@@ -10,8 +10,7 @@ Endpoints:
     GET /api/macro-news          -> latest macro news items (macro_news)
     GET /api/ui-strings?lang=he  -> UI text dictionary for a given language
 
-CORS is open for local development. Lock this down (allow_origins) before
-deploying publicly.
+CORS is open for local development and production addresses.
 """
 
 import json
@@ -28,14 +27,12 @@ DB_PATH = os.environ.get("SWING_DB_PATH", "swing_dashboard.db")
 
 app = FastAPI(title="Swing Desk API")
 
+# כעת הגישה פתוחה בצורה מלאה ותקינה כדי ש-Vercel יוכל למשוך נתונים
 app.add_middleware(
     CORSMiddleware,
-    # SECURITY: only your own site is allowed to talk to this API.
-    # Once you have your real Railway/Vercel/Cloudflare Pages address,
-    # replace the placeholder below with it. Until then, "*" (open to
-    # everyone) is kept as a safe default so local testing still works.
-    allow_origins=["*"],   # <-- replace with e.g. ["https://your-site.up.railway.app"]
-    allow_methods=["GET", "POST"],
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -62,7 +59,6 @@ def get_stocks(limit: int = Query(default=25, le=100)):
     result = []
     for r in rows:
         d = dict(r)
-        # resistance_targets is stored as a JSON string - parse it back to a list
         try:
             d["resistance_targets"] = json.loads(d["resistance_targets"] or "[]")
         except (json.JSONDecodeError, TypeError):
@@ -110,7 +106,7 @@ def stock_news(ticker: str, limit: int = 6):
 
     items = []
     for it in raw_items[:limit]:
-        content = it.get("content", it)  # newer yfinance versions nest under "content"
+        content = it.get("content", it)
         title = content.get("title") or it.get("title")
         link = (content.get("canonicalUrl") or {}).get("url") or it.get("link")
         publisher = (content.get("provider") or {}).get("displayName") or it.get("publisher")
@@ -119,12 +115,6 @@ def stock_news(ticker: str, limit: int = 6):
             items.append({"title": title, "link": link, "publisher": publisher, "published": published})
     return items
 
-
-# ------------------------------------------------------------------
-# Free-text stock search: works for ANY ticker, not just the ones the
-# nightly scanner flagged. Pulls live data directly from Yahoo Finance
-# on demand - no OpenAI call here, so it's instant and free to run.
-# ------------------------------------------------------------------
 
 @app.get("/api/lookup/{ticker}")
 def lookup_stock(ticker: str):
@@ -158,13 +148,8 @@ def lookup_stock(ticker: str):
     }
 
 
-# ------------------------------------------------------------------
-# Analytics: "what interests people" (not general traffic stats -
-# see DEPLOYMENT_GUIDE.md for that)
-# ------------------------------------------------------------------
-
 class TrackEvent(BaseModel):
-    event_type: str            # 'view_stock' / 'view_macro' / 'page_view'
+    event_type: str
     entity_id: Optional[str] = None
     session_id: Optional[str] = None
 
@@ -187,7 +172,6 @@ def top_interest(
     days: int = 7,
     limit: int = 10,
 ):
-    """Which tickers/news categories got the most clicks in the last N days."""
     conn = get_conn()
     rows = conn.execute(
         """
@@ -206,7 +190,6 @@ def top_interest(
 
 @app.get("/api/analytics/summary")
 def analytics_summary(days: int = 7):
-    """Quick daily event-count summary, useful for a simple internal chart."""
     conn = get_conn()
     rows = conn.execute(
         """
