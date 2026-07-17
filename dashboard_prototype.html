@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="he" dir="rtl">
 <head>
@@ -151,14 +152,6 @@
     font-size:11px;color:var(--text-dim);text-align:center;padding:10px 24px;border-top:1px solid var(--line);
   }
 </style>
-<!--
-  Full traffic analytics (visitor counts, referrers, devices, countries).
-  This is a separate, ready-made tool - it does NOT need to be built.
-  Sign up for a free Umami Cloud account (https://umami.is) or self-host it,
-  then paste your real script tag below. Until then this line does nothing.
-  Example:
-  <script defer src="https://cloud.umami.is/script.js" data-website-id="YOUR-ID-HERE"></script>
--->
 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 </head>
 <body>
@@ -179,8 +172,6 @@
 </header>
 
 <div class="board">
-
-  <!-- ימין: סורק מניות -->
   <div class="col right">
     <div class="col-title"><span class="dot"></span> סורק סווינג — משימות פתוחות</div>
     <div id="stocks"></div>
@@ -193,7 +184,6 @@
     </svg>
   </div>
 
-  <!-- שמאל: מאקרו -->
   <div class="col left">
     <div class="col-title"><span class="dot"></span> מוקד מאקרו וחדשות עולם</div>
     <div id="macro"></div>
@@ -204,56 +194,31 @@
   התוכן להמחשה בלבד ואינו מהווה ייעוץ השקעות או המלצה לביצוע עסקה.
 </div>
 
-<!-- Drawer -->
 <div class="overlay" id="overlay">
   <div class="drawer" id="drawer"></div>
 </div>
 
 <script>
 const stocks = [
-  {ticker:"IGV", trend:"up", score:82, trigger:"פריצת שיאים יורדים בווליום חזק",
-   entry:71.4, support:66.2, resistance:[74.9,78.6], socialSpike:64,
-   summary:"קהילת הטריידרים מדגישה חוזק סקטור התוכנה מול ריבית יציבה; עלייה חדה בדיונים סביב תוצאות רבעוניות קרובות."},
-  {ticker:"CRWD", trend:"up", score:76, trigger:"פריצת דגל שורי על נפח גבוה",
-   entry:298.1, support:281.0, resistance:[312.0,329.5], socialSpike:41,
-   summary:"עניין גובר סביב הרחבת חוזי אבטחת ענן; נצפתה מגמה חיובית עקבית בפורומים המקצועיים."},
-  {ticker:"PLTR", trend:"down", score:38, trigger:"כישלון בפריצה, לחץ מכירה",
-   entry:24.6, support:22.1, resistance:[26.0,27.4], socialSpike:12,
-   summary:"נפח הדיון ירד משמעותית מהשיא; חלק מהקהילה מביע חשש מהערכת שווי גבוהה."},
-  {ticker:"SNOW", trend:"up", score:69, trigger:"פריצת Cup & Handle",
-   entry:132.9, support:124.0, resistance:[138.5,145.0], socialSpike:53,
-   summary:"התעניינות מוגברת סביב שותפויות AI חדשות; טון הדיונים חיובי אך לא אופורי."},
-  {ticker:"SMH", trend:"up", score:71, trigger:"פריצת שיאים יורדים על נפח כבד",
-   entry:248.3, support:231.0, resistance:[258.0,269.0], socialSpike:47,
-   summary:"סקטור השבבים מרכז תשומת לב מוגברת לקראת עונת דוחות; נצפית מגמה חיובית רחבה."},
-  {ticker:"UBER", trend:"down", score:44, trigger:"בדיקת תמיכה מחדש",
-   entry:71.2, support:67.5, resistance:[75.0,79.0], socialSpike:19,
-   summary:"דיון מפוצל בקהילה סביב תחרות מוגברת בשוק; אין מגמה ברורה כרגע."},
-  {ticker:"COIN", trend:"up", score:78, trigger:"פריצת דגל שורי בליווי ווליום",
-   entry:214.6, support:198.0, resistance:[228.0,241.0], socialSpike:88,
-   summary:"קפיצה חדה בדיון סביב רגולציה חיובית לענף הקריפטו; עניין ציבורי מוגבר ניכר."},
-  {ticker:"SHOP", trend:"up", score:65, trigger:"פריצת שיאים יורדים",
-   entry:78.9, support:73.0, resistance:[82.5,87.0], socialSpike:33,
-   summary:"עלייה מתונה בדיון סביב הרחבת שירותי מסחר אלקטרוני; מגמה חיובית יציבה."},
+  {ticker:"IGV", trend:"up", score:82, trigger:"פריצת שיאים יורדים בווליום חזק", entry:71.4, support:66.2, resistance:[74.9,78.6], socialSpike:64, summary:"קהילת הטריידרים מדגישה חוזק סקטור התוכנה מול ריבית יציבה; עלייה חדה בדיונים סביב תוצאות רבעוניות קרובות."},
+  {ticker:"CRWD", trend:"up", score:76, trigger:"פריצת דגל שורי על נפח גבוה", entry:298.1, support:281.0, resistance:[312.0,329.5], socialSpike:41, summary:"עניין גובר סביב הרחבת חוזי אבטחת ענן; נצפתה מגמה חיובית עקבית בפורומים המקצועיים."},
+  {ticker:"PLTR", trend:"down", score:38, trigger:"כישלון בפריצה, לחץ מכירה", entry:24.6, support:22.1, resistance:[26.0,27.4], socialSpike:12, summary:"נפח הדיון ירד משמעותית מהשיא; חלק מהקהילה מביע חשש מהערכת שווי גבוהה."},
+  {ticker:"SNOW", trend:"up", score:69, trigger:"פריצת Cup & Handle", entry:132.9, support:124.0, resistance:[138.5,145.0], socialSpike:53, summary:"התעניינות מוגברת סביב שותפויות AI חדשות; טון הדיונים חיובי אך לא אופורי."},
+  {ticker:"SMH", trend:"up", score:71, trigger:"פריצת שיאים יורדים על נפח כבד", entry:248.3, support:231.0, resistance:[258.0,269.0], socialSpike:47, summary:"סקטור השבבים מרכז תשומת לב מוגברת לקראת עונת דוחות; נצפית מגמה חיובית רחבה."},
+  {ticker:"UBER", trend:"down", score:44, trigger:"בדיקת תמיכה מחדש", entry:71.2, support:67.5, resistance:[75.0,79.0], socialSpike:19, summary:"דיון מפוצל בקהילה סביב תחרות מוגברת בשוק; אין מגמה ברורה כרגע."},
+  {ticker:"COIN", trend:"up", score:78, trigger:"פריצת דגל שורי בליווי ווליום", entry:214.6, support:198.0, resistance:[228.0,241.0], socialSpike:88, summary:"קפיצה חדה בדיון סביב רגולציה חיובית לענף הקריפטו; עניין ציבורי מוגבר ניכר."},
+  {ticker:"SHOP", trend:"up", score:65, trigger:"פריצת שיאים יורדים", entry:78.9, support:73.0, resistance:[82.5,87.0], socialSpike:33, summary:"עלייה מתונה בדיון סביב הרחבת שירותי מסחר אלקטרוני; מגמה חיובית יציבה."},
 ];
 
 const macro = [
-  {tag:"CPI", impact:"High", text:"מדד ה-CPI בארה״ב עלה ב-2.4%, תואם את התחזיות ומוריד חשש מאינפלציה.", time:"לפני 42 דק׳",
-   source:"Reuters", link:"#", sectors:"טכנולוגיה, נדל״ן — רגישים במיוחד לריבית"},
-  {tag:"ריבית", impact:"Critical", text:"הפד השאיר את הריבית ללא שינוי, אך רמז לאפשרות הפחתה ברבעון הבא.", time:"לפני 3 שעות",
-   source:"Bloomberg", link:"#", sectors:"בנקים, סקטור הצריכה"},
-  {tag:"גאופוליטי", impact:"Critical", text:"הסלמה בשיט הימי במפרז מעלה חשש לשיבוש באספקת נפט גולמי.", time:"לפני 5 שעות",
-   source:"Reuters", link:"#", sectors:"אנרגיה, תעופה, שילוח"},
-  {tag:"תעסוקה", impact:"High", text:"דוח המשרות החדשות הפתיע לטובה עם 210 אלף משרות מול תחזית של 180 אלף.", time:"אתמול",
-   source:"Investing.com", link:"#", sectors:"כלל השוק — משפיע על ציפיות הריבית הבאה"},
-  {tag:"נפט", impact:"High", text:"מלאי הנפט הגולמי בארה״ב ירד מעבר לתחזיות, תומך במחירי האנרגיה.", time:"אתמול",
-   source:"Bloomberg", link:"#", sectors:"אנרגיה, תעשייה"},
-  {tag:"אינפלציה", impact:"High", text:"מדד ה-PPI הצביע על התמתנות בלחצי המחירים ברמת הסיטונאות.", time:"לפני יומיים",
-   source:"Reuters", link:"#", sectors:"כלל השוק"},
-  {tag:"סחר", impact:"Critical", text:"הודעה על מכסים חדשים על יבוא טכנולוגי מעלה חשש משיבוש שרשראות אספקה.", time:"לפני יומיים",
-   source:"Investing.com", link:"#", sectors:"טכנולוגיה, שבבים, קמעונאות"},
-  {tag:"תעסוקה", impact:"High", text:"תביעות אבטלה שבועיות עלו מעט מעבר לתחזיות, אך נותרו ברמה נמוכה היסטורית.", time:"לפני 3 ימים",
-   source:"Reuters", link:"#", sectors:"כלל השוק"},
+  {tag:"CPI", impact:"High", text:"מדד ה-CPI בארה״ב עלה ב-2.4%, תואם את התחזיות ומוריד חשש מאינפלציה.", time:"לפני 42 דק׳", source:"Reuters", link:"#", sectors:"טכנולוגיה, נדל״ן — רגישים במיוחד לריבית"},
+  {tag:"ריבית", impact:"Critical", text:"הפד השאיר את הריבית ללא שינוי, אך רמז לאפשרות הפחתה ברבעון הבא.", time:"לפני 3 שעות", source:"Bloomberg", link:"#", sectors:"בנקים, סקטור הצריכה"},
+  {tag:"גאופוליטי", impact:"Critical", text:"הסלמה בשיט הימי במפרז מעלה חשש לשיבוש באספקת נפט גולמי.", time:"לפני 5 שעות", source:"Reuters", link:"#", sectors:"אנרגיה, תעופה, שילוח"},
+  {tag:"תעסוקה", impact:"High", text:"דוח המשרות החדשות הפתיע לטובה עם 210 אלף משרות מול תחזית של 180 אלף.", time:"אתמול", source:"Investing.com", link:"#", sectors:"כלל השוק — משפיע על ציפיות הריבית הבאה"},
+  {tag:"נפט", impact:"High", text:"מלאי הנפט הגולמי בארה״ב ירד מעבר לתחזיות, תומך במחירי האנרגיה.", time:"אתמול", source:"Bloomberg", link:"#", sectors:"אנרגיה, תעשייה"},
+  {tag:"אינפלציה", impact:"High", text:"מדד ה-PPI הצביע על התמתנות בלחצי המחירים ברמת הסיטונאות.", time:"לפני יומיים", source:"Reuters", link:"#", sectors:"כלל השוק"},
+  {tag:"סחר", impact:"Critical", text:"הודעה על מכסים חדשים על יבוא טכנולוגי מעלה חשש משיבוש שרשראות אספקה.", time:"לפני יומיים", source:"Investing.com", link:"#", sectors:"טכנולוגיה, שבבים, קמעונאות"},
+  {tag:"תעסוקה", impact:"High", text:"תביעות אבטלה שבועיות עלו מעט מעבר לתחזיות, אך נותרו ברמה נמוכה היסטורית.", time:"לפני 3 ימים", source:"Reuters", link:"#", sectors:"כלל השוק"},
 ];
 
 function scoreClass(s){ return s>=60 ? "score-hi" : "score-mid"; }
@@ -355,13 +320,8 @@ function tickClock(){
 }
 setInterval(tickClock,1000); tickClock();
 
-// ---- API connection ----
-// Change this to your deployed API's address when it's not running locally.
-// ↓↓↓ THE ONLY LINE YOU'LL NEED TO CHANGE LATER — see the guide ↓↓↓
 const API_BASE = "https://swing-dashboard-production-438f.up.railway.app";
 
-// ---- Interest analytics ("what do people click on") ----
-// A random anonymous ID stored per-browser - no personal data involved.
 function getSessionId(){
   let sid = localStorage.getItem('swing_sid');
   if (!sid) {
@@ -375,9 +335,10 @@ function track(eventType, entityId){
     method: 'POST',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({event_type: eventType, entity_id: entityId, session_id: getSessionId()}),
-  }).catch(()=>{}); // silent fail - never blocks the UI if the API is offline
+  }).catch(()=>{});
 }
 track('page_view', null);
+
 const statusEl = document.createElement("div");
 statusEl.style.cssText = "position:fixed;bottom:12px;left:16px;font-size:11px;font-family:'JetBrains Mono',monospace;padding:4px 9px;border-radius:6px;z-index:60;";
 document.body.appendChild(statusEl);
@@ -408,7 +369,7 @@ async function loadFromApi(){
       fetch(`${API_BASE}/api/stocks`),
       fetch(`${API_BASE}/api/macro-news`),
     ]);
-    if (!stocksRes.ok || !macroRes.ok) throw new Error("API returned an error");
+    if (!stocksRes.ok || !macroRes.ok) throw new Error("API error");
 
     const dbStocks = await stocksRes.json();
     const dbMacro = await macroRes.json();
@@ -432,7 +393,7 @@ async function loadFromApi(){
     }
     setStatus(true);
   } catch (e) {
-    console.warn("API not reachable, showing demo data:", e);
+    console.warn("API offline, showing demo data:", e);
     setStatus(false);
   }
   renderStocks();
@@ -440,36 +401,42 @@ async function loadFromApi(){
 }
 
 loadFromApi();
-setInterval(loadFromApi, 20000); // poll the API every 20s so the board updates itself
+setInterval(loadFromApi, 20000);
 
-// ---- Free stock search (works for ANY ticker, not just the scanned ones) ----
+// ---- תיקון מנגנון החיפוש החופשי כאן למטה ----
 async function handleSearch(){
   const raw = document.getElementById("search-input").value.trim();
   if (!raw) return;
   const ticker = raw.toUpperCase();
 
   const drawer = document.getElementById("drawer");
-  drawer.innerHTML = `<div class="drawer-head"><h2>${ticker}</h2>
-    <button class="close-btn" onclick="closeDrawer()">✕</button></div>
-    <div class="ai-box">טוען נתונים...</div>`;
+  // הוספנו כאן את תיבת הגרף (#tv-chart) כדי שתוכל להתרנדר מיד בחיפוש חופשי
+  drawer.innerHTML = `
+    <div class="drawer-head">
+      <h2>${ticker}</h2>
+      <button class="close-btn" onclick="closeDrawer()">✕</button>
+    </div>
+    <div id="tv-chart" class="tv-chart-box"></div>
+    <div class="ai-box" id="loading-box">טוען נתונים...</div>
+  `;
   document.getElementById("overlay").classList.add("open");
+  
+  // מציג את הגרף מיד בשנייה שהחלון נפתח, בלי לחכות לשרת
+  renderTradingViewChart(ticker);
 
   try {
     const res = await fetch(`${API_BASE}/api/lookup/${ticker}`);
     if (!res.ok) {
-      const err = await res.json().catch(()=>({detail:"שגיאה לא ידועה"}));
-      drawer.innerHTML = `<div class="drawer-head"><h2>${ticker}</h2>
-        <button class="close-btn" onclick="closeDrawer()">✕</button></div>
-        <div class="ai-box">${err.detail || 'לא נמצא מידע על טיקר זה'}</div>`;
+      document.getElementById("loading-box").textContent = "לא נמצא מידע נוסף על טיקר זה, מציג גרף בלבד.";
       return;
     }
     const d = await res.json();
     const changeColor = d.change_pct >= 0 ? 'var(--green)' : 'var(--red)';
-    drawer.innerHTML = `
-      <div class="drawer-head">
-        <h2>${d.ticker}</h2>
-        <button class="close-btn" onclick="closeDrawer()">✕</button>
-      </div>
+    
+    // מעדכנים את שאר הנתונים מתחת לגרף הקיים
+    document.getElementById("loading-box").remove();
+    
+    const statsHtml = `
       <div class="macro-time" style="margin-bottom:14px;">${d.name} · ${d.exchange || ''}</div>
       <div class="gauge-wrap">
         <div class="gauge-num" style="color:${changeColor}">$${d.price}</div>
@@ -483,22 +450,16 @@ async function handleSearch(){
         <div class="stat"><div class="k">סקטור</div><div class="v" style="font-size:12px;">${d.sector || '—'}</div></div>
         <div class="stat"><div class="k">מכפיל רווח (P/E)</div><div class="v">${d.pe_ratio ? d.pe_ratio.toFixed(1) : '—'}</div></div>
       </div>
-      <div class="ai-box">
-        <div class="label">הערה</div>
-        חיפוש חופשי מציג נתוני שוק בזמן אמת בלבד. ניתוח AI וציון עוצמה מיוצרים רק עבור מניות שעברו את סינון הסורק היומי.
-      </div>
       <div class="news-section">
         <div class="label">חדשות אחרונות</div>
         <div id="stock-news-list">טוען חדשות...</div>
       </div>
     `;
-    renderTradingViewChart(d.ticker);
-    loadStockNews(d.ticker);
-    track('search_stock', d.ticker);
+    drawer.insertAdjacentHTML('beforeend', statsHtml);
+    loadStockNews(ticker);
+    track('search_stock', ticker);
   } catch (e) {
-    drawer.innerHTML = `<div class="drawer-head"><h2>${ticker}</h2>
-      <button class="close-btn" onclick="closeDrawer()">✕</button></div>
-      <div class="ai-box">לא ניתן להתחבר ל-API כרגע. ודא שהשרת פועל.</div>`;
+    document.getElementById("loading-box").textContent = "לא ניתן לטעון נתונים מהשרת כרגע, מציג גרף בלבד.";
   }
 }
 
@@ -506,11 +467,10 @@ document.getElementById("search-input").addEventListener("keydown", e=>{
   if (e.key === "Enter") handleSearch();
 });
 
-// ---- TradingView chart embed ----
 function renderTradingViewChart(ticker){
   const container = document.getElementById("tv-chart");
   if (!container || typeof TradingView === "undefined") return;
-  container.innerHTML = ""; // clear any previous widget instance
+  container.innerHTML = ""; 
   new TradingView.widget({
     autosize: true,
     symbol: ticker,
@@ -527,13 +487,12 @@ function renderTradingViewChart(ticker){
   });
 }
 
-// ---- Per-stock news ----
 async function loadStockNews(ticker){
   const el = document.getElementById("stock-news-list");
   if (!el) return;
   try {
     const res = await fetch(`${API_BASE}/api/stock-news/${ticker}`);
-    if (!res.ok) throw new Error("news fetch failed");
+    if (!res.ok) throw new Error("news failed");
     const items = await res.json();
     if (!items.length) {
       el.innerHTML = `<div class="macro-time">לא נמצאו כתבות עדכניות עבור ${ticker}</div>`;
