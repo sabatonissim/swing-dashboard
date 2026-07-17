@@ -16,15 +16,16 @@ deploying publicly.
 
 import json
 import os
-import sqlite3
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import yfinance as yf
+import psycopg2
+import psycopg2.extras
 
-DB_PATH = os.environ.get("SWING_DB_PATH", "swing_dashboard.db")
+DB_URL = os.environ.get("SWING_DB_PATH") or os.environ.get("DATABASE_URL")
 
 app = FastAPI(title="Swing Desk API")
 
@@ -32,8 +33,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://swing-desk-tau.vercel.app",
-        "http://localhost:8000",    # for local testing
-        "http://localhost:3000",    # for local testing
+        "http://localhost:8000",
+        "http://localhost:3000",
     ],
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
@@ -41,28 +42,78 @@ app.add_middleware(
 
 
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = psycopg2.connect(DB_URL)
     return conn
+
+
+def init_db():
+    """Create tables if they don't exist yet."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS scanned_stocks (
+            id SERIAL PRIMARY KEY,
+            ticker TEXT NOT NULL,
+            trigger_text_he TEXT,
+            trigger_text_en TEXT,
+            swing_score INTEGER,
+            entry_price REAL,
+            support_level REAL,
+            resistance_targets TEXT,
+            social_volume_spike_pct REAL,
+            ai_summary_he TEXT,
+            ai_summary_en TEXT,
+            market_cap REAL,
+            avg_volume_20d REAL,
+            breakout_volume_pct REAL,
+            exchange TEXT,
+            timestamp TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS macro_news (
+            id SERIAL PRIMARY KEY,
+            category_tag TEXT NOT NULL,
+            summary_he TEXT,
+            summary_en TEXT,
+            impact_level TEXT,
+            source_url TEXT,
+            timestamp TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS ui_strings (
+            string_key TEXT PRIMARY KEY,
+            he TEXT NOT NULL,
+            en TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS analytics_events (
+            id SERIAL PRIMARY KEY,
+            event_type TEXT NOT NULL,
+            entity_id TEXT,
+            session_id TEXT,
+            timestamp TIMESTAMPTZ DEFAULT NOW()
+        );
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+# Initialize DB tables on startup
+try:
+    init_db()
+except Exception as e:
+    print(f"DB init warning: {e}")
 
 
 @app.get("/api/stocks")
 def get_stocks(limit: int = Query(default=25, le=100)):
     conn = get_conn()
-    rows = conn.execute(
-        """
-        SELECT * FROM scanned_stocks
-        ORDER BY timestamp DESC
-        LIMIT ?
-        """,
-        (limit,),
-    ).fetchall()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT * FROM scanned_stocks ORDER BY timestamp DESC LIMIT %s", (limit,))
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
-
     result = []
     for r in rows:
         d = dict(r)
-        # resistance_targets is stored as a JSON string - parse it back to a list
         try:
             d["resistance_targets"] = json.loads(d["resistance_targets"] or "[]")
         except (json.JSONDecodeError, TypeError):
@@ -74,14 +125,10 @@ def get_stocks(limit: int = Query(default=25, le=100)):
 @app.get("/api/macro-news")
 def get_macro_news(limit: int = Query(default=25, le=100)):
     conn = get_conn()
-    rows = conn.execute(
-        """
-        SELECT * FROM macro_news
-        ORDER BY timestamp DESC
-        LIMIT ?
-        """,
-        (limit,),
-    ).fetchall()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT * FROM macro_news ORDER BY timestamp DESC LIMIT %s", (limit,))
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -89,14 +136,25 @@ def get_macro_news(limit: int = Query(default=25, le=100)):
 @app.get("/api/ui-strings")
 def get_ui_strings(lang: str = Query(default="he", pattern="^(he|en)$")):
     conn = get_conn()
-    rows = conn.execute("SELECT string_key, he, en FROM ui_strings").fetchall()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT string_key, he, en FROM ui_strings")
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
     return {r["string_key"]: r[lang] for r in rows}
 
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "db_path": DB_PATH}
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.close()
+        conn.close()
+        return {"status": "ok", "db": "connected"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 
 @app.get("/api/stock-news/{ticker}")
@@ -172,11 +230,13 @@ class TrackEvent(BaseModel):
 @app.post("/api/track")
 def track_event(event: TrackEvent):
     conn = get_conn()
-    conn.execute(
-        "INSERT INTO analytics_events (event_type, entity_id, session_id) VALUES (?, ?, ?)",
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO analytics_events (event_type, entity_id, session_id) VALUES (%s, %s, %s)",
         (event.event_type, event.entity_id, event.session_id),
     )
     conn.commit()
+    cur.close()
     conn.close()
     return {"status": "logged"}
 
@@ -187,36 +247,40 @@ def top_interest(
     days: int = 7,
     limit: int = 10,
 ):
-    """Which tickers/news categories got the most clicks in the last N days."""
     conn = get_conn()
-    rows = conn.execute(
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
         """
         SELECT entity_id, COUNT(*) as clicks
         FROM analytics_events
-        WHERE event_type = ? AND timestamp >= datetime('now', ?)
+        WHERE event_type = %s AND timestamp >= NOW() - (%s || ' days')::INTERVAL
         GROUP BY entity_id
         ORDER BY clicks DESC
-        LIMIT ?
+        LIMIT %s
         """,
-        (event_type, f"-{days} days", limit),
-    ).fetchall()
+        (event_type, days, limit),
+    )
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
     return [dict(r) for r in rows]
 
 
 @app.get("/api/analytics/summary")
 def analytics_summary(days: int = 7):
-    """Quick daily event-count summary, useful for a simple internal chart."""
     conn = get_conn()
-    rows = conn.execute(
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
         """
         SELECT date(timestamp) as day, event_type, COUNT(*) as count
         FROM analytics_events
-        WHERE timestamp >= datetime('now', ?)
+        WHERE timestamp >= NOW() - (%s || ' days')::INTERVAL
         GROUP BY day, event_type
         ORDER BY day DESC
         """,
-        (f"-{days} days",),
-    ).fetchall()
+        (days,),
+    )
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
     return [dict(r) for r in rows]
