@@ -26,7 +26,8 @@ Requirements (pip install --break-system-packages):
 
 import json
 import os
-import sqlite3
+import psycopg2
+import psycopg2.extras
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -35,11 +36,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-# ------------------------------------------------------------------
-# Config
-# ------------------------------------------------------------------
-
-DB_PATH = os.environ.get("SWING_DB_PATH", "swing_dashboard.db")
+DB_URL = os.environ.get("SWING_DB_PATH") or os.environ.get("DATABASE_URL")
 
 # Universe to scan. This starter list covers major large/mid-cap names across
 # several sectors so the live scan doesn't come back too sparse. For full
@@ -50,16 +47,21 @@ DB_PATH = os.environ.get("SWING_DB_PATH", "swing_dashboard.db")
 DEFAULT_UNIVERSE = [
     # Software / Cloud
     "MSFT", "CRM", "NOW", "SNOW", "PANW", "CRWD", "DDOG", "NET", "IGV",
-    # Semiconductors / Hardware
-    "NVDA", "AMD", "AVGO", "SMH", "MU", "QCOM",
+    "OKTA", "ZS", "WDAY", "ADBE", "INTU",
+    # Semiconductors
+    "NVDA", "AMD", "AVGO", "SMH", "MU", "QCOM", "AMAT", "LRCX", "KLAC",
     # Consumer / E-commerce
-    "AMZN", "SHOP", "ABNB", "UBER", "SBUX",
-    # Fintech / Crypto-adjacent
-    "SQ", "COIN", "PYPL", "MSTR",
-    # AI / Data
-    "PLTR", "AI", "GOOGL", "META",
-    # Industrials / Energy
-    "CAT", "XLE", "XOM",
+    "AMZN", "SHOP", "ABNB", "UBER", "SBUX", "MELI",
+    # Fintech
+    "SQ", "COIN", "PYPL", "AFRM",
+    # AI / Data / Big Tech
+    "PLTR", "GOOGL", "META", "AAPL",
+    # Biotech / Health
+    "MRNA", "ISRG", "DXCM",
+    # Energy
+    "XLE", "XOM", "CVX",
+    # ETFs
+    "QQQ", "SPY", "ARKK",
 ]
 
 MIN_AVG_VOLUME_20D = 1_500_000       # shares
@@ -288,43 +290,60 @@ def call_openai_sentiment(ticker: str, posts: List[str], target_language: str) -
 # Step 6: DB upsert
 # ------------------------------------------------------------------
 
-def init_db(db_path: str = DB_PATH):
-    conn = sqlite3.connect(db_path)
-    with open(os.path.join(os.path.dirname(__file__), "database_schema.sql")) as f:
-        conn.executescript(f.read())
+def get_conn():
+    return psycopg2.connect(DB_URL)
+
+
+def init_db():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS scanned_stocks (
+            id SERIAL PRIMARY KEY,
+            ticker TEXT NOT NULL,
+            trigger_text_he TEXT,
+            trigger_text_en TEXT,
+            swing_score INTEGER,
+            entry_price REAL,
+            support_level REAL,
+            resistance_targets TEXT,
+            social_volume_spike_pct REAL,
+            ai_summary_he TEXT,
+            ai_summary_en TEXT,
+            market_cap REAL,
+            avg_volume_20d REAL,
+            breakout_volume_pct REAL,
+            exchange TEXT,
+            timestamp TIMESTAMPTZ DEFAULT NOW()
+        );
+    """)
     conn.commit()
-    return conn
+    cur.close()
+    conn.close()
 
 
-def upsert_scan_result(conn: sqlite3.Connection, result: ScanResult):
-    conn.execute(
+def upsert_scan_result(conn, result):
+    cur = conn.cursor()
+    cur.execute(
         """
         INSERT INTO scanned_stocks (
             ticker, trigger_text_he, trigger_text_en, swing_score,
             entry_price, support_level, resistance_targets,
             social_volume_spike_pct, ai_summary_he, ai_summary_en,
             market_cap, avg_volume_20d, breakout_volume_pct, exchange, timestamp
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
-            result.ticker,
-            result.trigger_text_he,
-            result.trigger_text_en,
-            result.swing_score,
-            result.entry_price,
-            result.support_level,
-            json.dumps(result.resistance_targets),
-            result.social_volume_spike_pct,
-            result.ai_summary_he,
-            result.ai_summary_en,
-            result.market_cap,
-            result.avg_volume_20d,
-            result.breakout_volume_pct,
-            result.exchange,
+            result.ticker, result.trigger_text_he, result.trigger_text_en,
+            result.swing_score, result.entry_price, result.support_level,
+            json.dumps(result.resistance_targets), result.social_volume_spike_pct,
+            result.ai_summary_he, result.ai_summary_en, result.market_cap,
+            result.avg_volume_20d, result.breakout_volume_pct, result.exchange,
             datetime.now(timezone.utc).isoformat(),
         ),
     )
     conn.commit()
+    cur.close()
 
 
 # ------------------------------------------------------------------
@@ -389,11 +408,12 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
 
 
 def main():
-    conn = init_db()
+    init_db()
+    conn = get_conn()
     results = scan_universe()
     for r in results:
         upsert_scan_result(conn, r)
-    print(f"Scan complete. {len(results)} tickers flagged and saved to {DB_PATH}.")
+    print(f"Scan complete. {len(results)} tickers flagged and saved to Postgres.")
     conn.close()
 
 
