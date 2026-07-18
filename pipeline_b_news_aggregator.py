@@ -23,14 +23,16 @@ import feedparser
 
 DB_URL = os.environ.get("SWING_DB_PATH") or os.environ.get("DATABASE_URL")
 
-# Top-tier financial RSS feeds - expanded list for more coverage
+# פידים אמינים ועובדים שמביאים חדשות פיננסיות גדולות
 RSS_FEEDS = {
-    "Reuters Business":     "https://feeds.reuters.com/reuters/businessNews",
-    "Reuters World":        "https://feeds.reuters.com/Reuters/worldNews",
-    "Investing.com":        "https://www.investing.com/rss/news.rss",
-    "MarketWatch":          "https://feeds.marketwatch.com/marketwatch/topstories/",
-    "Yahoo Finance":        "https://finance.yahoo.com/news/rssindex",
-    "CNBC":                 "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+    "Reuters Top News":      "https://feeds.reuters.com/reuters/topNews",
+    "Reuters Business":      "https://feeds.reuters.com/reuters/businessNews",
+    "CNBC Top News":         "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+    "CNBC Markets":          "https://www.cnbc.com/id/20910258/device/rss/rss.html",
+    "Yahoo Finance":         "https://finance.yahoo.com/news/rssindex",
+    "Seeking Alpha Markets": "https://seekingalpha.com/market_currents.xml",
+    "MarketWatch":           "https://feeds.marketwatch.com/marketwatch/marketpulse/",
+    "Investing.com":         "https://www.investing.com/rss/news_301.rss",
 }
 
 # Broad keyword matrix — includes both macro AND general market/tech/geo news
@@ -112,10 +114,13 @@ def translate_to_hebrew(text: str) -> str:
     """Translate to Hebrew using deep-translator — free, no API key needed."""
     try:
         from deep_translator import GoogleTranslator
-        return GoogleTranslator(source='en', target='he').translate(text[:500])
+        # clean HTML tags if any
+        clean = re.sub(r'<[^>]+>', '', text).strip()
+        result = GoogleTranslator(source='auto', target='he').translate(clean[:400])
+        return result if result else text
     except Exception as e:
         print(f"[warn] translation failed: {e}")
-        return text  # fallback: return original English
+        return text  # fallback: return original
 
 
 def get_conn():
