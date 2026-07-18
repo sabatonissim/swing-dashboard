@@ -374,33 +374,29 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         if vol_pct is None:
             continue
 
-        # --- social fusion ---
-        posts = fetch_social_posts(ticker)
-        sentiment = call_openai_sentiment(ticker, posts, "Hebrew" if target_language == "he" else "English")
-        sentiment_en = sentiment if target_language == "en" else \
-            call_openai_sentiment(ticker, posts, "English")
-        sentiment_he = sentiment if target_language == "he" else \
-            call_openai_sentiment(ticker, posts, "Hebrew")
+        # --- score based purely on technical strength (no OpenAI needed) ---
+        # Higher volume spike = higher score
+        tech_score = min(100, 50 + int(vol_pct / 2))
 
         close = float(hist["Close"].iloc[-1])
         support = float(hist["Low"].tail(20).min())
-        resistance = [round(close * 1.05, 2), round(close * 1.10, 2)]  # placeholder targets
+        resistance = [round(close * 1.05, 2), round(close * 1.10, 2)]
 
         result = ScanResult(
             ticker=ticker,
             trigger_text_en="Breakout above descending trendline on strong volume",
             trigger_text_he="פריצת שיאים יורדים בווליום חזק",
-            swing_score=int(sentiment_he.get("score", 50)),
+            swing_score=tech_score,
             entry_price=close,
             support_level=support,
             resistance_targets=resistance,
-            social_volume_spike_pct=0.0,  # fill in once compute_social_volume_spike has real baseline data
+            social_volume_spike_pct=0.0,
             market_cap=float(info.get("marketCap") or 0),
             avg_volume_20d=float(hist["Volume"].tail(20).mean()),
             breakout_volume_pct=vol_pct,
             exchange=info.get("exchange", ""),
-            ai_summary_en=sentiment_en.get("summary", ""),
-            ai_summary_he=sentiment_he.get("summary", ""),
+            ai_summary_en=f"Technical breakout detected: volume {vol_pct:.0f}% above 20d average.",
+            ai_summary_he=f"זוהתה פריצה טכנית: נפח גבוה ב-{vol_pct:.0f}% מהממוצע.",
         )
         results.append(result)
 

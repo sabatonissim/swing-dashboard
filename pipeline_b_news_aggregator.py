@@ -20,7 +20,6 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 import feedparser
-from openai import OpenAI
 
 DB_URL = os.environ.get("SWING_DB_PATH") or os.environ.get("DATABASE_URL")
 
@@ -84,14 +83,6 @@ CRITICAL_KEYWORDS = {
     "Recession", "Bankruptcy", "Crisis",
 }
 
-NEWS_SYSTEM_PROMPT = """You are a financial news condenser for a swing-trading dashboard.
-You rewrite raw headlines/snippets into a single, neutral, factual sentence. Never add
-a buy/sell opinion, price target, or trading instruction - purely report what happened
-and its stated market implication (e.g. "reduces inflation concern"), not what a trader
-should do about it.
-"""
-
-
 def matches_high_impact(title: str) -> Optional[str]:
     """Returns the matched keyword if the title is high-impact, else None."""
     for kw in HIGH_IMPACT_KEYWORDS:
@@ -117,28 +108,14 @@ def fetch_raw_headlines() -> List[dict]:
     return items
 
 
-def condense_news(raw_text: str, target_language: str) -> str:
-    """
-    Calls OpenAI to translate/condense/rewrite into exactly one practical sentence.
-    Requires OPENAI_API_KEY in the environment.
-    """
-    client = OpenAI()
-    user_prompt = (
-        f"Translate, condense, and rewrite this financial news into exactly ONE "
-        f"practical, clear sentence in {target_language} suitable for a swing trader. "
-        f"Stay strictly factual/analytical - no trading advice. "
-        f"Example output format: 'US CPI rose 2.4%, matching forecasts, easing inflation concern.'\n\n"
-        f"Raw news:\n{raw_text}"
-    )
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": NEWS_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.2,
-    )
-    return response.choices[0].message.content.strip()
+def translate_to_hebrew(text: str) -> str:
+    """Translate to Hebrew using deep-translator — free, no API key needed."""
+    try:
+        from deep_translator import GoogleTranslator
+        return GoogleTranslator(source='en', target='he').translate(text[:500])
+    except Exception as e:
+        print(f"[warn] translation failed: {e}")
+        return text  # fallback: return original English
 
 
 def get_conn():
@@ -194,15 +171,14 @@ def run_pipeline_b():
         tag = KEYWORD_TO_TAG.get(matched_kw, "מאקרו")
         impact = "Critical" if matched_kw in CRITICAL_KEYWORDS else "High"
 
-        raw_text = f"{item['title']}. {item['summary']}"
-        summary_he = condense_news(raw_text, "Hebrew")
-        summary_en = condense_news(raw_text, "English")
+        title = item["title"]
+        summary_he = translate_to_hebrew(title)
+        summary_en = title  # keep original English as-is
 
         upsert_macro_news(tag, summary_he, summary_en, impact, item["link"])
         saved += 1
 
     print(f"Pipeline B complete. {saved} high-impact items saved to Postgres.")
-    conn.close()
 
 
 if __name__ == "__main__":
