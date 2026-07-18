@@ -257,12 +257,13 @@ function switchChart(symbol, label){
   const container = document.getElementById('market-tv-chart');
   container.innerHTML = '';
   if(typeof TradingView === 'undefined'){ return; }
-  const tvSymbol = symbol === 'BTCUSD' ? 'BINANCE:BTCUSDT'
-    : symbol === 'SPX' ? 'SP:SPX'
-    : symbol === 'NDX' ? 'NASDAQ:NDX'
-    : symbol === 'VIX' ? 'CBOE:VIX'
-    : symbol === 'RUT' ? 'RUSSELL:RUT'
-    : symbol;
+  // Use symbols compatible with the free TradingView widget
+  const tvSymbol =
+    symbol === 'SPX'    ? 'FOREXCOM:SPXUSD' :
+    symbol === 'NDX'    ? 'FOREXCOM:NSXUSD' :
+    symbol === 'VIX'    ? 'TVC:VIX' :
+    symbol === 'RUT'    ? 'TVC:RUT' :
+    symbol === 'BTCUSD' ? 'BITSTAMP:BTCUSD' : symbol;
   new TradingView.widget({
     container_id:'market-tv-chart',
     symbol: tvSymbol,
