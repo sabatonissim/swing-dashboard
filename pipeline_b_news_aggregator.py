@@ -24,32 +24,65 @@ from openai import OpenAI
 
 DB_PATH = os.environ.get("SWING_DB_PATH", "swing_dashboard.db")
 
-# Top-tier financial RSS feeds. Add/replace with licensed feeds as needed -
-# check each outlet's terms of use before scraping in production.
+# Top-tier financial RSS feeds - expanded list for more coverage
 RSS_FEEDS = {
-    "Reuters Business": "https://www.reutersagency.com/feed/?best-topics=business-finance",
-    "Investing.com":     "https://www.investing.com/rss/news.rss",
+    "Reuters Business":     "https://feeds.reuters.com/reuters/businessNews",
+    "Reuters World":        "https://feeds.reuters.com/Reuters/worldNews",
+    "Investing.com":        "https://www.investing.com/rss/news.rss",
+    "MarketWatch":          "https://feeds.marketwatch.com/marketwatch/topstories/",
+    "Yahoo Finance":        "https://finance.yahoo.com/news/rssindex",
+    "CNBC":                 "https://www.cnbc.com/id/100003114/device/rss/rss.html",
 }
 
-# High-impact keyword matrix (case-insensitive). Company-specific gossip
-# and low-tier news are discarded if none of these appear in the title.
+# Broad keyword matrix — includes both macro AND general market/tech/geo news
 HIGH_IMPACT_KEYWORDS = [
+    # מאקרו קלאסי
     "CPI", "PPI", "Federal Reserve", "Fed ", "Interest Rate", "Rate Hike",
-    "Rate Cut", "Inflation", "OPEC", "War", "Sanctions", "Employment Report",
-    "Non-Farm Payrolls", "Jobs Report", "GDP", "Recession", "Yield Curve",
+    "Rate Cut", "Inflation", "OPEC", "Employment Report", "Non-Farm Payrolls",
+    "Jobs Report", "GDP", "Recession", "Yield Curve",
+    # גאופוליטיקה
+    "War", "Sanctions", "Conflict", "Tension", "Crisis", "Attack",
+    # שווקים כלליים
+    "Stock Market", "S&P 500", "Nasdaq", "Dow Jones", "Bull Market", "Bear Market",
+    "Earnings", "Quarterly Results", "Revenue", "Profit", "Guidance",
+    "Merger", "Acquisition", "IPO", "Bankruptcy",
+    # טכנולוגיה ו-AI
+    "Artificial Intelligence", "AI", "Semiconductor", "Tech", "Chip",
+    "Apple", "Microsoft", "Google", "Amazon", "Nvidia", "Meta",
+    # אנרגיה וסחורות
+    "Oil", "Crude", "Natural Gas", "Gold", "Commodity",
+    # קריפטו
+    "Bitcoin", "Crypto", "Ethereum", "Regulation",
 ]
 
 KEYWORD_TO_TAG = {
-    "CPI": "CPI", "PPI": "PPI", "Federal Reserve": "Interest Rate",
-    "Fed ": "Interest Rate", "Interest Rate": "Interest Rate",
-    "Rate Hike": "Interest Rate", "Rate Cut": "Interest Rate",
-    "Inflation": "Inflation", "OPEC": "Commodities", "War": "Geo",
-    "Sanctions": "Geo", "Employment Report": "Employment",
-    "Non-Farm Payrolls": "Employment", "Jobs Report": "Employment",
-    "GDP": "GDP", "Recession": "Macro", "Yield Curve": "Rates",
+    "CPI": "CPI", "PPI": "PPI",
+    "Federal Reserve": "ריבית", "Fed ": "ריבית",
+    "Interest Rate": "ריבית", "Rate Hike": "ריבית", "Rate Cut": "ריבית",
+    "Inflation": "אינפלציה", "OPEC": "סחורות",
+    "War": "גאופוליטי", "Sanctions": "גאופוליטי", "Conflict": "גאופוליטי",
+    "Tension": "גאופוליטי", "Crisis": "גאופוליטי", "Attack": "גאופוליטי",
+    "Employment Report": "תעסוקה", "Non-Farm Payrolls": "תעסוקה",
+    "Jobs Report": "תעסוקה", "GDP": "GDP", "Recession": "מאקרו",
+    "Yield Curve": "אג\"ח", "Stock Market": "שוק", "S&P 500": "שוק",
+    "Nasdaq": "שוק", "Dow Jones": "שוק", "Bull Market": "שוק", "Bear Market": "שוק",
+    "Earnings": "דוחות", "Quarterly Results": "דוחות", "Revenue": "דוחות",
+    "Profit": "דוחות", "Guidance": "דוחות",
+    "Merger": "M&A", "Acquisition": "M&A", "IPO": "IPO", "Bankruptcy": "פשיטת רגל",
+    "Artificial Intelligence": "AI", "AI": "AI", "Semiconductor": "שבבים",
+    "Tech": "טכנולוגיה", "Chip": "שבבים",
+    "Apple": "טכנולוגיה", "Microsoft": "טכנולוגיה", "Google": "טכנולוגיה",
+    "Amazon": "טכנולוגיה", "Nvidia": "שבבים", "Meta": "טכנולוגיה",
+    "Oil": "אנרגיה", "Crude": "אנרגיה", "Natural Gas": "אנרגיה",
+    "Gold": "סחורות", "Commodity": "סחורות",
+    "Bitcoin": "קריפטו", "Crypto": "קריפטו", "Ethereum": "קריפטו",
+    "Regulation": "רגולציה",
 }
 
-CRITICAL_KEYWORDS = {"War", "Sanctions", "Federal Reserve", "Rate Hike", "Rate Cut"}
+CRITICAL_KEYWORDS = {
+    "War", "Sanctions", "Attack", "Federal Reserve", "Rate Hike", "Rate Cut",
+    "Recession", "Bankruptcy", "Crisis",
+}
 
 NEWS_SYSTEM_PROMPT = """You are a financial news condenser for a swing-trading dashboard.
 You rewrite raw headlines/snippets into a single, neutral, factual sentence. Never add
