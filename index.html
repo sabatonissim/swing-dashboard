@@ -22,134 +22,106 @@
     --red: #ef5b5b;
   }
   *{box-sizing:border-box;}
-  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:'Heebo',sans-serif;height:100%;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:'Heebo',sans-serif;}
   .mono{font-family:'JetBrains Mono',monospace;}
-  .display{font-family:'Frank Ruhl Libre',serif;}
 
+  /* ---- Header ---- */
   header{
     display:flex;align-items:center;justify-content:space-between;
-    padding:18px 28px;border-bottom:1px solid var(--line);
+    padding:14px 28px;border-bottom:1px solid var(--line);
     background:linear-gradient(180deg,#12151a,#0f1216);
+    position:sticky;top:0;z-index:40;
   }
   header .logo{display:flex;align-items:center;gap:10px;}
-  header .logo .mark{
-    width:10px;height:10px;border-radius:2px;background:var(--amber);
-    box-shadow:0 0 12px var(--amber);
-  }
-  header h1{font-family:'Frank Ruhl Libre',serif;font-weight:700;font-size:22px;margin:0;letter-spacing:0.3px;}
-  header .sub{color:var(--text-dim);font-size:13px;margin-top:2px;}
+  header .logo .mark{width:10px;height:10px;border-radius:2px;background:var(--amber);box-shadow:0 0 12px var(--amber);}
+  header h1{font-family:'Frank Ruhl Libre',serif;font-weight:700;font-size:20px;margin:0;}
+  header .sub{color:var(--text-dim);font-size:12px;margin-top:1px;}
   header .clock{color:var(--text-dim);font-size:13px;}
-
-  .search-wrap{display:flex;align-items:center;gap:8px;flex:1;max-width:340px;margin:0 24px;}
-  .search-input{
-    flex:1;background:var(--panel);border:1px solid var(--line);color:var(--text);
-    border-radius:8px;padding:9px 12px;font-size:13.5px;outline:none;
-  }
+  .search-wrap{display:flex;align-items:center;gap:8px;flex:1;max-width:320px;margin:0 20px;}
+  .search-input{flex:1;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 12px;font-size:13px;outline:none;}
   .search-input:focus{border-color:var(--amber-dim);}
-  .search-btn{
-    background:var(--amber);color:#1a1300;border:none;border-radius:8px;
-    padding:9px 16px;font-weight:700;font-size:13px;cursor:pointer;white-space:nowrap;
-  }
-  .search-btn:hover{opacity:0.9;}
-  @media (max-width:900px){ .search-wrap{display:none;} }
+  .search-btn{background:var(--amber);color:#1a1300;border:none;border-radius:8px;padding:8px 14px;font-weight:700;font-size:13px;cursor:pointer;}
+  @media(max-width:900px){.search-wrap{display:none;}}
 
-  .board{
-    display:grid;grid-template-columns:1fr 3px 1fr;
-    height:calc(100vh - 76px);
-  }
-  @media (max-width:900px){ .board{grid-template-columns:1fr;} .divider{display:none;} }
+  /* ---- Breaking news bar ---- */
+  .breaking-bar{background:var(--panel);border-bottom:1px solid var(--line);padding:10px 24px 14px;}
+  .breaking-bar-title{display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:11px;letter-spacing:1.5px;color:var(--red);text-transform:uppercase;font-weight:700;}
+  .pulse{width:7px;height:7px;border-radius:50%;background:var(--red);animation:pulse 1.5s infinite;}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.3;}}
+  .breaking-items{display:flex;gap:10px;overflow-x:auto;scrollbar-width:none;}
+  .breaking-items::-webkit-scrollbar{display:none;}
+  .breaking-card{flex-shrink:0;max-width:260px;background:rgba(239,91,91,.07);border:1px solid rgba(239,91,91,.2);border-radius:10px;padding:10px 14px;cursor:pointer;transition:border-color .15s;}
+  .breaking-card:hover{border-color:rgba(239,91,91,.5);}
+  .breaking-card .b-tag{font-size:10px;color:var(--red);font-weight:700;margin-bottom:4px;letter-spacing:1px;}
+  .breaking-card .b-text{font-size:13px;line-height:1.45;}
 
-  .divider{position:relative;background:var(--line);overflow:hidden;}
-  .divider svg{position:absolute;top:0;right:-14px;height:100%;width:32px;opacity:0.6;}
+  /* ---- Market charts ---- */
+  .market-charts{background:var(--panel-2);border-bottom:1px solid var(--line);padding:12px 24px;}
+  .market-charts-title{font-size:11px;letter-spacing:1.5px;color:var(--text-dim);text-transform:uppercase;margin-bottom:8px;}
+  .chart-tabs{display:flex;gap:7px;margin-bottom:10px;flex-wrap:wrap;}
+  .chart-tab{padding:5px 13px;border-radius:20px;font-size:12px;font-family:'JetBrains Mono',monospace;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--text-dim);transition:all .15s;}
+  .chart-tab.active{background:var(--amber);color:#1a1300;border-color:var(--amber);font-weight:700;}
+  .chart-tab:hover:not(.active){border-color:var(--amber-dim);color:var(--text);}
+  #market-tv-chart{height:220px;border-radius:10px;overflow:hidden;background:var(--panel);}
 
-  .col{overflow-y:auto;padding:22px 24px 60px;}
-  .col::-webkit-scrollbar{width:8px;}
+  /* ---- Main board ---- */
+  .board{display:grid;grid-template-columns:1fr 3px 1fr;height:calc(100vh - 280px);min-height:400px;}
+  @media(max-width:900px){.board{grid-template-columns:1fr;height:auto;}.divider{display:none;}}
+  .divider{background:var(--line);}
+  .col{overflow-y:auto;padding:20px 22px 60px;}
+  .col::-webkit-scrollbar{width:6px;}
   .col::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px;}
-
-  .col-title{
-    display:flex;align-items:center;gap:10px;margin-bottom:18px;
-    font-size:13px;letter-spacing:1.5px;color:var(--text-dim);text-transform:uppercase;
-  }
+  .col-title{display:flex;align-items:center;gap:10px;margin-bottom:16px;font-size:12px;letter-spacing:1.5px;color:var(--text-dim);text-transform:uppercase;}
   .col-title .dot{width:7px;height:7px;border-radius:50%;}
   .right .dot{background:var(--amber);}
   .left .dot{background:var(--teal);}
 
-  /* --- Scanner rows --- */
-  .stock-row{
-    display:flex;align-items:center;gap:14px;padding:14px 16px;margin-bottom:10px;
-    background:var(--panel);border:1px solid var(--line);border-radius:10px;
-    cursor:pointer;transition:transform .15s ease, border-color .15s ease;
-  }
+  /* ---- Stock rows ---- */
+  .stock-row{display:flex;align-items:center;gap:14px;padding:13px 15px;margin-bottom:9px;background:var(--panel);border:1px solid var(--line);border-radius:10px;cursor:pointer;transition:transform .15s,border-color .15s;}
   .stock-row:hover{border-color:var(--amber-dim);transform:translateX(-2px);}
-  .stock-row .ticker{font-family:'JetBrains Mono',monospace;font-weight:600;font-size:16px;min-width:58px;}
-  .stock-row .trend{font-size:18px;width:20px;text-align:center;}
-  .trend.up{color:var(--green);} .trend.down{color:var(--red);}
-  .stock-row .trigger{flex:1;font-size:13.5px;color:var(--text-dim);}
-  .score-badge{
-    font-family:'JetBrains Mono',monospace;font-weight:600;font-size:13px;
-    padding:4px 9px;border-radius:20px;min-width:38px;text-align:center;
-  }
+  .stock-row .ticker{font-family:'JetBrains Mono',monospace;font-weight:600;font-size:15px;min-width:55px;}
+  .stock-row .trend{font-size:17px;width:20px;text-align:center;}
+  .trend.up{color:var(--green);}.trend.down{color:var(--red);}
+  .stock-row .trigger{flex:1;font-size:13px;color:var(--text-dim);}
+  .score-badge{font-family:'JetBrains Mono',monospace;font-weight:600;font-size:13px;padding:4px 9px;border-radius:20px;min-width:36px;text-align:center;}
   .score-hi{background:rgba(62,207,126,.15);color:var(--green);}
   .score-mid{background:rgba(232,163,61,.15);color:var(--amber);}
 
-  /* --- Macro items --- */
-  .macro-item{
-    display:flex;gap:14px;padding:14px 4px;border-bottom:1px solid var(--line);
-  }
-  .macro-tag{
-    font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;
-    padding:4px 8px;border-radius:6px;height:fit-content;white-space:nowrap;
-  }
+  /* ---- Macro items ---- */
+  .macro-item{display:flex;gap:12px;padding:12px 4px;border-bottom:1px solid var(--line);cursor:pointer;}
+  .macro-item:hover .macro-text{color:var(--amber);}
+  .macro-tag{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;padding:4px 8px;border-radius:6px;height:fit-content;white-space:nowrap;}
   .tag-critical{background:rgba(239,91,91,.15);color:var(--red);}
   .tag-high{background:rgba(53,179,163,.15);color:var(--teal);}
-  .macro-text{font-size:14px;line-height:1.55;}
-  .macro-time{color:var(--text-dim);font-size:11.5px;margin-top:4px;}
+  .macro-text{font-size:13.5px;line-height:1.5;transition:color .15s;}
+  .macro-time{color:var(--text-dim);font-size:11px;margin-top:3px;}
 
-  /* --- Drawer --- */
-  .overlay{
-    position:fixed;inset:0;background:rgba(6,8,10,.6);backdrop-filter:blur(2px);
-    display:none;align-items:stretch;justify-content:flex-start;z-index:50;
-  }
+  /* ---- Drawer ---- */
+  .overlay{position:fixed;inset:0;background:rgba(6,8,10,.6);backdrop-filter:blur(2px);display:none;align-items:stretch;justify-content:flex-start;z-index:50;}
   .overlay.open{display:flex;}
-  .drawer{
-    width:min(460px,92vw);background:var(--panel-2);height:100%;
-    border-left:1px solid var(--line);padding:26px 24px;overflow-y:auto;
-    transform:translateX(-100%);transition:transform .28s ease;
-  }
+  .drawer{width:min(460px,92vw);background:var(--panel-2);height:100%;border-left:1px solid var(--line);padding:24px 22px;overflow-y:auto;transform:translateX(-100%);transition:transform .25s ease;}
   .overlay.open .drawer{transform:translateX(0);}
-  .drawer-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px;}
-  .drawer-head h2{font-family:'JetBrains Mono',monospace;font-size:24px;margin:0;}
-  .close-btn{
-    background:none;border:1px solid var(--line);color:var(--text-dim);
-    width:30px;height:30px;border-radius:8px;cursor:pointer;font-size:15px;
-  }
+  .drawer-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;}
+  .drawer-head h2{font-family:'JetBrains Mono',monospace;font-size:22px;margin:0;}
+  .close-btn{background:none;border:1px solid var(--line);color:var(--text-dim);width:30px;height:30px;border-radius:8px;cursor:pointer;font-size:15px;}
   .close-btn:hover{color:var(--text);}
-  .chart-placeholder{
-    height:160px;border-radius:10px;background:var(--panel);border:1px dashed var(--line);
-    display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:12.5px;
-    margin-bottom:18px;
-  }
-  .tv-chart-box{height:260px;border-radius:10px;overflow:hidden;margin-bottom:18px;background:var(--panel);}
-  .news-section{margin-bottom:18px;}
-  .news-item{padding:10px 0;border-bottom:1px solid var(--line);}
-  .news-item a{color:var(--text);font-size:13.5px;text-decoration:none;line-height:1.5;display:block;}
+  .tv-chart-box{height:260px;border-radius:10px;overflow:hidden;margin-bottom:16px;background:var(--panel);}
+  .news-section{margin-bottom:16px;}
+  .news-item{padding:9px 0;border-bottom:1px solid var(--line);}
+  .news-item a{color:var(--text);font-size:13px;text-decoration:none;line-height:1.5;display:block;}
   .news-item a:hover{color:var(--amber);}
-  .gauge-wrap{display:flex;align-items:center;gap:16px;margin-bottom:18px;}
-  .gauge-num{font-family:'JetBrains Mono',monospace;font-size:30px;font-weight:600;}
-  .gauge-label{color:var(--text-dim);font-size:12.5px;}
-  .stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:18px;}
+  .gauge-wrap{display:flex;align-items:center;gap:16px;margin-bottom:16px;}
+  .gauge-num{font-family:'JetBrains Mono',monospace;font-size:28px;font-weight:600;}
+  .gauge-label{color:var(--text-dim);font-size:12px;}
+  .stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:16px;}
   .stat{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px;}
-  .stat .k{color:var(--text-dim);font-size:11.5px;margin-bottom:3px;}
-  .stat .v{font-family:'JetBrains Mono',monospace;font-size:15px;}
-  .ai-box{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;font-size:13.5px;line-height:1.6;margin-bottom:18px;}
-  .ai-box .label{color:var(--amber);font-size:11px;letter-spacing:1px;text-transform:uppercase;margin-bottom:6px;}
-  .deep-btn{
-    display:block;width:100%;text-align:center;padding:12px;border-radius:9px;
-    background:var(--amber);color:#1a1300;font-weight:700;border:none;cursor:pointer;font-size:14px;
-  }
-  .disclaimer-strip{
-    font-size:11px;color:var(--text-dim);text-align:center;padding:10px 24px;border-top:1px solid var(--line);
-  }
+  .stat .k{color:var(--text-dim);font-size:11px;margin-bottom:3px;}
+  .stat .v{font-family:'JetBrains Mono',monospace;font-size:14px;}
+  .ai-box{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px;font-size:13px;line-height:1.6;margin-bottom:16px;}
+  .ai-box .label{color:var(--amber);font-size:11px;letter-spacing:1px;text-transform:uppercase;margin-bottom:5px;}
+  .deep-btn{display:block;width:100%;text-align:center;padding:11px;border-radius:9px;background:var(--amber);color:#1a1300;font-weight:700;border:none;cursor:pointer;font-size:14px;}
+
+  .disclaimer-strip{font-size:11px;color:var(--text-dim);text-align:center;padding:10px 24px;border-top:1px solid var(--line);}
 </style>
 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 </head>
@@ -160,7 +132,7 @@
     <div class="mark"></div>
     <div>
       <h1>Swing Desk</h1>
-      <div class="sub">פרוטוטייפ תצוגה — נתוני דמו</div>
+      <div class="sub">דשבורד מסחר בזמן אמת</div>
     </div>
   </div>
   <div class="search-wrap">
@@ -170,19 +142,32 @@
   <div class="clock mono" id="clock"></div>
 </header>
 
+<!-- Breaking News Bar -->
+<div class="breaking-bar">
+  <div class="breaking-bar-title"><span class="pulse"></span> חדשות שוברות — קריטי</div>
+  <div class="breaking-items" id="breaking-news"></div>
+</div>
+
+<!-- Market Index Charts -->
+<div class="market-charts">
+  <div class="market-charts-title">גרפי מדדים</div>
+  <div class="chart-tabs">
+    <button class="chart-tab active" onclick="switchChart('SPX','S&P 500')">S&P 500</button>
+    <button class="chart-tab" onclick="switchChart('NDX','נאסד&quot;ק')">נאסד"ק</button>
+    <button class="chart-tab" onclick="switchChart('VIX','VIX')">VIX</button>
+    <button class="chart-tab" onclick="switchChart('RUT','ראסל 2000')">ראסל 2000</button>
+    <button class="chart-tab" onclick="switchChart('BTCUSD','Bitcoin')">Bitcoin</button>
+  </div>
+  <div id="market-tv-chart"></div>
+</div>
+
+<!-- Main Board -->
 <div class="board">
   <div class="col right">
     <div class="col-title"><span class="dot"></span> סורק סווינג — משימות פתוחות</div>
     <div id="stocks"></div>
   </div>
-
-  <div class="divider">
-    <svg viewBox="0 0 32 400" preserveAspectRatio="none">
-      <polyline points="0,20 8,60 4,110 20,150 10,210 24,260 6,310 16,360 2,400"
-        fill="none" stroke="#3a4250" stroke-width="1.5"/>
-    </svg>
-  </div>
-
+  <div class="divider"></div>
   <div class="col left">
     <div class="col-title"><span class="dot"></span> מוקד מאקרו וחדשות עולם</div>
     <div id="macro"></div>
@@ -198,37 +183,36 @@
 </div>
 
 <script>
+// ---- Demo data (shown when API is offline) ----
 const stocks = [
-  {ticker:"IGV", trend:"up", score:82, trigger:"פריצת שיאים יורדים בווליום חזק", entry:71.4, support:66.2, resistance:[74.9,78.6], socialSpike:64, summary:"קהילת הטריידרים מדגישה חוזק סקטור התוכנה מול ריבית יציבה; עלייה חדה בדיונים סביב תוצאות רבעוניות קרובות."},
-  {ticker:"CRWD", trend:"up", score:76, trigger:"פריצת דגל שורי על נפח גבוה", entry:298.1, support:281.0, resistance:[312.0,329.5], socialSpike:41, summary:"עניין גובר סביב הרחבת חוזי אבטחת ענן; נצפתה מגמה חיובית עקבית בפורומים המקצועיים."},
-  {ticker:"PLTR", trend:"down", score:38, trigger:"כישלון בפריצה, לחץ מכירה", entry:24.6, support:22.1, resistance:[26.0,27.4], socialSpike:12, summary:"נפח הדיון ירד משמעותית מהשיא; חלק מהקהילה מביע חשש מהערכת שווי גבוהה."},
-  {ticker:"SNOW", trend:"up", score:69, trigger:"פריצת Cup & Handle", entry:132.9, support:124.0, resistance:[138.5,145.0], socialSpike:53, summary:"התעניינות מוגברת סביב שותפויות AI חדשות; טון הדיונים חיובי אך לא אופורי."},
-  {ticker:"SMH", trend:"up", score:71, trigger:"פריצת שיאים יורדים על נפח כבד", entry:248.3, support:231.0, resistance:[258.0,269.0], socialSpike:47, summary:"סקטור השבבים מרכז תשומת לב מוגברת לקראת עונת דוחות; נצפית מגמה חיובית רחבה."},
-  {ticker:"UBER", trend:"down", score:44, trigger:"בדיקת תמיכה מחדש", entry:71.2, support:67.5, resistance:[75.0,79.0], socialSpike:19, summary:"דיון מפוצל בקהילה סביב תחרות מוגברת בשוק; אין מגמה ברורה כרגע."},
-  {ticker:"COIN", trend:"up", score:78, trigger:"פריצת דגל שורי בליווי ווליום", entry:214.6, support:198.0, resistance:[228.0,241.0], socialSpike:88, summary:"קפיצה חדה בדיון סביב רגולציה חיובית לענף הקריפטו; עניין ציבורי מוגבר ניכר."},
-  {ticker:"SHOP", trend:"up", score:65, trigger:"פריצת שיאים יורדים", entry:78.9, support:73.0, resistance:[82.5,87.0], socialSpike:33, summary:"עלייה מתונה בדיון סביב הרחבת שירותי מסחר אלקטרוני; מגמה חיובית יציבה."},
+  {ticker:"IGV", trend:"up", score:82, trigger:"פריצת שיאים יורדים בווליום חזק", entry:71.4, support:66.2, resistance:[74.9,78.6], socialSpike:64, summary:"זוהתה פריצה טכנית: נפח גבוה מהממוצע עם מגמה חיובית."},
+  {ticker:"CRWD", trend:"up", score:76, trigger:"פריצת דגל שורי על נפח גבוה", entry:298.1, support:281.0, resistance:[312.0,329.5], socialSpike:41, summary:"זוהתה פריצה טכנית: נפח גבוה מהממוצע עם מגמה חיובית."},
+  {ticker:"PLTR", trend:"down", score:38, trigger:"כישלון בפריצה, לחץ מכירה", entry:24.6, support:22.1, resistance:[26.0,27.4], socialSpike:12, summary:"נצפית חולשה טכנית: נפח מכירה גבוה מהממוצע."},
+  {ticker:"NVDA", trend:"up", score:88, trigger:"פריצת שיאים יורדים בווליום חזק", entry:138.2, support:128.0, resistance:[145.0,155.0], socialSpike:91, summary:"זוהתה פריצה טכנית: נפח גבוה מהממוצע עם מגמה חיובית."},
+  {ticker:"COIN", trend:"up", score:78, trigger:"פריצת דגל שורי בליווי ווליום", entry:214.6, support:198.0, resistance:[228.0,241.0], socialSpike:88, summary:"זוהתה פריצה טכנית: נפח גבוה מהממוצע."},
+  {ticker:"SHOP", trend:"up", score:65, trigger:"פריצת שיאים יורדים", entry:78.9, support:73.0, resistance:[82.5,87.0], socialSpike:33, summary:"זוהתה פריצה טכנית: נפח גבוה מהממוצע."},
 ];
 
 const macro = [
-  {tag:"CPI", impact:"High", text:"מדד ה-CPI בארה״ב עלה ב-2.4%, תואם את התחזיות ומוריד חשש מאינפלציה.", time:"לפני 42 דק׳", source:"Reuters", link:"#", sectors:"טכנולוגיה, נדל״ן — רגישים במיוחד לריבית"},
+  {tag:"CPI", impact:"High", text:"מדד ה-CPI בארה״ב עלה ב-2.4%, תואם את התחזיות ומוריד חשש מאינפלציה.", time:"לפני 42 דק׳", source:"Reuters", link:"#", sectors:"טכנולוגיה, נדל״ן"},
   {tag:"ריבית", impact:"Critical", text:"הפד השאיר את הריבית ללא שינוי, אך רמז לאפשרות הפחתה ברבעון הבא.", time:"לפני 3 שעות", source:"Bloomberg", link:"#", sectors:"בנקים, סקטור הצריכה"},
-  {tag:"גאופוליטי", impact:"Critical", text:"הסלמה בשיט הימי במפרז מעלה חשש לשיבוש באספקת נפט גולמי.", time:"לפני 5 שעות", source:"Reuters", link:"#", sectors:"אנרגיה, תעופה, שילוח"},
-  {tag:"תעסוקה", impact:"High", text:"דוח המשרות החדשות הפתיע לטובה עם 210 אלף משרות מול תחזית של 180 אלף.", time:"אתמול", source:"Investing.com", link:"#", sectors:"כלל השוק — משפיע על ציפיות הריבית הבאה"},
-  {tag:"נפט", impact:"High", text:"מלאי הנפט הגולמי בארה״ב ירד מעבר לתחזיות, תומך במחירי האנרגיה.", time:"אתמול", source:"Bloomberg", link:"#", sectors:"אנרגיה, תעשייה"},
-  {tag:"אינפלציה", impact:"High", text:"מדד ה-PPI הצביע על התמתנות בלחצי המחירים ברמת הסיטונאות.", time:"לפני יומיים", source:"Reuters", link:"#", sectors:"כלל השוק"},
-  {tag:"סחר", impact:"Critical", text:"הודעה על מכסים חדשים על יבוא טכנולוגי מעלה חשש משיבוש שרשראות אספקה.", time:"לפני יומיים", source:"Investing.com", link:"#", sectors:"טכנולוגיה, שבבים, קמעונאות"},
-  {tag:"תעסוקה", impact:"High", text:"תביעות אבטלה שבועיות עלו מעט מעבר לתחזיות, אך נותרו ברמה נמוכה היסטורית.", time:"לפני 3 ימים", source:"Reuters", link:"#", sectors:"כלל השוק"},
+  {tag:"גאופוליטי", impact:"Critical", text:"הסלמה בשיט הימי במפרז מעלה חשש לשיבוש באספקת נפט גולמי.", time:"לפני 5 שעות", source:"Reuters", link:"#", sectors:"אנרגיה, תעופה"},
+  {tag:"תעסוקה", impact:"High", text:"דוח המשרות הפתיע לטובה עם 210 אלף משרות מול תחזית 180 אלף.", time:"אתמול", source:"Investing.com", link:"#", sectors:"כלל השוק"},
+  {tag:"סחר", impact:"Critical", text:"הודעה על מכסים חדשים על יבוא טכנולוגי מעלה חשש משיבוש שרשראות אספקה.", time:"לפני יומיים", source:"Reuters", link:"#", sectors:"טכנולוגיה, שבבים"},
+  {tag:"אינפלציה", impact:"High", text:"מדד ה-PPI הצביע על התמתנות בלחצי המחירים ברמת הסיטונאות.", time:"לפני יומיים", source:"Bloomberg", link:"#", sectors:"כלל השוק"},
 ];
 
+// ---- Render functions ----
 function scoreClass(s){ return s>=60 ? "score-hi" : "score-mid"; }
 
 function renderStocks(){
   const el = document.getElementById("stocks");
+  if(!stocks.length){ el.innerHTML='<div style="color:var(--text-dim);padding:20px;text-align:center;">אין מניות מסומנות כרגע — הסורק ירוץ בשעות המסחר הבאות</div>'; return; }
   el.innerHTML = stocks.map((s,i)=>`
     <div class="stock-row" onclick="openDrawer(${i})">
       <div class="ticker">${s.ticker}</div>
       <div class="trend ${s.trend}">${s.trend==="up"?"▲":"▼"}</div>
-      <div class="trigger">${s.trigger}</div>
+      <div class="trigger">${s.trigger||''}</div>
       <div class="score-badge ${scoreClass(s.score)}">${s.score}</div>
     </div>
   `).join("");
@@ -236,8 +220,9 @@ function renderStocks(){
 
 function renderMacro(){
   const el = document.getElementById("macro");
+  if(!macro.length){ el.innerHTML='<div style="color:var(--text-dim);padding:20px;text-align:center;">טוען חדשות...</div>'; return; }
   el.innerHTML = macro.map((m,i)=>`
-    <div class="macro-item" onclick="openMacroDrawer(${i})" style="cursor:pointer">
+    <div class="macro-item" onclick="openMacroDrawer(${i})">
       <div class="macro-tag ${m.impact==='Critical'?'tag-critical':'tag-high'}">${m.tag}</div>
       <div>
         <div class="macro-text">${m.text}</div>
@@ -247,33 +232,54 @@ function renderMacro(){
   `).join("");
 }
 
-function openMacroDrawer(i){
-  const m = macro[i];
-  const drawer = document.getElementById("drawer");
-  drawer.innerHTML = `
-    <div class="drawer-head">
-      <h2 style="font-family:'Heebo',sans-serif;font-size:19px;">${m.tag}</h2>
-      <button class="close-btn" onclick="closeDrawer()">✕</button>
+function renderBreakingNews(){
+  const el = document.getElementById("breaking-news");
+  const critical = macro.filter(m => m.impact === 'Critical');
+  if(!critical.length){
+    el.innerHTML='<div style="color:var(--text-dim);font-size:13px;padding:4px 0;">אין חדשות קריטיות כרגע</div>';
+    return;
+  }
+  el.innerHTML = critical.map((m,i)=>`
+    <div class="breaking-card" onclick="openMacroDrawer(${macro.indexOf(m)})">
+      <div class="b-tag">${m.tag}</div>
+      <div class="b-text">${m.text}</div>
     </div>
-    <div class="stat-grid" style="grid-template-columns:1fr 1fr;">
-      <div class="stat"><div class="k">רמת חשיבות</div><div class="v">${m.impact === 'Critical' ? 'קריטית' : 'גבוהה'}</div></div>
-      <div class="stat"><div class="k">מקור</div><div class="v">${m.source || '—'}</div></div>
-    </div>
-    <div class="ai-box">
-      <div class="label">תקציר עובדתי</div>
-      ${m.text}
-    </div>
-    <div class="ai-box">
-      <div class="label">סקטורים מושפעים</div>
-      ${m.sectors || 'לא סופק ניתוח סקטוריאלי עבור ידיעה זו'}
-    </div>
-    <div class="macro-time" style="margin-bottom:14px;">${m.time}</div>
-    ${m.link && m.link !== '#' ? `<button class="deep-btn" onclick="window.open('${m.link}','_blank')">לכתבה המקורית ←</button>` : ''}
-  `;
-  document.getElementById("overlay").classList.add("open");
-  track('view_macro', m.tag);
+  `).join("");
 }
 
+// ---- Market chart ----
+let currentChartSymbol = 'SPX';
+function switchChart(symbol, label){
+  currentChartSymbol = symbol;
+  document.querySelectorAll('.chart-tab').forEach(t=>{
+    t.classList.toggle('active', t.textContent.trim() === (label||symbol));
+  });
+  const container = document.getElementById('market-tv-chart');
+  container.innerHTML = '';
+  if(typeof TradingView === 'undefined'){ return; }
+  const tvSymbol = symbol === 'BTCUSD' ? 'BINANCE:BTCUSDT'
+    : symbol === 'SPX' ? 'SP:SPX'
+    : symbol === 'NDX' ? 'NASDAQ:NDX'
+    : symbol === 'VIX' ? 'CBOE:VIX'
+    : symbol === 'RUT' ? 'RUSSELL:RUT'
+    : symbol;
+  new TradingView.widget({
+    container_id:'market-tv-chart',
+    symbol: tvSymbol,
+    interval:'D',
+    theme:'dark',
+    style:'1',
+    locale:'he_IL',
+    toolbar_bg:'#161a20',
+    hide_side_toolbar:true,
+    allow_symbol_change:false,
+    height:220,
+    width:'100%',
+    save_image:false,
+  });
+}
+
+// ---- Drawers ----
 function openDrawer(i){
   const s = stocks[i];
   const drawer = document.getElementById("drawer");
@@ -285,80 +291,174 @@ function openDrawer(i){
     <div id="tv-chart" class="tv-chart-box"></div>
     <div class="gauge-wrap">
       <div class="gauge-num" style="color:${s.score>=60?'var(--green)':'var(--amber)'}">${s.score}</div>
-      <div class="gauge-label">מד סנטימנט AI (0–100)<br>קפיצת דיון חברתי: ${s.socialSpike}%+</div>
+      <div class="gauge-label">ציון עוצמה טכנית (0–100)</div>
     </div>
     <div class="stat-grid">
-      <div class="stat"><div class="k">מחיר כניסה</div><div class="v">$${s.entry}</div></div>
-      <div class="stat"><div class="k">רמת תמיכה</div><div class="v">$${s.support}</div></div>
-      <div class="stat"><div class="k">יעד 1</div><div class="v">$${s.resistance[0]}</div></div>
-      <div class="stat"><div class="k">יעד 2</div><div class="v">$${s.resistance[1]}</div></div>
+      <div class="stat"><div class="k">מחיר כניסה</div><div class="v">$${s.entry||'—'}</div></div>
+      <div class="stat"><div class="k">רמת תמיכה</div><div class="v">$${s.support||'—'}</div></div>
+      <div class="stat"><div class="k">יעד 1</div><div class="v">$${s.resistance?.[0]||'—'}</div></div>
+      <div class="stat"><div class="k">יעד 2</div><div class="v">$${s.resistance?.[1]||'—'}</div></div>
     </div>
     <div class="ai-box">
-      <div class="label">תקציר AI — עובדתי בלבד</div>
-      ${s.summary}
+      <div class="label">ניתוח טכני</div>
+      ${s.summary||s.ai_summary_he||'זוהתה פריצה טכנית עם נפח גבוה מהממוצע.'}
     </div>
     <div class="news-section">
-      <div class="label">חדשות אחרונות</div>
-      <div id="stock-news-list">טוען חדשות...</div>
+      <div class="ai-box" style="margin-bottom:0;">
+        <div class="label">חדשות אחרונות</div>
+        <div id="stock-news-list">טוען חדשות...</div>
+      </div>
     </div>
-    <button class="deep-btn" onclick="alert('כאן ינווט לדף הדוח המעמיק המלא')">דוח מעמיק ←</button>
   `;
   document.getElementById("overlay").classList.add("open");
   renderTradingViewChart(s.ticker);
   loadStockNews(s.ticker);
   track('view_stock', s.ticker);
 }
-function closeDrawer(){ document.getElementById("overlay").classList.remove("open"); }
-document.getElementById("overlay").addEventListener("click", e=>{
-  if(e.target.id==="overlay") closeDrawer();
-});
 
+function openMacroDrawer(i){
+  const m = macro[i];
+  const drawer = document.getElementById("drawer");
+  drawer.innerHTML = `
+    <div class="drawer-head">
+      <h2 style="font-family:'Heebo',sans-serif;font-size:19px;">${m.tag}</h2>
+      <button class="close-btn" onclick="closeDrawer()">✕</button>
+    </div>
+    <div class="stat-grid" style="grid-template-columns:1fr 1fr;">
+      <div class="stat"><div class="k">רמת חשיבות</div><div class="v" style="color:${m.impact==='Critical'?'var(--red)':'var(--teal)'}">${m.impact==='Critical'?'קריטית':'גבוהה'}</div></div>
+      <div class="stat"><div class="k">מקור</div><div class="v" style="font-size:12px;">${m.source||'—'}</div></div>
+    </div>
+    <div class="ai-box">
+      <div class="label">תקציר</div>
+      ${m.text}
+    </div>
+    <div class="ai-box">
+      <div class="label">סקטורים מושפעים</div>
+      ${m.sectors||'לא זמין'}
+    </div>
+    <div class="macro-time" style="margin-bottom:14px;">${m.time}</div>
+    ${m.link&&m.link!=='#'?`<button class="deep-btn" onclick="window.open('${m.link}','_blank')">לכתבה המקורית ←</button>`:''}
+  `;
+  document.getElementById("overlay").classList.add("open");
+  track('view_macro', m.tag);
+}
+
+function closeDrawer(){ document.getElementById("overlay").classList.remove("open"); }
+document.getElementById("overlay").addEventListener("click", e=>{ if(e.target.id==="overlay") closeDrawer(); });
+
+// ---- TradingView chart in drawer ----
+function renderTradingViewChart(ticker){
+  const container = document.getElementById("tv-chart");
+  if(!container||typeof TradingView==="undefined") return;
+  container.innerHTML="";
+  new TradingView.widget({
+    autosize:true, symbol:ticker, interval:"D",
+    timezone:"Asia/Jerusalem", theme:"dark", style:"1", locale:"he_IL",
+    toolbar_bg:"#161a20", hide_top_toolbar:false, hide_legend:false,
+    save_image:false, container_id:"tv-chart",
+  });
+}
+
+// ---- Stock news in drawer ----
+async function loadStockNews(ticker){
+  const el = document.getElementById("stock-news-list");
+  if(!el) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/stock-news/${ticker}`);
+    if(!res.ok) throw new Error();
+    const items = await res.json();
+    if(!items.length){ el.innerHTML=`<div class="macro-time">לא נמצאו כתבות עדכניות</div>`; return; }
+    el.innerHTML = items.map(n=>`
+      <div class="news-item">
+        <a href="${n.link}" target="_blank" rel="noopener">${n.title}</a>
+        <div class="macro-time">${n.publisher||''}</div>
+      </div>
+    `).join("");
+  } catch { el.innerHTML=`<div class="macro-time">לא ניתן לטעון חדשות כרגע</div>`; }
+}
+
+// ---- Free search ----
+async function handleSearch(){
+  const raw = document.getElementById("search-input").value.trim();
+  if(!raw) return;
+  const ticker = raw.toUpperCase();
+  const drawer = document.getElementById("drawer");
+  drawer.innerHTML = `
+    <div class="drawer-head"><h2>${ticker}</h2><button class="close-btn" onclick="closeDrawer()">✕</button></div>
+    <div id="tv-chart" class="tv-chart-box"></div>
+    <div class="ai-box" id="loading-box">טוען נתונים...</div>
+  `;
+  document.getElementById("overlay").classList.add("open");
+  renderTradingViewChart(ticker);
+  try {
+    const res = await fetch(`${API_BASE}/api/lookup/${ticker}`);
+    if(!res.ok){ document.getElementById("loading-box").textContent="לא נמצא מידע נוסף, מציג גרף בלבד."; return; }
+    const d = await res.json();
+    const changeColor = d.change_pct>=0?'var(--green)':'var(--red)';
+    document.getElementById("loading-box").remove();
+    drawer.insertAdjacentHTML('beforeend',`
+      <div class="macro-time" style="margin-bottom:12px;">${d.name} · ${d.exchange||''}</div>
+      <div class="gauge-wrap">
+        <div class="gauge-num" style="color:${changeColor}">$${d.price}</div>
+        <div class="gauge-label">שינוי יומי: <span style="color:${changeColor}">${d.change_pct}%</span></div>
+      </div>
+      <div class="stat-grid">
+        <div class="stat"><div class="k">שווי שוק</div><div class="v">${d.market_cap?(d.market_cap/1e9).toFixed(1)+'B$':'—'}</div></div>
+        <div class="stat"><div class="k">נפח ממוצע 20י</div><div class="v">${d.avg_volume_20d?Math.round(d.avg_volume_20d/1e6)+'M':'—'}</div></div>
+        <div class="stat"><div class="k">שיא 52 שבועות</div><div class="v">$${d.week52_high??'—'}</div></div>
+        <div class="stat"><div class="k">שפל 52 שבועות</div><div class="v">$${d.week52_low??'—'}</div></div>
+        <div class="stat"><div class="k">סקטור</div><div class="v" style="font-size:11px;">${d.sector||'—'}</div></div>
+        <div class="stat"><div class="k">מכפיל P/E</div><div class="v">${d.pe_ratio?d.pe_ratio.toFixed(1):'—'}</div></div>
+      </div>
+      <div class="ai-box">
+        <div class="label">חדשות אחרונות</div>
+        <div id="stock-news-list">טוען חדשות...</div>
+      </div>
+    `);
+    loadStockNews(ticker);
+    track('search_stock', ticker);
+  } catch { document.getElementById("loading-box").textContent="לא ניתן להתחבר לשרת כרגע."; }
+}
+document.getElementById("search-input").addEventListener("keydown", e=>{ if(e.key==="Enter") handleSearch(); });
+
+// ---- Clock ----
 function tickClock(){
   document.getElementById("clock").textContent =
-    new Date().toLocaleTimeString('he-IL', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    new Date().toLocaleTimeString('he-IL',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 setInterval(tickClock,1000); tickClock();
 
+// ---- API ----
 const API_BASE = "https://swing-dashboard-production-438f.up.railway.app";
 
 function getSessionId(){
   let sid = localStorage.getItem('swing_sid');
-  if (!sid) {
-    sid = crypto.randomUUID();
-    localStorage.setItem('swing_sid', sid);
-  }
+  if(!sid){ sid=crypto.randomUUID(); localStorage.setItem('swing_sid',sid); }
   return sid;
 }
 function track(eventType, entityId){
-  fetch(`${API_BASE}/api/track`, {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({event_type: eventType, entity_id: entityId, session_id: getSessionId()}),
+  fetch(`${API_BASE}/api/track`,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({event_type:eventType,entity_id:entityId,session_id:getSessionId()})
   }).catch(()=>{});
 }
-track('page_view', null);
+track('page_view',null);
 
 const statusEl = document.createElement("div");
-statusEl.style.cssText = "position:fixed;bottom:12px;left:16px;font-size:11px;font-family:'JetBrains Mono',monospace;padding:4px 9px;border-radius:6px;z-index:60;";
+statusEl.style.cssText="position:fixed;bottom:12px;left:16px;font-size:11px;font-family:'JetBrains Mono',monospace;padding:4px 9px;border-radius:6px;z-index:60;";
 document.body.appendChild(statusEl);
 
 function setStatus(connected){
-  statusEl.textContent = connected ? "● מחובר ל-API" : "● נתוני דמו (ה-API לא זמין)";
-  statusEl.style.background = connected ? "rgba(62,207,126,.15)" : "rgba(232,163,61,.15)";
-  statusEl.style.color = connected ? "var(--green)" : "var(--amber)";
+  statusEl.textContent = connected?"● מחובר ל-API":"● נתוני דמו (ה-API לא זמין)";
+  statusEl.style.background = connected?"rgba(62,207,126,.15)":"rgba(232,163,61,.15)";
+  statusEl.style.color = connected?"var(--green)":"var(--amber)";
 }
 
 function mapDbRowToStock(r){
   return {
-    ticker: r.ticker,
-    trend: (r.swing_score >= 50) ? "up" : "down",
-    score: r.swing_score,
-    trigger: r.trigger_text_he,
-    entry: r.entry_price,
-    support: r.support_level,
-    resistance: r.resistance_targets,
-    socialSpike: r.social_volume_spike_pct,
-    summary: r.ai_summary_he,
+    ticker:r.ticker, trend:(r.swing_score>=50)?"up":"down", score:r.swing_score,
+    trigger:r.trigger_text_he, entry:r.entry_price, support:r.support_level,
+    resistance:r.resistance_targets, socialSpike:r.social_volume_spike_pct,
+    summary:r.ai_summary_he,
   };
 }
 
@@ -368,145 +468,37 @@ async function loadFromApi(){
       fetch(`${API_BASE}/api/stocks`),
       fetch(`${API_BASE}/api/macro-news`),
     ]);
-    if (!stocksRes.ok || !macroRes.ok) throw new Error("API error");
-
+    if(!stocksRes.ok||!macroRes.ok) throw new Error("API error");
     const dbStocks = await stocksRes.json();
     const dbMacro = await macroRes.json();
-
-    if (dbStocks.length > 0) {
-      stocks.length = 0;
-      for (const row of dbStocks) stocks.push(mapDbRowToStock(row));
-    }
-    if (dbMacro.length > 0) {
-      macro.length = 0;
-      for (const row of dbMacro) {
+    if(dbStocks.length>0){ stocks.length=0; for(const r of dbStocks) stocks.push(mapDbRowToStock(r)); }
+    if(dbMacro.length>0){
+      macro.length=0;
+      for(const r of dbMacro){
         macro.push({
-          tag: row.category_tag,
-          impact: row.impact_level,
-          text: row.summary_he,
-          time: new Date(row.timestamp).toLocaleString('he-IL'),
-          source: row.source_url ? new URL(row.source_url).hostname.replace('www.','') : '',
-          link: row.source_url || '#',
+          tag:r.category_tag, impact:r.impact_level,
+          text:r.summary_he||r.summary_en,
+          time:new Date(r.timestamp).toLocaleString('he-IL'),
+          source:r.source_url?new URL(r.source_url).hostname.replace('www.',''):'',
+          link:r.source_url||'#',
+          sectors:'',
         });
       }
     }
     setStatus(true);
-  } catch (e) {
+  } catch(e){
     console.warn("API offline, showing demo data:", e);
     setStatus(false);
   }
   renderStocks();
   renderMacro();
+  renderBreakingNews();
 }
 
 loadFromApi();
 setInterval(loadFromApi, 20000);
 
-// ---- תיקון מנגנון החיפוש החופשי כאן למטה ----
-async function handleSearch(){
-  const raw = document.getElementById("search-input").value.trim();
-  if (!raw) return;
-  const ticker = raw.toUpperCase();
-
-  const drawer = document.getElementById("drawer");
-  // הוספנו כאן את תיבת הגרף (#tv-chart) כדי שתוכל להתרנדר מיד בחיפוש חופשי
-  drawer.innerHTML = `
-    <div class="drawer-head">
-      <h2>${ticker}</h2>
-      <button class="close-btn" onclick="closeDrawer()">✕</button>
-    </div>
-    <div id="tv-chart" class="tv-chart-box"></div>
-    <div class="ai-box" id="loading-box">טוען נתונים...</div>
-  `;
-  document.getElementById("overlay").classList.add("open");
-  
-  // מציג את הגרף מיד בשנייה שהחלון נפתח, בלי לחכות לשרת
-  renderTradingViewChart(ticker);
-
-  try {
-    const res = await fetch(`${API_BASE}/api/lookup/${ticker}`);
-    if (!res.ok) {
-      document.getElementById("loading-box").textContent = "לא נמצא מידע נוסף על טיקר זה, מציג גרף בלבד.";
-      return;
-    }
-    const d = await res.json();
-    const changeColor = d.change_pct >= 0 ? 'var(--green)' : 'var(--red)';
-    
-    // מעדכנים את שאר הנתונים מתחת לגרף הקיים
-    document.getElementById("loading-box").remove();
-    
-    const statsHtml = `
-      <div class="macro-time" style="margin-bottom:14px;">${d.name} · ${d.exchange || ''}</div>
-      <div class="gauge-wrap">
-        <div class="gauge-num" style="color:${changeColor}">$${d.price}</div>
-        <div class="gauge-label">שינוי יומי: <span style="color:${changeColor}">${d.change_pct}%</span></div>
-      </div>
-      <div class="stat-grid">
-        <div class="stat"><div class="k">שווי שוק</div><div class="v">${d.market_cap ? (d.market_cap/1e9).toFixed(1)+'B$' : '—'}</div></div>
-        <div class="stat"><div class="k">נפח ממוצע 20 יום</div><div class="v">${d.avg_volume_20d ? Math.round(d.avg_volume_20d/1e6)+'M' : '—'}</div></div>
-        <div class="stat"><div class="k">שיא 52 שבועות</div><div class="v">$${d.week52_high ?? '—'}</div></div>
-        <div class="stat"><div class="k">שפל 52 שבועות</div><div class="v">$${d.week52_low ?? '—'}</div></div>
-        <div class="stat"><div class="k">סקטור</div><div class="v" style="font-size:12px;">${d.sector || '—'}</div></div>
-        <div class="stat"><div class="k">מכפיל רווח (P/E)</div><div class="v">${d.pe_ratio ? d.pe_ratio.toFixed(1) : '—'}</div></div>
-      </div>
-      <div class="news-section">
-        <div class="label">חדשות אחרונות</div>
-        <div id="stock-news-list">טוען חדשות...</div>
-      </div>
-    `;
-    drawer.insertAdjacentHTML('beforeend', statsHtml);
-    loadStockNews(ticker);
-    track('search_stock', ticker);
-  } catch (e) {
-    document.getElementById("loading-box").textContent = "לא ניתן לטעון נתונים מהשרת כרגע, מציג גרף בלבד.";
-  }
-}
-
-document.getElementById("search-input").addEventListener("keydown", e=>{
-  if (e.key === "Enter") handleSearch();
-});
-
-function renderTradingViewChart(ticker){
-  const container = document.getElementById("tv-chart");
-  if (!container || typeof TradingView === "undefined") return;
-  container.innerHTML = ""; 
-  new TradingView.widget({
-    autosize: true,
-    symbol: ticker,
-    interval: "D",
-    timezone: "Asia/Jerusalem",
-    theme: "dark",
-    style: "1",
-    locale: "he_IL",
-    toolbar_bg: "#161a20",
-    hide_top_toolbar: false,
-    hide_legend: false,
-    save_image: false,
-    container_id: "tv-chart",
-  });
-}
-
-async function loadStockNews(ticker){
-  const el = document.getElementById("stock-news-list");
-  if (!el) return;
-  try {
-    const res = await fetch(`${API_BASE}/api/stock-news/${ticker}`);
-    if (!res.ok) throw new Error("news failed");
-    const items = await res.json();
-    if (!items.length) {
-      el.innerHTML = `<div class="macro-time">לא נמצאו כתבות עדכניות עבור ${ticker}</div>`;
-      return;
-    }
-    el.innerHTML = items.map(n => `
-      <div class="news-item">
-        <a href="${n.link}" target="_blank" rel="noopener">${n.title}</a>
-        <div class="macro-time">${n.publisher || ''}</div>
-      </div>
-    `).join("");
-  } catch (e) {
-    el.innerHTML = `<div class="macro-time">לא ניתן לטעון חדשות כרגע</div>`;
-  }
-}
+window.addEventListener('load', ()=>{ setTimeout(()=>switchChart('SPX','S&P 500'), 800); });
 </script>
 </body>
 </html>
