@@ -15,14 +15,14 @@ Requirements (pip install --break-system-packages):
 
 import os
 import re
-import sqlite3
+import psycopg2
 from datetime import datetime, timezone
 from typing import List, Optional
 
 import feedparser
 from openai import OpenAI
 
-DB_PATH = os.environ.get("SWING_DB_PATH", "swing_dashboard.db")
+DB_URL = os.environ.get("SWING_DB_PATH") or os.environ.get("DATABASE_URL")
 
 # Top-tier financial RSS feeds - expanded list for more coverage
 RSS_FEEDS = {
@@ -141,48 +141,67 @@ def condense_news(raw_text: str, target_language: str) -> str:
     return response.choices[0].message.content.strip()
 
 
-def init_db(db_path: str = DB_PATH):
-    conn = sqlite3.connect(db_path)
-    with open(os.path.join(os.path.dirname(__file__), "database_schema.sql")) as f:
-        conn.executescript(f.read())
+def get_conn():
+    return psycopg2.connect(DB_URL)
+
+
+def init_db():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS macro_news (
+            id SERIAL PRIMARY KEY,
+            category_tag TEXT NOT NULL,
+            summary_he TEXT,
+            summary_en TEXT,
+            impact_level TEXT,
+            source_url TEXT,
+            timestamp TIMESTAMPTZ DEFAULT NOW()
+        );
+    """)
     conn.commit()
-    return conn
+    cur.close()
+    conn.close()
 
 
-def upsert_macro_news(conn: sqlite3.Connection, category_tag: str, summary_he: str,
-                       summary_en: str, impact_level: str, source_url: str):
-    conn.execute(
+def upsert_macro_news(category_tag: str, summary_he: str,
+                      summary_en: str, impact_level: str, source_url: str):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
         """
         INSERT INTO macro_news (category_tag, summary_he, summary_en, impact_level, source_url, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s)
         """,
         (category_tag, summary_he, summary_en, impact_level, source_url,
          datetime.now(timezone.utc).isoformat()),
     )
     conn.commit()
+    cur.close()
+    conn.close()
 
 
 def run_pipeline_b():
-    conn = init_db()
+    init_db()
     raw_items = fetch_raw_headlines()
     saved = 0
 
     for item in raw_items:
         matched_kw = matches_high_impact(item["title"])
         if not matched_kw:
-            continue  # discard company-specific / low-tier news
+            continue
 
-        tag = KEYWORD_TO_TAG.get(matched_kw, "Macro")
+        tag = KEYWORD_TO_TAG.get(matched_kw, "מאקרו")
         impact = "Critical" if matched_kw in CRITICAL_KEYWORDS else "High"
 
         raw_text = f"{item['title']}. {item['summary']}"
         summary_he = condense_news(raw_text, "Hebrew")
         summary_en = condense_news(raw_text, "English")
 
-        upsert_macro_news(conn, tag, summary_he, summary_en, impact, item["link"])
+        upsert_macro_news(tag, summary_he, summary_en, impact, item["link"])
         saved += 1
 
-    print(f"Pipeline B complete. {saved} high-impact items saved to {DB_PATH}.")
+    print(f"Pipeline B complete. {saved} high-impact items saved to Postgres.")
     conn.close()
 
 
