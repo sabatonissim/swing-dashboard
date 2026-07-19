@@ -7,4 +7,3 @@ feedparser
 requests
 pydantic
 psycopg2-binary
-deep-translator

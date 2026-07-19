@@ -152,11 +152,11 @@
 <div class="market-charts">
   <div class="market-charts-title">גרפי מדדים</div>
   <div class="chart-tabs">
-    <button class="chart-tab active" onclick="switchChart('SPX','S&P 500')">S&P 500</button>
-    <button class="chart-tab" onclick="switchChart('NDX','נאסד&quot;ק')">נאסד"ק</button>
-    <button class="chart-tab" onclick="switchChart('VIX','VIX')">VIX</button>
-    <button class="chart-tab" onclick="switchChart('RUT','ראסל 2000')">ראסל 2000</button>
-    <button class="chart-tab" onclick="switchChart('BTCUSD','Bitcoin')">Bitcoin</button>
+    <button class="chart-tab active" onclick="switchChart('SPY')">SPY</button>
+    <button class="chart-tab" onclick="switchChart('QQQ')">QQQ</button>
+    <button class="chart-tab" onclick="switchChart('VIX')">VIX</button>
+    <button class="chart-tab" onclick="switchChart('IWM')">IWM (ראסל)</button>
+    <button class="chart-tab" onclick="switchChart('BTCUSD')">Bitcoin</button>
   </div>
   <div id="market-tv-chart"></div>
 </div>
@@ -249,20 +249,17 @@ function renderBreakingNews(){
 
 // ---- Market chart ----
 let currentChartSymbol = 'SPX';
-function switchChart(symbol, label){
-  currentChartSymbol = symbol;
+function switchChart(symbol){
   document.querySelectorAll('.chart-tab').forEach(t=>{
-    t.classList.toggle('active', t.textContent.trim() === (label||symbol));
+    t.classList.toggle('active', t.textContent.trim().startsWith(symbol.replace('BTCUSD','Bitcoin').replace('IWM','IWM')));
   });
   const container = document.getElementById('market-tv-chart');
   container.innerHTML = '';
   if(typeof TradingView === 'undefined'){ return; }
-  // Use symbols compatible with the free TradingView widget
+  // SPY, QQQ, IWM are regular ETF tickers — always work on TradingView free widget
+  // VIX and Bitcoin need specific exchange prefixes
   const tvSymbol =
-    symbol === 'SPX'    ? 'FOREXCOM:SPXUSD' :
-    symbol === 'NDX'    ? 'FOREXCOM:NSXUSD' :
-    symbol === 'VIX'    ? 'TVC:VIX' :
-    symbol === 'RUT'    ? 'TVC:RUT' :
+    symbol === 'VIX'    ? 'CBOE:VIX' :
     symbol === 'BTCUSD' ? 'BITSTAMP:BTCUSD' : symbol;
   new TradingView.widget({
     container_id:'market-tv-chart',
@@ -499,7 +496,7 @@ async function loadFromApi(){
 loadFromApi();
 setInterval(loadFromApi, 20000);
 
-window.addEventListener('load', ()=>{ setTimeout(()=>switchChart('SPX','S&P 500'), 800); });
+window.addEventListener('load', ()=>{ setTimeout(()=>switchChart('SPY'), 800); });
 </script>
 </body>
 </html>

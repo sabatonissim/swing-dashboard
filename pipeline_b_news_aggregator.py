@@ -111,16 +111,20 @@ def fetch_raw_headlines() -> List[dict]:
 
 
 def translate_to_hebrew(text: str) -> str:
-    """Translate to Hebrew using deep-translator — free, no API key needed."""
+    """Translate to Hebrew using Google Translate via direct HTTP request — free, no API key."""
     try:
-        from deep_translator import GoogleTranslator
-        # clean HTML tags if any
-        clean = re.sub(r'<[^>]+>', '', text).strip()
-        result = GoogleTranslator(source='auto', target='he').translate(clean[:400])
+        import urllib.parse, urllib.request, json as _json
+        clean = re.sub(r'<[^>]+>', '', text).strip()[:400]
+        encoded = urllib.parse.quote(clean)
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=he&dt=t&q={encoded}"
+        req = urllib.request.Request(url, headers={'User-Agent':'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = _json.loads(resp.read())
+        result = ''.join(part[0] for part in data[0] if part[0])
         return result if result else text
     except Exception as e:
         print(f"[warn] translation failed: {e}")
-        return text  # fallback: return original
+        return text
 
 
 def get_conn():
