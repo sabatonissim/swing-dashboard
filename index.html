@@ -132,14 +132,17 @@
     <div class="mark"></div>
     <div>
       <h1>Swing Desk</h1>
-      <div class="sub">דשבורד מסחר בזמן אמת</div>
+      <div class="sub" id="header-sub">דשבורד מסחר בזמן אמת</div>
     </div>
   </div>
   <div class="search-wrap">
     <input type="text" id="search-input" class="search-input mono" placeholder="חפש טיקר... (למשל AAPL)" />
-    <button class="search-btn" onclick="handleSearch()">חפש</button>
+    <button class="search-btn" onclick="handleSearch()" id="search-btn-label">חפש</button>
   </div>
-  <div class="clock mono" id="clock"></div>
+  <div style="display:flex;align-items:center;gap:12px;">
+    <button id="lang-toggle" onclick="toggleLang()" style="background:var(--panel);border:1px solid var(--line);color:var(--text-dim);border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;font-family:'JetBrains Mono',monospace;transition:all .15s;" onmouseover="this.style.borderColor='var(--amber)'" onmouseout="this.style.borderColor='var(--line)'">EN</button>
+    <div class="clock mono" id="clock"></div>
+  </div>
 </header>
 
 <!-- Breaking News Bar -->
@@ -185,47 +188,56 @@
 <script>
 // ---- Demo data (shown when API is offline) ----
 const stocks = [
-  {ticker:"IGV", trend:"up", score:82, trigger:"פריצת שיאים יורדים בווליום חזק", entry:71.4, support:66.2, resistance:[74.9,78.6], socialSpike:64, summary:"זוהתה פריצה טכנית: נפח גבוה מהממוצע עם מגמה חיובית."},
-  {ticker:"CRWD", trend:"up", score:76, trigger:"פריצת דגל שורי על נפח גבוה", entry:298.1, support:281.0, resistance:[312.0,329.5], socialSpike:41, summary:"זוהתה פריצה טכנית: נפח גבוה מהממוצע עם מגמה חיובית."},
-  {ticker:"PLTR", trend:"down", score:38, trigger:"כישלון בפריצה, לחץ מכירה", entry:24.6, support:22.1, resistance:[26.0,27.4], socialSpike:12, summary:"נצפית חולשה טכנית: נפח מכירה גבוה מהממוצע."},
-  {ticker:"NVDA", trend:"up", score:88, trigger:"פריצת שיאים יורדים בווליום חזק", entry:138.2, support:128.0, resistance:[145.0,155.0], socialSpike:91, summary:"זוהתה פריצה טכנית: נפח גבוה מהממוצע עם מגמה חיובית."},
-  {ticker:"COIN", trend:"up", score:78, trigger:"פריצת דגל שורי בליווי ווליום", entry:214.6, support:198.0, resistance:[228.0,241.0], socialSpike:88, summary:"זוהתה פריצה טכנית: נפח גבוה מהממוצע."},
-  {ticker:"SHOP", trend:"up", score:65, trigger:"פריצת שיאים יורדים", entry:78.9, support:73.0, resistance:[82.5,87.0], socialSpike:33, summary:"זוהתה פריצה טכנית: נפח גבוה מהממוצע."},
+  {ticker:"IGV", trend:"up", score:82, trigger:"פריצת שיאים יורדים בווליום חזק", trigger_en:"Descending trendline breakout on strong volume", entry:71.4, support:66.2, resistance:[74.9,78.6], summary:"זוהתה פריצה טכנית: נפח גבוה מהממוצע.", summary_en:"Technical breakout detected: volume significantly above 20d average."},
+  {ticker:"CRWD", trend:"up", score:76, trigger:"פריצת דגל שורי על נפח גבוה", trigger_en:"Bull flag breakout on high volume", entry:298.1, support:281.0, resistance:[312.0,329.5], summary:"זוהתה פריצה טכנית: נפח גבוה מהממוצע.", summary_en:"Technical breakout detected: volume above average with positive trend."},
+  {ticker:"PLTR", trend:"down", score:38, trigger:"כישלון בפריצה, לחץ מכירה", trigger_en:"Failed breakout, selling pressure", entry:24.6, support:22.1, resistance:[26.0,27.4], summary:"נצפית חולשה טכנית: נפח מכירה גבוה מהממוצע.", summary_en:"Technical weakness observed: elevated selling volume."},
+  {ticker:"NVDA", trend:"up", score:88, trigger:"פריצת שיאים יורדים בווליום חזק", trigger_en:"Descending trendline breakout on strong volume", entry:138.2, support:128.0, resistance:[145.0,155.0], summary:"זוהתה פריצה טכנית: נפח גבוה מהממוצע.", summary_en:"Technical breakout detected: volume significantly above 20d average."},
+  {ticker:"COIN", trend:"up", score:78, trigger:"פריצת דגל שורי בליווי ווליום", trigger_en:"Bull flag breakout with volume", entry:214.6, support:198.0, resistance:[228.0,241.0], summary:"זוהתה פריצה טכנית: נפח גבוה מהממוצע.", summary_en:"Technical breakout detected: volume above average."},
+  {ticker:"SHOP", trend:"up", score:65, trigger:"פריצת שיאים יורדים", trigger_en:"Descending trendline breakout", entry:78.9, support:73.0, resistance:[82.5,87.0], summary:"זוהתה פריצה טכנית: נפח גבוה מהממוצע.", summary_en:"Technical breakout detected: volume above average."},
 ];
 
 const macro = [
-  {tag:"CPI", impact:"High", text:"מדד ה-CPI בארה״ב עלה ב-2.4%, תואם את התחזיות ומוריד חשש מאינפלציה.", time:"לפני 42 דק׳", source:"Reuters", link:"#", sectors:"טכנולוגיה, נדל״ן"},
-  {tag:"ריבית", impact:"Critical", text:"הפד השאיר את הריבית ללא שינוי, אך רמז לאפשרות הפחתה ברבעון הבא.", time:"לפני 3 שעות", source:"Bloomberg", link:"#", sectors:"בנקים, סקטור הצריכה"},
-  {tag:"גאופוליטי", impact:"Critical", text:"הסלמה בשיט הימי במפרז מעלה חשש לשיבוש באספקת נפט גולמי.", time:"לפני 5 שעות", source:"Reuters", link:"#", sectors:"אנרגיה, תעופה"},
-  {tag:"תעסוקה", impact:"High", text:"דוח המשרות הפתיע לטובה עם 210 אלף משרות מול תחזית 180 אלף.", time:"אתמול", source:"Investing.com", link:"#", sectors:"כלל השוק"},
-  {tag:"סחר", impact:"Critical", text:"הודעה על מכסים חדשים על יבוא טכנולוגי מעלה חשש משיבוש שרשראות אספקה.", time:"לפני יומיים", source:"Reuters", link:"#", sectors:"טכנולוגיה, שבבים"},
-  {tag:"אינפלציה", impact:"High", text:"מדד ה-PPI הצביע על התמתנות בלחצי המחירים ברמת הסיטונאות.", time:"לפני יומיים", source:"Bloomberg", link:"#", sectors:"כלל השוק"},
+  {tag:"CPI", impact:"High", text:"מדד ה-CPI בארה״ב עלה ב-2.4%, תואם את התחזיות ומוריד חשש מאינפלציה.", summary_en:"US CPI rose 2.4%, in line with forecasts, easing inflation concerns.", time:"לפני 42 דק׳", source:"Reuters", link:"#", sectors:"טכנולוגיה, נדל״ן"},
+  {tag:"Interest Rate", impact:"Critical", text:"הפד השאיר את הריבית ללא שינוי, אך רמז לאפשרות הפחתה ברבעון הבא.", summary_en:"Fed held rates steady but signaled a possible cut next quarter.", time:"לפני 3 שעות", source:"Bloomberg", link:"#", sectors:"בנקים, סקטור הצריכה"},
+  {tag:"Geo", impact:"Critical", text:"הסלמה בשיט הימי במפרז מעלה חשש לשיבוש באספקת נפט גולמי.", summary_en:"Maritime escalation in key strait raises fears of crude oil supply disruption.", time:"לפני 5 שעות", source:"Reuters", link:"#", sectors:"אנרגיה, תעופה"},
+  {tag:"Employment", impact:"High", text:"דוח המשרות הפתיע לטובה עם 210 אלף משרות מול תחזית 180 אלף.", summary_en:"Jobs report surprised to the upside: 210K vs 180K forecast.", time:"אתמול", source:"Investing.com", link:"#", sectors:"כלל השוק"},
+  {tag:"Trade", impact:"Critical", text:"הודעה על מכסים חדשים על יבוא טכנולוגי מעלה חשש משיבוש שרשראות אספקה.", summary_en:"New tariffs on tech imports announced, raising supply chain disruption fears.", time:"לפני יומיים", source:"Reuters", link:"#", sectors:"טכנולוגיה, שבבים"},
+  {tag:"Inflation", impact:"High", text:"מדד ה-PPI הצביע על התמתנות בלחצי המחירים ברמת הסיטונאות.", summary_en:"PPI data showed easing wholesale price pressures.", time:"לפני יומיים", source:"Bloomberg", link:"#", sectors:"כלל השוק"},
 ];
+
+// Raw data from API — stored separately so we can re-render in any language without re-fetching
+let rawStocks = [];
+let rawMacro = [];
 
 // ---- Render functions ----
 function scoreClass(s){ return s>=60 ? "score-hi" : "score-mid"; }
 
 function renderStocks(){
   const el = document.getElementById("stocks");
-  if(!stocks.length){ el.innerHTML='<div style="color:var(--text-dim);padding:20px;text-align:center;">אין מניות מסומנות כרגע — הסורק ירוץ בשעות המסחר הבאות</div>'; return; }
+  if(!stocks.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${UI[lang].no_stocks}</div>`; return; }
   el.innerHTML = stocks.map((s,i)=>`
     <div class="stock-row" onclick="openDrawer(${i})">
       <div class="ticker">${s.ticker}</div>
       <div class="trend ${s.trend}">${s.trend==="up"?"▲":"▼"}</div>
-      <div class="trigger">${s.trigger||''}</div>
+      <div class="trigger">${lang==='en'?(s.trigger_en||s.trigger||''):(s.trigger||s.trigger_he||'')}</div>
       <div class="score-badge ${scoreClass(s.score)}">${s.score}</div>
     </div>
   `).join("");
 }
 
+function getNewsText(m){
+  if(lang==='en') return m.summary_en || m.text || '';
+  return m.text || m.summary_he || '';
+}
+
 function renderMacro(){
   const el = document.getElementById("macro");
-  if(!macro.length){ el.innerHTML='<div style="color:var(--text-dim);padding:20px;text-align:center;">טוען חדשות...</div>'; return; }
+  if(!macro.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${UI[lang].loading}</div>`; return; }
   el.innerHTML = macro.map((m,i)=>`
     <div class="macro-item" onclick="openMacroDrawer(${i})">
       <div class="macro-tag ${m.impact==='Critical'?'tag-critical':'tag-high'}">${m.tag}</div>
       <div>
-        <div class="macro-text">${m.text}</div>
+        <div class="macro-text">${getNewsText(m)}</div>
         <div class="macro-time">${m.time}</div>
       </div>
     </div>
@@ -236,13 +248,13 @@ function renderBreakingNews(){
   const el = document.getElementById("breaking-news");
   const critical = macro.filter(m => m.impact === 'Critical');
   if(!critical.length){
-    el.innerHTML='<div style="color:var(--text-dim);font-size:13px;padding:4px 0;">אין חדשות קריטיות כרגע</div>';
+    el.innerHTML=`<div style="color:var(--text-dim);font-size:13px;padding:4px 0;">${UI[lang].no_breaking}</div>`;
     return;
   }
   el.innerHTML = critical.map((m,i)=>`
     <div class="breaking-card" onclick="openMacroDrawer(${macro.indexOf(m)})">
       <div class="b-tag">${m.tag}</div>
-      <div class="b-text">${m.text}</div>
+      <div class="b-text">${getNewsText(m)}</div>
     </div>
   `).join("");
 }
@@ -259,7 +271,7 @@ function switchChart(symbol){
   // SPY, QQQ, IWM are regular ETF tickers — always work on TradingView free widget
   // VIX and Bitcoin need specific exchange prefixes
   const tvSymbol =
-    symbol === 'VIX'    ? 'CBOE:VIX' :
+    symbol === 'VIX'    ? 'TVC:VIX' :
     symbol === 'BTCUSD' ? 'BITSTAMP:BTCUSD' : symbol;
   new TradingView.widget({
     container_id:'market-tv-chart',
@@ -327,8 +339,8 @@ function openMacroDrawer(i){
       <div class="stat"><div class="k">מקור</div><div class="v" style="font-size:12px;">${m.source||'—'}</div></div>
     </div>
     <div class="ai-box">
-      <div class="label">תקציר</div>
-      ${m.text}
+      <div class="label">${lang==='en'?'Summary':'תקציר'}</div>
+      ${getNewsText(m)}
     </div>
     <div class="ai-box">
       <div class="label">סקטורים מושפעים</div>
@@ -454,9 +466,14 @@ function setStatus(connected){
 function mapDbRowToStock(r){
   return {
     ticker:r.ticker, trend:(r.swing_score>=50)?"up":"down", score:r.swing_score,
-    trigger:r.trigger_text_he, entry:r.entry_price, support:r.support_level,
+    trigger: lang==='en' ? (r.trigger_text_en||r.trigger_text_he) : (r.trigger_text_he||r.trigger_text_en),
+    entry:r.entry_price, support:r.support_level,
     resistance:r.resistance_targets, socialSpike:r.social_volume_spike_pct,
-    summary:r.ai_summary_he,
+    summary: lang==='en' ? (r.ai_summary_en||r.ai_summary_he) : (r.ai_summary_he||r.ai_summary_en),
+    summary_he: r.ai_summary_he,
+    summary_en: r.ai_summary_en,
+    trigger_he: r.trigger_text_he,
+    trigger_en: r.trigger_text_en,
   };
 }
 
@@ -469,34 +486,109 @@ async function loadFromApi(){
     if(!stocksRes.ok||!macroRes.ok) throw new Error("API error");
     const dbStocks = await stocksRes.json();
     const dbMacro = await macroRes.json();
-    if(dbStocks.length>0){ stocks.length=0; for(const r of dbStocks) stocks.push(mapDbRowToStock(r)); }
-    if(dbMacro.length>0){
-      macro.length=0;
-      for(const r of dbMacro){
-        macro.push({
-          tag:r.category_tag, impact:r.impact_level,
-          text:r.summary_he||r.summary_en,
-          time:new Date(r.timestamp).toLocaleString('he-IL'),
-          source:r.source_url?new URL(r.source_url).hostname.replace('www.',''):'',
-          link:r.source_url||'#',
-          sectors:'',
-        });
-      }
-    }
+    if(dbStocks.length>0){ rawStocks = dbStocks; }
+    if(dbMacro.length>0){ rawMacro = dbMacro; }
     setStatus(true);
   } catch(e){
     console.warn("API offline, showing demo data:", e);
     setStatus(false);
   }
+  applyLang(); // rebuild everything in the active language
+}
+
+// ---- Language toggle ----
+let lang = localStorage.getItem('swing_lang') || 'he';
+
+const UI = {
+  he: {
+    sub: 'דשבורד מסחר בזמן אמת',
+    search_placeholder: 'חפש טיקר... (למשל AAPL)',
+    search_btn: 'חפש',
+    breaking_title: 'חדשות שוברות — קריטי',
+    scanner_title: 'סורק סווינג — משימות פתוחות',
+    macro_title: 'מוקד מאקרו וחדשות עולם',
+    charts_title: 'גרפי מדדים',
+    no_stocks: 'אין מניות מסומנות כרגע — הסורק ירוץ בשעות המסחר הבאות',
+    no_breaking: 'אין חדשות קריטיות כרגע',
+    loading: 'טוען...',
+    lang_btn: 'EN',
+    dir: 'rtl',
+  },
+  en: {
+    sub: 'Real-time trading dashboard',
+    search_placeholder: 'Search ticker... (e.g. AAPL)',
+    search_btn: 'Search',
+    breaking_title: 'Breaking News — Critical',
+    scanner_title: 'Swing Scanner — Open Setups',
+    macro_title: 'Macro & World News Hub',
+    charts_title: 'Market Charts',
+    no_stocks: 'No stocks flagged yet — scanner runs during market hours',
+    no_breaking: 'No critical news at this time',
+    loading: 'Loading...',
+    lang_btn: 'עב',
+    dir: 'ltr',
+  }
+};
+
+function applyLang(){
+  const t = UI[lang];
+  document.documentElement.setAttribute('dir', t.dir);
+  document.documentElement.setAttribute('lang', lang === 'he' ? 'he' : 'en');
+  document.getElementById('header-sub').textContent = t.sub;
+  document.getElementById('search-input').placeholder = t.search_placeholder;
+  document.getElementById('search-btn-label').textContent = t.search_btn;
+  document.getElementById('lang-toggle').textContent = t.lang_btn;
+  document.querySelector('.breaking-bar-title').innerHTML = `<span class="pulse"></span> ${t.breaking_title}`;
+  document.querySelector('.right .col-title').innerHTML = `<span class="dot"></span> ${t.scanner_title}`;
+  document.querySelector('.left .col-title').innerHTML = `<span class="dot"></span> ${t.macro_title}`;
+  document.querySelector('.market-charts-title').textContent = t.charts_title;
+
+  // Rebuild stocks and macro arrays from raw API data in the active language
+  if(rawStocks.length > 0){
+    stocks.length = 0;
+    for(const r of rawStocks) stocks.push(mapDbRowToStock(r));
+  }
+  if(rawMacro.length > 0){
+    macro.length = 0;
+    for(const r of rawMacro){
+      macro.push({
+        tag: r.category_tag,
+        impact: r.impact_level,
+        text: lang==='en' ? (r.summary_en||r.summary_he) : (r.summary_he||r.summary_en),
+        summary_he: r.summary_he,
+        summary_en: r.summary_en,
+        time: new Date(r.timestamp).toLocaleString(lang==='he'?'he-IL':'en-US'),
+        source: r.source_url ? new URL(r.source_url).hostname.replace('www.','') : '',
+        link: r.source_url||'#',
+        sectors:'',
+      });
+    }
+  }
+
   renderStocks();
   renderMacro();
   renderBreakingNews();
 }
 
+function toggleLang(){
+  lang = lang === 'he' ? 'en' : 'he';
+  localStorage.setItem('swing_lang', lang);
+  applyLang();
+}
+
+// Patch getNewsText/getStockText to pick right language field from API data
+function getNewsText(item){
+  if(lang === 'en') return item.summary_en || item.text || '';
+  return item.summary_he || item.text || '';
+}
+
 loadFromApi();
 setInterval(loadFromApi, 20000);
 
-window.addEventListener('load', ()=>{ setTimeout(()=>switchChart('SPY'), 800); });
+window.addEventListener('load', ()=>{
+  applyLang();
+  setTimeout(()=>switchChart('SPY'), 800);
+});
 </script>
 </body>
 </html>
