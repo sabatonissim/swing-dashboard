@@ -121,6 +121,11 @@
   .ai-box .label{color:var(--amber);font-size:11px;letter-spacing:1px;text-transform:uppercase;margin-bottom:5px;}
   .deep-btn{display:block;width:100%;text-align:center;padding:11px;border-radius:9px;background:var(--amber);color:#1a1300;font-weight:700;border:none;cursor:pointer;font-size:14px;}
 
+  .sector-filter{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;}
+  .sector-btn{padding:4px 11px;border-radius:20px;font-size:11.5px;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--text-dim);transition:all .15s;font-family:'Heebo',sans-serif;}
+  .sector-btn.active{background:var(--teal);color:#0a1a18;border-color:var(--teal);font-weight:700;}
+  .sector-btn:hover:not(.active){border-color:var(--teal-dim);color:var(--text);}
+
   .disclaimer-strip{font-size:11px;color:var(--text-dim);text-align:center;padding:10px 24px;border-top:1px solid var(--line);}
 </style>
 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
@@ -157,7 +162,7 @@
   <div class="chart-tabs">
     <button class="chart-tab active" onclick="switchChart('SPY')">SPY</button>
     <button class="chart-tab" onclick="switchChart('QQQ')">QQQ</button>
-    <button class="chart-tab" onclick="switchChart('VIX')">VIX</button>
+    <button class="chart-tab" onclick="switchChart('GLD')">GLD (זהב)</button>
     <button class="chart-tab" onclick="switchChart('IWM')">IWM (ראסל)</button>
     <button class="chart-tab" onclick="switchChart('BTCUSD')">Bitcoin</button>
   </div>
@@ -173,6 +178,7 @@
   <div class="divider"></div>
   <div class="col left">
     <div class="col-title"><span class="dot"></span> מוקד מאקרו וחדשות עולם</div>
+    <div class="sector-filter" id="sector-filter"></div>
     <div id="macro"></div>
   </div>
 </div>
@@ -225,6 +231,29 @@ function renderStocks(){
   `).join("");
 }
 
+let activeSector = 'הכל';
+
+function renderSectorFilter(){
+  const el = document.getElementById("sector-filter");
+  if(!el) return;
+  // collect all unique sectors from all news items
+  const allSectors = new Set();
+  macro.forEach(m => {
+    if(m.sectors) m.sectors.split(',').forEach(s => { const t=s.trim(); if(t) allSectors.add(t); });
+    if(m.sector) allSectors.add(m.sector.trim());
+  });
+  const sectors = ['הכל', ...allSectors];
+  el.innerHTML = sectors.map(s=>`
+    <button class="sector-btn ${s===activeSector?'active':''}" onclick="setSector('${s}')">${s}</button>
+  `).join("");
+}
+
+function setSector(sector){
+  activeSector = sector;
+  renderSectorFilter();
+  renderMacro();
+}
+
 function getNewsText(m){
   if(lang==='en') return m.summary_en || m.text || '';
   return m.text || m.summary_he || '';
@@ -233,8 +262,13 @@ function getNewsText(m){
 function renderMacro(){
   const el = document.getElementById("macro");
   if(!macro.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${UI[lang].loading}</div>`; return; }
-  el.innerHTML = macro.map((m,i)=>`
-    <div class="macro-item" onclick="openMacroDrawer(${i})">
+  const filtered = activeSector==='הכל' ? macro : macro.filter(m=>{
+    const s = (m.sectors||m.sector||'');
+    return s.includes(activeSector);
+  });
+  if(!filtered.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">אין חדשות בסקטור זה</div>`; return; }
+  el.innerHTML = filtered.map((m,i)=>`
+    <div class="macro-item" onclick="openMacroDrawer(${macro.indexOf(m)})">
       <div class="macro-tag ${m.impact==='Critical'?'tag-critical':'tag-high'}">${m.tag}</div>
       <div>
         <div class="macro-text">${getNewsText(m)}</div>
@@ -271,7 +305,7 @@ function switchChart(symbol){
   // SPY, QQQ, IWM are regular ETF tickers — always work on TradingView free widget
   // VIX and Bitcoin need specific exchange prefixes
   const tvSymbol =
-    symbol === 'VIX'    ? 'TVC:VIX' :
+    symbol === 'VIX'    ? 'INDEX:VIX' :
     symbol === 'BTCUSD' ? 'BITSTAMP:BTCUSD' : symbol;
   new TradingView.widget({
     container_id:'market-tv-chart',
@@ -343,8 +377,8 @@ function openMacroDrawer(i){
       ${getNewsText(m)}
     </div>
     <div class="ai-box">
-      <div class="label">סקטורים מושפעים</div>
-      ${m.sectors||'לא זמין'}
+      <div class="label">${lang==='en'?'Affected Sectors':'סקטורים מושפעים'}</div>
+      ${m.sectors||m.sector||'—'}
     </div>
     <div class="macro-time" style="margin-bottom:14px;">${m.time}</div>
     ${m.link&&m.link!=='#'?`<button class="deep-btn" onclick="window.open('${m.link}','_blank')">לכתבה המקורית ←</button>`:''}
@@ -560,7 +594,7 @@ function applyLang(){
         time: new Date(r.timestamp).toLocaleString(lang==='he'?'he-IL':'en-US'),
         source: r.source_url ? new URL(r.source_url).hostname.replace('www.','') : '',
         link: r.source_url||'#',
-        sectors:'',
+        sectors: r.category_tag || '',  // use tag as sector fallback until API sends sector data
       });
     }
   }
@@ -568,6 +602,7 @@ function applyLang(){
   renderStocks();
   renderMacro();
   renderBreakingNews();
+  renderSectorFilter();
 }
 
 function toggleLang(){
