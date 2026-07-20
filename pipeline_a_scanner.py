@@ -68,8 +68,8 @@ MIN_AVG_VOLUME_20D = 1_500_000       # shares
 MIN_PRICE = 10.0                      # USD
 MIN_MARKET_CAP = 1_500_000_000        # USD -- anti pump & dump filter
 ALLOWED_EXCHANGES = {"NMS", "NYQ", "NGM", "NCM"}  # yfinance exchange codes for NASDAQ/NYSE variants
-BREAKOUT_VOLUME_THRESHOLD_PCT = 40.0   # breakout candle must be >= 40% above 20d avg vol
-TRENDLINE_LOOKBACK_DAYS = 40           # window used to fit the descending trendline
+BREAKOUT_VOLUME_THRESHOLD_PCT = 20.0   # lowered: breakout candle >= 20% above 20d avg vol
+TRENDLINE_LOOKBACK_DAYS = 60           # wider window to catch more patterns
 
 
 @dataclass
@@ -160,7 +160,30 @@ def detect_descending_trendline_breakout(hist: pd.DataFrame) -> Optional[dict]:
     return None
 
 
-def check_breakout_volume(hist: pd.DataFrame) -> Optional[float]:
+def detect_52w_high_breakout(hist: pd.DataFrame) -> Optional[dict]:
+    """Detects when price breaks above its 52-week high — very bullish signal."""
+    if len(hist) < 252:
+        return None
+    week52_high = hist["High"].iloc[-252:-1].max()
+    today_close = float(hist["Close"].iloc[-1])
+    if today_close > week52_high:
+        return {"breakout_price": today_close, "week52_high": float(week52_high)}
+    return None
+
+
+def detect_momentum_surge(hist: pd.DataFrame) -> Optional[dict]:
+    """Detects a strong 5-day momentum surge with rising volume."""
+    if len(hist) < 25:
+        return None
+    close_5d_ago = float(hist["Close"].iloc[-6])
+    close_today = float(hist["Close"].iloc[-1])
+    pct_change = ((close_today - close_5d_ago) / close_5d_ago) * 100
+    avg_vol = hist["Volume"].iloc[-21:-1].mean()
+    recent_vol = hist["Volume"].iloc[-5:].mean()
+    vol_surge = ((recent_vol - avg_vol) / avg_vol) * 100 if avg_vol > 0 else 0
+    if pct_change >= 5.0 and vol_surge >= 15.0:
+        return {"pct_change_5d": round(pct_change, 1), "vol_surge_pct": round(vol_surge, 1)}
+    return None
     """Returns the % by which today's volume exceeds the 20d average, or None."""
     avg_vol_20d = hist["Volume"].iloc[-21:-1].mean()  # 20 days prior to today
     today_vol = hist["Volume"].iloc[-1]
@@ -366,26 +389,39 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         if not passes_liquidity_and_cap_filter(ticker, info, hist):
             continue
 
-        breakout = detect_descending_trendline_breakout(hist)
-        if breakout is None:
+        # Try all three patterns — flag the stock if ANY matches
+        trendline_break = detect_descending_trendline_breakout(hist)
+        high_52w        = detect_52w_high_breakout(hist)
+        momentum        = detect_momentum_surge(hist)
+
+        if not trendline_break and not high_52w and not momentum:
             continue
 
         vol_pct = check_breakout_volume(hist)
-        if vol_pct is None:
-            continue
+        base_vol_pct = vol_pct or 0.0  # volume confirmation helpful but not blocking
 
-        # --- score based purely on technical strength (no OpenAI needed) ---
-        # Higher volume spike = higher score
-        tech_score = min(100, 50 + int(vol_pct / 2))
-
-        close = float(hist["Close"].iloc[-1])
+        close   = float(hist["Close"].iloc[-1])
         support = float(hist["Low"].tail(20).min())
         resistance = [round(close * 1.05, 2), round(close * 1.10, 2)]
 
+        # Pick the strongest pattern for the trigger text
+        if high_52w:
+            trigger_en = "Breaking above 52-week high"
+            trigger_he = "פריצת שיא 52 שבועות"
+            tech_score = min(100, 75 + int(base_vol_pct / 4))
+        elif momentum:
+            trigger_en = f"Strong 5-day momentum surge (+{momentum['pct_change_5d']}%)"
+            trigger_he = f"מומנטום חזק ב-5 ימים (+{momentum['pct_change_5d']}%)"
+            tech_score = min(100, 60 + int(base_vol_pct / 4))
+        else:
+            trigger_en = "Breakout above descending trendline on strong volume"
+            trigger_he = "פריצת שיאים יורדים בווליום חזק"
+            tech_score = min(100, 50 + int(base_vol_pct / 2))
+
         result = ScanResult(
             ticker=ticker,
-            trigger_text_en="Breakout above descending trendline on strong volume",
-            trigger_text_he="פריצת שיאים יורדים בווליום חזק",
+            trigger_text_en=trigger_en,
+            trigger_text_he=trigger_he,
             swing_score=tech_score,
             entry_price=close,
             support_level=support,
@@ -393,10 +429,10 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             social_volume_spike_pct=0.0,
             market_cap=float(info.get("marketCap") or 0),
             avg_volume_20d=float(hist["Volume"].tail(20).mean()),
-            breakout_volume_pct=vol_pct,
+            breakout_volume_pct=base_vol_pct,
             exchange=info.get("exchange", ""),
-            ai_summary_en=f"Technical breakout detected: volume {vol_pct:.0f}% above 20d average.",
-            ai_summary_he=f"זוהתה פריצה טכנית: נפח גבוה ב-{vol_pct:.0f}% מהממוצע.",
+            ai_summary_en=f"{trigger_en}. Volume {base_vol_pct:.0f}% above 20d average.",
+            ai_summary_he=f"{trigger_he}. נפח גבוה ב-{base_vol_pct:.0f}% מהממוצע.",
         )
         results.append(result)
 

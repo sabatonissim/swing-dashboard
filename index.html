@@ -41,7 +41,9 @@
   .search-input{flex:1;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 12px;font-size:13px;outline:none;}
   .search-input:focus{border-color:var(--amber-dim);}
   .search-btn{background:var(--amber);color:#1a1300;border:none;border-radius:8px;padding:8px 14px;font-weight:700;font-size:13px;cursor:pointer;}
-  @media(max-width:900px){.search-wrap{display:none;}}
+  .mobile-search{display:none;padding:10px 16px;gap:8px;background:var(--panel-2);border-bottom:1px solid var(--line);}
+  .mobile-search .search-input{flex:1;}
+  @media(max-width:900px){.search-wrap{display:none;}.mobile-search{display:flex;}}
 
   /* ---- Breaking news bar ---- */
   .breaking-bar{background:var(--panel);border-bottom:1px solid var(--line);padding:10px 24px 14px;}
@@ -149,6 +151,12 @@
     <div class="clock mono" id="clock"></div>
   </div>
 </header>
+
+<!-- Mobile Search Bar (visible only on small screens) -->
+<div class="mobile-search">
+  <input type="text" id="search-input-mobile" class="search-input mono" placeholder="חפש טיקר... (למשל AAPL)" />
+  <button class="search-btn" id="search-btn-mobile" onclick="handleSearchMobile()">חפש</button>
+</div>
 
 <!-- Breaking News Bar -->
 <div class="breaking-bar">
@@ -280,12 +288,19 @@ function renderMacro(){
 
 function renderBreakingNews(){
   const el = document.getElementById("breaking-news");
-  const critical = macro.filter(m => m.impact === 'Critical');
+  // Show only the most market-moving macro news
+  const MACRO_CRITICAL_TAGS = ['CPI','PPI','ריבית','Interest Rate','Fed','Federal Reserve',
+    'Inflation','אינפלציה','GDP','Recession','מיתון','גאופוליטי','Geo','War','Sanctions',
+    'Employment','תעסוקה','OPEC','Trade','סחר'];
+  const critical = macro.filter(m =>
+    m.impact === 'Critical' ||
+    MACRO_CRITICAL_TAGS.some(t => (m.tag||'').includes(t))
+  );
   if(!critical.length){
     el.innerHTML=`<div style="color:var(--text-dim);font-size:13px;padding:4px 0;">${UI[lang].no_breaking}</div>`;
     return;
   }
-  el.innerHTML = critical.map((m,i)=>`
+  el.innerHTML = critical.map((m)=>`
     <div class="breaking-card" onclick="openMacroDrawer(${macro.indexOf(m)})">
       <div class="b-tag">${m.tag}</div>
       <div class="b-text">${getNewsText(m)}</div>
@@ -465,6 +480,14 @@ async function handleSearch(){
 }
 document.getElementById("search-input").addEventListener("keydown", e=>{ if(e.key==="Enter") handleSearch(); });
 
+function handleSearchMobile(){
+  const raw = document.getElementById("search-input-mobile").value.trim();
+  if(!raw) return;
+  document.getElementById("search-input").value = raw;
+  handleSearch();
+}
+document.getElementById("search-input-mobile").addEventListener("keydown", e=>{ if(e.key==="Enter") handleSearchMobile(); });
+
 // ---- Clock ----
 function tickClock(){
   document.getElementById("clock").textContent =
@@ -570,7 +593,9 @@ function applyLang(){
   document.documentElement.setAttribute('lang', lang === 'he' ? 'he' : 'en');
   document.getElementById('header-sub').textContent = t.sub;
   document.getElementById('search-input').placeholder = t.search_placeholder;
+  document.getElementById('search-input-mobile').placeholder = t.search_placeholder;
   document.getElementById('search-btn-label').textContent = t.search_btn;
+  document.getElementById('search-btn-mobile').textContent = t.search_btn;
   document.getElementById('lang-toggle').textContent = t.lang_btn;
   document.querySelector('.breaking-bar-title').innerHTML = `<span class="pulse"></span> ${t.breaking_title}`;
   document.querySelector('.right .col-title').innerHTML = `<span class="dot"></span> ${t.scanner_title}`;
