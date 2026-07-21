@@ -184,14 +184,162 @@ def detect_momentum_surge(hist: pd.DataFrame) -> Optional[dict]:
     if pct_change >= 5.0 and vol_surge >= 15.0:
         return {"pct_change_5d": round(pct_change, 1), "vol_surge_pct": round(vol_surge, 1)}
     return None
-    """Returns the % by which today's volume exceeds the 20d average, or None."""
-    avg_vol_20d = hist["Volume"].iloc[-21:-1].mean()  # 20 days prior to today
+
+
+def check_breakout_volume(hist: pd.DataFrame) -> float:
+    """Returns the % by which today's volume exceeds the 20d average (0 if below)."""
+    avg_vol_20d = hist["Volume"].iloc[-21:-1].mean()
     today_vol = hist["Volume"].iloc[-1]
     if avg_vol_20d <= 0:
-        return None
+        return 0.0
     pct_above = ((today_vol - avg_vol_20d) / avg_vol_20d) * 100
-    if pct_above >= BREAKOUT_VOLUME_THRESHOLD_PCT:
-        return round(pct_above, 1)
+    return round(max(0.0, pct_above), 1)
+
+
+def detect_cup_and_handle(hist: pd.DataFrame) -> Optional[dict]:
+    """
+    Cup & Handle heuristic:
+    - Left rim: local high in the first third of the window
+    - Cup bottom: price drops at least 15% from left rim, then recovers
+    - Right rim: price recovers to within 5% of left rim high
+    - Handle: last 5-15 bars consolidate (range < 8% of cup depth)
+    - Breakout: today's close above the right rim
+    Uses a 60-bar window (approx 3 months daily).
+    """
+    if len(hist) < 65:
+        return None
+    window = hist.tail(65).reset_index(drop=True)
+    closes = window["Close"].values
+    n = len(closes)
+
+    # left rim = highest close in first third
+    left_rim = closes[:n//3].max()
+    left_rim_idx = int(np.argmax(closes[:n//3]))
+
+    # cup bottom = lowest close after left rim
+    cup_section = closes[left_rim_idx:]
+    if len(cup_section) < 20:
+        return None
+    cup_bottom = cup_section.min()
+    cup_depth = left_rim - cup_bottom
+    if cup_depth / left_rim < 0.15:  # must drop at least 15%
+        return None
+
+    # right rim = recovery to within 5% of left rim
+    right_section = closes[left_rim_idx + int(len(cup_section) * 0.4):]
+    if len(right_section) < 5:
+        return None
+    right_rim = right_section.max()
+    if right_rim < left_rim * 0.95:  # must recover to within 5% of left rim
+        return None
+
+    # handle = last 5-15 bars consolidate tightly
+    handle = closes[-12:]
+    handle_range = (handle.max() - handle.min()) / right_rim
+    if handle_range > 0.08:  # handle consolidation should be tight
+        return None
+
+    # breakout = today close above right rim
+    today_close = closes[-1]
+    if today_close >= right_rim:
+        return {"left_rim": round(float(left_rim), 2), "cup_bottom": round(float(cup_bottom), 2)}
+    return None
+
+
+def detect_bull_flag(hist: pd.DataFrame) -> Optional[dict]:
+    """
+    Bull Flag heuristic:
+    - Pole: strong rally of 8%+ over 5-15 bars
+    - Flag: tight consolidation (pullback < 50% of pole) over 5-20 bars
+    - Breakout: today's close breaks above the flag's upper boundary
+    """
+    if len(hist) < 30:
+        return None
+    closes = hist["Close"].values
+
+    # scan for a pole: find the best 10-bar rally in the last 50 bars
+    best_pole_pct = 0.0
+    best_pole_end = -1
+    scan = closes[-50:]
+    for i in range(5, len(scan) - 5):
+        for pole_len in [5, 7, 10, 12, 15]:
+            if i - pole_len < 0:
+                continue
+            pct = (scan[i] - scan[i - pole_len]) / scan[i - pole_len] * 100
+            if pct > best_pole_pct:
+                best_pole_pct = pct
+                best_pole_end = i
+
+    if best_pole_pct < 8.0 or best_pole_end < 0:
+        return None
+
+    # flag = consolidation after the pole top
+    pole_top = scan[best_pole_end]
+    flag_section = scan[best_pole_end:]
+    if len(flag_section) < 5:
+        return None
+
+    flag_low = flag_section.min()
+    flag_high = flag_section.max()
+    pullback_pct = (pole_top - flag_low) / pole_top * 100
+
+    # pullback should be less than 50% of the pole
+    if pullback_pct > best_pole_pct * 0.5:
+        return None
+
+    # breakout: today's close above the flag high
+    today_close = float(closes[-1])
+    if today_close >= flag_high and len(flag_section) >= 5:
+        return {"pole_pct": round(best_pole_pct, 1), "pullback_pct": round(pullback_pct, 1)}
+    return None
+
+
+def detect_ascending_triangle(hist: pd.DataFrame) -> Optional[dict]:
+    """
+    Ascending Triangle heuristic:
+    - Flat resistance: top 3 highs in last 40 bars within 2% of each other
+    - Rising support: each successive low is higher than the previous
+    - Breakout: today's close above the flat resistance
+    """
+    if len(hist) < 45:
+        return None
+    window = hist.tail(45).reset_index(drop=True)
+    highs = window["High"].values
+    lows = window["Low"].values
+    closes = window["Close"].values
+
+    # find local swing highs
+    swing_highs = []
+    for i in range(2, len(highs) - 2):
+        if highs[i] > highs[i-1] and highs[i] > highs[i-2] and \
+           highs[i] > highs[i+1] and highs[i] > highs[i+2]:
+            swing_highs.append(highs[i])
+
+    if len(swing_highs) < 3:
+        return None
+
+    # check flat resistance: top 3 highs within 2%
+    top3 = sorted(swing_highs)[-3:]
+    resistance = np.mean(top3)
+    if (max(top3) - min(top3)) / resistance > 0.02:
+        return None
+
+    # check rising lows: find swing lows and verify they're rising
+    swing_lows = []
+    for i in range(2, len(lows) - 2):
+        if lows[i] < lows[i-1] and lows[i] < lows[i-2] and \
+           lows[i] < lows[i+1] and lows[i] < lows[i+2]:
+            swing_lows.append(lows[i])
+
+    if len(swing_lows) < 2:
+        return None
+    if swing_lows[-1] <= swing_lows[-2]:  # lows must be rising
+        return None
+
+    # breakout above resistance
+    today_close = float(closes[-1])
+    if today_close > resistance:
+        return {"resistance": round(float(resistance), 2)}
     return None
 
 
@@ -389,34 +537,48 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         if not passes_liquidity_and_cap_filter(ticker, info, hist):
             continue
 
-        # Try all three patterns — flag the stock if ANY matches
-        trendline_break = detect_descending_trendline_breakout(hist)
-        high_52w        = detect_52w_high_breakout(hist)
-        momentum        = detect_momentum_surge(hist)
+        # Run all pattern detectors
+        trendline_break  = detect_descending_trendline_breakout(hist)
+        high_52w         = detect_52w_high_breakout(hist)
+        momentum         = detect_momentum_surge(hist)
+        cup_handle       = detect_cup_and_handle(hist)
+        bull_flag        = detect_bull_flag(hist)
+        asc_triangle     = detect_ascending_triangle(hist)
 
-        if not trendline_break and not high_52w and not momentum:
+        # Skip if no pattern found at all
+        if not any([trendline_break, high_52w, momentum, cup_handle, bull_flag, asc_triangle]):
             continue
 
         vol_pct = check_breakout_volume(hist)
-        base_vol_pct = vol_pct or 0.0  # volume confirmation helpful but not blocking
-
         close   = float(hist["Close"].iloc[-1])
         support = float(hist["Low"].tail(20).min())
         resistance = [round(close * 1.05, 2), round(close * 1.10, 2)]
 
-        # Pick the strongest pattern for the trigger text
-        if high_52w:
+        # Priority: strongest/rarest patterns get highest score
+        if cup_handle:
+            trigger_en = "Cup & Handle breakout"
+            trigger_he = "פריצת תבנית כוס וידית (Cup & Handle)"
+            tech_score = min(100, 80 + int(vol_pct / 5))
+        elif high_52w:
             trigger_en = "Breaking above 52-week high"
             trigger_he = "פריצת שיא 52 שבועות"
-            tech_score = min(100, 75 + int(base_vol_pct / 4))
+            tech_score = min(100, 78 + int(vol_pct / 5))
+        elif bull_flag:
+            trigger_en = f"Bull Flag breakout (pole +{bull_flag['pole_pct']}%)"
+            trigger_he = f"פריצת דגל שורי (עמוד +{bull_flag['pole_pct']}%)"
+            tech_score = min(100, 72 + int(vol_pct / 5))
+        elif asc_triangle:
+            trigger_en = f"Ascending Triangle breakout above ${asc_triangle['resistance']}"
+            trigger_he = f"פריצת משולש עולה מעל ${asc_triangle['resistance']}"
+            tech_score = min(100, 68 + int(vol_pct / 5))
         elif momentum:
-            trigger_en = f"Strong 5-day momentum surge (+{momentum['pct_change_5d']}%)"
+            trigger_en = f"Strong momentum surge (+{momentum['pct_change_5d']}% / 5 days)"
             trigger_he = f"מומנטום חזק ב-5 ימים (+{momentum['pct_change_5d']}%)"
-            tech_score = min(100, 60 + int(base_vol_pct / 4))
+            tech_score = min(100, 62 + int(vol_pct / 5))
         else:
             trigger_en = "Breakout above descending trendline on strong volume"
             trigger_he = "פריצת שיאים יורדים בווליום חזק"
-            tech_score = min(100, 50 + int(base_vol_pct / 2))
+            tech_score = min(100, 55 + int(vol_pct / 4))
 
         result = ScanResult(
             ticker=ticker,
@@ -429,10 +591,10 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             social_volume_spike_pct=0.0,
             market_cap=float(info.get("marketCap") or 0),
             avg_volume_20d=float(hist["Volume"].tail(20).mean()),
-            breakout_volume_pct=base_vol_pct,
+            breakout_volume_pct=vol_pct,
             exchange=info.get("exchange", ""),
-            ai_summary_en=f"{trigger_en}. Volume {base_vol_pct:.0f}% above 20d average.",
-            ai_summary_he=f"{trigger_he}. נפח גבוה ב-{base_vol_pct:.0f}% מהממוצע.",
+            ai_summary_en=f"{trigger_en}. Volume {vol_pct:.0f}% above 20d average.",
+            ai_summary_he=f"{trigger_he}. נפח גבוה ב-{vol_pct:.0f}% מהממוצע.",
         )
         results.append(result)
 
