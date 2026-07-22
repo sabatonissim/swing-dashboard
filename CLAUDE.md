@@ -152,8 +152,16 @@ Base URL: `https://swing-dashboard-production-438f.up.railway.app`
 ### מקורות RSS
 Reuters Top/Business, CNBC Top/Markets, Yahoo Finance, Seeking Alpha, MarketWatch, Investing.com
 
+### סינון רלוונטיות (עודכן)
+מטריצת מילות מפתח דו-שכבתית ב-`matches_high_impact`:
+- **Tier 1** (תמיד רלוונטי): CPI/PPI/Fed/ריבית/אינפלציה/תעסוקה/GDP/מיתון/גאופוליטיקה/שוק/דוחות/M&A/סחורות/קריפטו
+- **Tier 2** (מילים עמומות — AI, Tech, Chip, שמות חברות): נספרות רק אם יש **גם** מילת הקשר שוק בכותרת (stock/shares/market/nasdaq/earnings/rally/%...). מונע התאמות לא רלוונטיות (למשל חדשות פרס נובל שמזכירות "AI" בלי הקשר שוק).
+- כל ההתאמות עם `\b` (word boundary) — מונע התאמת substring שגויה (למשל "Meta" בתוך "metabolic").
+- כשיש מספר התאמות, נבחרת זו המוקדמת ביותר בכותרת (ולא לפי סדר הרשימה) — כדי שה-tag ישקף את מה שהכותרת באמת עוסקת בו.
+
 ### תרגום
-`urllib` ישיר ל-Google Translate API הציבורי — חינמי, ללא API key.
+`urllib` ישיר ל-Google Translate API הציבורי — חינמי, ללא API key. `sl=en` קבוע (לא auto).
+- **מילון מונחים קבוע** (`TERM_GLOSSARY`): מונחי מאקרו נפוצים (Jobless Claims, Non-Farm Payrolls, Fed, Rate Hike/Cut, CPI/PPI/GDP וכו') מוחלפים ב-placeholder לפני התרגום ומוחזרים אחרי עם תרגום עברי קבוע ונכון — כדי לא להסתמך על ניחוש התלוי-הקשר של Google (למשל "jobless" שתורגם לא עקבי).
 - `summary_he` = תרגום עברי
 - `summary_en` = כותרת מקורית באנגלית
 
@@ -202,8 +210,8 @@ const API_BASE = "https://swing-dashboard-production-438f.up.railway.app";
 ## 11. פיצ'רים שהושלמו ✅
 
 - [x] דשבורד split-screen (מניות + חדשות)
-- [x] סורק טכני עם 6 תבניות מוכחות (Cup&Handle, Bull Flag, Ascending Triangle, 52W High, Momentum, Trendline)
-- [x] Pipeline חדשות עם RSS מ-8 מקורות + תרגום עברית
+- [x] סורק טכני עם 10 תבניות מוכחות (Cup&Handle, Double Bottom, Bull Flag, Ascending Triangle, 52W High, Golden Cross, MACD Crossover, Momentum, RSI Bounce, Trendline)
+- [x] Pipeline חדשות עם RSS מ-8 מקורות, סינון דו-שכבתי (Tier1/Tier2+market-context) ותרגום עברית עם מילון מונחים קבוע
 - [x] גרף TradingView בלחיצה על מניה
 - [x] חיפוש חופשי לכל טיקר (real-time)
 - [x] חדשות ספציפיות לטיקר בתוך המגירה
