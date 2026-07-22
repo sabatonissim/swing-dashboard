@@ -67,6 +67,7 @@ def init_db():
             avg_volume_20d REAL,
             breakout_volume_pct REAL,
             exchange TEXT,
+            change_pct REAL,
             timestamp TIMESTAMPTZ DEFAULT NOW()
         );
         CREATE TABLE IF NOT EXISTS macro_news (
@@ -91,6 +92,9 @@ def init_db():
             timestamp TIMESTAMPTZ DEFAULT NOW()
         );
     """)
+    # Patches an already-deployed table that predates this column
+    # (CREATE TABLE IF NOT EXISTS above is a no-op once the table exists).
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS change_pct REAL;")
     conn.commit()
     cur.close()
     conn.close()

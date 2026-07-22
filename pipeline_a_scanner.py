@@ -101,6 +101,7 @@ class ScanResult:
     avg_volume_20d: float
     breakout_volume_pct: float
     exchange: str
+    change_pct: float = 0.0
     ai_summary_en: Optional[str] = None
     ai_summary_he: Optional[str] = None
 
@@ -629,9 +630,14 @@ def init_db():
             avg_volume_20d REAL,
             breakout_volume_pct REAL,
             exchange TEXT,
+            change_pct REAL,
             timestamp TIMESTAMPTZ DEFAULT NOW()
         );
     """)
+    # ADD COLUMN IF NOT EXISTS patches a table that was already created
+    # before this column existed (CREATE TABLE IF NOT EXISTS above is a
+    # no-op once the table exists, so this is needed for already-deployed DBs).
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS change_pct REAL;")
     conn.commit()
     cur.close()
     conn.close()
@@ -645,8 +651,9 @@ def upsert_scan_result(conn, result):
             ticker, trigger_text_he, trigger_text_en, swing_score,
             entry_price, support_level, resistance_targets,
             social_volume_spike_pct, ai_summary_he, ai_summary_en,
-            market_cap, avg_volume_20d, breakout_volume_pct, exchange, timestamp
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            market_cap, avg_volume_20d, breakout_volume_pct, exchange,
+            change_pct, timestamp
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             result.ticker, result.trigger_text_he, result.trigger_text_en,
@@ -654,7 +661,7 @@ def upsert_scan_result(conn, result):
             json.dumps(result.resistance_targets), result.social_volume_spike_pct,
             result.ai_summary_he, result.ai_summary_en, result.market_cap,
             result.avg_volume_20d, result.breakout_volume_pct, result.exchange,
-            datetime.now(timezone.utc).isoformat(),
+            result.change_pct, datetime.now(timezone.utc).isoformat(),
         ),
     )
     conn.commit()
@@ -749,6 +756,8 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         close   = float(hist["Close"].iloc[-1])
         support = float(hist["Low"].tail(20).min())
         resistance = [round(close * 1.05, 2), round(close * 1.10, 2)]
+        prev_close = float(hist["Close"].iloc[-2]) if len(hist) > 1 else close
+        change_pct = round(((close - prev_close) / prev_close) * 100, 2) if prev_close else 0.0
 
         # Priority: strongest/rarest patterns get highest score
         if cup_handle:
@@ -805,6 +814,7 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             avg_volume_20d=float(hist["Volume"].tail(20).mean()),
             breakout_volume_pct=vol_pct,
             exchange=info.get("exchange", ""),
+            change_pct=change_pct,
             ai_summary_en=f"{trigger_en}. Volume {vol_pct:.0f}% above 20d average.",
             ai_summary_he=f"{trigger_he}. נפח גבוה ב-{vol_pct:.0f}% מהממוצע.",
         )

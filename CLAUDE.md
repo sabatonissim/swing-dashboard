@@ -79,7 +79,7 @@
 ### טבלאות
 
 **`scanned_stocks`** — תוצאות הסריקה
-- עמודות מפתח: `ticker`, `trigger_text_he/en`, `swing_score` (0-100), `entry_price`, `support_level`, `resistance_targets` (JSON), `ai_summary_he/en`, `breakout_volume_pct`, `timestamp`
+- עמודות מפתח: `ticker`, `trigger_text_he/en`, `swing_score` (0-100), `entry_price`, `support_level`, `resistance_targets` (JSON), `ai_summary_he/en`, `breakout_volume_pct`, `change_pct` (שינוי יומי %, לרצועת "הכי זזות היום"), `timestamp`
 
 **`macro_news`** — חדשות מאקרו
 - עמודות מפתח: `category_tag`, `summary_he`, `summary_en`, `impact_level` (High/Critical), `source_url`, `timestamp`
@@ -173,7 +173,7 @@ Reuters Top/Business, CNBC Top/Markets, Yahoo Finance, Seeking Alpha, MarketWatc
 1. **Header** — לוגו, חיפוש (דסקטופ), כפתור שפה EN/עב, שעון
 2. **Mobile Search Bar** — מופיע רק מתחת ל-900px
 3. **Breaking News Bar** — חדשות קריטיות בלבד (CPI/ריבית/Fed/גאופוליטי/תעסוקה)
-4. **Market Charts** — SPY/QQQ/VIX/IWM/Bitcoin, החלפה בלחיצה
+4. **Market Charts + Movers strip** — SPY/QQQ/VIX/IWM/Bitcoin (בעמודה, ~62% רוחב) לצד רצועת "הכי זזות היום" מתוך הסריקה (~38% רוחב, `change_pct` מחושב ב-Pipeline A מיום קודם ליום נוכחי, ללא קריאות API נוספות)
 5. **Split Board:** ימין=מניות (מחולק ל"סריקה אחרונה" ו"ימים קודמים", דה-דופ לפי טיקר, שולף עד 60 שורות), שמאל=חדשות+פילטר סקטורים
 6. **Drawer** — מגירה צדדית: מניה (גרף+נתונים+חדשות) / חדשות (תקציר+סקטורים)
 
