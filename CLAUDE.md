@@ -224,6 +224,8 @@ const API_BASE = "https://swing-dashboard-production-438f.up.railway.app";
 - [x] Disclaimer פיננסי
 - [x] פריסה חיה: Railway (API) + Vercel (Frontend)
 - [x] Cron Jobs אוטומטיים
+- [x] אכיפת אישור נפח אמיתי (volume confirmation) לתבניות פריצה — קבוע היה קיים אך לא נאכף בפועל
+- [x] מגירת מניה: סיבת ההתאמה מוצגת מיד מתחת לגרף
 
 ---
 
@@ -261,10 +263,11 @@ const API_BASE = "https://swing-dashboard-production-438f.up.railway.app";
 
 | מגבלה | פירוט |
 |---|---|
-| yfinance rate limit | בסריקת 35+ מניות לפעמים timeouts — מניות שנכשלות מדולגות |
+| yfinance rate limit | בסריקת 35+ מניות לפעמים timeouts — מניות שנכשלות מדולגות. **תוקן 22/7:** כל בקשת yfinance רצה עכשיו עם timeout קשיח (15 שנ') + השהיה של 0.3 שנ' בין טיקרים, כדי שקריאה תקועה לא תקריס את כל הקונטיינר (זו הייתה סיבת ה-Crash של הסריקה בערב) |
 | Google Translate חינמי | לא רשמי, יכול להיחסם — fallback: כותרת באנגלית |
 | Railway free tier | $5 קרדיט ראשוני, אח"כ ~$5-20/חודש |
 | CORS | מוגדר ל-swing-desk-tau.vercel.app בלבד — לעדכן ב-api_server.py אם כתובת משתנה |
+| טיקר SQ | Block Inc שינתה טיקר מ-SQ ל-XYZ ב-2025 — עודכן ב-Universe |
 
 ---
 

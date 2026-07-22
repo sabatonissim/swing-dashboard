@@ -26,8 +26,11 @@ Requirements (pip install --break-system-packages):
 
 import json
 import os
+import time
+import traceback
 import psycopg2
 import psycopg2.extras
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -55,7 +58,7 @@ DEFAULT_UNIVERSE = [
     "AMZN", "SHOP", "ABNB", "UBER", "SBUX", "MELI", "CMG", "LULU", "DASH",
     "BKNG", "NKE",
     # Fintech
-    "SQ", "COIN", "PYPL", "AFRM", "HOOD", "SOFI",
+    "XYZ", "COIN", "PYPL", "AFRM", "HOOD", "SOFI",
     # AI / Data / Big Tech
     "PLTR", "GOOGL", "META", "AAPL", "MSTR", "IONQ",
     # Biotech / Health
@@ -80,6 +83,8 @@ MIN_MARKET_CAP = 1_500_000_000        # USD -- anti pump & dump filter
 ALLOWED_EXCHANGES = {"NMS", "NYQ", "NGM", "NCM"}  # yfinance exchange codes for NASDAQ/NYSE variants
 BREAKOUT_VOLUME_THRESHOLD_PCT = 20.0   # lowered: breakout candle >= 20% above 20d avg vol
 TRENDLINE_LOOKBACK_DAYS = 60           # wider window to catch more patterns
+PER_TICKER_TIMEOUT_SEC = 15            # hard cap so a single hung yfinance call can't hang the whole container
+INTER_TICKER_DELAY_SEC = 0.3           # small delay to avoid Yahoo Finance rate-limiting on a large universe
 
 
 @dataclass
@@ -657,6 +662,34 @@ def upsert_scan_result(conn, result):
 
 
 # ------------------------------------------------------------------
+# Resilient data fetch — a single hung yfinance call (Yahoo rate-limit,
+# network stall, etc.) must never be able to hang the whole container.
+# Every fetch runs in a worker thread with a hard wall-clock timeout;
+# if it doesn't return in time we abandon it and move to the next ticker.
+# ------------------------------------------------------------------
+
+def _fetch_ticker_data(ticker: str):
+    tk = yf.Ticker(ticker)
+    hist = tk.history(period="6mo", interval="1d")
+    info = tk.info
+    return hist, info
+
+
+def fetch_ticker_data_with_timeout(ticker: str, timeout: int = PER_TICKER_TIMEOUT_SEC):
+    """Runs the yfinance fetch in a worker thread with a hard timeout.
+    Raises on failure or timeout — caller is expected to catch and skip.
+    Uses shutdown(wait=False) so a hung request doesn't block us waiting
+    for it to finish; the orphaned thread is abandoned and cleaned up
+    by the interpreter once it eventually returns (or never does)."""
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        future = executor.submit(_fetch_ticker_data, ticker)
+        return future.result(timeout=timeout)  # raises FutureTimeoutError if it hangs
+    finally:
+        executor.shutdown(wait=False)
+
+
+# ------------------------------------------------------------------
 # Orchestration
 # ------------------------------------------------------------------
 
@@ -666,12 +699,15 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
 
     for ticker in universe:
         try:
-            tk = yf.Ticker(ticker)
-            hist = tk.history(period="6mo", interval="1d")
-            info = tk.info
+            hist, info = fetch_ticker_data_with_timeout(ticker)
+        except FutureTimeoutError:
+            print(f"[warn] {ticker}: timed out after {PER_TICKER_TIMEOUT_SEC}s, skipping")
+            continue
         except Exception as e:
             print(f"[warn] failed to fetch {ticker}: {e}")
             continue
+        finally:
+            time.sleep(INTER_TICKER_DELAY_SEC)  # be gentle with Yahoo Finance's rate limits
 
         if not passes_liquidity_and_cap_filter(ticker, info, hist):
             continue
@@ -688,12 +724,28 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         macd_cross       = detect_macd_bullish_crossover(hist)
         rsi_bounce       = detect_rsi_oversold_bounce(hist)
 
+        vol_pct = check_breakout_volume(hist)
+
+        # Volume confirmation gate: a genuine breakout should show real
+        # buying volume behind it. Without this, "breakout" patterns were
+        # being flagged even on weak/below-average volume, which is a
+        # classic false-breakout setup. Trend/momentum signals (golden
+        # cross, MACD cross, RSI bounce) don't require the full breakout
+        # threshold since they aren't breakout patterns by nature.
+        volume_confirmed = vol_pct >= BREAKOUT_VOLUME_THRESHOLD_PCT
+        if not volume_confirmed:
+            cup_handle = None
+            double_bottom = None
+            high_52w = None
+            bull_flag = None
+            asc_triangle = None
+            trendline_break = None
+
         # Skip if no pattern found at all
         if not any([trendline_break, high_52w, momentum, cup_handle, bull_flag,
                     asc_triangle, golden_cross, double_bottom, macd_cross, rsi_bounce]):
             continue
 
-        vol_pct = check_breakout_volume(hist)
         close   = float(hist["Close"].iloc[-1])
         support = float(hist["Low"].tail(20).min())
         resistance = [round(close * 1.05, 2), round(close * 1.10, 2)]
@@ -764,11 +816,20 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
 def main():
     init_db()
     conn = get_conn()
-    results = scan_universe()
-    for r in results:
-        upsert_scan_result(conn, r)
-    print(f"Scan complete. {len(results)} tickers flagged and saved to Postgres.")
-    conn.close()
+    try:
+        results = scan_universe()
+        for r in results:
+            upsert_scan_result(conn, r)
+        print(f"Scan complete. {len(results)} tickers flagged and saved to Postgres.")
+    except Exception:
+        # Make sure a crash is actually visible in the logs with a full
+        # traceback, instead of the process just going quiet (which is
+        # what made the last crash impossible to diagnose from the logs).
+        print("[fatal] scan crashed:")
+        print(traceback.format_exc())
+        raise
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

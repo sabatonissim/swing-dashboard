@@ -362,12 +362,18 @@ function switchChart(symbol){
 function openDrawer(i){
   const s = stocks[i];
   const drawer = document.getElementById("drawer");
+  const triggerText = lang==='en' ? (s.trigger_en||s.trigger||'') : (s.trigger||s.trigger_he||'');
   drawer.innerHTML = `
     <div class="drawer-head">
       <h2>${s.ticker}</h2>
       <button class="close-btn" onclick="closeDrawer()">✕</button>
     </div>
     <div id="tv-chart" class="tv-chart-box"></div>
+    <div class="ai-box">
+      <div class="label">${lang==='en'?'Match Reason':'סיבת ההתאמה'}</div>
+      <div style="font-weight:600;margin-bottom:6px;">${triggerText}</div>
+      ${s.summary||s.ai_summary_he||'זוהתה פריצה טכנית עם נפח גבוה מהממוצע.'}
+    </div>
     <div class="gauge-wrap">
       <div class="gauge-num" style="color:${s.score>=60?'var(--green)':'var(--amber)'}">${s.score}</div>
       <div class="gauge-label">ציון עוצמה טכנית (0–100)</div>
@@ -377,10 +383,6 @@ function openDrawer(i){
       <div class="stat"><div class="k">רמת תמיכה</div><div class="v">$${s.support||'—'}</div></div>
       <div class="stat"><div class="k">יעד 1</div><div class="v">$${s.resistance?.[0]||'—'}</div></div>
       <div class="stat"><div class="k">יעד 2</div><div class="v">$${s.resistance?.[1]||'—'}</div></div>
-    </div>
-    <div class="ai-box">
-      <div class="label">ניתוח טכני</div>
-      ${s.summary||s.ai_summary_he||'זוהתה פריצה טכנית עם נפח גבוה מהממוצע.'}
     </div>
     <div class="news-section">
       <div class="ai-box" style="margin-bottom:0;">
