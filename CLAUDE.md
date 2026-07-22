@@ -126,11 +126,18 @@ Base URL: `https://swing-dashboard-production-438f.up.railway.app`
 
 ### תבניות זיהוי (לפי עדיפות)
 1. **Cup & Handle** (80+) — ירידה מעוגלת + ידית + פריצה
-2. **52-Week High Breakout** (78+) — פריצת שיא שנתי
-3. **Bull Flag** (72+) — עמוד 8%+ + דגל צר + פריצה
-4. **Ascending Triangle** (68+) — התנגדות שטוחה + תמיכות עולות
-5. **Momentum Surge** (62+) — +5% ב-5 ימים + נפח עולה
-6. **Descending Trendline Break** (55+) — פריצת קו מגמה יורד
+2. **Double Bottom (W)** (79+) — שתי תחתיות דומות + פריצת קו הצוואר
+3. **52-Week High Breakout** (78+) — פריצת שיא שנתי
+4. **Golden Cross** (74+) — ממוצע 50 יום חוצה מעל ממוצע 200 יום
+5. **Bull Flag** (72+) — עמוד 8%+ + דגל צר + פריצה
+6. **Ascending Triangle** (68+) — התנגדות שטוחה + תמיכות עולות
+7. **MACD Bullish Crossover** (64+) — קו MACD חוצה מעל קו האיתות
+8. **Momentum Surge** (62+) — +5% ב-5 ימים + נפח עולה
+9. **RSI Oversold Bounce** (58+) — התאוששות מ-RSI מתחת ל-30
+10. **Descending Trendline Break** (55+) — פריצת קו מגמה יורד
+
+### Universe
+הורחב מ-~48 ל-~90 טיקרים (הוספת פיננסים, תעשייה, הגנה, קמעונאות, נדל"ן, תעופה ועוד).
 
 ### ציון
 מבוסס על עוצמת הנפח (לא OpenAI). `min(100, base_score + vol_pct/5)`
@@ -159,7 +166,7 @@ Reuters Top/Business, CNBC Top/Markets, Yahoo Finance, Seeking Alpha, MarketWatc
 2. **Mobile Search Bar** — מופיע רק מתחת ל-900px
 3. **Breaking News Bar** — חדשות קריטיות בלבד (CPI/ריבית/Fed/גאופוליטי/תעסוקה)
 4. **Market Charts** — SPY/QQQ/VIX/IWM/Bitcoin, החלפה בלחיצה
-5. **Split Board:** ימין=מניות, שמאל=חדשות+פילטר סקטורים
+5. **Split Board:** ימין=מניות (מחולק ל"סריקה אחרונה" ו"ימים קודמים", דה-דופ לפי טיקר, שולף עד 60 שורות), שמאל=חדשות+פילטר סקטורים
 6. **Drawer** — מגירה צדדית: מניה (גרף+נתונים+חדשות) / חדשות (תקציר+סקטורים)
 
 ### שפה

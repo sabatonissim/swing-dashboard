@@ -47,21 +47,31 @@ DB_URL = os.environ.get("SWING_DB_PATH") or os.environ.get("DATABASE_URL")
 DEFAULT_UNIVERSE = [
     # Software / Cloud
     "MSFT", "CRM", "NOW", "SNOW", "PANW", "CRWD", "DDOG", "NET", "IGV",
-    "OKTA", "ZS", "WDAY", "ADBE", "INTU",
+    "OKTA", "ZS", "WDAY", "ADBE", "INTU", "TEAM", "HUBS", "MDB", "S",
     # Semiconductors
     "NVDA", "AMD", "AVGO", "SMH", "MU", "QCOM", "AMAT", "LRCX", "KLAC",
+    "ARM", "ON", "MRVL", "TXN",
     # Consumer / E-commerce
-    "AMZN", "SHOP", "ABNB", "UBER", "SBUX", "MELI",
+    "AMZN", "SHOP", "ABNB", "UBER", "SBUX", "MELI", "CMG", "LULU", "DASH",
+    "BKNG", "NKE",
     # Fintech
-    "SQ", "COIN", "PYPL", "AFRM",
+    "SQ", "COIN", "PYPL", "AFRM", "HOOD", "SOFI",
     # AI / Data / Big Tech
-    "PLTR", "GOOGL", "META", "AAPL",
+    "PLTR", "GOOGL", "META", "AAPL", "MSTR", "IONQ",
     # Biotech / Health
-    "MRNA", "ISRG", "DXCM",
+    "MRNA", "ISRG", "DXCM", "LLY", "VRTX", "REGN",
     # Energy
-    "XLE", "XOM", "CVX",
+    "XLE", "XOM", "CVX", "OXY", "SLB",
+    # Industrials / Defense
+    "CAT", "DE", "LMT", "RTX", "BA", "GE",
+    # Financials / Banks
+    "JPM", "GS", "MS", "SCHW", "XLF",
+    # Airlines / Travel / Homebuilders
+    "DAL", "LEN", "DHI", "NVR",
+    # Retail
+    "WMT", "COST", "TGT", "HD",
     # ETFs
-    "QQQ", "SPY", "ARKK",
+    "QQQ", "SPY", "ARKK", "IWM", "XLK", "XBI",
 ]
 
 MIN_AVG_VOLUME_20D = 1_500_000       # shares
@@ -343,6 +353,135 @@ def detect_ascending_triangle(hist: pd.DataFrame) -> Optional[dict]:
     return None
 
 
+def detect_golden_cross(hist: pd.DataFrame) -> Optional[dict]:
+    """
+    Golden Cross heuristic:
+    - 50-day SMA crosses above the 200-day SMA within the last 3 bars.
+    - Classic long-term bullish trend-change signal.
+    """
+    if len(hist) < 210:
+        return None
+    closes = hist["Close"]
+    sma50 = closes.rolling(50).mean()
+    sma200 = closes.rolling(200).mean()
+    if sma50.isna().iloc[-4:].any() or sma200.isna().iloc[-4:].any():
+        return None
+
+    diff_today = float(sma50.iloc[-1] - sma200.iloc[-1])
+    # look back up to 3 bars for the actual cross-over point
+    for lookback in range(0, 3):
+        prev = float(sma50.iloc[-2 - lookback] - sma200.iloc[-2 - lookback])
+        if prev <= 0 and diff_today > 0:
+            return {
+                "sma50": round(float(sma50.iloc[-1]), 2),
+                "sma200": round(float(sma200.iloc[-1]), 2),
+            }
+    return None
+
+
+def detect_double_bottom(hist: pd.DataFrame) -> Optional[dict]:
+    """
+    Double Bottom ("W") heuristic:
+    - Two swing lows in the last ~60 bars within 3% of each other.
+    - A peak (the "neckline") between them, at least 8% above the lows.
+    - Breakout: today's close above the neckline.
+    """
+    if len(hist) < 60:
+        return None
+    window = hist.tail(60).reset_index(drop=True)
+    lows = window["Low"].values
+    closes = window["Close"].values
+    n = len(lows)
+
+    swing_idx, swing_val = [], []
+    for i in range(3, n - 3):
+        if lows[i] < lows[i - 1] and lows[i] < lows[i - 2] and \
+           lows[i] < lows[i + 1] and lows[i] < lows[i + 2]:
+            swing_idx.append(i)
+            swing_val.append(lows[i])
+
+    if len(swing_idx) < 2:
+        return None
+
+    # take the two lowest swing lows, far enough apart to be distinct bottoms
+    pairs = sorted(zip(swing_idx, swing_val), key=lambda p: p[1])
+    first_idx, first_low = pairs[0]
+    second = next(((i, v) for i, v in pairs[1:] if abs(i - first_idx) >= 8), None)
+    if second is None:
+        return None
+    second_idx, second_low = second
+    lo_idx, hi_idx = sorted([first_idx, second_idx])
+    lo_low, hi_low = (first_low, second_low) if first_idx < second_idx else (second_low, first_low)
+
+    if abs(lo_low - hi_low) / max(lo_low, hi_low) > 0.03:
+        return None  # bottoms must be roughly equal depth
+
+    neckline = float(closes[lo_idx:hi_idx + 1].max())
+    if lo_low <= 0 or (neckline - lo_low) / lo_low < 0.08:
+        return None  # not enough of a bounce between the two bottoms
+
+    today_close = float(closes[-1])
+    if today_close > neckline:
+        return {"neckline": round(neckline, 2), "bottom_price": round(float(min(lo_low, hi_low)), 2)}
+    return None
+
+
+def _macd_lines(closes: pd.Series):
+    ema12 = closes.ewm(span=12, adjust=False).mean()
+    ema26 = closes.ewm(span=26, adjust=False).mean()
+    macd = ema12 - ema26
+    signal = macd.ewm(span=9, adjust=False).mean()
+    return macd, signal
+
+
+def detect_macd_bullish_crossover(hist: pd.DataFrame) -> Optional[dict]:
+    """
+    MACD Bullish Crossover:
+    - The MACD line crosses above its signal line within the last 2 bars.
+    - Standard 12/26/9 EMA settings.
+    """
+    if len(hist) < 40:
+        return None
+    macd, signal = _macd_lines(hist["Close"])
+    diff_today = float(macd.iloc[-1] - signal.iloc[-1])
+    diff_yesterday = float(macd.iloc[-2] - signal.iloc[-2])
+    if diff_yesterday <= 0 and diff_today > 0:
+        return {"macd": round(float(macd.iloc[-1]), 3), "signal": round(float(signal.iloc[-1]), 3)}
+    return None
+
+
+def _rsi(closes: pd.Series, period: int = 14) -> pd.Series:
+    delta = closes.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi.fillna(50)
+
+
+def detect_rsi_oversold_bounce(hist: pd.DataFrame) -> Optional[dict]:
+    """
+    RSI Oversold Bounce:
+    - RSI(14) dipped below 30 at some point in the last 10 bars.
+    - Today RSI closes back above 30, with price ticking up -> early reversal signal.
+    """
+    if len(hist) < 30:
+        return None
+    rsi = _rsi(hist["Close"])
+    recent = rsi.tail(11)
+    if not (recent.iloc[:-1] < 30).any():
+        return None
+    if rsi.iloc[-1] <= 30:
+        return None
+    today_close = float(hist["Close"].iloc[-1])
+    yesterday_close = float(hist["Close"].iloc[-2])
+    if today_close > yesterday_close:
+        return {"rsi": round(float(rsi.iloc[-1]), 1)}
+    return None
+
+
 # ------------------------------------------------------------------
 # Step 4: Social & sentiment data collection (stubs w/ clear TODOs)
 # ------------------------------------------------------------------
@@ -544,9 +683,14 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         cup_handle       = detect_cup_and_handle(hist)
         bull_flag        = detect_bull_flag(hist)
         asc_triangle     = detect_ascending_triangle(hist)
+        golden_cross     = detect_golden_cross(hist)
+        double_bottom    = detect_double_bottom(hist)
+        macd_cross       = detect_macd_bullish_crossover(hist)
+        rsi_bounce       = detect_rsi_oversold_bounce(hist)
 
         # Skip if no pattern found at all
-        if not any([trendline_break, high_52w, momentum, cup_handle, bull_flag, asc_triangle]):
+        if not any([trendline_break, high_52w, momentum, cup_handle, bull_flag,
+                    asc_triangle, golden_cross, double_bottom, macd_cross, rsi_bounce]):
             continue
 
         vol_pct = check_breakout_volume(hist)
@@ -559,10 +703,18 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             trigger_en = "Cup & Handle breakout"
             trigger_he = "פריצת תבנית כוס וידית (Cup & Handle)"
             tech_score = min(100, 80 + int(vol_pct / 5))
+        elif double_bottom:
+            trigger_en = f"Double Bottom breakout above ${double_bottom['neckline']}"
+            trigger_he = f"פריצת תבנית תחתית כפולה (W) מעל ${double_bottom['neckline']}"
+            tech_score = min(100, 79 + int(vol_pct / 5))
         elif high_52w:
             trigger_en = "Breaking above 52-week high"
             trigger_he = "פריצת שיא 52 שבועות"
             tech_score = min(100, 78 + int(vol_pct / 5))
+        elif golden_cross:
+            trigger_en = "Golden Cross (50D SMA crossed above 200D SMA)"
+            trigger_he = "פריצת גולדן קרוס (ממוצע 50 יום חצה מעל ממוצע 200 יום)"
+            tech_score = min(100, 74 + int(vol_pct / 5))
         elif bull_flag:
             trigger_en = f"Bull Flag breakout (pole +{bull_flag['pole_pct']}%)"
             trigger_he = f"פריצת דגל שורי (עמוד +{bull_flag['pole_pct']}%)"
@@ -571,10 +723,18 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             trigger_en = f"Ascending Triangle breakout above ${asc_triangle['resistance']}"
             trigger_he = f"פריצת משולש עולה מעל ${asc_triangle['resistance']}"
             tech_score = min(100, 68 + int(vol_pct / 5))
+        elif macd_cross:
+            trigger_en = "MACD bullish crossover"
+            trigger_he = "חציית MACD שורית"
+            tech_score = min(100, 64 + int(vol_pct / 5))
         elif momentum:
             trigger_en = f"Strong momentum surge (+{momentum['pct_change_5d']}% / 5 days)"
             trigger_he = f"מומנטום חזק ב-5 ימים (+{momentum['pct_change_5d']}%)"
             tech_score = min(100, 62 + int(vol_pct / 5))
+        elif rsi_bounce:
+            trigger_en = f"RSI oversold bounce (RSI {rsi_bounce['rsi']})"
+            trigger_he = f"התאוששות מאזור מכירת יתר (RSI {rsi_bounce['rsi']})"
+            tech_score = min(100, 58 + int(vol_pct / 5))
         else:
             trigger_en = "Breakout above descending trendline on strong volume"
             trigger_he = "פריצת שיאים יורדים בווליום חזק"

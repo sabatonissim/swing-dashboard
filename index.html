@@ -88,6 +88,9 @@
   .score-badge{font-family:'JetBrains Mono',monospace;font-weight:600;font-size:13px;padding:4px 9px;border-radius:20px;min-width:36px;text-align:center;}
   .score-hi{background:rgba(62,207,126,.15);color:var(--green);}
   .score-mid{background:rgba(232,163,61,.15);color:var(--amber);}
+  .stock-group-title{font-size:11px;letter-spacing:1px;color:var(--text-dim);text-transform:uppercase;margin:4px 2px 9px;padding-top:6px;}
+  .stock-group-title.first{margin-top:0;padding-top:0;}
+  .stock-group-title.previous{border-top:1px solid var(--line);padding-top:14px;margin-top:14px;}
 
   /* ---- Macro items ---- */
   .macro-item{display:flex;gap:12px;padding:12px 4px;border-bottom:1px solid var(--line);cursor:pointer;}
@@ -226,17 +229,34 @@ let rawMacro = [];
 // ---- Render functions ----
 function scoreClass(s){ return s>=60 ? "score-hi" : "score-mid"; }
 
-function renderStocks(){
-  const el = document.getElementById("stocks");
-  if(!stocks.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${UI[lang].no_stocks}</div>`; return; }
-  el.innerHTML = stocks.map((s,i)=>`
+function stockRowHtml(s,i){
+  return `
     <div class="stock-row" onclick="openDrawer(${i})">
       <div class="ticker">${s.ticker}</div>
       <div class="trend ${s.trend}">${s.trend==="up"?"▲":"▼"}</div>
       <div class="trigger">${lang==='en'?(s.trigger_en||s.trigger||''):(s.trigger||s.trigger_he||'')}</div>
       <div class="score-badge ${scoreClass(s.score)}">${s.score}</div>
     </div>
-  `).join("");
+  `;
+}
+
+function renderStocks(){
+  const el = document.getElementById("stocks");
+  if(!stocks.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${UI[lang].no_stocks}</div>`; return; }
+
+  const recent = [], previous = [];
+  stocks.forEach((s,i)=>{ (s.isRecent===false ? previous : recent).push(i); });
+
+  let html = "";
+  if(recent.length){
+    html += `<div class="stock-group-title first">${UI[lang].recent_stocks_title}</div>`;
+    html += recent.map(i=>stockRowHtml(stocks[i],i)).join("");
+  }
+  if(previous.length){
+    html += `<div class="stock-group-title previous">${UI[lang].previous_stocks_title}</div>`;
+    html += previous.map(i=>stockRowHtml(stocks[i],i)).join("");
+  }
+  el.innerHTML = html;
 }
 
 let activeSector = 'הכל';
@@ -531,13 +551,39 @@ function mapDbRowToStock(r){
     summary_en: r.ai_summary_en,
     trigger_he: r.trigger_text_he,
     trigger_en: r.trigger_text_en,
+    timestamp: r.timestamp,
   };
+}
+
+// Given the deduped/ordered stocks array (newest first), mark each row
+// isRecent=true if it belongs to the same calendar day as the most recent
+// scan, otherwise false (an earlier day's match, kept for context).
+function markRecencyGroups(list){
+  if(!list.length) return list;
+  const latestDay = list[0].timestamp ? new Date(list[0].timestamp).toDateString() : null;
+  for(const s of list){
+    s.isRecent = latestDay ? (new Date(s.timestamp).toDateString() === latestDay) : true;
+  }
+  return list;
+}
+
+// Keep only the latest row per ticker (rows are already ordered newest-first
+// by the API), so a stock flagged both at market open and close only shows once.
+function dedupeByTicker(list){
+  const seen = new Set();
+  const out = [];
+  for(const s of list){
+    if(seen.has(s.ticker)) continue;
+    seen.add(s.ticker);
+    out.push(s);
+  }
+  return out;
 }
 
 async function loadFromApi(){
   try {
     const [stocksRes, macroRes] = await Promise.all([
-      fetch(`${API_BASE}/api/stocks`),
+      fetch(`${API_BASE}/api/stocks?limit=60`),
       fetch(`${API_BASE}/api/macro-news`),
     ]);
     if(!stocksRes.ok||!macroRes.ok) throw new Error("API error");
@@ -570,6 +616,8 @@ const UI = {
     loading: 'טוען...',
     lang_btn: 'EN',
     dir: 'rtl',
+    recent_stocks_title: 'הסריקה האחרונה',
+    previous_stocks_title: 'ימים קודמים',
   },
   en: {
     sub: 'Real-time trading dashboard',
@@ -584,6 +632,8 @@ const UI = {
     loading: 'Loading...',
     lang_btn: 'עב',
     dir: 'ltr',
+    recent_stocks_title: 'Latest Scan',
+    previous_stocks_title: 'Previous Days',
   }
 };
 
@@ -605,7 +655,9 @@ function applyLang(){
   // Rebuild stocks and macro arrays from raw API data in the active language
   if(rawStocks.length > 0){
     stocks.length = 0;
-    for(const r of rawStocks) stocks.push(mapDbRowToStock(r));
+    const mapped = dedupeByTicker(rawStocks.map(mapDbRowToStock));
+    markRecencyGroups(mapped);
+    for(const s of mapped) stocks.push(s);
   }
   if(rawMacro.length > 0){
     macro.length = 0;
