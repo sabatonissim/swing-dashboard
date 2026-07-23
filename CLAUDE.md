@@ -80,7 +80,7 @@
 ### טבלאות
 
 **`scanned_stocks`** — תוצאות הסריקה
-- עמודות מפתח: `ticker`, `trigger_text_he/en`, `swing_score` (0-100), `entry_price`, `support_level`, `resistance_targets` (JSON), `ai_summary_he/en`, `breakout_volume_pct`, `change_pct` (שינוי יומי %, לרצועת "הכי זזות היום"), `timestamp`
+- עמודות מפתח: `ticker`, `trigger_text_he/en`, `swing_score` (0-100), `entry_price`, `support_level`, `resistance_targets` (JSON), `ai_summary_he/en`, `breakout_volume_pct`, `change_pct` (שינוי יומי % של המניה המסומנת, לא קשור לרצועת "הכי זזות" — ראה סעיף 9), `timestamp`
 
 **`macro_news`** — חדשות מאקרו
 - עמודות מפתח: `category_tag`, `summary_he`, `summary_en`, `impact_level` (High/Critical), `source_url`, `timestamp`
@@ -106,6 +106,7 @@ Base URL: `https://swing-dashboard-production-438f.up.railway.app`
 | `/api/stocks` | GET | מניות מסומנות מה-DB |
 | `/api/macro-news` | GET | חדשות מאקרו מה-DB |
 | `/api/lookup/{ticker}` | GET | נתוני שוק חיים (yfinance) |
+| `/api/market-movers` | GET | הכי זזות היום — כל השוק האמריקאי (yf.screen day_gainers/day_losers), cache 3 דק' |
 | `/api/fundamentals/{ticker}` | GET | דוחות רבעוניים, EPS מול תחזית, רצועת P/E היסטורית (yfinance, timeout 20 שנ') |
 | `/api/stock-news/{ticker}` | GET | חדשות ספציפיות לטיקר (yfinance) |
 | `/api/track` | POST | רישום event לאנליטיקס |
@@ -175,7 +176,7 @@ Reuters Top/Business, CNBC Top/Markets, Yahoo Finance, Seeking Alpha, MarketWatc
 1. **Header** — לוגו, חיפוש (דסקטופ), כפתור שפה EN/עב, שעון
 2. **Mobile Search Bar** — מופיע רק מתחת ל-900px
 3. **Breaking News Bar** — חדשות קריטיות בלבד (CPI/ריבית/Fed/גאופוליטי/תעסוקה)
-4. **Market Charts + Movers strip** — SPY/QQQ/VIX/IWM/Bitcoin (בעמודה, ~62% רוחב) לצד רצועת "הכי זזות היום" מתוך הסריקה (~38% רוחב, `change_pct` מחושב ב-Pipeline A מיום קודם ליום נוכחי, ללא קריאות API נוספות)
+4. **Market Charts + Movers strip** — SPY/QQQ/VIX/IWM/Bitcoin (בעמודה, ~62% רוחב) לצד רצועת "הכי זזות היום" (~38% רוחב). **עודכן:** הרצועה כבר לא מוגבלת ל-90 הטיקרים שהסורק עוקב אחריהם — שולפת עכשיו את "day_gainers"/"day_losers" האמיתיים של כל השוק האמריקאי דרך `yf.screen()` (Yahoo, חינמי), עם cache בזיכרון ל-3 דקות כדי לא להעמיס על Yahoo. **תוקן 22/7:** תוצאה חלקית/מוחלשת (למשל אם רק אחד מבין שני ה-screeners הצליח) כבר לא דורסת cache טוב קודם — יש סף איכות מינימלי (5+ תוצאות) לפני שמעדכנים את ה-cache, כדי למנוע את התופעה של "מראה כמה מניות ואז קופץ למניה אחת".
 5. **Split Board:** ימין=מניות (מחולק ל"סריקה אחרונה" ו"ימים קודמים", דה-דופ לפי טיקר, שולף עד 60 שורות), שמאל=חדשות+פילטר סקטורים
 6. **Drawer** — מגירה צדדית: מניה (גרף+נתונים+חדשות) / חדשות (תקציר+סקטורים)
 

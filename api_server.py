@@ -16,6 +16,7 @@ deploying publicly.
 
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import List, Optional
 
@@ -223,6 +224,105 @@ def lookup_stock(ticker: str):
 
 
 # ------------------------------------------------------------------
+# Market-wide movers: genuine "biggest movers in the US market today",
+# NOT limited to the ~90 tickers our own scanner tracks. Uses yfinance's
+# built-in wrapper around Yahoo Finance's public predefined screeners
+# (day_gainers / day_losers) — still free, no paid data provider, but
+# covers the whole market instead of just our tracked universe.
+#
+# Cached in-process for a couple of minutes so a burst of dashboard
+# polls doesn't hammer Yahoo's screener endpoint or trip rate limits.
+# ------------------------------------------------------------------
+
+MOVERS_CACHE_TTL_SEC = 180
+_movers_cache = {"data": None, "ts": 0.0}
+
+
+def _parse_screen_quotes(screen_result: Optional[dict]) -> List[dict]:
+    if not screen_result:
+        return []
+    quotes = screen_result.get("quotes", []) or []
+    out = []
+    for q in quotes:
+        pct = q.get("regularMarketChangePercent")
+        price = q.get("regularMarketPrice")
+        if pct is None or price is None:
+            continue
+        out.append({
+            "ticker": q.get("symbol"),
+            "name": q.get("shortName") or q.get("longName") or q.get("symbol"),
+            "price": round(float(price), 2),
+            "change_pct": round(float(pct), 2),
+            "volume": q.get("regularMarketVolume"),
+        })
+    return out
+
+
+def _fetch_market_movers(limit: int = 50) -> List[dict]:
+    """Pulls Yahoo's 'day_gainers' and 'day_losers' predefined screeners
+    (whole US market, not our tracked universe) and merges them, ranked
+    by the size of the move. Requires a reasonably recent yfinance
+    version (screen() was added in 0.2.40+)."""
+    gainers = losers = None
+    try:
+        gainers = yf.screen("day_gainers", count=limit)
+    except Exception as e:
+        print(f"[warn] day_gainers screen failed: {e}")
+    try:
+        losers = yf.screen("day_losers", count=limit)
+    except Exception as e:
+        print(f"[warn] day_losers screen failed: {e}")
+
+    combined = _parse_screen_quotes(gainers) + _parse_screen_quotes(losers)
+    combined.sort(key=lambda x: abs(x["change_pct"]), reverse=True)
+    return combined[:limit]
+
+
+MOVERS_MIN_QUALITY = 5  # a fetch returning fewer than this is treated as a degraded/
+                        # partial Yahoo response (e.g. one screener got throttled)
+                        # rather than a genuine "only 1 mover today" result
+
+
+@app.get("/api/market-movers")
+def market_movers(limit: int = Query(default=15, le=50)):
+    now = time.time()
+    if _movers_cache["data"] is not None and (now - _movers_cache["ts"]) < MOVERS_CACHE_TTL_SEC:
+        return _movers_cache["data"][:limit]
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        future = executor.submit(_fetch_market_movers, 50)
+        result = future.result(timeout=15)
+
+        if result and len(result) >= MOVERS_MIN_QUALITY:
+            _movers_cache["data"] = result
+            _movers_cache["ts"] = now
+            return result[:limit]
+
+        # Degraded/partial result (Yahoo screener likely throttled) — don't let
+        # it clobber a previously-good cache; keep serving the last solid list
+        # if we have one, and only fall through to the thin result as a last resort.
+        if result:
+            print(f"[warn] market-movers: got only {len(result)} results (< {MOVERS_MIN_QUALITY}), "
+                  f"treating as degraded and keeping previous cache")
+        if _movers_cache["data"] is not None:
+            return _movers_cache["data"][:limit]
+        return (result or [])[:limit]
+    except FutureTimeoutError:
+        if _movers_cache["data"] is not None:
+            return _movers_cache["data"][:limit]  # serve stale cache rather than failing outright
+        raise HTTPException(status_code=504, detail="תם הזמן לשליפת המניות הכי זזות בשוק")
+    except Exception as e:
+        if _movers_cache["data"] is not None:
+            return _movers_cache["data"][:limit]
+        raise HTTPException(status_code=502, detail=f"שגיאה בשליפת נתוני שוק: {e}")
+    finally:
+        executor.shutdown(wait=False)
+
+
+
+
+# ------------------------------------------------------------------
 # Fundamentals dashboard (per-stock drawer): quarterly financials,
 # net debt, margins, EPS actual-vs-estimate, and a historical P/E band.
 # All from yfinance - free, no paid data provider.
@@ -305,18 +405,41 @@ def _compute_pe_band(tk: "yf.Ticker", qf: "pd.DataFrame"):
         return None
 
 
+def _first_nonempty_df(*dfs):
+    for df in dfs:
+        if df is not None and not df.empty:
+            return df
+    return None
+
+
 def _build_fundamentals(ticker: str) -> dict:
     tk = yf.Ticker(ticker)
-    info = tk.info
 
-    # Quarterly statements. yfinance returns columns as period-end
-    # Timestamps, newest first — sort ascending so charts read left-to-right.
-    qf = tk.quarterly_financials
-    qcf = tk.quarterly_cashflow
-    qbs = tk.quarterly_balance_sheet
+    try:
+        info = tk.info or {}
+    except Exception as e:
+        print(f"[warn] fundamentals({ticker}): .info fetch failed: {e}")
+        info = {}
 
-    if qf is None or qf.empty:
-        # Likely an ETF/index or a ticker with no standard financials.
+    # yfinance has renamed these properties across versions
+    # (quarterly_financials -> quarterly_income_stmt). Try both so we
+    # don't silently show "no data" just because of a naming drift.
+    def _safe_get(*attr_names):
+        for name in attr_names:
+            try:
+                df = getattr(tk, name, None)
+                if df is not None and not df.empty:
+                    return df
+            except Exception as e:
+                print(f"[warn] fundamentals({ticker}): .{name} fetch failed: {e}")
+        return None
+
+    qf = _safe_get("quarterly_financials", "quarterly_income_stmt")
+    qcf = _safe_get("quarterly_cashflow", "quarterly_cash_flow")
+    qbs = _safe_get("quarterly_balance_sheet", "quarterly_balancesheet")
+
+    if qf is None:
+        print(f"[info] fundamentals({ticker}): no quarterly income statement available (ETF/index or data gap)")
         return {"ticker": ticker, "has_fundamentals": False}
 
     quarters_sorted = sorted(qf.columns.tolist())
@@ -401,16 +524,29 @@ def _build_fundamentals(ticker: str) -> dict:
     }
 
 
+_fundamentals_cache = {}  # ticker -> (timestamp, data)
+FUNDAMENTALS_CACHE_TTL_SEC = 900  # 15 min - fundamentals change slowly, and this avoids
+                                  # hammering yfinance every time a stock drawer reopens
+
+
 @app.get("/api/fundamentals/{ticker}")
 def get_fundamentals(ticker: str):
     ticker = ticker.upper().strip()
+
+    cached = _fundamentals_cache.get(ticker)
+    if cached and (time.time() - cached[0]) < FUNDAMENTALS_CACHE_TTL_SEC:
+        return cached[1]
+
     executor = ThreadPoolExecutor(max_workers=1)
     try:
         future = executor.submit(_build_fundamentals, ticker)
-        return future.result(timeout=FUNDAMENTALS_TIMEOUT_SEC)
+        data = future.result(timeout=FUNDAMENTALS_TIMEOUT_SEC)
+        _fundamentals_cache[ticker] = (time.time(), data)
+        return data
     except FutureTimeoutError:
         raise HTTPException(status_code=504, detail="החישוב לקח יותר מדי זמן, נסה שוב")
     except Exception as e:
+        print(f"[warn] /api/fundamentals/{ticker} failed: {e}")
         raise HTTPException(status_code=502, detail=f"שגיאה בשליפת נתונים פונדמנטליים: {e}")
     finally:
         executor.shutdown(wait=False)

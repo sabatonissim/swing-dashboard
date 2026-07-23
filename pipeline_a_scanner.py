@@ -823,6 +823,7 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
     return results
 
 
+
 def main():
     init_db()
     conn = get_conn()
