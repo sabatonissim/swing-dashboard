@@ -16,8 +16,10 @@ deploying publicly.
 
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import List, Optional
 
+import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -221,9 +223,200 @@ def lookup_stock(ticker: str):
 
 
 # ------------------------------------------------------------------
-# Analytics: "what interests people" (not general traffic stats -
-# see DEPLOYMENT_GUIDE.md for that)
+# Fundamentals dashboard (per-stock drawer): quarterly financials,
+# net debt, margins, EPS actual-vs-estimate, and a historical P/E band.
+# All from yfinance - free, no paid data provider.
 # ------------------------------------------------------------------
+
+FUNDAMENTALS_TIMEOUT_SEC = 20  # hard cap so one slow yfinance call can't hang a request thread
+
+
+def _get_row(df: "pd.DataFrame", *names):
+    """Return the first matching row (by index label) from a yfinance
+    financial statement dataframe, or None if none of the names exist."""
+    if df is None or df.empty:
+        return None
+    for name in names:
+        if name in df.index:
+            return df.loc[name]
+    return None
+
+
+def _series_to_chart(row, quarters_sorted_cols):
+    """Aligns a financial-statement row to the given (ascending) column
+    order and returns a list of floats/None, rounded for display."""
+    if row is None:
+        return [None] * len(quarters_sorted_cols)
+    out = []
+    for col in quarters_sorted_cols:
+        v = row.get(col)
+        out.append(round(float(v), 2) if v is not None and pd.notna(v) else None)
+    return out
+
+
+def _compute_pe_band(tk: "yf.Ticker", qf: "pd.DataFrame"):
+    """Builds a weekly historical P/E series plus mean/±1-std band, using
+    trailing-twelve-month EPS (rolling 4-quarter sum) matched against
+    weekly closing price via merge_asof. Returns None if there isn't
+    enough data (e.g. ETFs, or tickers with a thin earnings history)."""
+    try:
+        eps_row = _get_row(qf, "Diluted EPS", "Basic EPS")
+        if eps_row is None:
+            return None
+        eps_row = eps_row.dropna().sort_index()
+        if len(eps_row) < 4:
+            return None
+        ttm_eps = eps_row.rolling(4).sum().dropna()
+        if ttm_eps.empty:
+            return None
+
+        hist = tk.history(period="5y", interval="1wk")
+        if hist.empty:
+            return None
+
+        ttm_df = pd.DataFrame({
+            "date": pd.to_datetime(ttm_eps.index).tz_localize(None),
+            "ttm_eps": ttm_eps.values,
+        }).sort_values("date")
+
+        hist2 = hist.reset_index()
+        date_col = "Date" if "Date" in hist2.columns else hist2.columns[0]
+        hist2["date"] = pd.to_datetime(hist2[date_col]).dt.tz_localize(None)
+        hist2 = hist2.sort_values("date")
+
+        merged = pd.merge_asof(hist2, ttm_df, on="date", direction="backward")
+        merged["pe"] = merged["Close"] / merged["ttm_eps"]
+        merged = merged[(merged["ttm_eps"] > 0) & merged["pe"].notna() & (merged["pe"] < 500) & (merged["pe"] > 0)]
+        if merged.empty:
+            return None
+
+        mean = float(merged["pe"].mean())
+        std = float(merged["pe"].std() or 0)
+        return {
+            "dates": merged["date"].dt.strftime("%Y-%m-%d").tolist(),
+            "values": merged["pe"].round(2).tolist(),
+            "mean": round(mean, 1),
+            "std1_upper": round(mean + std, 1),
+            "std1_lower": round(max(mean - std, 0), 1),
+            "current": round(float(merged["pe"].iloc[-1]), 1),
+        }
+    except Exception as e:
+        print(f"[warn] P/E band calc failed: {e}")
+        return None
+
+
+def _build_fundamentals(ticker: str) -> dict:
+    tk = yf.Ticker(ticker)
+    info = tk.info
+
+    # Quarterly statements. yfinance returns columns as period-end
+    # Timestamps, newest first — sort ascending so charts read left-to-right.
+    qf = tk.quarterly_financials
+    qcf = tk.quarterly_cashflow
+    qbs = tk.quarterly_balance_sheet
+
+    if qf is None or qf.empty:
+        # Likely an ETF/index or a ticker with no standard financials.
+        return {"ticker": ticker, "has_fundamentals": False}
+
+    quarters_sorted = sorted(qf.columns.tolist())
+    quarter_labels = [c.strftime("%b %Y") for c in quarters_sorted]
+
+    revenue    = _series_to_chart(_get_row(qf, "Total Revenue"), quarters_sorted)
+    net_income = _series_to_chart(_get_row(qf, "Net Income", "Net Income Common Stockholders"), quarters_sorted)
+    gross_profit = _get_row(qf, "Gross Profit")
+    if gross_profit is not None and _get_row(qf, "Total Revenue") is not None:
+        rev_row = _get_row(qf, "Total Revenue")
+        gross_margin_pct = []
+        for col in quarters_sorted:
+            r = rev_row.get(col)
+            g = gross_profit.get(col)
+            if r and pd.notna(r) and pd.notna(g) and r != 0:
+                gross_margin_pct.append(round(float(g) / float(r) * 100, 1))
+            else:
+                gross_margin_pct.append(None)
+    else:
+        gross_margin_pct = [None] * len(quarters_sorted)
+
+    op_cf = _get_row(qcf, "Operating Cash Flow", "Total Cash From Operating Activities")
+    capex = _get_row(qcf, "Capital Expenditure", "Capital Expenditures")
+    fcf_row = _get_row(qcf, "Free Cash Flow")
+    if fcf_row is not None:
+        fcf = _series_to_chart(fcf_row, quarters_sorted)
+    elif op_cf is not None and capex is not None:
+        fcf = []
+        for col in quarters_sorted:
+            o, c = op_cf.get(col), capex.get(col)
+            fcf.append(round(float(o) + float(c), 2) if pd.notna(o) and pd.notna(c) else None)  # capex is already negative
+    else:
+        fcf = [None] * len(quarters_sorted)
+
+    total_debt = _get_row(qbs, "Total Debt")
+    cash = _get_row(qbs, "Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments")
+    if total_debt is not None and cash is not None:
+        net_debt = []
+        for col in quarters_sorted:
+            d, c = total_debt.get(col), cash.get(col)
+            net_debt.append(round(float(d) - float(c), 2) if pd.notna(d) and pd.notna(c) else None)
+    else:
+        net_debt = [None] * len(quarters_sorted)
+
+    shares_row = _get_row(qbs, "Ordinary Shares Number", "Share Issued")
+    shares_outstanding = _series_to_chart(shares_row, quarters_sorted) if shares_row is not None else [None] * len(quarters_sorted)
+
+    # EPS actual vs estimate ("earnings surprises")
+    eps_actual, eps_estimate, eps_surprise_pct, eps_labels = [], [], [], []
+    try:
+        edates = tk.get_earnings_dates(limit=20)
+        if edates is not None and not edates.empty:
+            edates = edates.dropna(subset=["Reported EPS"]).sort_index()
+            for idx, row in edates.iterrows():
+                eps_labels.append(idx.strftime("%b %Y"))
+                eps_actual.append(round(float(row.get("Reported EPS")), 2) if pd.notna(row.get("Reported EPS")) else None)
+                eps_estimate.append(round(float(row.get("EPS Estimate")), 2) if pd.notna(row.get("EPS Estimate")) else None)
+                surprise = row.get("Surprise(%)")
+                eps_surprise_pct.append(round(float(surprise) * 100, 1) if pd.notna(surprise) else None)
+    except Exception as e:
+        print(f"[warn] earnings dates fetch failed for {ticker}: {e}")
+
+    pe_band = _compute_pe_band(tk, qf)
+
+    return {
+        "ticker": ticker,
+        "has_fundamentals": True,
+        "quarter_labels": quarter_labels,
+        "revenue": revenue,
+        "net_income": net_income,
+        "fcf": fcf,
+        "gross_margin_pct": gross_margin_pct,
+        "net_debt": net_debt,
+        "shares_outstanding": shares_outstanding,
+        "eps_labels": eps_labels,
+        "eps_actual": eps_actual,
+        "eps_estimate": eps_estimate,
+        "eps_surprise_pct": eps_surprise_pct,
+        "pe_band": pe_band,
+        "trailing_pe": info.get("trailingPE"),
+        "forward_pe": info.get("forwardPE"),
+    }
+
+
+@app.get("/api/fundamentals/{ticker}")
+def get_fundamentals(ticker: str):
+    ticker = ticker.upper().strip()
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        future = executor.submit(_build_fundamentals, ticker)
+        return future.result(timeout=FUNDAMENTALS_TIMEOUT_SEC)
+    except FutureTimeoutError:
+        raise HTTPException(status_code=504, detail="החישוב לקח יותר מדי זמן, נסה שוב")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"שגיאה בשליפת נתונים פונדמנטליים: {e}")
+    finally:
+        executor.shutdown(wait=False)
+
+
+
 
 class TrackEvent(BaseModel):
     event_type: str            # 'view_stock' / 'view_macro' / 'page_view'

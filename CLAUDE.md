@@ -52,6 +52,7 @@
 ### Frontend
 - **Vanilla HTML/CSS/JS** — קובץ אחד, בלי framework
 - **TradingView Widget** (חינמי) — גרפים בתוך המגירה וגרפי מדדים
+- **Chart.js** (CDN, חינמי) — גרפי הפונדמנטלס במגירת מניה
 - **RTL עברית כברירת מחדל**, עם toggle לאנגלית
 
 ### Backend
@@ -105,6 +106,7 @@ Base URL: `https://swing-dashboard-production-438f.up.railway.app`
 | `/api/stocks` | GET | מניות מסומנות מה-DB |
 | `/api/macro-news` | GET | חדשות מאקרו מה-DB |
 | `/api/lookup/{ticker}` | GET | נתוני שוק חיים (yfinance) |
+| `/api/fundamentals/{ticker}` | GET | דוחות רבעוניים, EPS מול תחזית, רצועת P/E היסטורית (yfinance, timeout 20 שנ') |
 | `/api/stock-news/{ticker}` | GET | חדשות ספציפיות לטיקר (yfinance) |
 | `/api/track` | POST | רישום event לאנליטיקס |
 | `/api/analytics/top-interest` | GET | אילו טיקרים/נושאים הכי נצפו |
@@ -226,6 +228,7 @@ const API_BASE = "https://swing-dashboard-production-438f.up.railway.app";
 - [x] Cron Jobs אוטומטיים
 - [x] אכיפת אישור נפח אמיתי (volume confirmation) לתבניות פריצה — קבוע היה קיים אך לא נאכף בפועל
 - [x] מגירת מניה: סיבת ההתאמה מוצגת מיד מתחת לגרף
+- [x] דשבורד פונדמנטלי במגירת מניה (חיפוש + סריקה): Revenue/Net Income/FCF, Net Debt, שולי רווח גולמי, מניות במחזור, EPS בפועל מול תחזית, רצועת P/E היסטורית מול ממוצע±סטיית תקן — הכל מ-yfinance חינמי, גרפים עם Chart.js (CDN), גלילה אופקית לכל הרבעונים הזמינים
 
 ---
 
