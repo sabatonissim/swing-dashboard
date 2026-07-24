@@ -85,6 +85,8 @@ BREAKOUT_VOLUME_THRESHOLD_PCT = 20.0   # lowered: breakout candle >= 20% above 2
 TRENDLINE_LOOKBACK_DAYS = 60           # wider window to catch more patterns
 PER_TICKER_TIMEOUT_SEC = 15            # hard cap so a single hung yfinance call can't hang the whole container
 INTER_TICKER_DELAY_SEC = 0.3           # small delay to avoid Yahoo Finance rate-limiting on a large universe
+MAX_CONSECUTIVE_TIMEOUTS = 8           # circuit breaker: abort the scan early if Yahoo is clearly rate-limiting
+                                        # hard right now, instead of piling up abandoned hung threads
 
 
 @dataclass
@@ -703,15 +705,30 @@ def fetch_ticker_data_with_timeout(ticker: str, timeout: int = PER_TICKER_TIMEOU
 def scan_universe(universe: List[str] = None, target_language: str = "he") -> List[ScanResult]:
     universe = universe or DEFAULT_UNIVERSE
     results: List[ScanResult] = []
+    consecutive_timeouts = 0
 
     for ticker in universe:
         try:
             hist, info = fetch_ticker_data_with_timeout(ticker)
+            consecutive_timeouts = 0  # reset on any successful fetch
         except FutureTimeoutError:
             print(f"[warn] {ticker}: timed out after {PER_TICKER_TIMEOUT_SEC}s, skipping")
+            consecutive_timeouts += 1
+            if consecutive_timeouts >= MAX_CONSECUTIVE_TIMEOUTS:
+                # Yahoo is very likely heavily rate-limiting right now. Each
+                # timeout leaves an abandoned thread still trying to connect
+                # in the background — piling up dozens of these can exhaust
+                # memory and get the whole container OOM-killed with no
+                # Python traceback (which is what made past crashes silent).
+                # Better to stop cleanly now and keep whatever we already found.
+                print(f"[fatal] {consecutive_timeouts} consecutive timeouts — Yahoo Finance appears to be "
+                      f"heavily rate-limiting right now. Aborting scan early to avoid resource exhaustion. "
+                      f"Saving the {len(results)} result(s) found so far.")
+                break
             continue
         except Exception as e:
             print(f"[warn] failed to fetch {ticker}: {e}")
+            consecutive_timeouts = 0
             continue
         finally:
             time.sleep(INTER_TICKER_DELAY_SEC)  # be gentle with Yahoo Finance's rate limits

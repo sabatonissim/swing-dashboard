@@ -267,7 +267,7 @@ const API_BASE = "https://swing-dashboard-production-438f.up.railway.app";
 
 | מגבלה | פירוט |
 |---|---|
-| yfinance rate limit | בסריקת 35+ מניות לפעמים timeouts — מניות שנכשלות מדולגות. **תוקן 22/7:** כל בקשת yfinance רצה עכשיו עם timeout קשיח (15 שנ') + השהיה של 0.3 שנ' בין טיקרים, כדי שקריאה תקועה לא תקריס את כל הקונטיינר (זו הייתה סיבת ה-Crash של הסריקה בערב) |
+| yfinance rate limit | בסריקת 35+ מניות לפעמים timeouts — מניות שנכשלות מדולגות. **תוקן 22/7:** כל בקשת yfinance רצה עכשיו עם timeout קשיח (15 שנ') + השהיה של 0.3 שנ' בין טיקרים. **תוקן 24/7:** נוסף circuit breaker — אחרי 8 timeouts רצופים הסריקה נעצרת מוקדם (במקום להמשיך לצבור threads נטושים שיכולים לגרום ל-OOM ולקריסה שקטה בלי traceback, שזו כנראה הסיבה לקריסות החוזרות דווקא בערב) |
 | Google Translate חינמי | לא רשמי, יכול להיחסם — fallback: כותרת באנגלית |
 | Railway free tier | $5 קרדיט ראשוני, אח"כ ~$5-20/חודש |
 | CORS | מוגדר ל-swing-desk-tau.vercel.app בלבד — לעדכן ב-api_server.py אם כתובת משתנה |
