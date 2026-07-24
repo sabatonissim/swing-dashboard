@@ -211,7 +211,14 @@ def check_breakout_volume(hist: pd.DataFrame) -> float:
     if avg_vol_20d <= 0:
         return 0.0
     pct_above = ((today_vol - avg_vol_20d) / avg_vol_20d) * 100
-    return round(max(0.0, pct_above), 1)
+    # IMPORTANT: round() on a numpy/pandas scalar returns another numpy
+    # scalar, not a native Python float — despite this function's type
+    # hint. psycopg2 can't properly adapt numpy types when they land in
+    # a query parameter; it silently falls back to their repr() (e.g.
+    # "np.float64(76.0)"), which gets embedded as literal invalid SQL
+    # text and crashes with "schema np does not exist". Casting to
+    # float() here guarantees a real Python float leaves this function.
+    return float(round(max(0.0, pct_above), 1))
 
 
 def detect_cup_and_handle(hist: pd.DataFrame) -> Optional[dict]:
@@ -645,6 +652,21 @@ def init_db():
     conn.close()
 
 
+def _native(v):
+    """Converts a numpy scalar (float64, int64, bool_, etc.) to its native
+    Python equivalent. psycopg2 doesn't have a proper adapter for numpy
+    types — passing one as a query parameter can silently fall back to
+    embedding its repr() (e.g. "np.float64(76.0)") as literal, invalid SQL
+    text instead of a real value, which crashes with a cryptic Postgres
+    parse error. Any pandas/numpy computation anywhere upstream can leak
+    one of these in, so this is applied as a blanket safety net right
+    before the values hit the database, not just fixed at the one
+    known source."""
+    if isinstance(v, np.generic):
+        return v.item()
+    return v
+
+
 def upsert_scan_result(conn, result):
     cur = conn.cursor()
     cur.execute(
@@ -659,11 +681,11 @@ def upsert_scan_result(conn, result):
         """,
         (
             result.ticker, result.trigger_text_he, result.trigger_text_en,
-            result.swing_score, result.entry_price, result.support_level,
-            json.dumps(result.resistance_targets), result.social_volume_spike_pct,
-            result.ai_summary_he, result.ai_summary_en, result.market_cap,
-            result.avg_volume_20d, result.breakout_volume_pct, result.exchange,
-            result.change_pct, datetime.now(timezone.utc).isoformat(),
+            _native(result.swing_score), _native(result.entry_price), _native(result.support_level),
+            json.dumps([_native(x) for x in result.resistance_targets]), _native(result.social_volume_spike_pct),
+            result.ai_summary_he, result.ai_summary_en, _native(result.market_cap),
+            _native(result.avg_volume_20d), _native(result.breakout_volume_pct), result.exchange,
+            _native(result.change_pct), datetime.now(timezone.utc).isoformat(),
         ),
     )
     conn.commit()

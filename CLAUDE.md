@@ -272,6 +272,7 @@ const API_BASE = "https://swing-dashboard-production-438f.up.railway.app";
 | Railway free tier | $5 קרדיט ראשוני, אח"כ ~$5-20/חודש |
 | CORS | מוגדר ל-swing-desk-tau.vercel.app בלבד — לעדכן ב-api_server.py אם כתובת משתנה |
 | טיקר SQ | Block Inc שינתה טיקר מ-SQ ל-XYZ ב-2025 — עודכן ב-Universe |
+| numpy → psycopg2 | **תוקן 24/7:** `check_breakout_volume()` החזיר `numpy.float64` (לא `float` רגיל) כי `round()` על ערך numpy מחזיר numpy. psycopg2 לא יודע להתאים טיפוס numpy כפרמטר, ונופל בחזרה על `repr()` שלו — למשל `np.float64(76.0)` — ומכניס את זה כטקסט גולמי ל-SQL, מה שגרם ל-`psycopg2.errors.InvalidSchemaName: schema "np" does not exist` וקריסת כל ריצת הסריקה. תוקן במקור (`float()` מפורש) + נוספה פונקציית הגנה `_native()` שממירה כל טיפוס numpy לטיפוס Python רגיל לפני שהוא מגיע ל-`upsert_scan_result`, כך שאותה בעיה לא תחזור משדה אחר בעתיד |
 
 ---
 
