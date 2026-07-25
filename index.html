@@ -214,7 +214,7 @@
       <div id="market-tv-chart"></div>
     </div>
     <div class="movers-col">
-      <div class="movers-title" id="movers-title">הכי זזות היום מהסריקה</div>
+      <div class="movers-title" id="movers-title">הכי זזות היום בשוק</div>
       <div class="movers-list" id="movers-list"></div>
     </div>
   </div>
@@ -299,32 +299,42 @@ function renderStocks(){
   el.innerHTML = html;
 }
 
-// "Today's biggest movers" — pulled straight from what the scanner already
-// flagged today (no extra API calls), ranked by absolute daily % change.
+// "Today's biggest movers" — genuine whole-US-market data (Yahoo's day
+// gainers/losers screener via the backend), independent of our own scan.
+let marketMovers = [];
+
+async function loadMarketMovers(){
+  try {
+    const res = await fetch(`${API_BASE}/api/market-movers?limit=12`);
+    if(!res.ok) throw new Error();
+    const data = await res.json();
+    if(Array.isArray(data) && data.length){ marketMovers = data; }
+  } catch(e){
+    console.warn("market movers fetch failed:", e);
+  }
+  renderMovers();
+}
+
+// "Today's biggest movers" — a genuine whole-US-market feed (Yahoo's
+// day gainers/losers via the backend), NOT limited to the ~90 tickers
+// our own scanner tracks.
 function renderMovers(){
   const el = document.getElementById("movers-list");
   if(!el) return;
 
-  const candidates = stocks
-    .map((s,i)=>({s,i}))
-    .filter(({s}) => s.isRecent !== false && typeof s.changePct === 'number' && !isNaN(s.changePct));
-
-  if(!candidates.length){
+  if(!marketMovers.length){
     el.innerHTML = `<div class="movers-empty">${UI[lang].movers_empty}</div>`;
     return;
   }
 
-  candidates.sort((a,b)=>Math.abs(b.s.changePct)-Math.abs(a.s.changePct));
-
-  el.innerHTML = candidates.slice(0,10).map(({s,i})=>{
-    const pctClass = s.changePct>=0 ? 'up' : 'down';
-    const pctSign = s.changePct>=0 ? '+' : '';
-    const triggerText = lang==='en' ? (s.trigger_en||s.trigger||'') : (s.trigger||s.trigger_he||'');
+  el.innerHTML = marketMovers.map((m)=>{
+    const pctClass = m.change_pct>=0 ? 'up' : 'down';
+    const pctSign = m.change_pct>=0 ? '+' : '';
     return `
-      <div class="mover-row" onclick="openDrawer(${i})">
-        <div class="mover-ticker">${s.ticker}</div>
-        <div class="mover-trigger">${triggerText}</div>
-        <div class="mover-pct ${pctClass}">${pctSign}${s.changePct.toFixed(1)}%</div>
+      <div class="mover-row" onclick="showTickerDrawer('${m.ticker}')">
+        <div class="mover-ticker">${m.ticker}</div>
+        <div class="mover-trigger">${m.name||''}</div>
+        <div class="mover-pct ${pctClass}">${pctSign}${m.change_pct.toFixed(1)}%</div>
       </div>
     `;
   }).join("");
@@ -684,10 +694,7 @@ function renderFundamentals(data){
 }
 
 // ---- Free search ----
-async function handleSearch(){
-  const raw = document.getElementById("search-input").value.trim();
-  if(!raw) return;
-  const ticker = raw.toUpperCase();
+async function showTickerDrawer(ticker){
   const drawer = document.getElementById("drawer");
   drawer.innerHTML = `
     <div class="drawer-head"><h2>${ticker}</h2><button class="close-btn" onclick="closeDrawer()">✕</button></div>
@@ -726,6 +733,12 @@ async function handleSearch(){
     loadFundamentals(ticker);
     track('search_stock', ticker);
   } catch { document.getElementById("loading-box").textContent="לא ניתן להתחבר לשרת כרגע."; }
+}
+
+async function handleSearch(){
+  const raw = document.getElementById("search-input").value.trim();
+  if(!raw) return;
+  showTickerDrawer(raw.toUpperCase());
 }
 document.getElementById("search-input").addEventListener("keydown", e=>{ if(e.key==="Enter") handleSearch(); });
 
@@ -848,7 +861,7 @@ const UI = {
     dir: 'rtl',
     recent_stocks_title: 'הסריקה האחרונה',
     previous_stocks_title: 'ימים קודמים',
-    movers_title: 'הכי זזות היום מהסריקה',
+    movers_title: 'הכי זזות היום בשוק',
     movers_empty: 'אין עדיין נתוני שינוי יומי להצגה',
   },
   en: {
@@ -932,6 +945,8 @@ function getNewsText(item){
 
 loadFromApi();
 setInterval(loadFromApi, 20000);
+loadMarketMovers();
+setInterval(loadMarketMovers, 60000);
 
 window.addEventListener('load', ()=>{
   applyLang();

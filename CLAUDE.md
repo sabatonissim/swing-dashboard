@@ -106,7 +106,7 @@ Base URL: `https://swing-dashboard-production-438f.up.railway.app`
 | `/api/stocks` | GET | מניות מסומנות מה-DB |
 | `/api/macro-news` | GET | חדשות מאקרו מה-DB |
 | `/api/lookup/{ticker}` | GET | נתוני שוק חיים (yfinance) |
-| `/api/market-movers` | GET | הכי זזות היום — כל השוק האמריקאי (yf.screen day_gainers/day_losers), cache 3 דק' |
+| `/api/market-movers` | GET | הכי זזות היום — כל השוק האמריקאי (yf.screen day_gainers/day_losers), cache 3 דק', עם fallback ל-`universe_movers` (טבלה שהסורק מעדכן מה-90 טיקרים שלו) אם ה-screener של יאהו חסום/נכשל |
 | `/api/fundamentals/{ticker}` | GET | דוחות רבעוניים, EPS מול תחזית, רצועת P/E היסטורית (yfinance, timeout 20 שנ') |
 | `/api/stock-news/{ticker}` | GET | חדשות ספציפיות לטיקר (yfinance) |
 | `/api/track` | POST | רישום event לאנליטיקס |
@@ -176,7 +176,7 @@ Reuters Top/Business, CNBC Top/Markets, Yahoo Finance, Seeking Alpha, MarketWatc
 1. **Header** — לוגו, חיפוש (דסקטופ), כפתור שפה EN/עב, שעון
 2. **Mobile Search Bar** — מופיע רק מתחת ל-900px
 3. **Breaking News Bar** — חדשות קריטיות בלבד (CPI/ריבית/Fed/גאופוליטי/תעסוקה)
-4. **Market Charts + Movers strip** — SPY/QQQ/VIX/IWM/Bitcoin (בעמודה, ~62% רוחב) לצד רצועת "הכי זזות היום" (~38% רוחב). **עודכן:** הרצועה כבר לא מוגבלת ל-90 הטיקרים שהסורק עוקב אחריהם — שולפת עכשיו את "day_gainers"/"day_losers" האמיתיים של כל השוק האמריקאי דרך `yf.screen()` (Yahoo, חינמי), עם cache בזיכרון ל-3 דקות כדי לא להעמיס על Yahoo. **תוקן 22/7:** תוצאה חלקית/מוחלשת (למשל אם רק אחד מבין שני ה-screeners הצליח) כבר לא דורסת cache טוב קודם — יש סף איכות מינימלי (5+ תוצאות) לפני שמעדכנים את ה-cache, כדי למנוע את התופעה של "מראה כמה מניות ואז קופץ למניה אחת".
+4. **Market Charts + Movers strip** — SPY/QQQ/VIX/IWM/Bitcoin (בעמודה, ~62% רוחב) לצד רצועת "הכי זזות היום בשוק" (~38% רוחב). שולפת "day_gainers"/"day_losers" האמיתיים של כל השוק האמריקאי דרך `yf.screen()` (Yahoo, חינמי), עם cache בזיכרון ל-3 דקות. **תוקן 22/7:** תוצאה חלקית/מוחלשת (רק אחד מבין שני ה-screeners הצליח) כבר לא דורסת cache טוב קודם — סף איכות מינימלי (5+ תוצאות) לפני עדכון ה-cache. **תוקן 25/7:** (1) תוקנה כותרת מטעה שעדיין אמרה "מהסריקה" למרות שזה כבר כל השוק. (2) נוסף **fallback אמין**: אם `yf.screen()` נכשל/חסום לגמרי (סביר שיאהו חוסם endpoint זה מ-Railway, כמו עם ה-fundamentals — endpoint שונה מ-`.history()` שכן עובד), הסורק (`pipeline_a_scanner.py`) שומר `change_pct` לכל טיקר בעולם המעקב שלו (לא רק המסומנים) בטבלת `universe_movers`, וה-API נופל אליה כמוצא אחרון — כיסוי צר יותר (90 טיקרים במקום כל השוק) אבל אמין, כי הוא משתמש ב-endpoint שכבר הוכח כעובד.
 5. **Split Board:** ימין=מניות (מחולק ל"סריקה אחרונה" ו"ימים קודמים", דה-דופ לפי טיקר, שולף עד 60 שורות), שמאל=חדשות+פילטר סקטורים
 6. **Drawer** — מגירה צדדית: מניה (גרף+נתונים+חדשות) / חדשות (תקציר+סקטורים)
 

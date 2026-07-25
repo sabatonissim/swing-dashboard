@@ -18,6 +18,7 @@ import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from contextlib import contextmanager
 from typing import List, Optional
 
 import pandas as pd
@@ -47,6 +48,34 @@ app.add_middleware(
 def get_conn():
     conn = psycopg2.connect(DB_URL)
     return conn
+
+
+@contextmanager
+def db_cursor(dict_cursor: bool = False):
+    """Guarantees the connection is always closed, even if the query
+    raises. Every endpoint below used to open a connection and close it
+    manually at the end of the function — meaning ANY exception mid-query
+    (a bad value, a transient network blip to Postgres, etc.) skipped the
+    close() call and leaked the connection. With the dashboard polling
+    every 20-60s all day, that leak very plausibly accumulates until the
+    connection pool is exhausted by evening — a strong candidate for why
+    the evening scan (which also needs its own DB connection) has been
+    failing while the morning scan works fine on a fresh/idle pool."""
+    conn = get_conn()
+    cur = None
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) if dict_cursor else conn.cursor()
+        yield conn, cur
+    finally:
+        if cur is not None:
+            try:
+                cur.close()
+            except Exception:
+                pass
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def init_db():
@@ -94,6 +123,12 @@ def init_db():
             session_id TEXT,
             timestamp TIMESTAMPTZ DEFAULT NOW()
         );
+        CREATE TABLE IF NOT EXISTS universe_movers (
+            ticker TEXT PRIMARY KEY,
+            change_pct REAL,
+            close_price REAL,
+            timestamp TIMESTAMPTZ DEFAULT NOW()
+        );
     """)
     # Patches an already-deployed table that predates this column
     # (CREATE TABLE IF NOT EXISTS above is a no-op once the table exists).
@@ -112,12 +147,9 @@ except Exception as e:
 
 @app.get("/api/stocks")
 def get_stocks(limit: int = Query(default=25, le=100)):
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM scanned_stocks ORDER BY timestamp DESC LIMIT %s", (limit,))
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute("SELECT * FROM scanned_stocks ORDER BY timestamp DESC LIMIT %s", (limit,))
+        rows = cur.fetchall()
     result = []
     for r in rows:
         d = dict(r)
@@ -283,6 +315,36 @@ MOVERS_MIN_QUALITY = 5  # a fetch returning fewer than this is treated as a degr
                         # rather than a genuine "only 1 mover today" result
 
 
+def _fetch_fallback_movers_from_db(limit: int) -> List[dict]:
+    """Reliable fallback: movers computed by the scanner itself (our own
+    ~90-ticker universe) using .history(), the endpoint proven to work
+    from this deployment. Narrower coverage than the whole-market
+    screener, but it actually returns data when Yahoo blocks/throttles
+    the screener endpoint (which uses a different, stricter code path)."""
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            """
+            SELECT ticker, change_pct, close_price
+            FROM universe_movers
+            WHERE change_pct IS NOT NULL
+            ORDER BY ABS(change_pct) DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [{"ticker": r["ticker"], "change_pct": float(r["change_pct"]),
+                  "price": float(r["close_price"]) if r["close_price"] is not None else None,
+                  "name": ""} for r in rows]
+    except Exception as e:
+        print(f"[warn] universe_movers DB fallback failed: {e}")
+        return []
+
+
 @app.get("/api/market-movers")
 def market_movers(limit: int = Query(default=15, le=50)):
     now = time.time()
@@ -301,20 +363,38 @@ def market_movers(limit: int = Query(default=15, le=50)):
 
         # Degraded/partial result (Yahoo screener likely throttled) — don't let
         # it clobber a previously-good cache; keep serving the last solid list
-        # if we have one, and only fall through to the thin result as a last resort.
+        # if we have one.
         if result:
             print(f"[warn] market-movers: got only {len(result)} results (< {MOVERS_MIN_QUALITY}), "
-                  f"treating as degraded and keeping previous cache")
+                  f"treating as degraded and falling back")
+        else:
+            print("[warn] market-movers: whole-market screener returned nothing at all "
+                  "(Yahoo likely blocking/throttling this endpoint from this IP) — falling back")
+
         if _movers_cache["data"] is not None:
             return _movers_cache["data"][:limit]
-        return (result or [])[:limit]
+
+        # No cache to fall back on either — try our own universe as a last resort
+        # before giving up, so the strip isn't empty just because the whole-market
+        # screener is unavailable.
+        fallback = _fetch_fallback_movers_from_db(limit)
+        if fallback:
+            print(f"[info] market-movers: serving {len(fallback)} results from the universe_movers fallback")
+            return fallback
+        return result or []
     except FutureTimeoutError:
         if _movers_cache["data"] is not None:
             return _movers_cache["data"][:limit]  # serve stale cache rather than failing outright
+        fallback = _fetch_fallback_movers_from_db(limit)
+        if fallback:
+            return fallback
         raise HTTPException(status_code=504, detail="תם הזמן לשליפת המניות הכי זזות בשוק")
     except Exception as e:
         if _movers_cache["data"] is not None:
             return _movers_cache["data"][:limit]
+        fallback = _fetch_fallback_movers_from_db(limit)
+        if fallback:
+            return fallback
         raise HTTPException(status_code=502, detail=f"שגיאה בשליפת נתוני שוק: {e}")
     finally:
         executor.shutdown(wait=False)

@@ -647,6 +647,14 @@ def init_db():
     # before this column existed (CREATE TABLE IF NOT EXISTS above is a
     # no-op once the table exists, so this is needed for already-deployed DBs).
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS change_pct REAL;")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS universe_movers (
+            ticker TEXT PRIMARY KEY,
+            change_pct REAL,
+            close_price REAL,
+            timestamp TIMESTAMPTZ DEFAULT NOW()
+        );
+    """)
     conn.commit()
     cur.close()
     conn.close()
@@ -728,6 +736,10 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
     universe = universe or DEFAULT_UNIVERSE
     results: List[ScanResult] = []
     consecutive_timeouts = 0
+    all_changes: List[tuple] = []  # (ticker, change_pct, close) for EVERY ticker fetched —
+                                     # a reliable fallback for the movers strip if Yahoo's
+                                     # whole-market screener endpoint is unavailable, since
+                                     # this uses .history(), the endpoint proven to work here.
 
     for ticker in universe:
         try:
@@ -754,6 +766,15 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             continue
         finally:
             time.sleep(INTER_TICKER_DELAY_SEC)  # be gentle with Yahoo Finance's rate limits
+
+        if hist is not None and len(hist) >= 2:
+            try:
+                _close_now = float(hist["Close"].iloc[-1])
+                _prev_close = float(hist["Close"].iloc[-2])
+                _chg = round(((_close_now - _prev_close) / _prev_close) * 100, 2) if _prev_close else 0.0
+                all_changes.append((ticker, _chg, round(_close_now, 2)))
+            except Exception as e:
+                print(f"[warn] change_pct calc failed for {ticker}: {e}")
 
         if not passes_liquidity_and_cap_filter(ticker, info, hist):
             continue
@@ -859,7 +880,36 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         )
         results.append(result)
 
+    upsert_universe_movers(all_changes)
     return results
+
+
+def upsert_universe_movers(all_changes: List[tuple]):
+    """One current row per ticker (whole scanned universe, not just
+    pattern-matched stocks) — used by api_server.py's /api/market-movers
+    as a fallback when Yahoo's whole-market screener endpoint is
+    unavailable, since this data comes from .history(), which is
+    proven to work reliably from this deployment."""
+    if not all_changes:
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    for ticker, chg, close_price in all_changes:
+        cur.execute(
+            """
+            INSERT INTO universe_movers (ticker, change_pct, close_price, timestamp)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (ticker) DO UPDATE SET
+                change_pct = EXCLUDED.change_pct,
+                close_price = EXCLUDED.close_price,
+                timestamp = EXCLUDED.timestamp
+            """,
+            (ticker, _native(chg), _native(close_price), datetime.now(timezone.utc).isoformat()),
+        )
+    conn.commit()
+    cur.close()
+    conn.close()
+    print(f"Updated universe_movers fallback table for {len(all_changes)} tickers.")
 
 
 
