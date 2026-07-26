@@ -165,7 +165,7 @@
   .fund-empty{color:var(--text-dim);font-size:12.5px;padding:10px 2px;}
 </style>
 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.0/chart.umd.min.js"></script>
 </head>
 <body>
 
@@ -578,13 +578,21 @@ async function loadFundamentals(ticker){
   if(!el) return;
   const t = lang==='en';
   el.innerHTML = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div><div class="fund-empty">${t?'Loading fundamentals...':'טוען נתונים פונדמנטליים...'}</div>`;
+  let data;
   try {
     const res = await fetch(`${API_BASE}/api/fundamentals/${ticker}`);
-    if(!res.ok) throw new Error();
-    const data = await res.json();
-    renderFundamentals(data);
-  } catch {
+    if(!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+  } catch(e) {
+    console.error('[fundamentals] fetch/parse failed for', ticker, e);
     el.innerHTML = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div><div class="fund-empty">${t?'Could not load fundamentals right now.':'לא ניתן לטעון נתונים פונדמנטליים כרגע.'}</div>`;
+    return;
+  }
+  try {
+    renderFundamentals(data);
+  } catch(e) {
+    console.error('[fundamentals] render failed for', ticker, e);
+    el.innerHTML = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div><div class="fund-empty">${t?'Data loaded but failed to render — check console.':'הנתונים נטענו אך הצגתם נכשלה — בדוק את הקונסול.'}</div>`;
   }
 }
 
@@ -629,10 +637,19 @@ function renderFundamentals(data){
   Chart.defaults.color = '#8a93a3';
   Chart.defaults.font.family = "'JetBrains Mono', monospace";
 
+  function safeChart(ctx, config){
+    if(!ctx) return;
+    try {
+      activeFundCharts.push(new Chart(ctx, config));
+    } catch(e) {
+      console.error('[fundamentals] chart render failed for', ctx.id, e);
+    }
+  }
+
   const revCtx = document.getElementById('chart-rev-ni-fcf');
   if(revCtx){
     revCtx.width = Math.max(n * 46, 280); revCtx.height = 150;
-    activeFundCharts.push(new Chart(revCtx, {
+    safeChart(revCtx, {
       type:'bar',
       data:{ labels:data.quarter_labels, datasets:[
         {label:t?'Revenue':'הכנסות', data:data.revenue, backgroundColor:'#5b8def'},
@@ -640,63 +657,63 @@ function renderFundamentals(data){
         {label:'FCF', data:data.fcf, backgroundColor:'#e8a33d'},
       ]},
       options: fundBarOptions(true)
-    }));
+    });
   }
 
   const marginCtx = document.getElementById('chart-margin');
   if(marginCtx){
     marginCtx.width = Math.max(n * 46, 280); marginCtx.height = 150;
-    activeFundCharts.push(new Chart(marginCtx, {
+    safeChart(marginCtx, {
       type:'line',
       data:{ labels:data.quarter_labels, datasets:[
         {label:'%', data:data.gross_margin_pct, borderColor:'#35b3a3', backgroundColor:'rgba(53,179,163,.15)', fill:true, tension:.25, pointRadius:2}
       ]},
       options: fundLineOptions(false)
-    }));
+    });
   }
 
   const debtCtx = document.getElementById('chart-netdebt');
   if(debtCtx){
     debtCtx.width = Math.max(n * 46, 280); debtCtx.height = 150;
-    activeFundCharts.push(new Chart(debtCtx, {
+    safeChart(debtCtx, {
       type:'bar',
       data:{ labels:data.quarter_labels, datasets:[
         {label:t?'Net Debt':'חוב נטו', data:data.net_debt, backgroundColor:(data.net_debt||[]).map(v=>(v||0)>=0?'#ef5b5b':'#3ecf7e')}
       ]},
       options: fundBarOptions(false)
-    }));
+    });
   }
 
   const epsCtx = document.getElementById('chart-eps');
   if(epsCtx && data.eps_labels && data.eps_labels.length){
     epsCtx.width = Math.max(data.eps_labels.length * 46, 280); epsCtx.height = 150;
-    activeFundCharts.push(new Chart(epsCtx, {
+    safeChart(epsCtx, {
       type:'bar',
       data:{ labels:data.eps_labels, datasets:[
         {label:t?'Estimate':'תחזית', data:data.eps_estimate, backgroundColor:'rgba(138,147,163,.5)'},
         {label:t?'Actual':'בפועל', data:data.eps_actual, backgroundColor:'#3ecf7e'},
       ]},
       options: fundBarOptions(true)
-    }));
+    });
   }
 
   const epsActualOnlyCtx = document.getElementById('chart-eps-actual-only');
   if(epsActualOnlyCtx){
     epsActualOnlyCtx.width = Math.max(n * 46, 280); epsActualOnlyCtx.height = 150;
-    activeFundCharts.push(new Chart(epsActualOnlyCtx, {
+    safeChart(epsActualOnlyCtx, {
       type:'bar',
       data:{ labels:data.quarter_labels, datasets:[
         {label:t?'Diluted EPS':'EPS מדולל', data:data.diluted_eps, backgroundColor:'#3ecf7e'},
       ]},
       options: fundBarOptions(false)
-    }));
+    });
   }
 
   const peCtx = document.getElementById('chart-pe');
   if(peCtx && data.pe_band){
     const pb = data.pe_band;
     peCtx.width = Math.max(pb.dates.length * 4, 280); peCtx.height = 150;
-    activeFundCharts.push(new Chart(peCtx, {
+    safeChart(peCtx, {
       type:'line',
       data:{ labels:pb.dates, datasets:[
         {label:'P/E', data:pb.values, borderColor:'#e8a33d', borderWidth:1.5, pointRadius:0, tension:.1},
@@ -705,7 +722,7 @@ function renderFundamentals(data){
         {label:'-1σ', data:pb.dates.map(()=>pb.std1_lower), borderColor:'rgba(62,207,126,.6)', borderDash:[2,3], borderWidth:1, pointRadius:0},
       ]},
       options: fundLineOptions(true)
-    }));
+    });
   }
 }
 
