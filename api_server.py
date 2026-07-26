@@ -15,6 +15,7 @@ deploying publicly.
 """
 
 import json
+import math
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
@@ -516,13 +517,18 @@ def _compute_pe_band_sec(ticker: str, dates_sorted: List[str], diluted_eps: List
             return None
 
         ttm_df = pd.DataFrame({
-            "date": pd.to_datetime(ttm_eps.index).tz_localize(None),
+            "date": pd.to_datetime(ttm_eps.index).tz_localize(None).astype("datetime64[ns]"),
             "ttm_eps": ttm_eps.values,
         }).sort_values("date")
 
         hist2 = hist.reset_index()
         date_col = "Date" if "Date" in hist2.columns else hist2.columns[0]
-        hist2["date"] = pd.to_datetime(hist2[date_col]).dt.tz_localize(None)
+        # IMPORTANT: pandas can parse dates at different internal resolutions
+        # (datetime64[s] vs [us] vs [ns]) depending on the source — SEC's
+        # ISO date strings vs yfinance's DatetimeIndex commonly disagree.
+        # merge_asof requires the merge key dtype to match EXACTLY, so both
+        # sides are forced to the same resolution here.
+        hist2["date"] = pd.to_datetime(hist2[date_col]).dt.tz_localize(None).astype("datetime64[ns]")
         hist2 = hist2.sort_values("date")
 
         merged = pd.merge_asof(hist2, ttm_df, on="date", direction="backward")
@@ -544,6 +550,24 @@ def _compute_pe_band_sec(ticker: str, dates_sorted: List[str], diluted_eps: List
     except Exception as e:
         print(f"[warn] P/E band calc failed for {ticker}: {e}")
         return None
+
+
+def _json_safe(obj):
+    """Recursively replaces NaN/Infinity/-Infinity with None. Python's
+    default JSON encoder serializes these as literal, non-standard
+    tokens (NaN, Infinity) — valid Python but NOT valid JSON. A browser's
+    fetch().json() throws a SyntaxError on them, which looks exactly like
+    'the request failed' even though the server actually returned 200 OK.
+    Any division here (margins, P/E ratios, etc.) can produce one of
+    these from an unusual data point, so this is applied as a final
+    safety net right before any computed dict leaves the server."""
+    if isinstance(obj, float):
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(v) for v in obj]
+    return obj
 
 
 def _build_fundamentals(ticker: str) -> dict:
@@ -639,7 +663,7 @@ def _build_fundamentals(ticker: str) -> dict:
     except Exception as e:
         print(f"[info] fundamentals({ticker}): yfinance trailing/forward P/E unavailable (non-fatal): {e}")
 
-    return {
+    return _json_safe({
         "ticker": ticker,
         "has_fundamentals": True,
         "data_source": "sec_edgar",
@@ -658,7 +682,7 @@ def _build_fundamentals(ticker: str) -> dict:
         "pe_band": pe_band,
         "trailing_pe": trailing_pe,
         "forward_pe": forward_pe,
-    }
+    })
 
 
 _fundamentals_cache = {}  # ticker -> (timestamp, data)
