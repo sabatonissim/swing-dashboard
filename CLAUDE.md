@@ -107,7 +107,7 @@ Base URL: `https://swing-dashboard-production-438f.up.railway.app`
 | `/api/macro-news` | GET | חדשות מאקרו מה-DB |
 | `/api/lookup/{ticker}` | GET | נתוני שוק חיים (yfinance) |
 | `/api/market-movers` | GET | הכי זזות היום — כל השוק האמריקאי (yf.screen day_gainers/day_losers), cache 3 דק', עם fallback ל-`universe_movers` (טבלה שהסורק מעדכן מה-90 טיקרים שלו) אם ה-screener של יאהו חסום/נכשל |
-| `/api/fundamentals/{ticker}` | GET | דוחות רבעוניים, EPS מול תחזית, רצועת P/E היסטורית (yfinance, timeout 20 שנ') |
+| `/api/fundamentals/{ticker}` | GET | דוחות רבעוניים (Revenue/NI/FCF/שולי רווח/חוב נטו/מניות במחזור) מ-**SEC EDGAR** (חינמי, ממשלתי, לא חסום), EPS מדולל + רצועת P/E היסטורית (מחיר מ-yfinance `.history()`), timeout 20 שנ' |
 | `/api/stock-news/{ticker}` | GET | חדשות ספציפיות לטיקר (yfinance) |
 | `/api/track` | POST | רישום event לאנליטיקס |
 | `/api/analytics/top-interest` | GET | אילו טיקרים/נושאים הכי נצפו |
@@ -229,7 +229,7 @@ const API_BASE = "https://swing-dashboard-production-438f.up.railway.app";
 - [x] Cron Jobs אוטומטיים
 - [x] אכיפת אישור נפח אמיתי (volume confirmation) לתבניות פריצה — קבוע היה קיים אך לא נאכף בפועל
 - [x] מגירת מניה: סיבת ההתאמה מוצגת מיד מתחת לגרף
-- [x] דשבורד פונדמנטלי במגירת מניה (חיפוש + סריקה): Revenue/Net Income/FCF, Net Debt, שולי רווח גולמי, מניות במחזור, EPS בפועל מול תחזית, רצועת P/E היסטורית מול ממוצע±סטיית תקן — הכל מ-yfinance חינמי, גרפים עם Chart.js (CDN), גלילה אופקית לכל הרבעונים הזמינים
+- [x] דשבורד פונדמנטלי במגירת מניה (חיפוש + סריקה): Revenue/Net Income/FCF, Net Debt, שולי רווח גולמי, מניות במחזור, EPS מדולל, רצועת P/E היסטורית מול ממוצע±סטיית תקן — גרפים עם Chart.js (CDN), גלילה אופקית לכל הרבעונים הזמינים. **עודכן 25/7 — מקור הנתונים הוחלף ל-SEC EDGAR:** התברר ש-yfinance's `.info`/`quarterly_financials`/`get_earnings_dates()` פונים ל-endpoint של יאהו (quoteSummary) שנחסם/מוגבל מ-Railway — אותה בעיה בדיוק כמו ב-market movers. במקום זה: כל נתוני הדוחות (Revenue/NI/Gross Profit/EPS/Cash Flow/חוב/מניות) נשלפים עכשיו מ-**SEC EDGAR XBRL companyfacts API** (`data.sec.gov`) — API רשמי, חינמי, ממשלתי, לא דורש מפתח, ולא כפוף לאותה חסימה. ממפה טיקר ל-CIK דרך `company_tickers.json` של ה-SEC (cache 24 שעות), ומסנן נכון בין נתונים רבעוניים (10-Q) לשנתיים מצטברים (10-K) לפי אורך התקופה (~90 יום). רצועת ה-P/E עדיין משתמשת ב-yfinance `.history()` (ה-endpoint שכן עובד באמינות) לצמוד למחיר, בשילוב EPS מ-SEC. תחזיות אנליסטים (EPS vs Estimate) אין ב-SEC — מנסה yfinance כבונוס best-effort, ואם זה לא זמין, מציג את ה-EPS המדווח בפועל בלבד (מ-SEC) במקום להסתיר את כל הסקשן. ⚠️ **User-Agent ל-SEC:** `SEC_HEADERS` ב-`api_server.py` הוא string גנרי מומצא (לא מייל אמיתי של אף אחד) — זה מספיק לפי מדיניות ה-SEC (הם לא מאמתים את הכתובת), **אין צורך להכניס מייל אישי**.
 
 ---
 

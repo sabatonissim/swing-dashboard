@@ -615,6 +615,10 @@ function renderFundamentals(data){
 
   if(data.eps_labels && data.eps_labels.length){
     html += `<div class="fund-card"><div class="fund-card-title">${t?'EPS Actual vs Estimate':'EPS בפועל מול תחזית'}</div>${fundChartCanvas('chart-eps')}</div>`;
+  } else if(data.diluted_eps && data.diluted_eps.some(v=>v!=null)){
+    // Analyst estimates weren't available this time — still show the real
+    // reported diluted EPS trend (from SEC filings) rather than nothing.
+    html += `<div class="fund-card"><div class="fund-card-title">${t?'Diluted EPS (reported)':'EPS מדולל (מדווח)'}</div>${fundChartCanvas('chart-eps-actual-only')}</div>`;
   }
   if(data.pe_band){
     html += `<div class="fund-card"><div class="fund-card-title">${t?'P/E History (vs mean ±1 std)':'מכפיל P/E היסטורי (מול ממוצע ±סטיית תקן)'}</div>${fundChartCanvas('chart-pe')}</div>`;
@@ -673,6 +677,18 @@ function renderFundamentals(data){
         {label:t?'Actual':'בפועל', data:data.eps_actual, backgroundColor:'#3ecf7e'},
       ]},
       options: fundBarOptions(true)
+    }));
+  }
+
+  const epsActualOnlyCtx = document.getElementById('chart-eps-actual-only');
+  if(epsActualOnlyCtx){
+    epsActualOnlyCtx.width = Math.max(n * 46, 280); epsActualOnlyCtx.height = 150;
+    activeFundCharts.push(new Chart(epsActualOnlyCtx, {
+      type:'bar',
+      data:{ labels:data.quarter_labels, datasets:[
+        {label:t?'Diluted EPS':'EPS מדולל', data:data.diluted_eps, backgroundColor:'#3ecf7e'},
+      ]},
+      options: fundBarOptions(false)
     }));
   }
 

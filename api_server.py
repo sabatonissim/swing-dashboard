@@ -19,9 +19,11 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
+from datetime import date, datetime as dt
 from typing import List, Optional
 
 import pandas as pd
+import requests
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -404,53 +406,112 @@ def market_movers(limit: int = Query(default=15, le=50)):
 
 # ------------------------------------------------------------------
 # Fundamentals dashboard (per-stock drawer): quarterly financials,
-# net debt, margins, EPS actual-vs-estimate, and a historical P/E band.
-# All from yfinance - free, no paid data provider.
+# net debt, margins, EPS, and a historical P/E band.
+#
+# Core financial statement data comes from the SEC's own free EDGAR
+# XBRL API (data.sec.gov) instead of yfinance's quoteSummary-based
+# calls (.info / .quarterly_financials / etc). Those hit the SAME
+# Yahoo endpoint class that the market-movers screener does, which is
+# the one that appears to be blocked/throttled from Railway's IP —
+# unlike .history(), which works reliably and is still used here for
+# the P/E band price series. SEC EDGAR is an official US government
+# API, free, keyless, and not subject to that same blocking.
+#
+# Trade-off: SEC has no analyst EPS *estimates* (only actual reported
+# figures), so "EPS actual vs estimate" is attempted as a best-effort
+# bonus via yfinance and simply omitted if that call is unavailable —
+# it never blocks the rest of the section.
 # ------------------------------------------------------------------
 
-FUNDAMENTALS_TIMEOUT_SEC = 20  # hard cap so one slow yfinance call can't hang a request thread
+FUNDAMENTALS_TIMEOUT_SEC = 20  # hard cap so one slow call can't hang a request thread
+SEC_HEADERS = {"User-Agent": "SwingDesk-Dashboard admin@swingdesk.app"}  # SEC's fair-use policy
+                                                                          # asks automated tools to
+                                                                          # send *a* descriptive
+                                                                          # User-Agent string — their
+                                                                          # servers don't verify it's
+                                                                          # real or tied to anyone.
+                                                                          # This is a generic made-up
+                                                                          # placeholder, not personal
+                                                                          # info — nothing to change here.
+
+_cik_cache = {"data": None, "ts": 0.0}
+CIK_CACHE_TTL_SEC = 24 * 3600  # ticker->CIK mapping barely changes; refresh once a day
 
 
-def _get_row(df: "pd.DataFrame", *names):
-    """Return the first matching row (by index label) from a yfinance
-    financial statement dataframe, or None if none of the names exist."""
-    if df is None or df.empty:
+def _get_cik_map() -> dict:
+    now = time.time()
+    if _cik_cache["data"] is not None and (now - _cik_cache["ts"]) < CIK_CACHE_TTL_SEC:
+        return _cik_cache["data"]
+    resp = requests.get("https://www.sec.gov/files/company_tickers.json", headers=SEC_HEADERS, timeout=10)
+    resp.raise_for_status()
+    raw = resp.json()
+    mapping = {row["ticker"].upper(): str(row["cik_str"]).zfill(10) for row in raw.values()}
+    _cik_cache["data"] = mapping
+    _cik_cache["ts"] = now
+    return mapping
+
+
+def _sec_company_facts(cik10: str) -> Optional[dict]:
+    resp = requests.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik10}.json",
+                         headers=SEC_HEADERS, timeout=15)
+    if resp.status_code != 200:
         return None
-    for name in names:
-        if name in df.index:
-            return df.loc[name]
-    return None
+    return resp.json()
 
 
-def _series_to_chart(row, quarters_sorted_cols):
-    """Aligns a financial-statement row to the given (ascending) column
-    order and returns a list of floats/None, rounded for display."""
-    if row is None:
-        return [None] * len(quarters_sorted_cols)
-    out = []
-    for col in quarters_sorted_cols:
-        v = row.get(col)
-        out.append(round(float(v), 2) if v is not None and pd.notna(v) else None)
-    return out
+def _sec_quarterly_series(facts_usgaap: dict, tag_candidates: List[str], instant: bool) -> dict:
+    """Returns {end_date_str: value}, using the first XBRL tag (from the
+    candidates, in order) that actually has data for this company —
+    different companies/years tag the same concept differently.
+    Flow measures (revenue, net income, EPS, cash flow) are filtered to
+    ~90-day spans so we get single-quarter figures, not year-to-date or
+    annual cumulative ones. Instant measures (cash, debt, shares) are
+    point-in-time balance-sheet snapshots, kept as-is."""
+    for tag in tag_candidates:
+        node = facts_usgaap.get(tag)
+        if not node:
+            continue
+        units = node.get("units", {})
+        unit_key = next(iter(units), None)
+        if not unit_key:
+            continue
+        out = {}
+        for e in units[unit_key]:
+            if e.get("form") not in ("10-Q", "10-K"):
+                continue
+            end, val = e.get("end"), e.get("val")
+            if end is None or val is None:
+                continue
+            if instant:
+                out[end] = val
+            else:
+                start = e.get("start")
+                if not start:
+                    continue
+                try:
+                    days = (date.fromisoformat(end) - date.fromisoformat(start)).days
+                except Exception:
+                    continue
+                if 80 <= days <= 100:
+                    out[end] = val
+        if out:
+            return out
+    return {}
 
 
-def _compute_pe_band(tk: "yf.Ticker", qf: "pd.DataFrame"):
-    """Builds a weekly historical P/E series plus mean/±1-std band, using
-    trailing-twelve-month EPS (rolling 4-quarter sum) matched against
-    weekly closing price via merge_asof. Returns None if there isn't
-    enough data (e.g. ETFs, or tickers with a thin earnings history)."""
+def _compute_pe_band_sec(ticker: str, dates_sorted: List[str], diluted_eps: List[Optional[float]]):
+    """Weekly P/E band: yfinance .history() (reliable) for price, matched
+    against SEC's trailing-twelve-month diluted EPS via merge_asof."""
     try:
-        eps_row = _get_row(qf, "Diluted EPS", "Basic EPS")
-        if eps_row is None:
+        pairs = [(d, v) for d, v in zip(dates_sorted, diluted_eps) if v is not None]
+        if len(pairs) < 4:
             return None
-        eps_row = eps_row.dropna().sort_index()
-        if len(eps_row) < 4:
-            return None
-        ttm_eps = eps_row.rolling(4).sum().dropna()
+        eps_series = pd.Series([p[1] for p in pairs], index=pd.to_datetime([p[0] for p in pairs])).sort_index()
+        ttm_eps = eps_series.rolling(4).sum().dropna()
         if ttm_eps.empty:
             return None
 
-        hist = tk.history(period="5y", interval="1wk")
+        hist = yf.Ticker(ticker).history(period="5y", interval="1wk")
         if hist.empty:
             return None
 
@@ -481,96 +542,84 @@ def _compute_pe_band(tk: "yf.Ticker", qf: "pd.DataFrame"):
             "current": round(float(merged["pe"].iloc[-1]), 1),
         }
     except Exception as e:
-        print(f"[warn] P/E band calc failed: {e}")
+        print(f"[warn] P/E band calc failed for {ticker}: {e}")
         return None
-
-
-def _first_nonempty_df(*dfs):
-    for df in dfs:
-        if df is not None and not df.empty:
-            return df
-    return None
 
 
 def _build_fundamentals(ticker: str) -> dict:
-    tk = yf.Ticker(ticker)
+    ticker = ticker.upper()
 
     try:
-        info = tk.info or {}
+        cik10 = _get_cik_map().get(ticker)
     except Exception as e:
-        print(f"[warn] fundamentals({ticker}): .info fetch failed: {e}")
-        info = {}
+        print(f"[warn] fundamentals({ticker}): SEC ticker->CIK map fetch failed: {e}")
+        cik10 = None
 
-    # yfinance has renamed these properties across versions
-    # (quarterly_financials -> quarterly_income_stmt). Try both so we
-    # don't silently show "no data" just because of a naming drift.
-    def _safe_get(*attr_names):
-        for name in attr_names:
-            try:
-                df = getattr(tk, name, None)
-                if df is not None and not df.empty:
-                    return df
-            except Exception as e:
-                print(f"[warn] fundamentals({ticker}): .{name} fetch failed: {e}")
-        return None
-
-    qf = _safe_get("quarterly_financials", "quarterly_income_stmt")
-    qcf = _safe_get("quarterly_cashflow", "quarterly_cash_flow")
-    qbs = _safe_get("quarterly_balance_sheet", "quarterly_balancesheet")
-
-    if qf is None:
-        print(f"[info] fundamentals({ticker}): no quarterly income statement available (ETF/index or data gap)")
+    if not cik10:
+        print(f"[info] fundamentals({ticker}): no SEC CIK match (likely an ETF/index, not an individual filer)")
         return {"ticker": ticker, "has_fundamentals": False}
 
-    quarters_sorted = sorted(qf.columns.tolist())
-    quarter_labels = [c.strftime("%b %Y") for c in quarters_sorted]
-
-    revenue    = _series_to_chart(_get_row(qf, "Total Revenue"), quarters_sorted)
-    net_income = _series_to_chart(_get_row(qf, "Net Income", "Net Income Common Stockholders"), quarters_sorted)
-    gross_profit = _get_row(qf, "Gross Profit")
-    if gross_profit is not None and _get_row(qf, "Total Revenue") is not None:
-        rev_row = _get_row(qf, "Total Revenue")
-        gross_margin_pct = []
-        for col in quarters_sorted:
-            r = rev_row.get(col)
-            g = gross_profit.get(col)
-            if r and pd.notna(r) and pd.notna(g) and r != 0:
-                gross_margin_pct.append(round(float(g) / float(r) * 100, 1))
-            else:
-                gross_margin_pct.append(None)
-    else:
-        gross_margin_pct = [None] * len(quarters_sorted)
-
-    op_cf = _get_row(qcf, "Operating Cash Flow", "Total Cash From Operating Activities")
-    capex = _get_row(qcf, "Capital Expenditure", "Capital Expenditures")
-    fcf_row = _get_row(qcf, "Free Cash Flow")
-    if fcf_row is not None:
-        fcf = _series_to_chart(fcf_row, quarters_sorted)
-    elif op_cf is not None and capex is not None:
-        fcf = []
-        for col in quarters_sorted:
-            o, c = op_cf.get(col), capex.get(col)
-            fcf.append(round(float(o) + float(c), 2) if pd.notna(o) and pd.notna(c) else None)  # capex is already negative
-    else:
-        fcf = [None] * len(quarters_sorted)
-
-    total_debt = _get_row(qbs, "Total Debt")
-    cash = _get_row(qbs, "Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments")
-    if total_debt is not None and cash is not None:
-        net_debt = []
-        for col in quarters_sorted:
-            d, c = total_debt.get(col), cash.get(col)
-            net_debt.append(round(float(d) - float(c), 2) if pd.notna(d) and pd.notna(c) else None)
-    else:
-        net_debt = [None] * len(quarters_sorted)
-
-    shares_row = _get_row(qbs, "Ordinary Shares Number", "Share Issued")
-    shares_outstanding = _series_to_chart(shares_row, quarters_sorted) if shares_row is not None else [None] * len(quarters_sorted)
-
-    # EPS actual vs estimate ("earnings surprises")
-    eps_actual, eps_estimate, eps_surprise_pct, eps_labels = [], [], [], []
     try:
-        edates = tk.get_earnings_dates(limit=20)
+        facts = _sec_company_facts(cik10)
+    except Exception as e:
+        print(f"[warn] fundamentals({ticker}): SEC companyfacts fetch failed: {e}")
+        facts = None
+
+    usgaap = (facts or {}).get("facts", {}).get("us-gaap", {})
+    if not usgaap:
+        print(f"[warn] fundamentals({ticker}): SEC companyfacts had no us-gaap data")
+        return {"ticker": ticker, "has_fundamentals": False}
+
+    revenue_s = _sec_quarterly_series(usgaap, ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"], instant=False)
+    ni_s      = _sec_quarterly_series(usgaap, ["NetIncomeLoss"], instant=False)
+    gross_s   = _sec_quarterly_series(usgaap, ["GrossProfit"], instant=False)
+    eps_s     = _sec_quarterly_series(usgaap, ["EarningsPerShareDiluted", "EarningsPerShareBasic"], instant=False)
+    ocf_s     = _sec_quarterly_series(usgaap, ["NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"], instant=False)
+    capex_s   = _sec_quarterly_series(usgaap, ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsForCapitalImprovements"], instant=False)
+    cash_s    = _sec_quarterly_series(usgaap, ["CashAndCashEquivalentsAtCarryingValue", "CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations"], instant=True)
+    debt_s    = _sec_quarterly_series(usgaap, ["LongTermDebtNoncurrent", "LongTermDebt", "DebtLongtermAndShorttermCombinedAmount"], instant=True)
+    shares_s  = _sec_quarterly_series(usgaap, ["CommonStockSharesOutstanding"], instant=True)
+
+    if not revenue_s and not ni_s:
+        print(f"[info] fundamentals({ticker}): SEC facts had no usable revenue/net-income tags for this company")
+        return {"ticker": ticker, "has_fundamentals": False}
+
+    all_dates = sorted(set(revenue_s) | set(ni_s) | set(gross_s) | set(eps_s)
+                        | set(ocf_s) | set(capex_s) | set(cash_s) | set(debt_s) | set(shares_s))
+    all_dates = all_dates[-32:]  # cap payload size; still "as many quarters as available"
+
+    def align(series):
+        return [round(float(series[d]), 4) if d in series else None for d in all_dates]
+
+    quarter_labels = [dt.strptime(d, "%Y-%m-%d").strftime("%b %Y") for d in all_dates]
+    revenue      = align(revenue_s)
+    net_income   = align(ni_s)
+    gross_profit = align(gross_s)
+    diluted_eps  = align(eps_s)
+
+    gross_margin_pct = [round(g / r * 100, 1) if (r and g is not None and r != 0) else None
+                         for r, g in zip(revenue, gross_profit)]
+
+    fcf = []
+    for d in all_dates:
+        o, c = ocf_s.get(d), capex_s.get(d)
+        fcf.append(round(float(o) - float(c), 2) if (o is not None and c is not None) else None)
+
+    net_debt = []
+    for d in all_dates:
+        dv, cv = debt_s.get(d), cash_s.get(d)
+        net_debt.append(round(float(dv) - float(cv), 2) if (dv is not None and cv is not None) else None)
+
+    shares_outstanding = align(shares_s)
+
+    pe_band = _compute_pe_band_sec(ticker, all_dates, diluted_eps)
+
+    # Analyst EPS estimates: SEC doesn't have these. Best-effort bonus via
+    # yfinance — if this (Yahoo quoteSummary-based) call is unavailable,
+    # we simply skip the "vs estimate" comparison rather than fail anything.
+    eps_labels, eps_actual, eps_estimate, eps_surprise_pct = [], [], [], []
+    try:
+        edates = yf.Ticker(ticker).get_earnings_dates(limit=12)
         if edates is not None and not edates.empty:
             edates = edates.dropna(subset=["Reported EPS"]).sort_index()
             for idx, row in edates.iterrows():
@@ -580,13 +629,20 @@ def _build_fundamentals(ticker: str) -> dict:
                 surprise = row.get("Surprise(%)")
                 eps_surprise_pct.append(round(float(surprise) * 100, 1) if pd.notna(surprise) else None)
     except Exception as e:
-        print(f"[warn] earnings dates fetch failed for {ticker}: {e}")
+        print(f"[info] fundamentals({ticker}): yfinance analyst EPS estimates unavailable (non-fatal): {e}")
 
-    pe_band = _compute_pe_band(tk, qf)
+    trailing_pe = forward_pe = None
+    try:
+        info = yf.Ticker(ticker).info or {}
+        trailing_pe = info.get("trailingPE")
+        forward_pe = info.get("forwardPE")
+    except Exception as e:
+        print(f"[info] fundamentals({ticker}): yfinance trailing/forward P/E unavailable (non-fatal): {e}")
 
     return {
         "ticker": ticker,
         "has_fundamentals": True,
+        "data_source": "sec_edgar",
         "quarter_labels": quarter_labels,
         "revenue": revenue,
         "net_income": net_income,
@@ -594,13 +650,14 @@ def _build_fundamentals(ticker: str) -> dict:
         "gross_margin_pct": gross_margin_pct,
         "net_debt": net_debt,
         "shares_outstanding": shares_outstanding,
+        "diluted_eps": diluted_eps,
         "eps_labels": eps_labels,
         "eps_actual": eps_actual,
         "eps_estimate": eps_estimate,
         "eps_surprise_pct": eps_surprise_pct,
         "pe_band": pe_band,
-        "trailing_pe": info.get("trailingPE"),
-        "forward_pe": info.get("forwardPE"),
+        "trailing_pe": trailing_pe,
+        "forward_pe": forward_pe,
     }
 
 
