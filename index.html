@@ -168,7 +168,20 @@
   .fund-legend-dot{width:9px;height:9px;border-radius:2px;display:inline-block;}
 </style>
 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.0/chart.umd.min.js"></script>
+<script>
+(function(){
+  var s = document.createElement('script');
+  s.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.0/chart.umd.min.js';
+  s.onerror = function(){
+    console.warn('[chart.js] cdnjs failed to load, trying jsdelivr fallback');
+    var s2 = document.createElement('script');
+    s2.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.min.js';
+    s2.onerror = function(){ console.error('[chart.js] both CDN sources failed — fundamentals charts will not render'); };
+    document.head.appendChild(s2);
+  };
+  document.head.appendChild(s);
+})();
+</script>
 </head>
 <body>
 
@@ -659,6 +672,16 @@ function renderFundamentals(data){
   }
 
   el.innerHTML = html;
+
+  if(typeof Chart === 'undefined'){
+    // Chart.js didn't load (blocked script, network issue, ad-blocker, etc).
+    // This would otherwise crash identically on every single ticker at the
+    // very first Chart.js reference below — showing a clear message here
+    // instead of letting that happen silently.
+    console.error('[fundamentals] Chart.js library is not loaded — charts cannot render. Check network/ad-blocker for cdnjs.cloudflare.com.');
+    el.insertAdjacentHTML('beforeend', `<div class="fund-empty">${t?'Chart library failed to load — try disabling any ad-blocker/script-blocker for this site and refresh.':'ספריית הגרפים לא נטענה — נסה לכבות חוסם פרסומות/סקריפטים לאתר הזה ולרענן.'}</div>`);
+    return;
+  }
 
   Chart.defaults.color = '#8a93a3';
   Chart.defaults.font.family = "'JetBrains Mono', monospace";
