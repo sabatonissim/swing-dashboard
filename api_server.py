@@ -851,8 +851,14 @@ def _build_fundamentals(ticker: str) -> dict:
 
 
 _fundamentals_cache = {}  # ticker -> (timestamp, data)
-FUNDAMENTALS_CACHE_TTL_SEC = 900  # 15 min - fundamentals change slowly, and this avoids
-                                  # hammering yfinance every time a stock drawer reopens
+FUNDAMENTALS_CACHE_TTL_SEC = 900          # 15 min for a SUCCESSFUL result - fundamentals
+                                           # change slowly, and this avoids hammering SEC
+                                           # every time a stock drawer reopens
+FUNDAMENTALS_NEGATIVE_CACHE_TTL_SEC = 45   # a "no data" result gets a much shorter life —
+                                           # this is usually a transient hiccup (rate limit,
+                                           # brief network blip), not a permanent fact about
+                                           # the ticker, so it should self-heal quickly
+                                           # instead of blocking retries for 15 minutes
 
 
 def _is_valid_fundamentals_shape(data: dict) -> bool:
@@ -872,8 +878,11 @@ def get_fundamentals(ticker: str):
     ticker = ticker.upper().strip()
 
     cached = _fundamentals_cache.get(ticker)
-    if cached and (time.time() - cached[0]) < FUNDAMENTALS_CACHE_TTL_SEC and _is_valid_fundamentals_shape(cached[1]):
-        return cached[1]
+    if cached:
+        cached_ts, cached_data = cached
+        ttl = FUNDAMENTALS_CACHE_TTL_SEC if cached_data.get("has_fundamentals") else FUNDAMENTALS_NEGATIVE_CACHE_TTL_SEC
+        if (time.time() - cached_ts) < ttl and _is_valid_fundamentals_shape(cached_data):
+            return cached_data
 
     executor = ThreadPoolExecutor(max_workers=1)
     try:
