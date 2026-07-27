@@ -461,13 +461,26 @@ def _sec_company_facts(cik10: str) -> Optional[dict]:
 
 
 def _sec_quarterly_series(facts_usgaap: dict, tag_candidates: List[str], instant: bool) -> dict:
-    """Returns {end_date_str: value}, using the first XBRL tag (from the
-    candidates, in order) that actually has data for this company —
-    different companies/years tag the same concept differently.
-    Flow measures (revenue, net income, EPS, cash flow) are filtered to
-    ~90-day spans so we get single-quarter figures, not year-to-date or
-    annual cumulative ones. Instant measures (cash, debt, shares) are
-    point-in-time balance-sheet snapshots, kept as-is."""
+    """Returns {end_date_str: value}, merged across ALL of the given XBRL
+    tag candidates — not just the first one with any data. Companies
+    routinely switch which tag they report a concept under across fiscal
+    years (XBRL taxonomy updates), so restricting to a single tag left
+    real gaps in the timeline where a company happened to use a
+    different (but equally valid) tag for that period.
+
+    Flow measures (revenue, net income, EPS, cash flow) prefer a clean
+    single-quarter entry (~75-105 day span). Where that doesn't exist —
+    very common for cash-flow-statement items, which many companies only
+    disclose as cumulative year-to-date in interim filings — the discrete
+    quarter is DERIVED from consecutive YTD deltas sharing the same
+    fiscal-year start (e.g. Q4 = full-year total − 9-month YTD). Without
+    this, those quarters would just be empty gaps in every chart.
+
+    Instant measures (cash, debt, shares) are point-in-time balance-sheet
+    snapshots, kept as-is."""
+    out = {}
+    raw_all = []  # every valid flow-measure entry (any span), for YTD-delta derivation
+
     for tag in tag_candidates:
         node = facts_usgaap.get(tag)
         if not node:
@@ -476,7 +489,6 @@ def _sec_quarterly_series(facts_usgaap: dict, tag_candidates: List[str], instant
         unit_key = next(iter(units), None)
         if not unit_key:
             continue
-        out = {}
         for e in units[unit_key]:
             if e.get("form") not in ("10-Q", "10-K"):
                 continue
@@ -484,20 +496,96 @@ def _sec_quarterly_series(facts_usgaap: dict, tag_candidates: List[str], instant
             if end is None or val is None:
                 continue
             if instant:
-                out[end] = val
+                out.setdefault(end, val)  # keep the first tag's value if two tags both cover this date
             else:
                 start = e.get("start")
                 if not start:
                     continue
                 try:
-                    days = (date.fromisoformat(end) - date.fromisoformat(start)).days
+                    span_days = (date.fromisoformat(end) - date.fromisoformat(start)).days
                 except Exception:
                     continue
-                if 80 <= days <= 100:
-                    out[end] = val
-        if out:
-            return out
-    return {}
+                raw_all.append({"start": start, "end": end, "val": val})
+                if 75 <= span_days <= 105:
+                    out.setdefault(end, val)
+
+    if instant or not raw_all:
+        return out
+
+    # Derive quarters that only exist as YTD-cumulative figures: group by
+    # fiscal-year start, sort by end date, and take consecutive deltas.
+    # IMPORTANT: the group includes every entry sharing that start —
+    # including ones already accepted directly above (e.g. Q1, which is
+    # both a discrete quarter AND the first YTD data point) — so it can
+    # serve as the anchor value the next delta is computed against.
+    by_start: dict = {}
+    for e in raw_all:
+        by_start.setdefault(e["start"], []).append(e)
+
+    for start, group in by_start.items():
+        group_sorted = sorted(group, key=lambda e: e["end"])
+        prev_val = 0.0
+        try:
+            prev_end_date = date.fromisoformat(start)
+        except Exception:
+            continue
+        for e in group_sorted:
+            try:
+                end_date = date.fromisoformat(e["end"])
+            except Exception:
+                continue
+            gap_days = (end_date - prev_end_date).days
+            # Only accept as a genuine single-quarter delta — not a jump
+            # spanning a missing quarter in between.
+            if e["end"] not in out and 60 <= gap_days <= 115:
+                out.setdefault(e["end"], e["val"] - prev_val)
+            prev_val = e["val"]
+            prev_end_date = end_date
+
+    return out
+
+
+def _sec_cumulative_to_quarterly(facts_usgaap: dict, tag_candidates: List[str]) -> dict:
+    """For cash-flow-statement items (operating cash flow, capex, etc.),
+    which SEC/GAAP convention always reports as FISCAL-YEAR-TO-DATE
+    CUMULATIVE figures in 10-Q filings — never a standalone single
+    quarter — unlike revenue/net income/EPS, which companies do report
+    standalone. Using the same ~90-day span filter as
+    _sec_quarterly_series only catches Q1 (which happens to be
+    standalone already) and discards Q2/Q3/Q4 entirely, which is why
+    FCF charts were coming out almost empty. This derives the real
+    standalone quarter value by subtracting the prior cumulative period
+    within the same fiscal year, using SEC's own 'fy'/'fp' fields."""
+    merged = {}
+    for tag in tag_candidates:
+        node = facts_usgaap.get(tag)
+        if not node:
+            continue
+        units = node.get("units", {})
+        unit_key = next(iter(units), None)
+        if not unit_key:
+            continue
+
+        by_fy = {}
+        for e in units[unit_key]:
+            if e.get("form") not in ("10-Q", "10-K"):
+                continue
+            fy, fp, end, val = e.get("fy"), e.get("fp"), e.get("end"), e.get("val")
+            if not (fy and fp and end is not None and val is not None):
+                continue
+            by_fy.setdefault(fy, {})[fp] = (end, val)  # later filings overwrite (restatements)
+
+        for fy, periods in by_fy.items():
+            q1, q2, q3, fyend = periods.get("Q1"), periods.get("Q2"), periods.get("Q3"), periods.get("FY")
+            if q1:
+                merged.setdefault(q1[0], q1[1])
+            if q1 and q2:
+                merged.setdefault(q2[0], q2[1] - q1[1])
+            if q2 and q3:
+                merged.setdefault(q3[0], q3[1] - q2[1])
+            if q3 and fyend:
+                merged.setdefault(fyend[0], fyend[1] - q3[1])
+    return merged
 
 
 def _compute_pe_band_sec(ticker: str, dates_sorted: List[str], diluted_eps: List[Optional[float]]):
@@ -598,8 +686,8 @@ def _build_fundamentals(ticker: str) -> dict:
     ni_s      = _sec_quarterly_series(usgaap, ["NetIncomeLoss"], instant=False)
     gross_s   = _sec_quarterly_series(usgaap, ["GrossProfit"], instant=False)
     eps_s     = _sec_quarterly_series(usgaap, ["EarningsPerShareDiluted", "EarningsPerShareBasic"], instant=False)
-    ocf_s     = _sec_quarterly_series(usgaap, ["NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"], instant=False)
-    capex_s   = _sec_quarterly_series(usgaap, ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsForCapitalImprovements"], instant=False)
+    ocf_s     = _sec_cumulative_to_quarterly(usgaap, ["NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"])
+    capex_s   = _sec_cumulative_to_quarterly(usgaap, ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsForCapitalImprovements"])
     cash_s    = _sec_quarterly_series(usgaap, ["CashAndCashEquivalentsAtCarryingValue", "CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations"], instant=True)
     debt_s    = _sec_quarterly_series(usgaap, ["LongTermDebtNoncurrent", "LongTermDebt", "DebtLongtermAndShorttermCombinedAmount"], instant=True)
     shares_s  = _sec_quarterly_series(usgaap, ["CommonStockSharesOutstanding"], instant=True)
@@ -608,35 +696,83 @@ def _build_fundamentals(ticker: str) -> dict:
         print(f"[info] fundamentals({ticker}): SEC facts had no usable revenue/net-income tags for this company")
         return {"ticker": ticker, "has_fundamentals": False}
 
-    all_dates = sorted(set(revenue_s) | set(ni_s) | set(gross_s) | set(eps_s)
-                        | set(ocf_s) | set(capex_s) | set(cash_s) | set(debt_s) | set(shares_s))
-    all_dates = all_dates[-32:]  # cap payload size; still "as many quarters as available"
+    def _nearest(series: dict, target: str, tolerance_days: int = 6):
+        """Finds the value in `series` whose date is within `tolerance_days`
+        of `target`, preferring an exact match. Handles the common case
+        where a balance-sheet or cash-flow figure was filed a few days
+        off from the matching income-statement quarter-end."""
+        if target in series:
+            return series[target]
+        try:
+            t = date.fromisoformat(target)
+        except Exception:
+            return None
+        best_val, best_diff = None, tolerance_days + 1
+        for d_str, v in series.items():
+            try:
+                d = date.fromisoformat(d_str)
+            except Exception:
+                continue
+            diff = abs((d - t).days)
+            if diff <= tolerance_days and diff < best_diff:
+                best_val, best_diff = v, diff
+        return best_val
 
-    def align(series):
-        return [round(float(series[d]), 4) if d in series else None for d in all_dates]
+    def _nearest_pair(series_a: dict, series_b: dict, tolerance_days: int = 6):
+        """Pairs up two series by nearest matching date (within tolerance),
+        returning {date: (val_a, val_b)} using series_a's dates as anchors.
+        Used for ratios/differences that need two series at once (margin
+        needs gross+revenue; net debt needs debt+cash)."""
+        out = {}
+        for d, va in series_a.items():
+            vb = _nearest(series_b, d, tolerance_days)
+            if vb is not None:
+                out[d] = (va, vb)
+        return out
 
-    quarter_labels = [dt.strptime(d, "%Y-%m-%d").strftime("%b %Y") for d in all_dates]
-    revenue      = align(revenue_s)
-    net_income   = align(ni_s)
-    gross_profit = align(gross_s)
-    diluted_eps  = align(eps_s)
+    def to_chart(date_value_pairs):
+        """Sorts a {date: value} dict by date (cap to the most recent 32
+        points) and returns (labels, values) ready for the frontend."""
+        items = sorted(date_value_pairs.items())[-32:]
+        labels = [dt.strptime(d, "%Y-%m-%d").strftime("%b %Y") for d, _ in items]
+        values = [round(float(v), 4) if v is not None else None for d, v in items]
+        return labels, values
 
-    gross_margin_pct = [round(g / r * 100, 1) if (r and g is not None and r != 0) else None
-                         for r, g in zip(revenue, gross_profit)]
+    # Revenue / Net Income / FCF: each chart card gets its OWN compact
+    # date axis (its own series' union only) instead of being forced onto
+    # one shared axis padded with dates that only exist for unrelated
+    # balance-sheet metrics — that shared-axis design was the cause of
+    # the many empty/blank columns in the chart.
+    fcf_s = {}
+    for d, ov in ocf_s.items():
+        cv = _nearest(capex_s, d)
+        if cv is not None:
+            fcf_s[d] = ov - cv
 
-    fcf = []
-    for d in all_dates:
-        o, c = ocf_s.get(d), capex_s.get(d)
-        fcf.append(round(float(o) - float(c), 2) if (o is not None and c is not None) else None)
+    income_dates = sorted(set(revenue_s) | set(ni_s) | set(fcf_s))[-32:]
+    income_labels = [dt.strptime(d, "%Y-%m-%d").strftime("%b %Y") for d in income_dates]
+    revenue    = [round(float(v), 2) if (v := _nearest(revenue_s, d)) is not None else None for d in income_dates]
+    net_income = [round(float(v), 2) if (v := _nearest(ni_s, d)) is not None else None for d in income_dates]
+    fcf        = [round(float(v), 2) if (v := _nearest(fcf_s, d)) is not None else None for d in income_dates]
 
-    net_debt = []
-    for d in all_dates:
-        dv, cv = debt_s.get(d), cash_s.get(d)
-        net_debt.append(round(float(dv) - float(cv), 2) if (dv is not None and cv is not None) else None)
+    margin_pairs = _nearest_pair(gross_s, revenue_s)
+    margin_ratio = {d: (g / r * 100) for d, (g, r) in margin_pairs.items() if r}
+    margin_labels, gross_margin_pct = to_chart(margin_ratio)
 
-    shares_outstanding = align(shares_s)
+    debt_pairs = _nearest_pair(debt_s, cash_s)
+    net_debt_map = {d: (dv - cv) for d, (dv, cv) in debt_pairs.items()}
+    debt_labels, net_debt = to_chart(net_debt_map)
 
-    pe_band = _compute_pe_band_sec(ticker, all_dates, diluted_eps)
+    eps_dates = sorted(eps_s)[-32:]
+    diluted_eps_labels = [dt.strptime(d, "%Y-%m-%d").strftime("%b %Y") for d in eps_dates]
+    diluted_eps = [round(float(v), 4) if (v := eps_s.get(d)) is not None else None for d in eps_dates]
+
+    latest_shares = None
+    if shares_s:
+        latest_date = max(shares_s)
+        latest_shares = round(float(shares_s[latest_date]), 0)
+
+    pe_band = _compute_pe_band_sec(ticker, eps_dates, diluted_eps)
 
     # Analyst EPS estimates: SEC doesn't have these. Best-effort bonus via
     # yfinance — if this (Yahoo quoteSummary-based) call is unavailable,
@@ -667,13 +803,16 @@ def _build_fundamentals(ticker: str) -> dict:
         "ticker": ticker,
         "has_fundamentals": True,
         "data_source": "sec_edgar",
-        "quarter_labels": quarter_labels,
+        "income_labels": income_labels,
         "revenue": revenue,
         "net_income": net_income,
         "fcf": fcf,
+        "margin_labels": margin_labels,
         "gross_margin_pct": gross_margin_pct,
+        "debt_labels": debt_labels,
         "net_debt": net_debt,
-        "shares_outstanding": shares_outstanding,
+        "latest_shares_outstanding": latest_shares,
+        "diluted_eps_labels": diluted_eps_labels,
         "diluted_eps": diluted_eps,
         "eps_labels": eps_labels,
         "eps_actual": eps_actual,

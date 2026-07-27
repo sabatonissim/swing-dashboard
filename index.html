@@ -163,6 +163,9 @@
   .fund-stat .k{color:var(--text-dim);font-size:10.5px;margin-bottom:2px;}
   .fund-stat .v{font-family:'JetBrains Mono',monospace;font-size:13px;}
   .fund-empty{color:var(--text-dim);font-size:12.5px;padding:10px 2px;}
+  .fund-legend{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px;font-size:11px;color:var(--text-dim);}
+  .fund-legend-item{display:flex;align-items:center;gap:5px;}
+  .fund-legend-dot{width:9px;height:9px;border-radius:2px;display:inline-block;}
 </style>
 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.0/chart.umd.min.js"></script>
@@ -455,6 +458,7 @@ function openDrawer(i){
       <div style="font-weight:600;margin-bottom:6px;">${triggerText}</div>
       ${s.summary||s.ai_summary_he||'זוהתה פריצה טכנית עם נפח גבוה מהממוצע.'}
     </div>
+    <div id="fundamentals-section"></div>
     <div class="gauge-wrap">
       <div class="gauge-num" style="color:${s.score>=60?'var(--green)':'var(--amber)'}">${s.score}</div>
       <div class="gauge-label">ציון עוצמה טכנית (0–100)</div>
@@ -471,7 +475,6 @@ function openDrawer(i){
         <div id="stock-news-list">טוען חדשות...</div>
       </div>
     </div>
-    <div id="fundamentals-section"></div>
   `;
   document.getElementById("overlay").classList.add("open");
   renderTradingViewChart(s.ticker);
@@ -552,25 +555,36 @@ function fundChartCanvas(id){
   return `<div class="fund-scroll"><canvas id="${id}" style="display:block;"></canvas></div>`;
 }
 
-function fundBarOptions(showLegend){
+function fundBarOptions(){
   return {
     responsive:false, maintainAspectRatio:false,
-    plugins:{ legend:{ display:showLegend, position:'top', labels:{boxWidth:10,font:{size:10}} } },
+    plugins:{ legend:{ display:false } }, // replaced by a fixed HTML legend — see fundLegendHtml()
     scales:{
       x:{ grid:{display:false}, ticks:{font:{size:9}, maxRotation:0, autoSkip:true, maxTicksLimit:12} },
       y:{ grid:{color:'rgba(255,255,255,0.06)'}, ticks:{font:{size:9}} },
     }
   };
 }
-function fundLineOptions(showLegend){
+function fundLineOptions(){
   return {
     responsive:false, maintainAspectRatio:false,
-    plugins:{ legend:{ display:showLegend, position:'top', labels:{boxWidth:10,font:{size:10}} } },
+    plugins:{ legend:{ display:false } },
     scales:{
       x:{ grid:{display:false}, ticks:{font:{size:8}, maxRotation:0, autoSkip:true, maxTicksLimit:8} },
       y:{ grid:{color:'rgba(255,255,255,0.06)'}, ticks:{font:{size:9}} },
     }
   };
+}
+
+// A fixed HTML legend that sits above the scrollable chart, instead of
+// Chart.js's built-in legend — which renders relative to the chart's OWN
+// (very wide) canvas coordinate space, so in a horizontally-scrolling +
+// RTL layout it ends up positioned off-screen until scrolled to just the
+// right spot. This is always visible regardless of scroll position.
+function fundLegendHtml(items){
+  return `<div class="fund-legend">${items.map(it=>
+    `<span class="fund-legend-item"><span class="fund-legend-dot" style="background:${it.color}"></span>${it.label}</span>`
+  ).join('')}</div>`;
 }
 
 async function loadFundamentals(ticker){
@@ -610,7 +624,11 @@ function renderFundamentals(data){
   const n = data.quarter_labels.length;
   let html = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div>`;
 
-  html += `<div class="fund-card"><div class="fund-card-title">${t?'Revenue / Net Income / FCF':'הכנסות / רווח נקי / FCF'}</div>${fundChartCanvas('chart-rev-ni-fcf')}</div>`;
+  html += `<div class="fund-card"><div class="fund-card-title">${t?'Revenue / Net Income / FCF':'הכנסות / רווח נקי / FCF'}</div>${fundLegendHtml([
+    {color:'#5b8def', label:t?'Revenue':'הכנסות'},
+    {color:'#3ecf7e', label:t?'Net Income':'רווח נקי'},
+    {color:'#e8a33d', label:'FCF'},
+  ])}${fundChartCanvas('chart-rev-ni-fcf')}</div>`;
   html += `<div class="fund-card"><div class="fund-card-title">${t?'Gross Margin %':'שולי רווח גולמי %'}</div>${fundChartCanvas('chart-margin')}</div>`;
   html += `<div class="fund-card"><div class="fund-card-title">${t?'Net Debt':'חוב נטו'}</div>${fundChartCanvas('chart-netdebt')}</div>`;
 
@@ -622,14 +640,22 @@ function renderFundamentals(data){
   </div>`;
 
   if(data.eps_labels && data.eps_labels.length){
-    html += `<div class="fund-card"><div class="fund-card-title">${t?'EPS Actual vs Estimate':'EPS בפועל מול תחזית'}</div>${fundChartCanvas('chart-eps')}</div>`;
+    html += `<div class="fund-card"><div class="fund-card-title">${t?'EPS Actual vs Estimate':'EPS בפועל מול תחזית'}</div>${fundLegendHtml([
+      {color:'rgba(138,147,163,.8)', label:t?'Estimate':'תחזית'},
+      {color:'#3ecf7e', label:t?'Actual':'בפועל'},
+    ])}${fundChartCanvas('chart-eps')}</div>`;
   } else if(data.diluted_eps && data.diluted_eps.some(v=>v!=null)){
     // Analyst estimates weren't available this time — still show the real
     // reported diluted EPS trend (from SEC filings) rather than nothing.
     html += `<div class="fund-card"><div class="fund-card-title">${t?'Diluted EPS (reported)':'EPS מדולל (מדווח)'}</div>${fundChartCanvas('chart-eps-actual-only')}</div>`;
   }
   if(data.pe_band){
-    html += `<div class="fund-card"><div class="fund-card-title">${t?'P/E History (vs mean ±1 std)':'מכפיל P/E היסטורי (מול ממוצע ±סטיית תקן)'}</div>${fundChartCanvas('chart-pe')}</div>`;
+    html += `<div class="fund-card"><div class="fund-card-title">${t?'P/E History (vs mean ±1 std)':'מכפיל P/E היסטורי (מול ממוצע ±סטיית תקן)'}</div>${fundLegendHtml([
+      {color:'#e8a33d', label:'P/E'},
+      {color:'#8a93a3', label:t?'Mean':'ממוצע'},
+      {color:'rgba(239,91,91,.8)', label:'+1σ'},
+      {color:'rgba(62,207,126,.8)', label:'-1σ'},
+    ])}${fundChartCanvas('chart-pe')}</div>`;
   }
 
   el.innerHTML = html;
@@ -656,7 +682,7 @@ function renderFundamentals(data){
         {label:t?'Net Income':'רווח נקי', data:data.net_income, backgroundColor:'#3ecf7e'},
         {label:'FCF', data:data.fcf, backgroundColor:'#e8a33d'},
       ]},
-      options: fundBarOptions(true)
+      options: fundBarOptions()
     });
   }
 
@@ -668,7 +694,7 @@ function renderFundamentals(data){
       data:{ labels:data.quarter_labels, datasets:[
         {label:'%', data:data.gross_margin_pct, borderColor:'#35b3a3', backgroundColor:'rgba(53,179,163,.15)', fill:true, tension:.25, pointRadius:2}
       ]},
-      options: fundLineOptions(false)
+      options: fundLineOptions()
     });
   }
 
@@ -680,7 +706,7 @@ function renderFundamentals(data){
       data:{ labels:data.quarter_labels, datasets:[
         {label:t?'Net Debt':'חוב נטו', data:data.net_debt, backgroundColor:(data.net_debt||[]).map(v=>(v||0)>=0?'#ef5b5b':'#3ecf7e')}
       ]},
-      options: fundBarOptions(false)
+      options: fundBarOptions()
     });
   }
 
@@ -693,7 +719,7 @@ function renderFundamentals(data){
         {label:t?'Estimate':'תחזית', data:data.eps_estimate, backgroundColor:'rgba(138,147,163,.5)'},
         {label:t?'Actual':'בפועל', data:data.eps_actual, backgroundColor:'#3ecf7e'},
       ]},
-      options: fundBarOptions(true)
+      options: fundBarOptions()
     });
   }
 
@@ -705,7 +731,7 @@ function renderFundamentals(data){
       data:{ labels:data.quarter_labels, datasets:[
         {label:t?'Diluted EPS':'EPS מדולל', data:data.diluted_eps, backgroundColor:'#3ecf7e'},
       ]},
-      options: fundBarOptions(false)
+      options: fundBarOptions()
     });
   }
 
@@ -721,7 +747,7 @@ function renderFundamentals(data){
         {label:'+1σ', data:pb.dates.map(()=>pb.std1_upper), borderColor:'rgba(239,91,91,.6)', borderDash:[2,3], borderWidth:1, pointRadius:0},
         {label:'-1σ', data:pb.dates.map(()=>pb.std1_lower), borderColor:'rgba(62,207,126,.6)', borderDash:[2,3], borderWidth:1, pointRadius:0},
       ]},
-      options: fundLineOptions(true)
+      options: fundLineOptions()
     });
   }
 }
@@ -744,6 +770,7 @@ async function showTickerDrawer(ticker){
     document.getElementById("loading-box").remove();
     drawer.insertAdjacentHTML('beforeend',`
       <div class="macro-time" style="margin-bottom:12px;">${d.name} · ${d.exchange||''}</div>
+      <div id="fundamentals-section"></div>
       <div class="gauge-wrap">
         <div class="gauge-num" style="color:${changeColor}">$${d.price}</div>
         <div class="gauge-label">שינוי יומי: <span style="color:${changeColor}">${d.change_pct}%</span></div>
@@ -760,7 +787,6 @@ async function showTickerDrawer(ticker){
         <div class="label">חדשות אחרונות</div>
         <div id="stock-news-list">טוען חדשות...</div>
       </div>
-      <div id="fundamentals-section"></div>
     `);
     loadStockNews(ticker);
     loadFundamentals(ticker);
