@@ -443,21 +443,47 @@ def _get_cik_map() -> dict:
     now = time.time()
     if _cik_cache["data"] is not None and (now - _cik_cache["ts"]) < CIK_CACHE_TTL_SEC:
         return _cik_cache["data"]
-    resp = requests.get("https://www.sec.gov/files/company_tickers.json", headers=SEC_HEADERS, timeout=10)
-    resp.raise_for_status()
-    raw = resp.json()
-    mapping = {row["ticker"].upper(): str(row["cik_str"]).zfill(10) for row in raw.values()}
-    _cik_cache["data"] = mapping
-    _cik_cache["ts"] = now
-    return mapping
+
+    last_error = None
+    for attempt in range(3):
+        try:
+            resp = requests.get("https://www.sec.gov/files/company_tickers.json", headers=SEC_HEADERS, timeout=10)
+            resp.raise_for_status()
+            raw = resp.json()
+            mapping = {row["ticker"].upper(): str(row["cik_str"]).zfill(10) for row in raw.values()}
+            _cik_cache["data"] = mapping
+            _cik_cache["ts"] = now
+            return mapping
+        except Exception as e:
+            last_error = e
+            print(f"[warn] SEC ticker->CIK map fetch attempt {attempt+1}/3 failed: {type(e).__name__}: {e}")
+            if attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+    raise last_error
 
 
 def _sec_company_facts(cik10: str) -> Optional[dict]:
-    resp = requests.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik10}.json",
-                         headers=SEC_HEADERS, timeout=15)
-    if resp.status_code != 200:
-        return None
-    return resp.json()
+    last_error = None
+    for attempt in range(3):
+        try:
+            resp = requests.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik10}.json",
+                                 headers=SEC_HEADERS, timeout=15)
+            if resp.status_code == 200:
+                return resp.json()
+            # IMPORTANT: log the actual status code — this was previously
+            # swallowed entirely, so a 403/429/5xx from SEC was
+            # indistinguishable from "this company just has no data".
+            print(f"[warn] SEC companyfacts CIK{cik10} attempt {attempt+1}/3: HTTP {resp.status_code}")
+            if resp.status_code == 404:
+                return None  # genuinely no such CIK — retrying won't help
+            last_error = f"HTTP {resp.status_code}"
+        except Exception as e:
+            last_error = e
+            print(f"[warn] SEC companyfacts CIK{cik10} attempt {attempt+1}/3 failed: {type(e).__name__}: {e}")
+        if attempt < 2:
+            time.sleep(1.5 * (attempt + 1))
+    print(f"[warn] SEC companyfacts CIK{cik10}: all 3 attempts failed, last error: {last_error}")
+    return None
 
 
 def _sec_quarterly_series(facts_usgaap: dict, tag_candidates: List[str], instant: bool) -> dict:
