@@ -829,12 +829,24 @@ FUNDAMENTALS_CACHE_TTL_SEC = 900  # 15 min - fundamentals change slowly, and thi
                                   # hammering yfinance every time a stock drawer reopens
 
 
+def _is_valid_fundamentals_shape(data: dict) -> bool:
+    """Guards the cache against ever serving a malformed/incomplete response
+    (e.g. from an older code version, or a partial result from some edge
+    case) for the full 15-minute TTL. If it doesn't look structurally
+    sound, treat it as a cache miss and recompute fresh."""
+    if not isinstance(data, dict):
+        return False
+    if not data.get("has_fundamentals"):
+        return True  # the "no fundamentals for this ticker" shape is valid as-is
+    return isinstance(data.get("quarter_labels"), list)
+
+
 @app.get("/api/fundamentals/{ticker}")
 def get_fundamentals(ticker: str):
     ticker = ticker.upper().strip()
 
     cached = _fundamentals_cache.get(ticker)
-    if cached and (time.time() - cached[0]) < FUNDAMENTALS_CACHE_TTL_SEC:
+    if cached and (time.time() - cached[0]) < FUNDAMENTALS_CACHE_TTL_SEC and _is_valid_fundamentals_shape(cached[1]):
         return cached[1]
 
     executor = ThreadPoolExecutor(max_workers=1)

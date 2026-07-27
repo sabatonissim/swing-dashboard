@@ -297,4 +297,6 @@ const API_BASE = "https://swing-dashboard-production-438f.up.railway.app";
 
 ---
 
+**תוקן 28/7 — קונסול הראה `Cannot read properties of undefined (reading 'length')` בכל מניה:** ה-error המדויק מהקונסול (`renderFundamentals`, בשורה עם `data.quarter_labels.length`) הראה ש-`quarter_labels` הגיע `undefined` למרות `has_fundamentals:true`. הסיבה: יש **cache בזיכרון של 15 דקות** (`_fundamentals_cache`, מפתח=טיקר) בשרת — טיקר ספציפי (כמו SHOP) יכול להישאר "תקוע" עם תשובה ישנה/פגומה מגרסת קוד קודמת עד שה-cache פג, גם אם שאר הקוד כבר תוקן. תוקן משני הכיוונים: (1) **frontend** — `renderFundamentals` בודק עכשיו במפורש ש-`quarter_labels` הוא מערך תקין לפני שהוא נוגע בו, ואם לא — מציג "אין נתונים" במקום לקרוס. (2) **backend** — נוספה `_is_valid_fundamentals_shape()` שבודקת את המבנה של כל רשומת cache לפני שמגישים אותה; רשומה פגומה נחשבת אוטומטית כ-cache miss ומחושבת מחדש, כך שהיא לא יכולה "להיתקע" לכל משך ה-TTL.
+
 *עדכון אחרון: יולי 2026 | גרסה: MVP v1.2*

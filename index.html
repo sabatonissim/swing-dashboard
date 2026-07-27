@@ -629,7 +629,7 @@ function renderFundamentals(data){
   destroyFundCharts();
   const t = lang==='en';
 
-  if(!data || !data.has_fundamentals){
+  if(!data || !data.has_fundamentals || !Array.isArray(data.quarter_labels)){
     el.innerHTML = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div><div class="fund-empty">${t?'No standard financials for this ticker (likely an ETF/index).':'אין נתונים פונדמנטליים סטנדרטיים לטיקר זה (כנראה ETF/מדד).'}</div>`;
     return;
   }
