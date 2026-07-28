@@ -183,6 +183,9 @@
   .cmp-row{display:grid;grid-template-columns:1fr 1.3fr 1fr;gap:6px;padding:8px 0;border-bottom:1px solid var(--line);align-items:center;}
   .cmp-row:last-of-type{border-bottom:none;}
   .cmp-val{font-family:'JetBrains Mono',monospace;font-size:12.5px;text-align:center;}
+  .cmp-trend{font-family:'Heebo',sans-serif;font-size:9px;color:var(--text-dim);text-align:center;margin-top:3px;line-height:1.3;}
+  .cmp-open-full{display:block;font-family:'Heebo',sans-serif;font-size:9.5px;font-weight:400;color:var(--teal);cursor:pointer;margin-top:2px;}
+  .cmp-open-full:hover{text-decoration:underline;}
   .cmp-label{font-size:10.5px;color:var(--text-dim);text-align:center;line-height:1.3;}
   .close-compare-btn{display:block;width:100%;text-align:center;padding:10px;border-radius:9px;background:transparent;border:1px solid var(--line);color:var(--text-dim);cursor:pointer;font-size:12.5px;margin-top:12px;font-family:'Heebo',sans-serif;}
   .close-compare-btn:hover{color:var(--text);border-color:var(--text-dim);}
@@ -590,23 +593,53 @@ function fundChartCanvas(id){
   return `<div class="fund-scroll"><canvas id="${id}" style="display:block;"></canvas></div>`;
 }
 
-function fundBarOptions(){
+// Formats a raw number into a compact, human-readable form for chart axes
+// and tooltips — e.g. 186000000000 -> "$186.00B" instead of the full digit
+// string, which is unreadable on a hover tooltip or a cramped y-axis.
+function fmtCompactMoney(v){
+  if(v==null || isNaN(v)) return '—';
+  const sign = v<0 ? '-' : '';
+  const abs = Math.abs(v);
+  if(abs>=1e9) return sign+'$'+(abs/1e9).toFixed(2)+'B';
+  if(abs>=1e6) return sign+'$'+(abs/1e6).toFixed(2)+'M';
+  if(abs>=1e3) return sign+'$'+(abs/1e3).toFixed(1)+'K';
+  return sign+'$'+abs.toFixed(2);
+}
+// Same idea but without the $ sign and fewer decimals — used in the tight
+// compare-table "trend" line where space is at a premium.
+function fmtCompactShort(v){
+  if(v==null) return '';
+  const sign = v<0 ? '-' : '';
+  const abs = Math.abs(v);
+  if(abs>=1e9) return sign+(abs/1e9).toFixed(1)+'B';
+  if(abs>=1e6) return sign+(abs/1e6).toFixed(1)+'M';
+  if(abs>=1e3) return sign+(abs/1e3).toFixed(0)+'K';
+  return sign+abs.toFixed(1);
+}
+
+function fundBarOptions(valueFormatter){
   return {
     responsive:false, maintainAspectRatio:false,
-    plugins:{ legend:{ display:false } }, // replaced by a fixed HTML legend — see fundLegendHtml()
+    plugins:{
+      legend:{ display:false }, // replaced by a fixed HTML legend — see fundLegendHtml()
+      tooltip: valueFormatter ? { callbacks:{ label:(ctx)=>`${ctx.dataset.label}: ${valueFormatter(ctx.parsed.y)}` } } : {},
+    },
     scales:{
       x:{ grid:{display:false}, ticks:{font:{size:9}, maxRotation:0, autoSkip:true, maxTicksLimit:12} },
-      y:{ grid:{color:'rgba(255,255,255,0.06)'}, ticks:{font:{size:9}} },
+      y:{ grid:{color:'rgba(255,255,255,0.06)'}, ticks:{font:{size:9}, callback: valueFormatter ? (v)=>valueFormatter(v) : undefined} },
     }
   };
 }
-function fundLineOptions(){
+function fundLineOptions(valueFormatter){
   return {
     responsive:false, maintainAspectRatio:false,
-    plugins:{ legend:{ display:false } },
+    plugins:{
+      legend:{ display:false },
+      tooltip: valueFormatter ? { callbacks:{ label:(ctx)=>`${ctx.dataset.label}: ${valueFormatter(ctx.parsed.y)}` } } : {},
+    },
     scales:{
       x:{ grid:{display:false}, ticks:{font:{size:8}, maxRotation:0, autoSkip:true, maxTicksLimit:8} },
-      y:{ grid:{color:'rgba(255,255,255,0.06)'}, ticks:{font:{size:9}} },
+      y:{ grid:{color:'rgba(255,255,255,0.06)'}, ticks:{font:{size:9}, callback: valueFormatter ? (v)=>valueFormatter(v) : undefined} },
     }
   };
 }
@@ -792,7 +825,7 @@ function renderFundamentals(data){
         {label:t?'Net Income':'רווח נקי', data:data.net_income, backgroundColor:'#3ecf7e'},
         {label:'FCF', data:data.fcf, backgroundColor:'#e8a33d'},
       ]},
-      options: fundBarOptions()
+      options: fundBarOptions(fmtCompactMoney)
     });
   }
 
@@ -804,7 +837,7 @@ function renderFundamentals(data){
       data:{ labels:data.margin_labels, datasets:[
         {label:'%', data:data.gross_margin_pct, borderColor:'#35b3a3', backgroundColor:'rgba(53,179,163,.15)', fill:true, tension:.25, pointRadius:2}
       ]},
-      options: fundLineOptions()
+      options: fundLineOptions(v=>v.toFixed(1)+'%')
     });
   }
 
@@ -816,7 +849,7 @@ function renderFundamentals(data){
       data:{ labels:data.debt_labels, datasets:[
         {label:t?'Net Debt':'חוב נטו', data:data.net_debt, backgroundColor:(data.net_debt||[]).map(v=>(v||0)>=0?'#ef5b5b':'#3ecf7e')}
       ]},
-      options: fundBarOptions()
+      options: fundBarOptions(fmtCompactMoney)
     });
   }
 
@@ -829,7 +862,7 @@ function renderFundamentals(data){
         {label:t?'Estimate':'תחזית', data:data.eps_estimate, backgroundColor:'rgba(138,147,163,.5)'},
         {label:t?'Actual':'בפועל', data:data.eps_actual, backgroundColor:'#3ecf7e'},
       ]},
-      options: fundBarOptions()
+      options: fundBarOptions(v=>'$'+v.toFixed(2))
     });
   }
 
@@ -841,7 +874,7 @@ function renderFundamentals(data){
       data:{ labels:data.diluted_eps_labels, datasets:[
         {label:t?'Diluted EPS':'EPS מדולל', data:data.diluted_eps, backgroundColor:'#3ecf7e'},
       ]},
-      options: fundBarOptions()
+      options: fundBarOptions(v=>'$'+v.toFixed(2))
     });
   }
 
@@ -857,7 +890,7 @@ function renderFundamentals(data){
         {label:'+1σ', data:pb.dates.map(()=>pb.std1_upper), borderColor:'rgba(239,91,91,.6)', borderDash:[2,3], borderWidth:1, pointRadius:0},
         {label:'-1σ', data:pb.dates.map(()=>pb.std1_lower), borderColor:'rgba(62,207,126,.6)', borderDash:[2,3], borderWidth:1, pointRadius:0},
       ]},
-      options: fundLineOptions()
+      options: fundLineOptions(v=>v.toFixed(1))
     });
   }
 }
@@ -927,14 +960,18 @@ function lastVal(arr){
   for(let i=arr.length-1;i>=0;i--){ if(arr[i]!=null) return arr[i]; }
   return null;
 }
-function fmtMoney(v){
-  if(v==null) return null;
-  const abs = Math.abs(v);
-  if(abs>=1e9) return '$'+(v/1e9).toFixed(2)+'B';
-  if(abs>=1e6) return '$'+(v/1e6).toFixed(1)+'M';
-  return '$'+v.toFixed(1);
+// Last up to `n` non-null values, oldest→newest — used to show a short
+// trend (not just the single latest quarter) under each compare value.
+function lastN(arr, n){
+  if(!Array.isArray(arr)) return [];
+  return arr.filter(v=>v!=null).slice(-n);
 }
-function cmpRow(label, a, b, fmt, betterHigher=null){
+function trendStr(arr, formatter){
+  const vals = lastN(arr, 4);
+  if(vals.length<2) return '';
+  return vals.map(formatter).join(' → ');
+}
+function cmpRow(label, a, b, fmt, betterHigher=null, trendA='', trendB=''){
   let ca='color:var(--text)', cb='color:var(--text)';
   if(betterHigher!==null && a!=null && b!=null && a!==b){
     const aBetter = betterHigher ? a>b : a<b;
@@ -942,9 +979,9 @@ function cmpRow(label, a, b, fmt, betterHigher=null){
     cb = 'color:'+(aBetter?'var(--text-dim)':'var(--green)');
   }
   return `<div class="cmp-row">
-    <div class="cmp-val" style="${cb}">${b!=null?fmt(b):'—'}</div>
+    <div class="cmp-val" style="${cb}">${b!=null?fmt(b):'—'}${trendB?`<div class="cmp-trend">${trendB}</div>`:''}</div>
     <div class="cmp-label">${label}</div>
-    <div class="cmp-val" style="${ca}">${a!=null?fmt(a):'—'}</div>
+    <div class="cmp-val" style="${ca}">${a!=null?fmt(a):'—'}${trendA?`<div class="cmp-trend">${trendA}</div>`:''}</div>
   </div>`;
 }
 
@@ -983,18 +1020,25 @@ function renderCompare(el, tA, tB, lookA, lookB, fundA, fundB){
   const t = lang==='en';
   const gmA = fundA && Array.isArray(fundA.gross_margin_pct) ? lastVal(fundA.gross_margin_pct) : null;
   const gmB = fundB && Array.isArray(fundB.gross_margin_pct) ? lastVal(fundB.gross_margin_pct) : null;
+  const trendLabel = t?'(last 4 quarters)':'(4 רבעונים אחרונים)';
 
   const rows = [
     cmpRow(t?'Price':'מחיר', lookA?.price, lookB?.price, v=>'$'+v),
     cmpRow(t?'Daily Change %':'שינוי יומי %', lookA?.change_pct, lookB?.change_pct, v=>v.toFixed(2)+'%', true),
-    cmpRow(t?'Market Cap':'שווי שוק', lookA?.market_cap, lookB?.market_cap, v=>fmtMoney(v), true),
+    cmpRow(t?'Market Cap':'שווי שוק', lookA?.market_cap, lookB?.market_cap, v=>fmtCompactMoney(v), true),
     cmpRow(t?'Trailing P/E':'מכפיל P/E נוכחי', fundA?.trailing_pe, fundB?.trailing_pe, v=>v.toFixed(1)),
-    cmpRow(t?'Revenue (latest Q)':'הכנסות (רבעון אחרון)', lastVal(fundA?.revenue), lastVal(fundB?.revenue), v=>fmtMoney(v), true),
-    cmpRow(t?'Net Income (latest Q)':'רווח נקי (רבעון אחרון)', lastVal(fundA?.net_income), lastVal(fundB?.net_income), v=>fmtMoney(v), true),
-    cmpRow(t?'FCF (latest Q)':'FCF (רבעון אחרון)', lastVal(fundA?.fcf), lastVal(fundB?.fcf), v=>fmtMoney(v), true),
-    cmpRow(t?'Gross Margin %':'שולי רווח גולמי %', gmA, gmB, v=>v.toFixed(1)+'%', true),
-    cmpRow(t?'Net Debt':'חוב נטו', lastVal(fundA?.net_debt), lastVal(fundB?.net_debt), v=>fmtMoney(v), false),
-    cmpRow(t?'Diluted EPS (latest Q)':'EPS מדולל (רבעון אחרון)', lastVal(fundA?.diluted_eps), lastVal(fundB?.diluted_eps), v=>v.toFixed(2), true),
+    cmpRow(`${t?'Revenue':'הכנסות'} ${trendLabel}`, lastVal(fundA?.revenue), lastVal(fundB?.revenue), v=>fmtCompactMoney(v), true,
+      trendStr(fundA?.revenue, fmtCompactShort), trendStr(fundB?.revenue, fmtCompactShort)),
+    cmpRow(`${t?'Net Income':'רווח נקי'} ${trendLabel}`, lastVal(fundA?.net_income), lastVal(fundB?.net_income), v=>fmtCompactMoney(v), true,
+      trendStr(fundA?.net_income, fmtCompactShort), trendStr(fundB?.net_income, fmtCompactShort)),
+    cmpRow(`FCF ${trendLabel}`, lastVal(fundA?.fcf), lastVal(fundB?.fcf), v=>fmtCompactMoney(v), true,
+      trendStr(fundA?.fcf, fmtCompactShort), trendStr(fundB?.fcf, fmtCompactShort)),
+    cmpRow(`${t?'Gross Margin %':'שולי רווח גולמי %'} ${trendLabel}`, gmA, gmB, v=>v.toFixed(1)+'%', true,
+      trendStr(fundA?.gross_margin_pct, v=>v.toFixed(0)+'%'), trendStr(fundB?.gross_margin_pct, v=>v.toFixed(0)+'%')),
+    cmpRow(`${t?'Net Debt':'חוב נטו'} ${trendLabel}`, lastVal(fundA?.net_debt), lastVal(fundB?.net_debt), v=>fmtCompactMoney(v), false,
+      trendStr(fundA?.net_debt, fmtCompactShort), trendStr(fundB?.net_debt, fmtCompactShort)),
+    cmpRow(`${t?'Diluted EPS':'EPS מדולל'} ${trendLabel}`, lastVal(fundA?.diluted_eps), lastVal(fundB?.diluted_eps), v=>v.toFixed(2), true,
+      trendStr(fundA?.diluted_eps, v=>v.toFixed(2)), trendStr(fundB?.diluted_eps, v=>v.toFixed(2))),
   ];
 
   const noteA = (!lookA && !fundA?.has_fundamentals) ? `<div class="fund-empty">${t?`Couldn't load data for ${tA}.`:`לא ניתן היה לטעון נתונים עבור ${tA}.`}</div>` : '';
@@ -1003,9 +1047,9 @@ function renderCompare(el, tA, tB, lookA, lookB, fundA, fundB){
   el.innerHTML = `
     <div class="fund-section-title">${t?'Comparison':'השוואת מניות'}</div>
     <div class="cmp-head">
-      <div class="cmp-ticker">${tB}</div>
+      <div class="cmp-ticker">${tB}<span class="cmp-open-full" onclick="showTickerDrawer('${tB}')">${t?'open full ↗':'פתח מלא ↗'}</span></div>
       <div></div>
-      <div class="cmp-ticker">${tA}</div>
+      <div class="cmp-ticker">${tA}<span class="cmp-open-full" onclick="showTickerDrawer('${tA}')">${t?'open full ↗':'פתח מלא ↗'}</span></div>
     </div>
     ${rows.join('')}
     ${noteA}${noteB}
