@@ -166,6 +166,26 @@
   .fund-legend{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px;font-size:11px;color:var(--text-dim);}
   .fund-legend-item{display:flex;align-items:center;gap:5px;}
   .fund-legend-dot{width:9px;height:9px;border-radius:2px;display:inline-block;}
+  .fund-info{position:relative;display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:var(--line);color:var(--text-dim);font-size:10px;font-weight:700;cursor:pointer;margin-inline-start:6px;user-select:none;vertical-align:middle;}
+  .fund-info:hover, .fund-info.open{background:var(--amber);color:#1a1a1a;}
+  .fund-tip{display:none;position:absolute;z-index:20;top:20px;inset-inline-start:0;width:230px;background:#1c1f26;border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:11.5px;line-height:1.45;color:var(--text);font-weight:400;box-shadow:0 6px 18px rgba(0,0,0,.35);text-transform:none;letter-spacing:normal;white-space:normal;}
+  .fund-tip.show{display:block;}
+  .fund-card-title{position:relative;}
+  .fund-source-note{font-size:11px;color:var(--text-dim);background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:8px 12px;margin-bottom:12px;line-height:1.5;}
+  .fund-source-note a{color:var(--amber);text-decoration:none;}
+  .fund-source-note a:hover{text-decoration:underline;}
+
+  /* ---- Compare two stocks ---- */
+  .compare-btn{display:block;width:100%;text-align:center;padding:11px;border-radius:9px;background:transparent;border:1px solid var(--teal);color:var(--teal);font-weight:700;cursor:pointer;font-size:13px;margin-bottom:16px;font-family:'Heebo',sans-serif;}
+  .compare-btn:hover{background:var(--teal);color:#0a1a18;}
+  .cmp-head{display:grid;grid-template-columns:1fr 1.3fr 1fr;gap:6px;margin-bottom:4px;}
+  .cmp-ticker{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:13.5px;text-align:center;color:var(--amber);}
+  .cmp-row{display:grid;grid-template-columns:1fr 1.3fr 1fr;gap:6px;padding:8px 0;border-bottom:1px solid var(--line);align-items:center;}
+  .cmp-row:last-of-type{border-bottom:none;}
+  .cmp-val{font-family:'JetBrains Mono',monospace;font-size:12.5px;text-align:center;}
+  .cmp-label{font-size:10.5px;color:var(--text-dim);text-align:center;line-height:1.3;}
+  .close-compare-btn{display:block;width:100%;text-align:center;padding:10px;border-radius:9px;background:transparent;border:1px solid var(--line);color:var(--text-dim);cursor:pointer;font-size:12.5px;margin-top:12px;font-family:'Heebo',sans-serif;}
+  .close-compare-btn:hover{color:var(--text);border-color:var(--text-dim);}
 </style>
 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 <script>
@@ -488,6 +508,8 @@ function openDrawer(i){
         <div id="stock-news-list">טוען חדשות...</div>
       </div>
     </div>
+    <button class="compare-btn" onclick="openCompare('${s.ticker}')">⇄ ${lang==='en'?'Compare with another stock':'השווה מול מניה אחרת'}</button>
+    <div id="compare-section"></div>
   `;
   document.getElementById("overlay").classList.add("open");
   renderTradingViewChart(s.ticker);
@@ -600,6 +622,65 @@ function fundLegendHtml(items){
   ).join('')}</div>`;
 }
 
+// Plain-language explanations for each metric, shown via a tappable "i"
+// icon next to the relevant chart/stat title. Kept short and focused on
+// "what is this" + "what's a good sign vs a warning sign" rather than
+// textbook definitions.
+const FUND_TIPS = {
+  rev_ni_fcf: {
+    he: 'הכנסות = סך המכירות. רווח נקי = מה שנשאר אחרי כל ההוצאות. FCF (תזרים מזומנים חופשי) = מזומן שנשאר בפועל אחרי השקעות בציוד/נכסים — לרוב הכי "אמין" כי קשה לייפות אותו חשבונאית. חפשו מגמת עלייה עקבית בשלושתם; פער גדול בין רווח נקי ל-FCF (למשל רווח חיובי אך FCF שלילי לאורך זמן) יכול לרמז על איכות רווחים נמוכה.',
+    en: 'Revenue = total sales. Net Income = what\'s left after all expenses. FCF (Free Cash Flow) = actual cash left after capital spending — often the most "honest" number since it\'s harder to dress up. Look for a steady uptrend across all three; a persistent gap where profit is positive but FCF is weak/negative can signal lower earnings quality.'
+  },
+  gross_margin: {
+    he: 'שולי רווח גולמי = כמה % נשאר מכל דולר מכירות אחרי עלות הייצור/הרכישה בלבד (לפני הוצאות תפעול אחרות). מגמת עלייה = כוח תמחור/יעילות משתפרת. ירידה מתמשכת יכולה לרמז על תחרות מחירים או עלויות עולות.',
+    en: 'Gross margin = what % of every sales dollar is left after just the cost of producing/acquiring the product (before other operating costs). A rising trend suggests pricing power or improving efficiency. A steady decline can signal price competition or rising costs.'
+  },
+  net_debt: {
+    he: 'חוב נטו = סך החוב פחות המזומן בקופה. מספר שלילי (ירוק) = יש יותר מזומן מחוב — מצב חזק. מספר חיובי גדל לאורך זמן = החברה נשענת יותר על חוב, כדאי לבדוק אם זה מלווה בצמיחה תואמת.',
+    en: 'Net debt = total debt minus cash on hand. A negative number (green) means more cash than debt — a strong position. A growing positive number over time means the company is leaning more on debt; worth checking it\'s matched by comparable growth.'
+  },
+  shares: {
+    he: 'מניות במחזור = כמה מניות קיימות בשוק. עלייה לאורך זמן = דילול (כל מניה מייצגת פחות מהחברה, בד"כ בגלל הנפקת מניות/אופציות). ירידה = לרוב buyback (רכישה חוזרת) שמגדילה את הערך למניה הקיימת.',
+    en: 'Shares Outstanding = how many shares exist in the market. Rising over time = dilution (each share represents a smaller piece of the company, usually from new stock/option issuance). Falling = usually a buyback, which increases value per remaining share.'
+  },
+  pe: {
+    he: 'מכפיל P/E = מחיר המניה חלקי הרווח למניה. "נוכחי" מבוסס על רווחי 12 החודשים האחרונים, "צפוי" על תחזית האנליסטים לשנה הקרובה. מכפיל גבוה = השוק מתמחר צמיחה גבוהה יותר (או שהמניה יקרה יחסית לרווחים שלה). הכי שימושי בהשוואה לממוצע ההיסטורי של אותה מניה או לחברות דומות בסקטור, לא כמספר בודד.',
+    en: 'P/E = share price divided by earnings per share. "Trailing" uses the last 12 months of actual earnings, "Forward" uses analyst estimates for the coming year. A higher multiple means the market is pricing in more growth (or the stock is expensive relative to its earnings). Most useful compared against the stock\'s own historical average or similar companies in its sector — not as a standalone number.'
+  },
+  eps_est: {
+    he: 'EPS (רווח למניה) בפועל מול תחזית האנליסטים לאותו רבעון. "הפתעה" חיובי (בפועל > תחזית) לרוב מזיז את המניה למעלה בטווח הקצר, ולהפך. שימו לב יותר למגמה (כמה רבעונים ברצף) מאשר לרבעון בודד.',
+    en: 'Actual EPS (earnings per share) vs the analyst consensus estimate for that quarter. A positive surprise (actual > estimate) often moves the stock up short-term, and a miss the opposite. The trend across several quarters matters more than any single one.'
+  },
+  eps_actual: {
+    he: 'EPS מדולל = הרווח הנקי חלקי כל המניות (כולל אופציות/מניות המרה פוטנציאליות) — התמונה ה"שמרנית" ביותר של הרווח למניה. אין כאן תחזית אנליסטים להשוואה עבור המניה הזו, רק המספר המדווח בפועל.',
+    en: 'Diluted EPS = net income divided by all shares including potential options/convertibles — the most "conservative" per-share profit figure. There\'s no analyst estimate available to compare against for this ticker, just the actual reported number.'
+  },
+  pe_band: {
+    he: 'מראה את מכפיל ה-P/E ההיסטורי של המניה מול הממוצע שלה ±סטיית תקן אחת. המניה מעל האזור הירוק/מעל +1σ = יקרה יחסית להיסטוריה שלה עצמה. מתחת ל--1σ = זולה יחסית להיסטוריה שלה. זו השוואה למניה מול עצמה בעבר, לא מול מניות אחרות.',
+    en: 'Shows the stock\'s historical P/E vs its own mean ±1 standard deviation. Above +1σ = expensive relative to its own history. Below -1σ = cheap relative to its own history. This compares the stock to itself over time, not to other stocks.'
+  }
+};
+
+function fundInfoIcon(key){
+  const tip = FUND_TIPS[key];
+  if(!tip) return '';
+  const text = (lang==='en') ? tip.en : tip.he;
+  return `<span class="fund-info" onclick="toggleFundTip(event,this)">i<span class="fund-tip">${text}</span></span>`;
+}
+
+function toggleFundTip(ev, iconEl){
+  ev.stopPropagation();
+  const tip = iconEl.querySelector('.fund-tip');
+  const wasOpen = tip.classList.contains('show');
+  document.querySelectorAll('.fund-tip.show').forEach(t=>t.classList.remove('show'));
+  document.querySelectorAll('.fund-info.open').forEach(i=>i.classList.remove('open'));
+  if(!wasOpen){ tip.classList.add('show'); iconEl.classList.add('open'); }
+}
+document.addEventListener('click', ()=>{
+  document.querySelectorAll('.fund-tip.show').forEach(t=>t.classList.remove('show'));
+  document.querySelectorAll('.fund-info.open').forEach(i=>i.classList.remove('open'));
+});
+
 async function loadFundamentals(ticker){
   const el = document.getElementById("fundamentals-section");
   if(!el) return;
@@ -637,33 +718,39 @@ function renderFundamentals(data){
   const n = data.income_labels.length;
   let html = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div>`;
 
-  html += `<div class="fund-card"><div class="fund-card-title">${t?'Revenue / Net Income / FCF':'הכנסות / רווח נקי / FCF'}</div>${fundLegendHtml([
+  html += `<div class="fund-card"><div class="fund-card-title">${t?'Revenue / Net Income / FCF':'הכנסות / רווח נקי / FCF'}${fundInfoIcon('rev_ni_fcf')}</div>${fundLegendHtml([
     {color:'#5b8def', label:t?'Revenue':'הכנסות'},
     {color:'#3ecf7e', label:t?'Net Income':'רווח נקי'},
     {color:'#e8a33d', label:'FCF'},
   ])}${fundChartCanvas('chart-rev-ni-fcf')}</div>`;
-  html += `<div class="fund-card"><div class="fund-card-title">${t?'Gross Margin %':'שולי רווח גולמי %'}</div>${fundChartCanvas('chart-margin')}</div>`;
-  html += `<div class="fund-card"><div class="fund-card-title">${t?'Net Debt':'חוב נטו'}</div>${fundChartCanvas('chart-netdebt')}</div>`;
+  html += `<div class="fund-card"><div class="fund-card-title">${t?'Gross Margin %':'שולי רווח גולמי %'}${fundInfoIcon('gross_margin')}</div>${fundChartCanvas('chart-margin')}</div>`;
+  html += `<div class="fund-card"><div class="fund-card-title">${t?'Net Debt':'חוב נטו'}${fundInfoIcon('net_debt')}</div>${fundChartCanvas('chart-netdebt')}</div>`;
 
   const latestShares = data.latest_shares_outstanding;
   html += `<div class="fund-stat-row">
-    <div class="fund-stat"><div class="k">${t?'Shares Outstanding':'מניות במחזור'}</div><div class="v">${latestShares?(latestShares/1e9).toFixed(2)+'B':'—'}</div></div>
-    <div class="fund-stat"><div class="k">${t?'Trailing P/E':'מכפיל P/E נוכחי'}</div><div class="v">${data.trailing_pe?data.trailing_pe.toFixed(1):'—'}</div></div>
+    <div class="fund-stat"><div class="k">${t?'Shares Outstanding':'מניות במחזור'}${fundInfoIcon('shares')}</div><div class="v">${latestShares?(latestShares/1e9).toFixed(2)+'B':'—'}</div></div>
+    <div class="fund-stat"><div class="k">${t?'Trailing P/E':'מכפיל P/E נוכחי'}${fundInfoIcon('pe')}</div><div class="v">${data.trailing_pe?data.trailing_pe.toFixed(1):'—'}</div></div>
     <div class="fund-stat"><div class="k">${t?'Forward P/E':'מכפיל P/E צפוי'}</div><div class="v">${data.forward_pe?data.forward_pe.toFixed(1):'—'}</div></div>
   </div>`;
 
+  const secLink = data.cik ? `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${data.cik}&type=10-Q&dateb=&owner=include&count=40` : null;
+  html += `<div class="fund-source-note">${t
+    ? `All figures come straight from the company's official <b>SEC filings</b> (10-Q/10-K) via SEC EDGAR — the same numbers reported to regulators, not analyst-adjusted. Trailing/Forward P/E and analyst EPS estimates come from Yahoo Finance as a supplementary source.${secLink?` <a href="${secLink}" target="_blank" rel="noopener">View the raw filings on SEC.gov →</a>`:''}`
+    : `כל הנתונים מגיעים ישירות מ<b>הדוחות הרשמיים לרשות ניירות ערך האמריקאית (SEC)</b> — 10-Q/10-K — דרך SEC EDGAR, אותם מספרים בדיוק שהחברה מדווחת לרגולטור, לא מספרים מעובדים ע"י אנליסטים. מכפילי P/E ותחזיות אנליסטים מגיעים כמקור משלים מ-Yahoo Finance.${secLink?` <a href="${secLink}" target="_blank" rel="noopener">לצפייה בדוחות הגולמיים ב-SEC.gov ←</a>`:''}`
+  }</div>`;
+
   if(data.eps_labels && data.eps_labels.length){
-    html += `<div class="fund-card"><div class="fund-card-title">${t?'EPS Actual vs Estimate':'EPS בפועל מול תחזית'}</div>${fundLegendHtml([
+    html += `<div class="fund-card"><div class="fund-card-title">${t?'EPS Actual vs Estimate':'EPS בפועל מול תחזית'}${fundInfoIcon('eps_est')}</div>${fundLegendHtml([
       {color:'rgba(138,147,163,.8)', label:t?'Estimate':'תחזית'},
       {color:'#3ecf7e', label:t?'Actual':'בפועל'},
     ])}${fundChartCanvas('chart-eps')}</div>`;
   } else if(data.diluted_eps && data.diluted_eps.some(v=>v!=null)){
     // Analyst estimates weren't available this time — still show the real
     // reported diluted EPS trend (from SEC filings) rather than nothing.
-    html += `<div class="fund-card"><div class="fund-card-title">${t?'Diluted EPS (reported)':'EPS מדולל (מדווח)'}</div>${fundChartCanvas('chart-eps-actual-only')}</div>`;
+    html += `<div class="fund-card"><div class="fund-card-title">${t?'Diluted EPS (reported)':'EPS מדולל (מדווח)'}${fundInfoIcon('eps_actual')}</div>${fundChartCanvas('chart-eps-actual-only')}</div>`;
   }
   if(data.pe_band){
-    html += `<div class="fund-card"><div class="fund-card-title">${t?'P/E History (vs mean ±1 std)':'מכפיל P/E היסטורי (מול ממוצע ±סטיית תקן)'}</div>${fundLegendHtml([
+    html += `<div class="fund-card"><div class="fund-card-title">${t?'P/E History (vs mean ±1 std)':'מכפיל P/E היסטורי (מול ממוצע ±סטיית תקן)'}${fundInfoIcon('pe_band')}</div>${fundLegendHtml([
       {color:'#e8a33d', label:'P/E'},
       {color:'#8a93a3', label:t?'Mean':'ממוצע'},
       {color:'rgba(239,91,91,.8)', label:'+1σ'},
@@ -810,6 +897,8 @@ async function showTickerDrawer(ticker){
         <div class="label">חדשות אחרונות</div>
         <div id="stock-news-list">טוען חדשות...</div>
       </div>
+      <button class="compare-btn" onclick="openCompare('${ticker}')">⇄ ${lang==='en'?'Compare with another stock':'השווה מול מניה אחרת'}</button>
+      <div id="compare-section"></div>
     `);
     loadStockNews(ticker);
     loadFundamentals(ticker);
@@ -831,6 +920,98 @@ function handleSearchMobile(){
   handleSearch();
 }
 document.getElementById("search-input-mobile").addEventListener("keydown", e=>{ if(e.key==="Enter") handleSearchMobile(); });
+
+// ---- Compare two stocks side by side ----
+function lastVal(arr){
+  if(!Array.isArray(arr)) return null;
+  for(let i=arr.length-1;i>=0;i--){ if(arr[i]!=null) return arr[i]; }
+  return null;
+}
+function fmtMoney(v){
+  if(v==null) return null;
+  const abs = Math.abs(v);
+  if(abs>=1e9) return '$'+(v/1e9).toFixed(2)+'B';
+  if(abs>=1e6) return '$'+(v/1e6).toFixed(1)+'M';
+  return '$'+v.toFixed(1);
+}
+function cmpRow(label, a, b, fmt, betterHigher=null){
+  let ca='color:var(--text)', cb='color:var(--text)';
+  if(betterHigher!==null && a!=null && b!=null && a!==b){
+    const aBetter = betterHigher ? a>b : a<b;
+    ca = 'color:'+(aBetter?'var(--green)':'var(--text-dim)');
+    cb = 'color:'+(aBetter?'var(--text-dim)':'var(--green)');
+  }
+  return `<div class="cmp-row">
+    <div class="cmp-val" style="${cb}">${b!=null?fmt(b):'—'}</div>
+    <div class="cmp-label">${label}</div>
+    <div class="cmp-val" style="${ca}">${a!=null?fmt(a):'—'}</div>
+  </div>`;
+}
+
+async function openCompare(baseTicker){
+  const t = lang==='en';
+  const raw = prompt(t?'Compare with which ticker?':'להשוות מול איזה טיקר?');
+  if(!raw) return;
+  const ticker2 = raw.trim().toUpperCase();
+  if(!ticker2 || ticker2===baseTicker.toUpperCase()) return;
+
+  const compareEl = document.getElementById('compare-section');
+  if(!compareEl) return;
+  compareEl.innerHTML = `<div class="fund-section-title">${t?'Comparison':'השוואת מניות'}</div><div class="fund-empty">${t?'Loading comparison...':'טוען השוואה...'}</div>`;
+
+  const safeFetch = async (url) => {
+    try { const r = await fetch(url); return r.ok ? await r.json() : null; }
+    catch { return null; }
+  };
+
+  try {
+    const [lookA, lookB, fundA, fundB] = await Promise.all([
+      safeFetch(`${API_BASE}/api/lookup/${baseTicker}`),
+      safeFetch(`${API_BASE}/api/lookup/${ticker2}`),
+      safeFetch(`${API_BASE}/api/fundamentals/${baseTicker}`),
+      safeFetch(`${API_BASE}/api/fundamentals/${ticker2}`),
+    ]);
+    renderCompare(compareEl, baseTicker.toUpperCase(), ticker2, lookA, lookB, fundA, fundB);
+    track('compare_stock', `${baseTicker}_vs_${ticker2}`);
+  } catch(e) {
+    console.error('[compare] failed', e);
+    compareEl.innerHTML = `<div class="fund-section-title">${t?'Comparison':'השוואת מניות'}</div><div class="fund-empty">${t?'Could not load comparison right now.':'לא ניתן לטעון השוואה כרגע.'}</div>`;
+  }
+}
+
+function renderCompare(el, tA, tB, lookA, lookB, fundA, fundB){
+  const t = lang==='en';
+  const gmA = fundA && Array.isArray(fundA.gross_margin_pct) ? lastVal(fundA.gross_margin_pct) : null;
+  const gmB = fundB && Array.isArray(fundB.gross_margin_pct) ? lastVal(fundB.gross_margin_pct) : null;
+
+  const rows = [
+    cmpRow(t?'Price':'מחיר', lookA?.price, lookB?.price, v=>'$'+v),
+    cmpRow(t?'Daily Change %':'שינוי יומי %', lookA?.change_pct, lookB?.change_pct, v=>v.toFixed(2)+'%', true),
+    cmpRow(t?'Market Cap':'שווי שוק', lookA?.market_cap, lookB?.market_cap, v=>fmtMoney(v), true),
+    cmpRow(t?'Trailing P/E':'מכפיל P/E נוכחי', fundA?.trailing_pe, fundB?.trailing_pe, v=>v.toFixed(1)),
+    cmpRow(t?'Revenue (latest Q)':'הכנסות (רבעון אחרון)', lastVal(fundA?.revenue), lastVal(fundB?.revenue), v=>fmtMoney(v), true),
+    cmpRow(t?'Net Income (latest Q)':'רווח נקי (רבעון אחרון)', lastVal(fundA?.net_income), lastVal(fundB?.net_income), v=>fmtMoney(v), true),
+    cmpRow(t?'FCF (latest Q)':'FCF (רבעון אחרון)', lastVal(fundA?.fcf), lastVal(fundB?.fcf), v=>fmtMoney(v), true),
+    cmpRow(t?'Gross Margin %':'שולי רווח גולמי %', gmA, gmB, v=>v.toFixed(1)+'%', true),
+    cmpRow(t?'Net Debt':'חוב נטו', lastVal(fundA?.net_debt), lastVal(fundB?.net_debt), v=>fmtMoney(v), false),
+    cmpRow(t?'Diluted EPS (latest Q)':'EPS מדולל (רבעון אחרון)', lastVal(fundA?.diluted_eps), lastVal(fundB?.diluted_eps), v=>v.toFixed(2), true),
+  ];
+
+  const noteA = (!lookA && !fundA?.has_fundamentals) ? `<div class="fund-empty">${t?`Couldn't load data for ${tA}.`:`לא ניתן היה לטעון נתונים עבור ${tA}.`}</div>` : '';
+  const noteB = (!lookB && !fundB?.has_fundamentals) ? `<div class="fund-empty">${t?`Couldn't load data for ${tB}.`:`לא ניתן היה לטעון נתונים עבור ${tB}.`}</div>` : '';
+
+  el.innerHTML = `
+    <div class="fund-section-title">${t?'Comparison':'השוואת מניות'}</div>
+    <div class="cmp-head">
+      <div class="cmp-ticker">${tB}</div>
+      <div></div>
+      <div class="cmp-ticker">${tA}</div>
+    </div>
+    ${rows.join('')}
+    ${noteA}${noteB}
+    <button class="close-compare-btn" onclick="document.getElementById('compare-section').innerHTML=''">${t?'Close comparison':'סגור השוואה'}</button>
+  `;
+}
 
 // ---- Clock ----
 function tickClock(){
