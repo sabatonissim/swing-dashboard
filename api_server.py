@@ -870,7 +870,7 @@ def _is_valid_fundamentals_shape(data: dict) -> bool:
         return False
     if not data.get("has_fundamentals"):
         return True  # the "no fundamentals for this ticker" shape is valid as-is
-    return isinstance(data.get("quarter_labels"), list)
+    return isinstance(data.get("income_labels"), list)
 
 
 @app.get("/api/fundamentals/{ticker}")

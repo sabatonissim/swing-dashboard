@@ -629,12 +629,12 @@ function renderFundamentals(data){
   destroyFundCharts();
   const t = lang==='en';
 
-  if(!data || !data.has_fundamentals || !Array.isArray(data.quarter_labels)){
+  if(!data || !data.has_fundamentals || !Array.isArray(data.income_labels)){
     el.innerHTML = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div><div class="fund-empty">${t?'No standard financials for this ticker (likely an ETF/index).':'אין נתונים פונדמנטליים סטנדרטיים לטיקר זה (כנראה ETF/מדד).'}</div>`;
     return;
   }
 
-  const n = data.quarter_labels.length;
+  const n = data.income_labels.length;
   let html = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div>`;
 
   html += `<div class="fund-card"><div class="fund-card-title">${t?'Revenue / Net Income / FCF':'הכנסות / רווח נקי / FCF'}</div>${fundLegendHtml([
@@ -645,7 +645,7 @@ function renderFundamentals(data){
   html += `<div class="fund-card"><div class="fund-card-title">${t?'Gross Margin %':'שולי רווח גולמי %'}</div>${fundChartCanvas('chart-margin')}</div>`;
   html += `<div class="fund-card"><div class="fund-card-title">${t?'Net Debt':'חוב נטו'}</div>${fundChartCanvas('chart-netdebt')}</div>`;
 
-  const latestShares = [...data.shares_outstanding].reverse().find(v=>v!=null);
+  const latestShares = data.latest_shares_outstanding;
   html += `<div class="fund-stat-row">
     <div class="fund-stat"><div class="k">${t?'Shares Outstanding':'מניות במחזור'}</div><div class="v">${latestShares?(latestShares/1e9).toFixed(2)+'B':'—'}</div></div>
     <div class="fund-stat"><div class="k">${t?'Trailing P/E':'מכפיל P/E נוכחי'}</div><div class="v">${data.trailing_pe?data.trailing_pe.toFixed(1):'—'}</div></div>
@@ -700,7 +700,7 @@ function renderFundamentals(data){
     revCtx.width = Math.max(n * 46, 280); revCtx.height = 150;
     safeChart(revCtx, {
       type:'bar',
-      data:{ labels:data.quarter_labels, datasets:[
+      data:{ labels:data.income_labels, datasets:[
         {label:t?'Revenue':'הכנסות', data:data.revenue, backgroundColor:'#5b8def'},
         {label:t?'Net Income':'רווח נקי', data:data.net_income, backgroundColor:'#3ecf7e'},
         {label:'FCF', data:data.fcf, backgroundColor:'#e8a33d'},
@@ -710,11 +710,11 @@ function renderFundamentals(data){
   }
 
   const marginCtx = document.getElementById('chart-margin');
-  if(marginCtx){
-    marginCtx.width = Math.max(n * 46, 280); marginCtx.height = 150;
+  if(marginCtx && data.margin_labels && data.margin_labels.length){
+    marginCtx.width = Math.max(data.margin_labels.length * 46, 280); marginCtx.height = 150;
     safeChart(marginCtx, {
       type:'line',
-      data:{ labels:data.quarter_labels, datasets:[
+      data:{ labels:data.margin_labels, datasets:[
         {label:'%', data:data.gross_margin_pct, borderColor:'#35b3a3', backgroundColor:'rgba(53,179,163,.15)', fill:true, tension:.25, pointRadius:2}
       ]},
       options: fundLineOptions()
@@ -722,11 +722,11 @@ function renderFundamentals(data){
   }
 
   const debtCtx = document.getElementById('chart-netdebt');
-  if(debtCtx){
-    debtCtx.width = Math.max(n * 46, 280); debtCtx.height = 150;
+  if(debtCtx && data.debt_labels && data.debt_labels.length){
+    debtCtx.width = Math.max(data.debt_labels.length * 46, 280); debtCtx.height = 150;
     safeChart(debtCtx, {
       type:'bar',
-      data:{ labels:data.quarter_labels, datasets:[
+      data:{ labels:data.debt_labels, datasets:[
         {label:t?'Net Debt':'חוב נטו', data:data.net_debt, backgroundColor:(data.net_debt||[]).map(v=>(v||0)>=0?'#ef5b5b':'#3ecf7e')}
       ]},
       options: fundBarOptions()
@@ -747,11 +747,11 @@ function renderFundamentals(data){
   }
 
   const epsActualOnlyCtx = document.getElementById('chart-eps-actual-only');
-  if(epsActualOnlyCtx){
-    epsActualOnlyCtx.width = Math.max(n * 46, 280); epsActualOnlyCtx.height = 150;
+  if(epsActualOnlyCtx && data.diluted_eps_labels && data.diluted_eps_labels.length){
+    epsActualOnlyCtx.width = Math.max(data.diluted_eps_labels.length * 46, 280); epsActualOnlyCtx.height = 150;
     safeChart(epsActualOnlyCtx, {
       type:'bar',
-      data:{ labels:data.quarter_labels, datasets:[
+      data:{ labels:data.diluted_eps_labels, datasets:[
         {label:t?'Diluted EPS':'EPS מדולל', data:data.diluted_eps, backgroundColor:'#3ecf7e'},
       ]},
       options: fundBarOptions()
