@@ -118,6 +118,8 @@
   .tag-high{background:rgba(53,179,163,.15);color:var(--teal);}
   .macro-text{font-size:13.5px;line-height:1.5;transition:color .15s;}
   .macro-time{color:var(--text-dim);font-size:11px;margin-top:3px;}
+  .macro-hook{font-size:11.5px;color:var(--amber);line-height:1.4;margin-top:4px;opacity:.9;}
+  .breaking-card .b-hook{font-size:11px;color:var(--amber);line-height:1.4;margin-top:5px;opacity:.9;}
 
   /* ---- Drawer ---- */
   .overlay{position:fixed;inset:0;background:rgba(6,8,10,.6);backdrop-filter:blur(2px);display:none;align-items:stretch;justify-content:flex-start;z-index:50;}
@@ -420,6 +422,7 @@ function renderMacro(){
       <div class="macro-tag ${m.impact==='Critical'?'tag-critical':'tag-high'}">${m.tag}</div>
       <div>
         <div class="macro-text">${getNewsText(m)}</div>
+        ${(lang==='he' && m.hook_he) ? `<div class="macro-hook">💡 ${m.hook_he}</div>` : ''}
         <div class="macro-time">${m.time}</div>
       </div>
     </div>
@@ -444,6 +447,7 @@ function renderBreakingNews(){
     <div class="breaking-card" onclick="openMacroDrawer(${macro.indexOf(m)})">
       <div class="b-tag">${m.tag}</div>
       <div class="b-text">${getNewsText(m)}</div>
+      ${(lang==='he' && m.hook_he) ? `<div class="b-hook">💡 ${m.hook_he}</div>` : ''}
     </div>
   `).join("");
 }
@@ -537,6 +541,7 @@ function openMacroDrawer(i){
       <div class="label">${lang==='en'?'Summary':'תקציר'}</div>
       ${getNewsText(m)}
     </div>
+    ${(lang==='he' && m.hook_he) ? `<div class="ai-box"><div class="label">💡 למה זה חשוב</div>${m.hook_he}</div>` : ''}
     <div class="ai-box">
       <div class="label">${lang==='en'?'Affected Sectors':'סקטורים מושפעים'}</div>
       ${m.sectors||m.sector||'—'}
@@ -1223,6 +1228,7 @@ function applyLang(){
         text: lang==='en' ? (r.summary_en||r.summary_he) : (r.summary_he||r.summary_en),
         summary_he: r.summary_he,
         summary_en: r.summary_en,
+        hook_he: r.hook_he || '',
         time: new Date(r.timestamp).toLocaleString(lang==='he'?'he-IL':'en-US'),
         source: r.source_url ? new URL(r.source_url).hostname.replace('www.','') : '',
         link: r.source_url||'#',
