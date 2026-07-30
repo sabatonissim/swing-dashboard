@@ -399,21 +399,51 @@ def init_db():
     # before this column existed (CREATE TABLE IF NOT EXISTS above is a
     # no-op once the table exists, so this is needed for already-deployed DBs).
     cur.execute("ALTER TABLE macro_news ADD COLUMN IF NOT EXISTS hook_he TEXT;")
-    # Without this, the same recurring story got re-inserted as a fresh row
-    # on every hourly run and flooded the "latest 25" view — that's why the
-    # top news list looked stuck on 1-2 stories for days. A UNIQUE constraint
-    # + ON CONFLICT DO NOTHING (see upsert_macro_news) stops that at the DB
-    # level. Wrapped in DO/EXCEPTION so re-running this on an already-patched
-    # DB doesn't error out.
-    cur.execute("""
-        DO $$
-        BEGIN
-            ALTER TABLE macro_news ADD CONSTRAINT macro_news_source_url_key UNIQUE (source_url);
-        EXCEPTION
-            WHEN duplicate_object THEN NULL;
-        END $$;
-    """)
     conn.commit()
+
+    # --- one-time cleanup, required before the UNIQUE constraint below can
+    # actually be added ---
+    # The table already has duplicate source_url values: for ~2 days the
+    # same recurring story was re-inserted as a fresh row on every hourly
+    # run with zero dedup. Adding a UNIQUE constraint on a column that still
+    # contains duplicates raises a hard error (a *different* error than
+    # "constraint already exists" — this is Postgres refusing to build the
+    # constraint at all) which was never caught and crashed every run. Fixed
+    # by cleaning up first, every time (a no-op once already cleaned):
+    #   1. blank '' source_url values -> NULL (Postgres treats every NULL as
+    #      distinct, so they never collide under a UNIQUE constraint)
+    #   2. delete older duplicate rows, keeping the earliest id per URL
+    try:
+        cur.execute("UPDATE macro_news SET source_url = NULL WHERE source_url = '';")
+        cur.execute("""
+            DELETE FROM macro_news a USING macro_news b
+            WHERE a.id > b.id
+              AND a.source_url = b.source_url
+              AND a.source_url IS NOT NULL;
+        """)
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"[warn] macro_news duplicate cleanup failed (non-fatal): {e}")
+
+    # Wrapped in DO/EXCEPTION so re-running this on an already-patched DB
+    # doesn't error out, AND wrapped in a Python try/except so that even an
+    # unexpected failure here can never take down the whole pipeline run —
+    # worst case, dedup just silently doesn't happen this run.
+    try:
+        cur.execute("""
+            DO $$
+            BEGIN
+                ALTER TABLE macro_news ADD CONSTRAINT macro_news_source_url_key UNIQUE (source_url);
+            EXCEPTION
+                WHEN duplicate_object THEN NULL;
+            END $$;
+        """)
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"[warn] could not ensure macro_news.source_url UNIQUE constraint (non-fatal): {e}")
+
     cur.close()
     conn.close()
 
@@ -422,23 +452,48 @@ def upsert_macro_news(category_tag: str, summary_he: str,
                       summary_en: str, impact_level: str, source_url: str,
                       hook_he: str = "") -> bool:
     """Returns True if a new row was inserted, False if this source_url was
-    already saved (duplicate story — skipped instead of piling up)."""
+    already saved (duplicate story — skipped instead of piling up).
+
+    Tries the fast atomic ON CONFLICT path first (needs the UNIQUE
+    constraint from init_db). If that constraint somehow isn't present —
+    e.g. init_db's cleanup above hit an edge case — falls back to a plain
+    check-then-insert instead of crashing the run on every single item.
+    """
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO macro_news (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, timestamp)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (source_url) DO NOTHING
-        RETURNING id
-        """,
-        (category_tag, summary_he, summary_en, impact_level, source_url, hook_he,
-         datetime.now(timezone.utc).isoformat()),
-    )
-    inserted = cur.fetchone() is not None
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        cur.execute(
+            """
+            INSERT INTO macro_news (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, timestamp)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (source_url) DO NOTHING
+            RETURNING id
+            """,
+            (category_tag, summary_he, summary_en, impact_level, source_url, hook_he,
+             datetime.now(timezone.utc).isoformat()),
+        )
+        inserted = cur.fetchone() is not None
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"[warn] ON CONFLICT insert failed, falling back to manual dedup check: {e}")
+        cur.execute("SELECT 1 FROM macro_news WHERE source_url = %s LIMIT 1", (source_url,))
+        if cur.fetchone() is not None:
+            inserted = False
+        else:
+            cur.execute(
+                """
+                INSERT INTO macro_news (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, timestamp)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (category_tag, summary_he, summary_en, impact_level, source_url, hook_he,
+                 datetime.now(timezone.utc).isoformat()),
+            )
+            inserted = True
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
     return inserted
 
 

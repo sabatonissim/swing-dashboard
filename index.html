@@ -65,6 +65,9 @@
   .chart-tab.active{background:var(--amber);color:#1a1300;border-color:var(--amber);font-weight:700;}
   .chart-tab:hover:not(.active){border-color:var(--amber-dim);color:var(--text);}
   #market-tv-chart{height:220px;border-radius:10px;overflow:hidden;background:var(--panel);}
+  .sector-chart-wrap{height:220px;border-radius:10px;overflow:hidden;background:var(--panel);border:1px solid var(--line);padding:8px;box-sizing:border-box;}
+  .pct-up{color:var(--green);}
+  .pct-down{color:var(--red);}
 
   .market-charts-row{display:flex;gap:18px;align-items:stretch;}
   .chart-col{flex:1 1 62%;min-width:0;}
@@ -244,8 +247,14 @@
 <div class="market-charts">
   <div class="market-charts-row">
     <div class="chart-col">
-      <div class="market-charts-title">גרפי מדדים</div>
-      <div class="chart-tabs">
+      <div class="market-charts-title-row">
+        <div class="market-charts-title" id="chart-section-title">גרפי מדדים</div>
+        <div class="view-mode-toggle">
+          <button class="mode-btn active" id="mode-btn-indices" onclick="setChartMode('indices')">מדדים</button>
+          <button class="mode-btn" id="mode-btn-sectors" onclick="setChartMode('sectors')">סקטורים</button>
+        </div>
+      </div>
+      <div class="chart-tabs" id="chart-tabs-container">
         <button class="chart-tab active" onclick="switchChart('SPY')">SPY</button>
         <button class="chart-tab" onclick="switchChart('QQQ')">QQQ</button>
         <button class="chart-tab" onclick="switchChart('GLD')">GLD (זהב)</button>
@@ -253,6 +262,9 @@
         <button class="chart-tab" onclick="switchChart('BTCUSD')">Bitcoin</button>
       </div>
       <div id="market-tv-chart"></div>
+      <div id="sector-chart-wrap" class="sector-chart-wrap" style="display:none;">
+        <canvas id="sector-chart-canvas"></canvas>
+      </div>
     </div>
     <div class="movers-col">
       <div class="movers-title" id="movers-title">הכי זזות היום בשוק</div>
@@ -353,7 +365,7 @@ async function loadMarketMovers(){
   } catch(e){
     console.warn("market movers fetch failed:", e);
   }
-  renderMovers();
+  renderMoversOrSectorList();
 }
 
 // "Today's biggest movers" — a genuine whole-US-market feed (Yahoo's
@@ -454,6 +466,16 @@ function renderBreakingNews(){
 
 // ---- Market chart ----
 let currentChartSymbol = 'SPX';
+// Captured once at load — the original SPY/QQQ/GLD/IWM/Bitcoin tab markup,
+// so switching back from "sectors" mode can restore it verbatim instead of
+// re-generating it from scratch.
+const INDICES_TABS_HTML = document.getElementById('chart-tabs-container').innerHTML;
+let chartMode = 'indices';      // 'indices' | 'sectors'
+let sectorPeriod = 'YTD';       // '1M' | '3M' | 'YTD' | '1Y'
+let sectorChartInstance = null;
+let sectorDataCache = {};       // period -> API response (avoid re-fetching on every toggle)
+let latestSectorData = null;
+const SECTOR_COLORS = ['#ef5b5b','#5b8def','#3ecf7e','#c65bef','#35b3a3','#e8a33d','#8a5bef','#5b6fef','#8fef5b','#ef5ba3','#efa35b'];
 function switchChart(symbol){
   document.querySelectorAll('.chart-tab').forEach(t=>{
     t.classList.toggle('active', t.textContent.trim().startsWith(symbol.replace('BTCUSD','Bitcoin').replace('IWM','IWM')));
@@ -480,6 +502,136 @@ function switchChart(symbol){
     width:'100%',
     save_image:false,
   });
+}
+
+// ---- Indices vs Sectors chart mode (Koyfin-style "US Sectors" view) ----
+function setChartMode(mode){
+  if(chartMode === mode) return;
+  chartMode = mode;
+  document.getElementById('mode-btn-indices').classList.toggle('active', mode==='indices');
+  document.getElementById('mode-btn-sectors').classList.toggle('active', mode==='sectors');
+
+  const tabsEl = document.getElementById('chart-tabs-container');
+  const tvEl = document.getElementById('market-tv-chart');
+  const sectorEl = document.getElementById('sector-chart-wrap');
+
+  if(mode === 'indices'){
+    tabsEl.innerHTML = INDICES_TABS_HTML;
+    sectorEl.style.display = 'none';
+    tvEl.style.display = '';
+    switchChart(currentChartSymbol);
+  } else {
+    tabsEl.innerHTML = ['1M','3M','YTD','1Y'].map(p =>
+      `<button class="chart-tab ${p===sectorPeriod?'active':''}" onclick="switchSectorPeriod('${p}')">${p}</button>`
+    ).join('');
+    tvEl.style.display = 'none';
+    sectorEl.style.display = '';
+    loadSectorPerformance(sectorPeriod);
+  }
+  renderMoversOrSectorList();
+}
+
+function switchSectorPeriod(period){
+  sectorPeriod = period;
+  document.querySelectorAll('#chart-tabs-container .chart-tab').forEach(t=>{
+    t.classList.toggle('active', t.textContent.trim() === period);
+  });
+  loadSectorPerformance(period);
+  renderMoversOrSectorList();
+}
+
+async function loadSectorPerformance(period){
+  const wrap = document.getElementById('sector-chart-wrap');
+  if(sectorDataCache[period]){
+    latestSectorData = sectorDataCache[period];
+    renderSectorChart(latestSectorData);
+    return;
+  }
+  wrap.innerHTML = `<div class="fund-empty" style="height:100%;display:flex;align-items:center;justify-content:center;">${lang==='en'?'Loading sector data...':'טוען נתוני סקטורים...'}</div>`;
+  try {
+    const res = await fetch(`${API_BASE}/api/sector-performance?period=${period}`);
+    if(!res.ok) throw new Error('bad response');
+    const data = await res.json();
+    sectorDataCache[period] = data;
+    latestSectorData = data;
+    wrap.innerHTML = `<canvas id="sector-chart-canvas"></canvas>`;
+    renderSectorChart(data);
+    renderMoversOrSectorList();
+  } catch(e) {
+    console.error('[sectors] failed to load', e);
+    wrap.innerHTML = `<div class="fund-empty" style="height:100%;display:flex;align-items:center;justify-content:center;">${lang==='en'?'Could not load sector data.':'לא ניתן לטעון נתוני סקטורים.'}</div>`;
+  }
+}
+
+function renderSectorChart(data){
+  const canvas = document.getElementById('sector-chart-canvas');
+  if(!canvas || typeof Chart === 'undefined') return;
+  if(sectorChartInstance){ sectorChartInstance.destroy(); sectorChartInstance = null; }
+  const datasets = (data.series||[]).map((s,i)=>({
+    label: s.ticker,
+    data: s.values,
+    borderColor: SECTOR_COLORS[i % SECTOR_COLORS.length],
+    backgroundColor: 'transparent',
+    borderWidth: 1.5,
+    pointRadius: 0,
+    tension: .15,
+    spanGaps: true,
+  }));
+  sectorChartInstance = new Chart(canvas, {
+    type: 'line',
+    data: { labels: data.dates||[], datasets },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      interaction:{ mode:'nearest', intersect:false },
+      plugins:{
+        // Clicking a legend chip hides/shows that sector's line — this is
+        // Chart.js's built-in behavior and mirrors Koyfin's removable tags.
+        legend:{ position:'top', labels:{ boxWidth:10, boxHeight:10, font:{size:10}, color:'#8a93a3', padding:8 } },
+        tooltip:{ callbacks:{ label:(ctx)=>`${ctx.dataset.label}: ${ctx.parsed.y>=0?'+':''}${ctx.parsed.y.toFixed(2)}%` } },
+      },
+      scales:{
+        x:{ grid:{display:false}, ticks:{ font:{size:9}, maxRotation:0, autoSkip:true, maxTicksLimit:8 } },
+        y:{ grid:{color:'rgba(255,255,255,0.06)'}, ticks:{ font:{size:9}, callback:(v)=>v+'%' } },
+      }
+    }
+  });
+}
+
+function destroySectorChart(){
+  if(sectorChartInstance){ sectorChartInstance.destroy(); sectorChartInstance = null; }
+}
+
+// Swaps the "movers" column between today's biggest individual-stock movers
+// (indices mode) and the 11 SPDR sector ETFs with 1D + period % change
+// (sectors mode) — reuses the same .mover-row markup/styling either way.
+function renderMoversOrSectorList(){
+  if(chartMode === 'sectors'){
+    document.getElementById('movers-title').textContent =
+      lang==='en' ? `US Sectors (${sectorPeriod})` : `סקטורים בארה"ב (${sectorPeriod})`;
+    const el = document.getElementById('movers-list');
+    if(!el) return;
+    const table = (latestSectorData && latestSectorData.table) || [];
+    if(!table.length){
+      el.innerHTML = `<div class="movers-empty">${UI[lang].loading}</div>`;
+      return;
+    }
+    el.innerHTML = table.map(r=>{
+      const dayClass = r.change_pct>=0 ? 'up':'down';
+      const daySign = r.change_pct>=0 ? '+':'';
+      const perClass = r.period_change_pct>=0 ? 'pct-up':'pct-down';
+      const perSign = r.period_change_pct>=0 ? '+':'';
+      return `
+        <div class="mover-row" onclick="showTickerDrawer('${r.ticker}')">
+          <div class="mover-ticker">${r.ticker}</div>
+          <div class="mover-trigger">${r.name||''} · ${sectorPeriod}: <span class="${perClass}">${perSign}${r.period_change_pct.toFixed(1)}%</span></div>
+          <div class="mover-pct ${dayClass}">${daySign}${r.change_pct.toFixed(1)}%</div>
+        </div>
+      `;
+    }).join('');
+  } else {
+    document.getElementById('movers-title').textContent = UI[lang].movers_title;
+    renderMovers();
+  }
 }
 
 // ---- Drawers ----
@@ -1238,7 +1390,7 @@ function applyLang(){
   }
 
   renderStocks();
-  renderMovers();
+  renderMoversOrSectorList();
   renderMacro();
   renderBreakingNews();
   renderSectorFilter();
