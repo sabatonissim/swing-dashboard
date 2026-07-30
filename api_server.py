@@ -170,11 +170,49 @@ def get_stocks(limit: int = Query(default=25, le=100)):
 def get_macro_news(limit: int = Query(default=25, le=100)):
     conn = get_conn()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM macro_news ORDER BY timestamp DESC LIMIT %s", (limit,))
-    rows = cur.fetchall()
+
+    # Critical-impact stories (Fed rate decisions, wars, etc.) stay relevant
+    # for days, not just until the next batch of routine updates rolls in
+    # 30 minutes later. Reserve a slice of the response for recent Critical
+    # items specifically, so they don't get pushed out purely by the volume
+    # of newer but less important "High" items — those keep rotating
+    # normally with the per-category diversity cap below.
+    critical_slots = max(3, limit // 5)
+    cur.execute(
+        """
+        SELECT * FROM macro_news
+        WHERE impact_level = 'Critical'
+          AND timestamp > NOW() - INTERVAL '72 hours'
+        ORDER BY timestamp DESC
+        LIMIT %s
+        """,
+        (critical_slots,),
+    )
+    critical_rows = cur.fetchall()
+    critical_ids = [r["id"] for r in critical_rows] or [0]  # guard against an empty array in the NOT IN below
+
+    remaining = max(limit - len(critical_rows), 5)
+    per_category_cap = max(3, remaining // 5)
+    cur.execute(
+        """
+        SELECT * FROM (
+            SELECT *, ROW_NUMBER() OVER (PARTITION BY category_tag ORDER BY timestamp DESC) AS rn
+            FROM macro_news
+            WHERE id != ALL(%s)
+        ) ranked
+        WHERE rn <= %s
+        ORDER BY timestamp DESC
+        LIMIT %s
+        """,
+        (critical_ids, per_category_cap, remaining),
+    )
+    other_rows = cur.fetchall()
     cur.close()
     conn.close()
-    return [dict(r) for r in rows]
+
+    combined = list(critical_rows) + list(other_rows)
+    combined.sort(key=lambda r: r["timestamp"], reverse=True)
+    return [{k: v for k, v in dict(r).items() if k != "rn"} for r in combined]
 
 
 @app.get("/api/ui-strings")
