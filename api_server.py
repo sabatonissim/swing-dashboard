@@ -9,6 +9,8 @@ Endpoints:
     GET /api/stocks              -> latest flagged stocks (scanned_stocks)
     GET /api/macro-news          -> latest macro news items (macro_news)
     GET /api/ui-strings?lang=he  -> UI text dictionary for a given language
+    GET /api/market-movers       -> whole-US-market today's biggest movers
+    GET /api/sector-performance  -> the 11 SPDR sector ETFs: 1D table + normalized period chart
 
 CORS is open for local development. Lock this down (allow_origins) before
 deploying publicly.
@@ -399,6 +401,110 @@ def market_movers(limit: int = Query(default=15, le=50)):
         if fallback:
             return fallback
         raise HTTPException(status_code=502, detail=f"שגיאה בשליפת נתוני שוק: {e}")
+    finally:
+        executor.shutdown(wait=False)
+
+
+# ------------------------------------------------------------------
+# Sector performance (Koyfin-style "US Sectors" view): the 11 SPDR
+# sector ETFs, with today's 1D % change for the table and a normalized
+# (rebased-to-0%) daily close series per ETF for the comparison chart.
+# Cached per-period since a full multi-ticker history download is a
+# heavier call than a single quote.
+# ------------------------------------------------------------------
+
+SECTOR_ETFS = {
+    "XLY": "Cons. Discretionary", "XLP": "Cons. Staples", "XLE": "Energy",
+    "XLF": "Financials", "XLV": "Health Care", "XLI": "Industrials",
+    "XLB": "Materials", "XLRE": "Real Estate", "XLK": "Technology",
+    "XLC": "Communications", "XLU": "Utilities",
+}
+
+SECTOR_PERIOD_MAP = {"1M": "1mo", "3M": "3mo", "YTD": "ytd", "1Y": "1y"}
+SECTOR_CACHE_TTL_SEC = 600  # sector prices move much slower than individual movers
+_sector_cache: dict = {}  # period -> {"data": ..., "ts": ...}
+
+
+def _fetch_sector_performance(period: str) -> dict:
+    yf_period = SECTOR_PERIOD_MAP[period]
+
+    # NOTE: this used to be a single batched yf.download(tickers, ...) call.
+    # That's a different code path than yf.Ticker(x).history(), which is the
+    # one already confirmed to work reliably from Railway's IP (see the note
+    # above the fundamentals section) — the batched/threaded multi-ticker
+    # download appears to be more prone to getting throttled by Yahoo, and
+    # since it's all-or-nothing, ANY hiccup meant zero sector data and the
+    # frontend stuck on "couldn't load sector data" with nothing to show.
+    # Looping over individual, proven-reliable single-ticker calls means one
+    # ETF failing doesn't take down the other 10.
+    per_ticker_closes = {}
+    all_dates_set = set()
+    for ticker, name in SECTOR_ETFS.items():
+        try:
+            hist = yf.Ticker(ticker).history(period=yf_period, interval="1d")
+            closes = hist["Close"].dropna()
+        except Exception as e:
+            print(f"[warn] sector fetch failed for {ticker}: {e}")
+            continue
+        if closes.empty:
+            continue
+        closes_by_date = {d.strftime("%Y-%m-%d"): float(v) for d, v in closes.items()}
+        per_ticker_closes[ticker] = (name, closes_by_date)
+        all_dates_set.update(closes_by_date.keys())
+
+    if not per_ticker_closes:
+        raise RuntimeError("no sector ETF data could be fetched (all 11 tickers failed)")
+
+    all_dates = sorted(all_dates_set)
+    series = []
+    table = []
+
+    for ticker, (name, closes_by_date) in per_ticker_closes.items():
+        base = next(iter(closes_by_date.values()))
+        last_val = None
+        normalized = []
+        for d in all_dates:
+            if d in closes_by_date:
+                last_val = closes_by_date[d]
+            normalized.append(round((last_val / base - 1) * 100, 2) if last_val is not None else None)
+        series.append({"ticker": ticker, "name": name, "values": normalized})
+
+        values_list = list(closes_by_date.values())
+        latest_close = values_list[-1]
+        prev_close = values_list[-2] if len(values_list) >= 2 else latest_close
+        day_chg = round((latest_close / prev_close - 1) * 100, 2) if prev_close else 0.0
+        table.append({
+            "ticker": ticker, "name": name,
+            "price": round(latest_close, 2),
+            "change_pct": day_chg,
+            "period_change_pct": normalized[-1] if normalized else 0.0,
+        })
+
+    table.sort(key=lambda r: r["change_pct"], reverse=True)
+    return {"period": period, "dates": all_dates, "series": series, "table": table}
+
+
+@app.get("/api/sector-performance")
+def sector_performance(period: str = Query(default="YTD", pattern="^(1M|3M|YTD|1Y)$")):
+    now = time.time()
+    cached = _sector_cache.get(period)
+    if cached and (now - cached["ts"]) < SECTOR_CACHE_TTL_SEC:
+        return cached["data"]
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        future = executor.submit(_fetch_sector_performance, period)
+        result = future.result(timeout=40)
+        _sector_cache[period] = {"data": result, "ts": now}
+        return result
+    except FutureTimeoutError:
+        if cached:
+            return cached["data"]  # serve stale cache rather than failing outright
+        raise HTTPException(status_code=504, detail="תם הזמן לשליפת ביצועי הסקטורים")
+    except Exception as e:
+        if cached:
+            return cached["data"]
+        raise HTTPException(status_code=502, detail=f"שגיאה בשליפת ביצועי הסקטורים: {e}")
     finally:
         executor.shutdown(wait=False)
 
@@ -829,6 +935,7 @@ def _build_fundamentals(ticker: str) -> dict:
         "ticker": ticker,
         "has_fundamentals": True,
         "data_source": "sec_edgar",
+        "cik": cik10,
         "income_labels": income_labels,
         "revenue": revenue,
         "net_income": net_income,
