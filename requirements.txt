@@ -3,7 +3,8 @@ uvicorn
 yfinance
 pandas
 numpy
+openai
 feedparser
 requests
 pydantic
-psycopg2-binary
+lxml

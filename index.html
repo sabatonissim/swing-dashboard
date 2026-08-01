@@ -146,6 +146,9 @@
   .stat .k{color:var(--text-dim);font-size:11px;margin-bottom:3px;}
   .stat .v{font-family:'JetBrains Mono',monospace;font-size:14px;}
   .ai-box{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px;font-size:13px;line-height:1.6;margin-bottom:16px;}
+  .trend-stage-badge{display:inline-block;padding:4px 11px;border:1px solid;border-radius:20px;font-size:11px;font-weight:700;margin:2px 0 10px;}
+  .trend-ma-row{display:flex;justify-content:space-between;font-size:12.5px;padding:5px 0;border-bottom:1px solid var(--line);font-family:'JetBrains Mono',monospace;}
+  .trend-ma-row:last-child{border-bottom:none;}
   .ai-box .label{color:var(--amber);font-size:11px;letter-spacing:1px;text-transform:uppercase;margin-bottom:5px;}
   .deep-btn{display:block;width:100%;text-align:center;padding:11px;border-radius:9px;background:var(--amber);color:#1a1300;font-weight:700;border:none;cursor:pointer;font-size:14px;}
 
@@ -645,6 +648,7 @@ function openDrawer(i){
       <button class="close-btn" onclick="closeDrawer()">✕</button>
     </div>
     <div id="tv-chart" class="tv-chart-box"></div>
+    ${renderTrendBlock(s)}
     <div class="ai-box">
       <div class="label">${lang==='en'?'Match Reason':'סיבת ההתאמה'}</div>
       <div style="font-weight:600;margin-bottom:6px;">${triggerText}</div>
@@ -1246,6 +1250,47 @@ function setStatus(connected){
   statusEl.style.color = connected?"var(--green)":"var(--amber)";
 }
 
+const STAGE_HE = {
+  'Stage 2 - Uptrend': 'שלב 2 - מגמת עלייה',
+  'Stage 1 - Basing': 'שלב 1 - בסיס/איחוד',
+  'Stage 3 - Topping': 'שלב 3 - היפוך אפשרי מלמעלה',
+  'Stage 4 - Downtrend': 'שלב 4 - מגמת ירידה',
+};
+const STAGE_COLOR = {
+  'Stage 2 - Uptrend': 'var(--green)',
+  'Stage 1 - Basing': 'var(--amber)',
+  'Stage 3 - Topping': 'var(--amber)',
+  'Stage 4 - Downtrend': 'var(--red)',
+};
+
+// Trend structure (SMA50/150/200 + Weinstein-style stage) + ATR, shown in
+// the stock drawer right under the chart — the "higher level analysis"
+// context (is this actually a healthy uptrend, not just an isolated pattern).
+function renderTrendBlock(s){
+  if(!s.trendStage && s.sma150==null && s.atrValue==null) return '';
+  const t = lang==='en';
+  const stageLabel = t ? (s.trendStage||'—') : (STAGE_HE[s.trendStage] || s.trendStage || '—');
+  const stageColor = STAGE_COLOR[s.trendStage] || 'var(--text-dim)';
+  const price = s.entry;
+  const maRow = (label, value) => {
+    if(value==null) return '';
+    const above = price!=null && price > value;
+    const color = above ? 'var(--green)' : 'var(--red)';
+    const word = above ? (t?'above':'מעל') : (t?'below':'מתחת');
+    return `<div class="trend-ma-row"><span>${label}</span><span style="color:${color}">$${value} (${word})</span></div>`;
+  };
+  return `
+    <div class="ai-box trend-box">
+      <div class="label">${t?'Trend Structure':'מבנה מגמה'}</div>
+      ${s.trendStage ? `<div class="trend-stage-badge" style="color:${stageColor};border-color:${stageColor};">${stageLabel}</div>` : ''}
+      ${maRow(t?'SMA 50':'ממוצע 50', s.sma50)}
+      ${maRow(t?'SMA 150':'ממוצע 150', s.sma150)}
+      ${maRow(t?'SMA 200':'ממוצע 200', s.sma200)}
+      ${s.atrValue!=null ? `<div class="trend-ma-row"><span>ATR (14D)</span><span>$${s.atrValue} (${s.atrPct}%)</span></div>` : ''}
+    </div>
+  `;
+}
+
 function mapDbRowToStock(r){
   return {
     ticker:r.ticker, trend:(r.swing_score>=50)?"up":"down", score:r.swing_score,
@@ -1259,6 +1304,9 @@ function mapDbRowToStock(r){
     trigger_en: r.trigger_text_en,
     timestamp: r.timestamp,
     changePct: (r.change_pct===null||r.change_pct===undefined) ? null : Number(r.change_pct),
+    sma50: r.sma50, sma150: r.sma150, sma200: r.sma200,
+    trendStage: r.trend_stage,
+    atrValue: r.atr_value, atrPct: r.atr_pct,
   };
 }
 

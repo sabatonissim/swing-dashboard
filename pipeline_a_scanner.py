@@ -4,13 +4,26 @@ Pipeline A - Swing Trading Scanner
 Runs once daily, ~23:00 Israel time (after US market close).
 
 Flow:
-  1. Universe filter   -> liquid, mid/large-cap NYSE/NASDAQ stocks only (anti pump&dump)
-  2. Technical filter  -> descending-trendline breakout / continuation pattern breakout
-  3. Volume filter     -> breakout candle volume >= 40% above 20-day average volume
-  4. Social fusion     -> pull recent posts (X / Reddit / Stocktwits), measure mention spike
-  5. AI summary        -> OpenAI call with a STRICTLY factual/analytical prompt
+  1. Universe filter   -> S&P 500 (fetched live from Wikipedia) + a curated
+                          list of liquid extras/ETFs not in the index, then
+                          liquid/mid/large-cap NYSE/NASDAQ only (anti pump&dump)
+  2. Trend structure    -> SMA50/150/200 position + order + slope, classified
+                          into a Weinstein-style Stage 1-4 (see
+                          compute_trend_structure) — this is what lets the
+                          scan tell a breakout in a genuine uptrend apart
+                          from the same pattern firing in a downtrend/basing
+                          stock, instead of pattern-matching in a vacuum
+  3. Technical filter   -> descending-trendline breakout / ascending-trendline
+                          support bounce / continuation pattern breakout
+                          (see detect_* functions below)
+  4. Volatility         -> ATR(14), both absolute and as % of price
+  5. Volume filter      -> breakout candle volume >= 20% above 20-day average volume
+  6. Support/resistance -> real swing-high/swing-low levels (see
+                          compute_support_resistance), not an arbitrary % of price
+  7. Social fusion       -> pull recent posts (X / Reddit / Stocktwits), measure mention spike
+  8. AI summary          -> OpenAI call with a STRICTLY factual/analytical prompt
                           (no buy/sell recommendations - see LEGAL NOTE below)
-  6. DB upsert         -> scanned_stocks table
+  9. DB upsert           -> scanned_stocks table
 
 LEGAL NOTE
 ----------
@@ -21,7 +34,7 @@ and descriptive (e.g. "the asset is drawing renewed interest" instead of
 to display on the site.
 
 Requirements (pip install --break-system-packages):
-    yfinance pandas numpy openai praw requests python-dotenv
+    yfinance pandas numpy openai praw requests python-dotenv lxml
 """
 
 import json
@@ -89,6 +102,41 @@ MAX_CONSECUTIVE_TIMEOUTS = 8           # circuit breaker: abort the scan early i
                                         # hard right now, instead of piling up abandoned hung threads
 
 
+def fetch_sp500_tickers() -> List[str]:
+    """Pulls the current S&P 500 constituent list from Wikipedia (free, no
+    API key, updated whenever the index changes) — this is what takes the
+    universe from ~90 hand-picked names to 500+. Falls back to just the
+    curated DEFAULT_UNIVERSE below if the fetch ever fails (network issue,
+    Wikipedia table layout change, etc.) so a bad day for this one dependency
+    can't zero out the whole scan.
+    """
+    try:
+        import requests
+        resp = requests.get(
+            "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        tables = pd.read_html(resp.text)
+        symbols_col = tables[0]["Symbol"].astype(str).tolist()
+        # yfinance uses '-' where Wikipedia uses '.' for share classes (e.g. BRK.B -> BRK-B)
+        return [s.strip().replace(".", "-") for s in symbols_col if s.strip()]
+    except Exception as e:
+        print(f"[warn] failed to fetch S&P 500 list from Wikipedia, using curated list only: {e}")
+        return []
+
+
+def build_scan_universe() -> List[str]:
+    """S&P 500 (broad coverage) + the curated extras below (liquid names and
+    ETFs that aren't S&P 500 constituents, like QQQ/IWM/ARKK or newer
+    high-momentum names not yet added to the index) — deduplicated."""
+    sp500 = fetch_sp500_tickers()
+    combined = list(dict.fromkeys(sp500 + DEFAULT_UNIVERSE))  # dedup, preserve order
+    return combined
+
+
+
 @dataclass
 class ScanResult:
     ticker: str
@@ -106,6 +154,12 @@ class ScanResult:
     change_pct: float = 0.0
     ai_summary_en: Optional[str] = None
     ai_summary_he: Optional[str] = None
+    sma50: Optional[float] = None
+    sma150: Optional[float] = None
+    sma200: Optional[float] = None
+    trend_stage: Optional[str] = None
+    atr_value: Optional[float] = None
+    atr_pct: Optional[float] = None
 
 
 # ------------------------------------------------------------------
@@ -131,6 +185,165 @@ def passes_liquidity_and_cap_filter(ticker: str, info: dict, hist: pd.DataFrame)
     if exchange not in ALLOWED_EXCHANGES:
         return False
     return True
+
+
+# ------------------------------------------------------------------
+# Trend structure (Weinstein/Minervini-style "trend template") + ATR
+# ------------------------------------------------------------------
+# This is the piece that was missing before: pattern detectors below can
+# flag a technically-valid breakout on a stock that's still in a long-term
+# downtrend, which is a much lower-quality setup than the same breakout
+# happening on a stock in a genuine Stage 2 uptrend (price above a RISING
+# 150/200-day MA, in the right order). Computing this once per ticker and
+# feeding it into both the score and the displayed reasoning is what makes
+# the scan precise instead of just pattern-matching in a vacuum.
+
+def compute_trend_structure(hist: pd.DataFrame) -> Optional[dict]:
+    """Returns SMA50/150/200, whether price/MAs are in bullish order, and a
+    Stage 1-4 classification (Weinstein stage analysis):
+      Stage 1 - Basing:      price chopping around a flat/falling 150MA
+      Stage 2 - Uptrend:     price > rising SMA50 > SMA150 > SMA200 (the
+                              "buy zone" — this is what the Google chart
+                              example in the request shows)
+      Stage 3 - Topping:     price below/around a flattening 150MA after an uptrend
+      Stage 4 - Downtrend:   price < falling SMA150 < SMA200
+    """
+    if len(hist) < 210:
+        return None
+    closes = hist["Close"]
+    sma50 = closes.rolling(50).mean()
+    sma150 = closes.rolling(150).mean()
+    sma200 = closes.rolling(200).mean()
+    if sma200.isna().iloc[-1]:
+        return None
+
+    price = float(closes.iloc[-1])
+    s50, s150, s200 = float(sma50.iloc[-1]), float(sma150.iloc[-1]), float(sma200.iloc[-1])
+    # slope over the last ~20 bars — sign matters more than magnitude here
+    sma150_slope = float(sma150.iloc[-1] - sma150.iloc[-20]) if not sma150.iloc[-20:].isna().any() else 0.0
+    sma200_slope = float(sma200.iloc[-1] - sma200.iloc[-20]) if not sma200.iloc[-20:].isna().any() else 0.0
+
+    above_50 = price > s50
+    above_150 = price > s150
+    above_200 = price > s200
+    bullish_order = s50 > s150 > s200  # short-term MA above medium above long-term
+
+    if above_50 and above_150 and above_200 and bullish_order and sma150_slope > 0:
+        stage = "Stage 2 - Uptrend"
+    elif price < s150 and price < s200 and sma150_slope < 0:
+        stage = "Stage 4 - Downtrend"
+    elif above_150 and sma150_slope <= 0:
+        stage = "Stage 3 - Topping"
+    else:
+        stage = "Stage 1 - Basing"
+
+    return {
+        "sma50": round(s50, 2), "sma150": round(s150, 2), "sma200": round(s200, 2),
+        "above_sma50": above_50, "above_sma150": above_150, "above_sma200": above_200,
+        "bullish_ma_order": bullish_order, "sma150_rising": sma150_slope > 0,
+        "sma200_rising": sma200_slope > 0, "stage": stage,
+    }
+
+
+def compute_atr(hist: pd.DataFrame, period: int = 14) -> Optional[dict]:
+    """Average True Range (Wilder's) — the standard volatility yardstick for
+    sizing stops/targets, shown here the same way most charting platforms
+    display it (absolute $ value + % of price)."""
+    if len(hist) < period + 1:
+        return None
+    high, low, close = hist["High"], hist["Low"], hist["Close"]
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1 / period, adjust=False).mean()
+    atr_val = float(atr.iloc[-1])
+    price = float(close.iloc[-1])
+    if price <= 0:
+        return None
+    return {"atr_value": round(atr_val, 2), "atr_pct": round(atr_val / price * 100, 2)}
+
+
+def find_swing_points(values: np.ndarray, mode: str = "high", window: int = 2) -> List[tuple]:
+    """Generalized local-extremum finder shared by every pattern detector
+    below (previously each detector reimplemented its own copy of this).
+    Returns [(index, value), ...] for swing highs (mode='high') or swing
+    lows (mode='low')."""
+    points = []
+    for i in range(window, len(values) - window):
+        if mode == "high":
+            if all(values[i] > values[i - k] for k in range(1, window + 1)) and \
+               all(values[i] > values[i + k] for k in range(1, window + 1)):
+                points.append((i, float(values[i])))
+        else:
+            if all(values[i] < values[i - k] for k in range(1, window + 1)) and \
+               all(values[i] < values[i + k] for k in range(1, window + 1)):
+                points.append((i, float(values[i])))
+    return points
+
+
+def compute_support_resistance(hist: pd.DataFrame, lookback: int = 120) -> dict:
+    """Real support/resistance from actual swing highs/lows in recent price
+    structure, replacing the old placeholder (which was just close*1.05 and
+    close*1.10 — not a real technical level at all). Support = the nearest
+    genuine swing low below current price; resistance = the nearest 1-2
+    genuine swing highs above current price (prior highs price will need to
+    clear), falling back to the recent 20-day low/a round % above price only
+    if the window doesn't have enough real structure to work with."""
+    window = hist.tail(lookback).reset_index(drop=True)
+    price = float(window["Close"].iloc[-1])
+
+    swing_lows = find_swing_points(window["Low"].values, mode="low")
+    swing_highs = find_swing_points(window["High"].values, mode="high")
+
+    supports_below = sorted([v for _, v in swing_lows if v < price], reverse=True)
+    resistances_above = sorted([v for _, v in swing_highs if v > price])
+
+    support = supports_below[0] if supports_below else float(hist["Low"].tail(20).min())
+    resistance_targets = resistances_above[:2] if resistances_above else [
+        round(price * 1.05, 2), round(price * 1.10, 2)
+    ]
+    return {"support_level": round(support, 2), "resistance_targets": [round(r, 2) for r in resistance_targets]}
+
+
+def detect_ascending_trendline_support(hist: pd.DataFrame) -> Optional[dict]:
+    """The pattern from the Google chart example in the request: price
+    riding/bouncing off a RISING trendline drawn through a series of higher
+    swing lows, rather than breaking out of a range. This is a continuation
+    signal (good entry timing within an existing uptrend), distinct from
+    the breakout-style patterns below.
+
+    Method: fit a line through recent swing lows; require a rising slope
+    (confirming it's genuinely an ascending trendline); flag it when
+    today's close is within 3% above the trendline's current value (i.e.
+    price is bouncing off it right now, not far above or already broken
+    below it).
+    """
+    window = hist.tail(TRENDLINE_LOOKBACK_DAYS).reset_index(drop=True)
+    lows = window["Low"].values
+
+    swing_lows = find_swing_points(lows, mode="low")
+    if len(swing_lows) < 3:
+        return None
+
+    idx = [i for i, _ in swing_lows]
+    val = [v for _, v in swing_lows]
+    slope, intercept = np.polyfit(idx, val, 1)
+    if slope <= 0:
+        return None  # lows aren't actually rising -> not this pattern
+
+    today_idx = len(window) - 1
+    trendline_value_today = slope * today_idx + intercept
+    today_close = float(window["Close"].iloc[-1])
+
+    if trendline_value_today <= 0:
+        return None
+    distance_pct = (today_close - trendline_value_today) / trendline_value_today * 100
+    if 0 <= distance_pct <= 3.0:
+        return {"trendline_value": round(float(trendline_value_today), 2), "distance_pct": round(distance_pct, 1)}
+    return None
 
 
 def detect_descending_trendline_breakout(hist: pd.DataFrame) -> Optional[dict]:
@@ -647,6 +860,12 @@ def init_db():
     # before this column existed (CREATE TABLE IF NOT EXISTS above is a
     # no-op once the table exists, so this is needed for already-deployed DBs).
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS change_pct REAL;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sma50 REAL;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sma150 REAL;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sma200 REAL;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS trend_stage TEXT;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS atr_value REAL;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS atr_pct REAL;")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS universe_movers (
             ticker TEXT PRIMARY KEY,
@@ -684,8 +903,8 @@ def upsert_scan_result(conn, result):
             entry_price, support_level, resistance_targets,
             social_volume_spike_pct, ai_summary_he, ai_summary_en,
             market_cap, avg_volume_20d, breakout_volume_pct, exchange,
-            change_pct, timestamp
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            change_pct, sma50, sma150, sma200, trend_stage, atr_value, atr_pct, timestamp
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             result.ticker, result.trigger_text_he, result.trigger_text_en,
@@ -693,7 +912,9 @@ def upsert_scan_result(conn, result):
             json.dumps([_native(x) for x in result.resistance_targets]), _native(result.social_volume_spike_pct),
             result.ai_summary_he, result.ai_summary_en, _native(result.market_cap),
             _native(result.avg_volume_20d), _native(result.breakout_volume_pct), result.exchange,
-            _native(result.change_pct), datetime.now(timezone.utc).isoformat(),
+            _native(result.change_pct), _native(result.sma50), _native(result.sma150), _native(result.sma200),
+            result.trend_stage, _native(result.atr_value), _native(result.atr_pct),
+            datetime.now(timezone.utc).isoformat(),
         ),
     )
     conn.commit()
@@ -733,7 +954,7 @@ def fetch_ticker_data_with_timeout(ticker: str, timeout: int = PER_TICKER_TIMEOU
 # ------------------------------------------------------------------
 
 def scan_universe(universe: List[str] = None, target_language: str = "he") -> List[ScanResult]:
-    universe = universe or DEFAULT_UNIVERSE
+    universe = universe or build_scan_universe()
     results: List[ScanResult] = []
     consecutive_timeouts = 0
     all_changes: List[tuple] = []  # (ticker, change_pct, close) for EVERY ticker fetched —
@@ -781,6 +1002,7 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
 
         # Run all pattern detectors
         trendline_break  = detect_descending_trendline_breakout(hist)
+        asc_trendline    = detect_ascending_trendline_support(hist)
         high_52w         = detect_52w_high_breakout(hist)
         momentum         = detect_momentum_surge(hist)
         cup_handle       = detect_cup_and_handle(hist)
@@ -792,13 +1014,16 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         rsi_bounce       = detect_rsi_oversold_bounce(hist)
 
         vol_pct = check_breakout_volume(hist)
+        trend = compute_trend_structure(hist)
+        atr = compute_atr(hist)
 
         # Volume confirmation gate: a genuine breakout should show real
         # buying volume behind it. Without this, "breakout" patterns were
         # being flagged even on weak/below-average volume, which is a
         # classic false-breakout setup. Trend/momentum signals (golden
-        # cross, MACD cross, RSI bounce) don't require the full breakout
-        # threshold since they aren't breakout patterns by nature.
+        # cross, MACD cross, RSI bounce, ascending trendline support)
+        # don't require the full breakout threshold since they aren't
+        # breakout-on-a-volume-spike patterns by nature.
         volume_confirmed = vol_pct >= BREAKOUT_VOLUME_THRESHOLD_PCT
         if not volume_confirmed:
             cup_handle = None
@@ -809,13 +1034,13 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             trendline_break = None
 
         # Skip if no pattern found at all
-        if not any([trendline_break, high_52w, momentum, cup_handle, bull_flag,
+        if not any([trendline_break, asc_trendline, high_52w, momentum, cup_handle, bull_flag,
                     asc_triangle, golden_cross, double_bottom, macd_cross, rsi_bounce]):
             continue
 
         close   = float(hist["Close"].iloc[-1])
-        support = float(hist["Low"].tail(20).min())
-        resistance = [round(close * 1.05, 2), round(close * 1.10, 2)]
+        sr = compute_support_resistance(hist)
+        support, resistance = sr["support_level"], sr["resistance_targets"]
         prev_close = float(hist["Close"].iloc[-2]) if len(hist) > 1 else close
         change_pct = round(((close - prev_close) / prev_close) * 100, 2) if prev_close else 0.0
 
@@ -844,6 +1069,10 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             trigger_en = f"Ascending Triangle breakout above ${asc_triangle['resistance']}"
             trigger_he = f"פריצת משולש עולה מעל ${asc_triangle['resistance']}"
             tech_score = min(100, 68 + int(vol_pct / 5))
+        elif asc_trendline:
+            trigger_en = f"Bouncing off rising trendline support (~${asc_trendline['trendline_value']})"
+            trigger_he = f"התאוששות מקו מגמה עולה (סביב ${asc_trendline['trendline_value']})"
+            tech_score = 66
         elif macd_cross:
             trigger_en = "MACD bullish crossover"
             trigger_he = "חציית MACD שורית"
@@ -861,6 +1090,33 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             trigger_he = "פריצת שיאים יורדים בווליום חזק"
             tech_score = min(100, 55 + int(vol_pct / 4))
 
+        # Trend-quality adjustment: the same pattern is a meaningfully
+        # better setup when the broader trend structure backs it up (Stage
+        # 2 uptrend — price above a rising 150-day MA, in bullish MA order)
+        # vs. the same pattern firing on a stock that's still in a downtrend
+        # or basing phase. This is the main lever for making the scan more
+        # precise rather than just pattern-matching in a vacuum.
+        trend_stage = trend["stage"] if trend else None
+        if trend:
+            if trend["stage"] == "Stage 2 - Uptrend":
+                tech_score = min(100, tech_score + 8)
+            elif trend["stage"] == "Stage 4 - Downtrend":
+                tech_score = max(1, tech_score - 20)  # bullish pattern against a downtrend = much lower conviction
+            elif trend["stage"] == "Stage 3 - Topping":
+                tech_score = max(1, tech_score - 10)
+
+        ai_summary_en = f"{trigger_en}. Volume {vol_pct:.0f}% above 20d average."
+        ai_summary_he = f"{trigger_he}. נפח גבוה ב-{vol_pct:.0f}% מהממוצע."
+        if trend_stage:
+            ai_summary_en += f" Trend: {trend_stage}."
+            stage_he = {
+                "Stage 2 - Uptrend": "שלב 2 - מגמת עלייה",
+                "Stage 1 - Basing": "שלב 1 - בסיס/איחוד",
+                "Stage 3 - Topping": "שלב 3 - היפוך אפשרי מלמעלה",
+                "Stage 4 - Downtrend": "שלב 4 - מגמת ירידה",
+            }.get(trend_stage, trend_stage)
+            ai_summary_he += f" מגמה: {stage_he}."
+
         result = ScanResult(
             ticker=ticker,
             trigger_text_en=trigger_en,
@@ -875,8 +1131,14 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             breakout_volume_pct=vol_pct,
             exchange=info.get("exchange", ""),
             change_pct=change_pct,
-            ai_summary_en=f"{trigger_en}. Volume {vol_pct:.0f}% above 20d average.",
-            ai_summary_he=f"{trigger_he}. נפח גבוה ב-{vol_pct:.0f}% מהממוצע.",
+            ai_summary_en=ai_summary_en,
+            ai_summary_he=ai_summary_he,
+            sma50=trend["sma50"] if trend else None,
+            sma150=trend["sma150"] if trend else None,
+            sma200=trend["sma200"] if trend else None,
+            trend_stage=trend_stage,
+            atr_value=atr["atr_value"] if atr else None,
+            atr_pct=atr["atr_pct"] if atr else None,
         )
         results.append(result)
 
