@@ -4,9 +4,10 @@ Pipeline A - Swing Trading Scanner
 Runs once daily, ~23:00 Israel time (after US market close).
 
 Flow:
-  1. Universe filter   -> S&P 500 (fetched live from Wikipedia) + a curated
-                          list of liquid extras/ETFs not in the index, then
-                          liquid/mid/large-cap NYSE/NASDAQ only (anti pump&dump)
+  1. Universe filter   -> S&P 500 (fetched live from a public CSV) + a
+                          curated list of liquid extras/ETFs not in the
+                          index, then liquid/mid/large-cap NYSE/NASDAQ only
+                          (anti pump&dump)
   2. Trend structure    -> SMA50/150/200 position + order + slope, classified
                           into a Weinstein-style Stage 1-4 (see
                           compute_trend_structure) — this is what lets the
@@ -34,7 +35,7 @@ and descriptive (e.g. "the asset is drawing renewed interest" instead of
 to display on the site.
 
 Requirements (pip install --break-system-packages):
-    yfinance pandas numpy openai praw requests python-dotenv lxml
+    yfinance pandas numpy openai praw requests python-dotenv
 """
 
 import json
@@ -103,27 +104,36 @@ MAX_CONSECUTIVE_TIMEOUTS = 8           # circuit breaker: abort the scan early i
 
 
 def fetch_sp500_tickers() -> List[str]:
-    """Pulls the current S&P 500 constituent list from Wikipedia (free, no
-    API key, updated whenever the index changes) — this is what takes the
-    universe from ~90 hand-picked names to 500+. Falls back to just the
-    curated DEFAULT_UNIVERSE below if the fetch ever fails (network issue,
-    Wikipedia table layout change, etc.) so a bad day for this one dependency
-    can't zero out the whole scan.
+    """Pulls the current S&P 500 constituent list from a plain public CSV
+    (free, no API key, updated whenever the index changes) — this is what
+    takes the universe from ~90 hand-picked names to 500+.
+
+    NOTE: this used to scrape Wikipedia's HTML table via pandas.read_html(),
+    which needs lxml (or html5lib) installed to parse HTML. Adding lxml to
+    requirements.txt is exactly what broke the Railway deploy — lxml often
+    has to compile from source and can fail a build outright depending on
+    what's available in the build image, which took down the *entire*
+    deployment (API included), not just this one feature. A plain CSV needs
+    none of that — pandas.read_csv has zero extra parsing dependencies.
+
+    Falls back to just the curated DEFAULT_UNIVERSE below if the fetch ever
+    fails (network issue, source unavailable, etc.) so a bad day for this
+    one dependency can't zero out the whole scan.
     """
     try:
         import requests
+        import io
         resp = requests.get(
-            "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
-            headers={"User-Agent": "Mozilla/5.0"},
+            "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv",
             timeout=15,
         )
         resp.raise_for_status()
-        tables = pd.read_html(resp.text)
-        symbols_col = tables[0]["Symbol"].astype(str).tolist()
-        # yfinance uses '-' where Wikipedia uses '.' for share classes (e.g. BRK.B -> BRK-B)
+        table = pd.read_csv(io.StringIO(resp.text))
+        symbols_col = table["Symbol"].astype(str).tolist()
+        # yfinance uses '-' where this source uses '.' for share classes (e.g. BRK.B -> BRK-B)
         return [s.strip().replace(".", "-") for s in symbols_col if s.strip()]
     except Exception as e:
-        print(f"[warn] failed to fetch S&P 500 list from Wikipedia, using curated list only: {e}")
+        print(f"[warn] failed to fetch S&P 500 list, using curated list only: {e}")
         return []
 
 
