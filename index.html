@@ -1379,7 +1379,7 @@ const STAGE_COLOR = {
 // the stock drawer right under the chart — the "higher level analysis"
 // context (is this actually a healthy uptrend, not just an isolated pattern).
 function renderTrendBlock(s){
-  if(!s.trendStage && s.sma150==null && s.atrValue==null) return '';
+  if(!s.trendStage && s.sma150==null && s.atrValue==null && s.rsRating==null) return '';
   const t = lang==='en';
   const stageLabel = t ? (s.trendStage||'—') : (STAGE_HE[s.trendStage] || s.trendStage || '—');
   const stageColor = STAGE_COLOR[s.trendStage] || 'var(--text-dim)';
@@ -1391,10 +1391,16 @@ function renderTrendBlock(s){
     const word = above ? (t?'above':'מעל') : (t?'below':'מתחת');
     return `<div class="trend-ma-row"><span>${label}</span><span style="color:${color}">$${value} (${word})</span></div>`;
   };
+  let rsRow = '';
+  if(s.rsRating!=null){
+    const rsColor = s.rsRating>=80 ? 'var(--green)' : s.rsRating>=60 ? 'var(--amber)' : 'var(--red)';
+    rsRow = `<div class="trend-ma-row"><span>RS Rating</span><span style="color:${rsColor};font-weight:700;">${s.rsRating}</span></div>`;
+  }
   return `
     <div class="ai-box trend-box">
       <div class="label">${t?'Trend Structure':'מבנה מגמה'}</div>
       ${s.trendStage ? `<div class="trend-stage-badge" style="color:${stageColor};border-color:${stageColor};">${stageLabel}</div>` : ''}
+      ${rsRow}
       ${maRow(t?'SMA 50':'ממוצע 50', s.sma50)}
       ${maRow(t?'SMA 150':'ממוצע 150', s.sma150)}
       ${maRow(t?'SMA 200':'ממוצע 200', s.sma200)}
@@ -1419,6 +1425,7 @@ function mapDbRowToStock(r){
     sma50: r.sma50, sma150: r.sma150, sma200: r.sma200,
     trendStage: r.trend_stage,
     atrValue: r.atr_value, atrPct: r.atr_pct,
+    rsRating: r.rs_rating,
   };
 }
 

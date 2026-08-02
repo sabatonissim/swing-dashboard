@@ -148,6 +148,7 @@ def init_db():
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS trend_stage TEXT;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS atr_value REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS atr_pct REAL;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS rs_rating INTEGER;")
     conn.commit()
     cur.close()
     conn.close()

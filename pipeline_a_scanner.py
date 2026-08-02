@@ -14,6 +14,12 @@ Flow:
                           scan tell a breakout in a genuine uptrend apart
                           from the same pattern firing in a downtrend/basing
                           stock, instead of pattern-matching in a vacuum
+  3. Relative Strength   -> IBD/O'Neil-style RS Rating (1-99): weighted
+                          performance vs SPY over the past year, ranked as a
+                          percentile across the whole universe (see
+                          compute_rs_raw / compute_rs_ratings). A technically
+                          valid pattern on a market laggard scores lower than
+                          the same pattern on a genuine relative leader.
   3. Technical filter   -> descending-trendline breakout / ascending-trendline
                           support bounce / continuation pattern breakout
                           (see detect_* functions below)
@@ -47,7 +53,7 @@ import psycopg2.extras
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 import numpy as np
 import pandas as pd
@@ -170,6 +176,7 @@ class ScanResult:
     trend_stage: Optional[str] = None
     atr_value: Optional[float] = None
     atr_pct: Optional[float] = None
+    rs_rating: Optional[int] = None
 
 
 # ------------------------------------------------------------------
@@ -876,6 +883,7 @@ def init_db():
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS trend_stage TEXT;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS atr_value REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS atr_pct REAL;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS rs_rating INTEGER;")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS universe_movers (
             ticker TEXT PRIMARY KEY,
@@ -913,8 +921,8 @@ def upsert_scan_result(conn, result):
             entry_price, support_level, resistance_targets,
             social_volume_spike_pct, ai_summary_he, ai_summary_en,
             market_cap, avg_volume_20d, breakout_volume_pct, exchange,
-            change_pct, sma50, sma150, sma200, trend_stage, atr_value, atr_pct, timestamp
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            change_pct, sma50, sma150, sma200, trend_stage, atr_value, atr_pct, rs_rating, timestamp
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             result.ticker, result.trigger_text_he, result.trigger_text_en,
@@ -923,7 +931,7 @@ def upsert_scan_result(conn, result):
             result.ai_summary_he, result.ai_summary_en, _native(result.market_cap),
             _native(result.avg_volume_20d), _native(result.breakout_volume_pct), result.exchange,
             _native(result.change_pct), _native(result.sma50), _native(result.sma150), _native(result.sma200),
-            result.trend_stage, _native(result.atr_value), _native(result.atr_pct),
+            result.trend_stage, _native(result.atr_value), _native(result.atr_pct), _native(result.rs_rating),
             datetime.now(timezone.utc).isoformat(),
         ),
     )
@@ -940,7 +948,12 @@ def upsert_scan_result(conn, result):
 
 def _fetch_ticker_data(ticker: str):
     tk = yf.Ticker(ticker)
-    hist = tk.history(period="6mo", interval="1d")
+    # NOTE: this used to be period="6mo" (~126 trading days). That's LESS
+    # than the 210 bars compute_trend_structure() requires for SMA200 + its
+    # slope check — meaning the whole trend-stage feature was silently
+    # returning None for every single ticker since it was added. 2y gives
+    # enough room for SMA200 and for the RS Rating's 12-month lookback below.
+    hist = tk.history(period="2y", interval="1d")
     info = tk.info
     return hist, info
 
@@ -960,6 +973,69 @@ def fetch_ticker_data_with_timeout(ticker: str, timeout: int = PER_TICKER_TIMEOU
 
 
 # ------------------------------------------------------------------
+# Relative Strength (RS) Rating — IBD/O'Neil style: how has this stock
+# performed vs. the S&P 500 (SPY) over the past year, weighted so recent
+# performance counts more? This is the main lever for scan PRECISION: a
+# technically valid breakout on a stock that's been quietly lagging the
+# market for a year is a much weaker signal than the same breakout on a
+# stock that's been genuinely outperforming. Computed once per scan run
+# across the whole universe, then ranked into a 1-99 percentile so "RS 90"
+# means "outperforming 90% of everything else scanned today" — the same
+# scale IBD uses, which the user may already be familiar with.
+# ------------------------------------------------------------------
+
+RS_LOOKBACK_WEIGHTS = {63: 0.4, 126: 0.2, 189: 0.2, 252: 0.2}  # ~3/6/9/12 months, weighted
+
+
+def fetch_benchmark_returns() -> Dict[int, float]:
+    """SPY's own return over each lookback window — the yardstick every
+    ticker's RS score gets compared against. Fetched once per scan run,
+    not once per ticker."""
+    try:
+        spy_hist = yf.Ticker("SPY").history(period="2y", interval="1d")
+        closes = spy_hist["Close"]
+        rets = {}
+        for days in RS_LOOKBACK_WEIGHTS:
+            if len(closes) > days:
+                rets[days] = float(closes.iloc[-1] / closes.iloc[-days - 1] - 1)
+        return rets
+    except Exception as e:
+        print(f"[warn] failed to fetch SPY benchmark for RS Rating: {e}")
+        return {}
+
+
+def compute_rs_raw(hist: pd.DataFrame, benchmark_rets: Dict[int, float]) -> Optional[float]:
+    """Weighted excess return vs SPY across the available lookback windows.
+    Positive = outperforming the market over that horizon, negative = lagging."""
+    if not benchmark_rets:
+        return None
+    closes = hist["Close"]
+    score = 0.0
+    total_weight = 0.0
+    for days, weight in RS_LOOKBACK_WEIGHTS.items():
+        if len(closes) > days and days in benchmark_rets:
+            stock_ret = float(closes.iloc[-1] / closes.iloc[-days - 1] - 1)
+            score += weight * (stock_ret - benchmark_rets[days])
+            total_weight += weight
+    if total_weight == 0:
+        return None
+    return score / total_weight
+
+
+def compute_rs_ratings(rs_raw_by_ticker: Dict[str, float]) -> Dict[str, int]:
+    """Converts raw excess-return scores into a 1-99 percentile rank across
+    everything scanned this run — the actual "RS Rating" number."""
+    if not rs_raw_by_ticker:
+        return {}
+    ranked = sorted(rs_raw_by_ticker.items(), key=lambda kv: kv[1])
+    n = len(ranked)
+    ratings = {}
+    for i, (ticker, _) in enumerate(ranked):
+        ratings[ticker] = int(round((i / max(n - 1, 1)) * 98)) + 1  # 1..99
+    return ratings
+
+
+# ------------------------------------------------------------------
 # Orchestration
 # ------------------------------------------------------------------
 
@@ -971,6 +1047,9 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
                                      # a reliable fallback for the movers strip if Yahoo's
                                      # whole-market screener endpoint is unavailable, since
                                      # this uses .history(), the endpoint proven to work here.
+    benchmark_rets = fetch_benchmark_returns()
+    rs_raw_by_ticker: Dict[str, float] = {}  # computed for every ticker fetched, used for
+                                              # percentile ranking after the full loop below
 
     for ticker in universe:
         try:
@@ -1009,6 +1088,10 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
 
         if not passes_liquidity_and_cap_filter(ticker, info, hist):
             continue
+
+        rs_raw = compute_rs_raw(hist, benchmark_rets)
+        if rs_raw is not None:
+            rs_raw_by_ticker[ticker] = rs_raw
 
         # Run all pattern detectors
         trendline_break  = detect_descending_trendline_breakout(hist)
@@ -1151,6 +1234,22 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             atr_pct=atr["atr_pct"] if atr else None,
         )
         results.append(result)
+
+    # RS Rating can only be computed as a percentile AFTER seeing every
+    # ticker's raw score, so this pass happens once the whole universe has
+    # been scanned — same idea as the trend-stage adjustment above, applied
+    # after the fact rather than ticker-by-ticker.
+    rs_ratings = compute_rs_ratings(rs_raw_by_ticker)
+    for result in results:
+        rating = rs_ratings.get(result.ticker)
+        result.rs_rating = rating
+        if rating is not None:
+            if rating >= 80:
+                result.swing_score = min(100, result.swing_score + 8)   # genuine market leader
+            elif rating >= 60:
+                result.swing_score = min(100, result.swing_score + 3)
+            elif rating < 40:
+                result.swing_score = max(1, result.swing_score - 15)  # pattern firing on a market laggard = low conviction
 
     upsert_universe_movers(all_changes)
     return results
