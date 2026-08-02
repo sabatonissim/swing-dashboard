@@ -74,6 +74,13 @@
   .movers-col{flex:1 1 38%;min-width:0;max-width:340px;display:flex;flex-direction:column;}
   @media(max-width:900px){.market-charts-row{flex-direction:column;}.movers-col{max-width:none;}}
   .movers-title{font-size:11px;letter-spacing:1.5px;color:var(--text-dim);text-transform:uppercase;margin-bottom:8px;}
+  .movers-head-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap;}
+  .movers-head-row .movers-title{margin-bottom:0;}
+  .movers-toggle{display:flex;gap:4px;background:var(--panel-2);border-radius:8px;padding:2px;}
+  .movers-toggle-btn{background:transparent;border:none;color:var(--text-dim);font-size:10.5px;font-weight:600;padding:5px 9px;border-radius:6px;cursor:pointer;font-family:'Heebo',sans-serif;white-space:nowrap;}
+  .movers-toggle-btn.active{background:var(--amber);color:#1a1a1a;}
+  .watchlist-star{cursor:pointer;font-size:15px;line-height:1;user-select:none;color:var(--text-dim);}
+  .watchlist-star.active{color:var(--amber);}
   .movers-list{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px 10px;height:220px;overflow-y:auto;}
   .movers-list::-webkit-scrollbar{width:5px;}
   .movers-list::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px;}
@@ -270,7 +277,13 @@
       </div>
     </div>
     <div class="movers-col">
-      <div class="movers-title" id="movers-title">הכי זזות היום בשוק</div>
+      <div class="movers-head-row">
+        <div class="movers-title" id="movers-title">הכי זזות היום בשוק</div>
+        <div class="movers-toggle">
+          <button class="movers-toggle-btn active" id="movers-toggle-hot" onclick="setMoversPanelMode('hot')">הכי זזות</button>
+          <button class="movers-toggle-btn" id="movers-toggle-watchlist" onclick="setMoversPanelMode('watchlist')">רשימת מעקב</button>
+        </div>
+      </div>
       <div class="movers-list" id="movers-list"></div>
     </div>
   </div>
@@ -474,6 +487,9 @@ let currentChartSymbol = 'SPX';
 // re-generating it from scratch.
 const INDICES_TABS_HTML = document.getElementById('chart-tabs-container').innerHTML;
 let chartMode = 'indices';      // 'indices' | 'sectors'
+let moversPanelMode = 'hot';    // 'hot' | 'watchlist' — independent of chartMode
+let watchlistTickers = new Set();
+let latestWatchlistData = [];
 let sectorPeriod = 'YTD';       // '1M' | '3M' | 'YTD' | '1Y'
 let sectorChartInstance = null;
 let sectorDataCache = {};       // period -> API response (avoid re-fetching on every toggle)
@@ -608,7 +624,9 @@ function destroySectorChart(){
 // (indices mode) and the 11 SPDR sector ETFs with 1D + period % change
 // (sectors mode) — reuses the same .mover-row markup/styling either way.
 function renderMoversOrSectorList(){
+  const toggleEl = document.querySelector('.movers-toggle');
   if(chartMode === 'sectors'){
+    if(toggleEl) toggleEl.style.display = 'none';
     document.getElementById('movers-title').textContent =
       lang==='en' ? `US Sectors (${sectorPeriod})` : `סקטורים בארה"ב (${sectorPeriod})`;
     const el = document.getElementById('movers-list');
@@ -631,9 +649,103 @@ function renderMoversOrSectorList(){
         </div>
       `;
     }).join('');
+    return;
+  }
+
+  if(toggleEl) toggleEl.style.display = '';
+  if(moversPanelMode === 'watchlist'){
+    document.getElementById('movers-title').textContent = lang==='en' ? 'Watchlist' : 'רשימת מעקב';
+    renderWatchlistPanel();
+    return;
+  }
+  document.getElementById('movers-title').textContent = UI[lang].movers_title;
+  renderMovers();
+}
+
+// ---- Personal watchlist (movers-panel toggle) ----
+function setMoversPanelMode(mode){
+  if(moversPanelMode === mode) return;
+  moversPanelMode = mode;
+  document.getElementById('movers-toggle-hot').classList.toggle('active', mode==='hot');
+  document.getElementById('movers-toggle-watchlist').classList.toggle('active', mode==='watchlist');
+  if(mode === 'watchlist'){
+    loadWatchlist();
   } else {
-    document.getElementById('movers-title').textContent = UI[lang].movers_title;
-    renderMovers();
+    renderMoversOrSectorList();
+  }
+}
+
+async function refreshWatchlistData(){
+  try {
+    const res = await fetch(`${API_BASE}/api/watchlist`);
+    if(!res.ok) throw new Error('bad response');
+    const data = await res.json();
+    latestWatchlistData = Array.isArray(data) ? data : [];
+    watchlistTickers = new Set(latestWatchlistData.map(r=>r.ticker));
+    return true;
+  } catch(e) {
+    console.error('[watchlist] load failed', e);
+    return false;
+  }
+}
+
+async function loadWatchlist(){
+  const el = document.getElementById('movers-list');
+  document.getElementById('movers-title').textContent = lang==='en' ? 'Watchlist' : 'רשימת מעקב';
+  if(el) el.innerHTML = `<div class="movers-empty">${UI[lang].loading}</div>`;
+  const ok = await refreshWatchlistData();
+  if(!ok && el){
+    el.innerHTML = `<div class="movers-empty">${lang==='en'?'Could not load watchlist.':'לא ניתן לטעון את רשימת המעקב.'}</div>`;
+    return;
+  }
+  renderWatchlistPanel();
+}
+
+function renderWatchlistPanel(){
+  const el = document.getElementById('movers-list');
+  if(!el) return;
+  if(!latestWatchlistData.length){
+    el.innerHTML = `<div class="movers-empty">${lang==='en'?"No tickers yet — add one from any stock's page (★ next to the ticker).":'עדיין אין מניות ברשימת המעקב — הוסף אחת מעמוד המניה (★ ליד שם הטיקר).'}</div>`;
+    return;
+  }
+  el.innerHTML = latestWatchlistData.map(r=>{
+    const has = r.price!=null;
+    const cls = has && r.change_pct>=0 ? 'up' : 'down';
+    const sign = has && r.change_pct>=0 ? '+' : '';
+    return `
+      <div class="mover-row" onclick="showTickerDrawer('${r.ticker}')">
+        <div class="mover-ticker">${r.ticker}</div>
+        <div class="mover-trigger">${has ? '$'+r.price : (lang==='en'?'price unavailable':'מחיר לא זמין')}</div>
+        <div class="mover-pct ${cls}">${has ? sign+r.change_pct.toFixed(2)+'%' : '—'}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function toggleWatchlist(ticker){
+  const starEl = document.getElementById(`watchlist-star-${ticker}`);
+  const isActive = watchlistTickers.has(ticker);
+  try {
+    if(isActive){
+      const res = await fetch(`${API_BASE}/api/watchlist/${ticker}`, { method: 'DELETE' });
+      if(!res.ok) throw new Error('delete failed');
+      watchlistTickers.delete(ticker);
+      latestWatchlistData = latestWatchlistData.filter(r=>r.ticker!==ticker);
+    } else {
+      const res = await fetch(`${API_BASE}/api/watchlist`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker }),
+      });
+      if(!res.ok) throw new Error('add failed');
+      watchlistTickers.add(ticker);
+      latestWatchlistData.unshift({ ticker, price: null, change_pct: null });
+      track('watchlist_add', ticker);
+    }
+    if(starEl) starEl.classList.toggle('active', !isActive);
+    if(moversPanelMode === 'watchlist') renderWatchlistPanel();
+  } catch(e) {
+    console.error('[watchlist] toggle failed', e);
   }
 }
 
@@ -644,7 +756,7 @@ function openDrawer(i){
   const triggerText = lang==='en' ? (s.trigger_en||s.trigger||'') : (s.trigger||s.trigger_he||'');
   drawer.innerHTML = `
     <div class="drawer-head">
-      <h2>${s.ticker}</h2>
+      <h2>${s.ticker} <span class="watchlist-star ${watchlistTickers.has(s.ticker)?'active':''}" id="watchlist-star-${s.ticker}" onclick="toggleWatchlist('${s.ticker}')" title="${lang==='en'?'Add/remove from watchlist':'הוסף/הסר מרשימת המעקב'}">★</span></h2>
       <button class="close-btn" onclick="closeDrawer()">✕</button>
     </div>
     <div id="tv-chart" class="tv-chart-box"></div>
@@ -1060,7 +1172,7 @@ function renderFundamentals(data){
 async function showTickerDrawer(ticker){
   const drawer = document.getElementById("drawer");
   drawer.innerHTML = `
-    <div class="drawer-head"><h2>${ticker}</h2><button class="close-btn" onclick="closeDrawer()">✕</button></div>
+    <div class="drawer-head"><h2>${ticker} <span class="watchlist-star ${watchlistTickers.has(ticker)?'active':''}" id="watchlist-star-${ticker}" onclick="toggleWatchlist('${ticker}')" title="${lang==='en'?'Add/remove from watchlist':'הוסף/הסר מרשימת המעקב'}">★</span></h2><button class="close-btn" onclick="closeDrawer()">✕</button></div>
     <div id="tv-chart" class="tv-chart-box"></div>
     <div class="ai-box" id="loading-box">טוען נתונים...</div>
   `;
@@ -1460,6 +1572,7 @@ loadFromApi();
 setInterval(loadFromApi, 20000);
 loadMarketMovers();
 setInterval(loadMarketMovers, 60000);
+refreshWatchlistData();
 
 window.addEventListener('load', ()=>{
   applyLang();

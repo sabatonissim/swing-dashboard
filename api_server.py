@@ -134,6 +134,10 @@ def init_db():
             close_price REAL,
             timestamp TIMESTAMPTZ DEFAULT NOW()
         );
+        CREATE TABLE IF NOT EXISTS watchlist (
+            ticker TEXT PRIMARY KEY,
+            added_at TIMESTAMPTZ DEFAULT NOW()
+        );
     """)
     # Patches an already-deployed table that predates this column
     # (CREATE TABLE IF NOT EXISTS above is a no-op once the table exists).
@@ -302,6 +306,86 @@ def lookup_stock(ticker: str):
         "sector": info.get("sector"),
         "pe_ratio": info.get("trailingPE"),
     }
+
+
+# ------------------------------------------------------------------
+# Personal watchlist — a plain list of tickers the user chose to track,
+# independent of whatever the scanner happens to flag that day. Single
+# shared list (this is a personal dashboard, not multi-user), so no auth
+# needed here — just persisted tickers.
+# ------------------------------------------------------------------
+
+@app.get("/api/watchlist")
+def get_watchlist():
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT ticker FROM watchlist ORDER BY added_at DESC")
+    tickers = [r["ticker"] for r in cur.fetchall()]
+    cur.close()
+    conn.close()
+
+    if not tickers:
+        return []
+
+    # One batch yf.Tickers() call instead of N individual lookups — keeps
+    # this fast and avoids hammering Yahoo with a separate request per
+    # watchlist item every time the panel refreshes.
+    out = []
+    try:
+        batch = yf.Tickers(" ".join(tickers))
+        for t in tickers:
+            try:
+                tk = batch.tickers.get(t)
+                if tk is None:
+                    continue
+                fast = tk.fast_info
+                price = fast.get("lastPrice")
+                prev_close = fast.get("previousClose")
+                if price is None:
+                    continue
+                change_pct = round(((price - prev_close) / prev_close) * 100, 2) if prev_close else 0.0
+                out.append({"ticker": t, "price": round(float(price), 2), "change_pct": change_pct})
+            except Exception as e:
+                print(f"[warn] watchlist quote failed for {t}: {e}")
+                out.append({"ticker": t, "price": None, "change_pct": None})
+    except Exception as e:
+        print(f"[warn] watchlist batch quote fetch failed: {e}")
+        out = [{"ticker": t, "price": None, "change_pct": None} for t in tickers]
+
+    return out
+
+
+class WatchlistTicker(BaseModel):
+    ticker: str
+
+
+@app.post("/api/watchlist")
+def add_to_watchlist(body: WatchlistTicker):
+    ticker = body.ticker.upper().strip()
+    if not ticker:
+        raise HTTPException(status_code=400, detail="ticker is required")
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO watchlist (ticker) VALUES (%s) ON CONFLICT (ticker) DO NOTHING",
+        (ticker,),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"ticker": ticker, "added": True}
+
+
+@app.delete("/api/watchlist/{ticker}")
+def remove_from_watchlist(ticker: str):
+    ticker = ticker.upper().strip()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM watchlist WHERE ticker = %s", (ticker,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"ticker": ticker, "removed": True}
 
 
 # ------------------------------------------------------------------
