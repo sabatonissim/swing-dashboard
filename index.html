@@ -157,6 +157,21 @@
   .trend-ma-row{display:flex;justify-content:space-between;font-size:12.5px;padding:5px 0;border-bottom:1px solid var(--line);font-family:'JetBrains Mono',monospace;}
   .trend-ma-row:last-child{border-bottom:none;}
   .pattern-stats-blurb{margin-top:10px;padding:9px 11px;border-inline-start:3px solid;border-radius:6px;background:var(--panel-2);font-size:12px;line-height:1.5;color:var(--text-dim);}
+  .risk-calc-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;align-items:center;justify-content:center;padding:16px;}
+  .risk-calc-overlay.open{display:flex;}
+  .risk-calc-modal{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px;width:100%;max-width:380px;max-height:90vh;overflow-y:auto;}
+  .risk-calc-modal h3{margin:0 0 14px;font-size:16px;}
+  .risk-field{margin-bottom:12px;}
+  .risk-field label{display:block;font-size:11px;color:var(--text-dim);margin-bottom:5px;}
+  .risk-field input{width:100%;box-sizing:border-box;background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:9px 10px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:14px;}
+  .risk-field input:focus{outline:none;border-color:var(--amber);}
+  .risk-calc-results{margin-top:14px;padding:13px;background:var(--panel-2);border-radius:10px;border:1px solid var(--line);}
+  .risk-result-row{display:flex;justify-content:space-between;padding:6px 0;font-size:13px;border-bottom:1px solid var(--line);}
+  .risk-result-row:last-child{border-bottom:none;}
+  .risk-result-row .v{font-family:'JetBrains Mono',monospace;font-weight:700;}
+  .risk-calc-warning{margin-top:10px;font-size:11.5px;color:var(--red);line-height:1.5;}
+  .risk-calc-close{display:block;width:100%;text-align:center;padding:10px;border-radius:9px;background:transparent;border:1px solid var(--line);color:var(--text-dim);cursor:pointer;font-size:12.5px;margin-top:14px;font-family:'Heebo',sans-serif;}
+  .risk-calc-close:hover{color:var(--text);border-color:var(--text-dim);}
   .ai-box .label{color:var(--amber);font-size:11px;letter-spacing:1px;text-transform:uppercase;margin-bottom:5px;}
   .deep-btn{display:block;width:100%;text-align:center;padding:11px;border-radius:9px;background:var(--amber);color:#1a1300;font-weight:700;border:none;cursor:pointer;font-size:14px;}
 
@@ -310,6 +325,9 @@
 
 <div class="overlay" id="overlay">
   <div class="drawer" id="drawer"></div>
+  <div class="risk-calc-overlay" id="risk-calc-overlay" onclick="if(event.target===this) closeRiskCalc();">
+    <div class="risk-calc-modal" id="risk-calc-modal"></div>
+  </div>
 </div>
 
 <script>
@@ -697,7 +715,103 @@ function renderMoversOrSectorList(){
   renderMovers();
 }
 
-// ---- Personal watchlist (movers-panel toggle) ----
+// ---- Position size / risk calculator ----
+// Pure client-side math, no backend involved — the user re-enters their
+// current total account equity every time (not a stored fixed value),
+// since that's the only honest way to size risk: it has to reflect what
+// the account is actually worth right now, including whatever's tied up
+// in other open positions.
+function openRiskCalc(prefill){
+  prefill = prefill || {};
+  const t = lang==='en';
+  const savedEquity = localStorage.getItem('riskCalcEquity') || '';
+  const savedRiskPct = localStorage.getItem('riskCalcRiskPct') || '1';
+  document.getElementById('risk-calc-modal').innerHTML = `
+    <h3>🧮 ${t?'Position Size Calculator':'מחשבון גודל פוזיציה'}</h3>
+    <div class="risk-field">
+      <label>${t?'Account Equity ($) — enter current total':'שווי התיק הכולל ($) — הזן את השווי הנוכחי'}</label>
+      <input type="number" id="rc-equity" value="${savedEquity}" oninput="recalcRisk()" placeholder="10000">
+    </div>
+    <div class="risk-field">
+      <label>${t?'Risk per trade (%)':'סיכון לטרייד (%)'}</label>
+      <input type="number" id="rc-risk-pct" value="${savedRiskPct}" step="0.1" oninput="recalcRisk()">
+    </div>
+    <div class="risk-field">
+      <label>${t?'Entry Price ($)':'מחיר כניסה ($)'}</label>
+      <input type="number" id="rc-entry" value="${prefill.entry??''}" step="0.01" oninput="recalcRisk()">
+    </div>
+    <div class="risk-field">
+      <label>${t?'Stop-Loss Price ($)':'מחיר סטופ-לוס ($)'}</label>
+      <input type="number" id="rc-stop" value="${prefill.stop??''}" step="0.01" oninput="recalcRisk()">
+    </div>
+    <div class="risk-field">
+      <label>${t?'Target Price ($) — optional':'מחיר יעד ($) — אופציונלי'}</label>
+      <input type="number" id="rc-target" value="${prefill.target??''}" step="0.01" oninput="recalcRisk()">
+    </div>
+    <div class="risk-calc-results" id="risk-calc-results"></div>
+    <button class="risk-calc-close" onclick="closeRiskCalc()">${t?'Close':'סגור'}</button>
+  `;
+  document.getElementById('risk-calc-overlay').classList.add('open');
+  recalcRisk();
+}
+
+function closeRiskCalc(){
+  const overlay = document.getElementById('risk-calc-overlay');
+  if(overlay) overlay.classList.remove('open');
+}
+
+function recalcRisk(){
+  const t = lang==='en';
+  const equityEl = document.getElementById('rc-equity');
+  if(!equityEl) return;
+  const equity = parseFloat(equityEl.value);
+  const riskPct = parseFloat(document.getElementById('rc-risk-pct').value);
+  const entry = parseFloat(document.getElementById('rc-entry').value);
+  const stop = parseFloat(document.getElementById('rc-stop').value);
+  const targetRaw = document.getElementById('rc-target').value;
+  const target = targetRaw ? parseFloat(targetRaw) : null;
+
+  if(!isNaN(equity)) localStorage.setItem('riskCalcEquity', equity);
+  if(!isNaN(riskPct)) localStorage.setItem('riskCalcRiskPct', riskPct);
+
+  const resultsEl = document.getElementById('risk-calc-results');
+  if(!resultsEl) return;
+
+  if(isNaN(equity) || isNaN(riskPct) || isNaN(entry) || isNaN(stop) || equity<=0 || entry<=0){
+    resultsEl.innerHTML = `<div style="color:var(--text-dim);font-size:12.5px;">${t?'Fill in equity, risk %, entry and stop to calculate.':'מלא שווי תיק, אחוז סיכון, כניסה וסטופ כדי לחשב.'}</div>`;
+    return;
+  }
+  const riskPerShare = entry - stop;
+  if(riskPerShare <= 0){
+    resultsEl.innerHTML = `<div class="risk-calc-warning">${t?'Stop must be below entry (for a long position).':'הסטופ חייב להיות מתחת למחיר הכניסה (בפוזיציית לונג).'}</div>`;
+    return;
+  }
+  const riskAmount = equity * (riskPct/100);
+  const shares = Math.floor(riskAmount / riskPerShare);
+  const positionSize = shares * entry;
+  const pctOfAccount = (positionSize / equity) * 100;
+  let rMultipleRow = '';
+  if(target!=null && !isNaN(target)){
+    const rMultiple = (target - entry) / riskPerShare;
+    rMultipleRow = `<div class="risk-result-row"><span>${t?'Risk/Reward (R)':'יחס סיכוי/סיכון'}</span><span class="v">1:${rMultiple.toFixed(1)}</span></div>`;
+  }
+  let warning = '';
+  if(shares<=0){
+    warning = `<div class="risk-calc-warning">${t?'Risk amount too small for even 1 share at this stop distance.':'סכום הסיכון קטן מדי אפילו למניה אחת במרחק הסטופ הזה.'}</div>`;
+  } else if(pctOfAccount > 25){
+    warning = `<div class="risk-calc-warning">${t?'⚠️ This position would be over 25% of your account — consider a wider stop or smaller risk %.':'⚠️ הפוזיציה הזו תהיה מעל 25% מהתיק — שקול סטופ רחוק יותר או אחוז סיכון נמוך יותר.'}</div>`;
+  }
+  resultsEl.innerHTML = `
+    <div class="risk-result-row"><span>${t?'Risk Amount':'סכום הסיכון'}</span><span class="v">$${riskAmount.toFixed(0)}</span></div>
+    <div class="risk-result-row"><span>${t?'Risk per Share':'סיכון למניה'}</span><span class="v">$${riskPerShare.toFixed(2)}</span></div>
+    <div class="risk-result-row"><span>${t?'Shares to Buy':'מניות לקנייה'}</span><span class="v">${shares}</span></div>
+    <div class="risk-result-row"><span>${t?'Position Size':'גודל הפוזיציה'}</span><span class="v">$${positionSize.toFixed(0)}</span></div>
+    <div class="risk-result-row"><span>${t?'% of Account':'אחוז מהתיק'}</span><span class="v">${pctOfAccount.toFixed(1)}%</span></div>
+    ${rMultipleRow}
+    ${warning}
+  `;
+}
+
 function setMoversPanelMode(mode){
   if(moversPanelMode === mode) return;
   moversPanelMode = mode;
@@ -820,6 +934,7 @@ function openDrawer(i){
       </div>
     </div>
     <button class="compare-btn" onclick="openCompare('${s.ticker}')">⇄ ${lang==='en'?'Compare with another stock':'השווה מול מניה אחרת'}</button>
+    <button class="compare-btn" style="border-color:var(--amber);color:var(--amber);" onclick='openRiskCalc(${JSON.stringify({entry:s.entry, stop:s.support, target:(Array.isArray(s.resistance)&&s.resistance.length?s.resistance[0]:null)})})'>🧮 ${lang==='en'?'Position Size Calculator':'מחשבון גודל פוזיציה'}</button>
     <div id="compare-section"></div>
   `;
   document.getElementById("overlay").classList.add("open");
@@ -1240,6 +1355,7 @@ async function showTickerDrawer(ticker){
         <div id="stock-news-list">טוען חדשות...</div>
       </div>
       <button class="compare-btn" onclick="openCompare('${ticker}')">⇄ ${lang==='en'?'Compare with another stock':'השווה מול מניה אחרת'}</button>
+      <button class="compare-btn" style="border-color:var(--amber);color:var(--amber);" onclick='openRiskCalc(${JSON.stringify({entry:d.price, stop:d.week52_low, target:d.week52_high})})'>🧮 ${lang==='en'?'Position Size Calculator':'מחשבון גודל פוזיציה'}</button>
       <div id="compare-section"></div>
     `);
     loadStockNews(ticker);
