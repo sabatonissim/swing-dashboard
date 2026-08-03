@@ -79,6 +79,11 @@
   .movers-toggle{display:flex;gap:4px;background:var(--panel-2);border-radius:8px;padding:2px;}
   .movers-toggle-btn{background:transparent;border:none;color:var(--text-dim);font-size:10.5px;font-weight:600;padding:5px 9px;border-radius:6px;cursor:pointer;font-family:'Heebo',sans-serif;white-space:nowrap;}
   .movers-toggle-btn.active{background:var(--amber);color:#1a1a1a;}
+  .view-mode-toggle{display:flex;gap:4px;background:var(--panel-2);border-radius:8px;padding:2px;}
+  .mode-btn{background:transparent;border:none;color:var(--text-dim);font-size:11px;font-weight:600;padding:6px 12px;border-radius:6px;cursor:pointer;font-family:'Heebo',sans-serif;white-space:nowrap;}
+  .mode-btn.active{background:var(--amber);color:#1a1a1a;}
+  .watchlist-add-btn{background:var(--amber);color:#1a1a1a;border:none;border-radius:8px;width:26px;height:26px;font-size:16px;font-weight:700;cursor:pointer;line-height:1;flex-shrink:0;}
+  .watchlist-add-btn:hover{opacity:.85;}
   .watchlist-star{cursor:pointer;font-size:15px;line-height:1;user-select:none;color:var(--text-dim);}
   .watchlist-star.active{color:var(--amber);}
   .movers-list{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px 10px;height:220px;overflow-y:auto;}
@@ -299,6 +304,7 @@
           <button class="movers-toggle-btn active" id="movers-toggle-hot" onclick="setMoversPanelMode('hot')">הכי זזות</button>
           <button class="movers-toggle-btn" id="movers-toggle-watchlist" onclick="setMoversPanelMode('watchlist')">רשימת מעקב</button>
         </div>
+        <button class="watchlist-add-btn" id="watchlist-add-btn" style="display:none;" onclick="promptAddToWatchlist()" title="הוסף מניה">+</button>
       </div>
       <div class="movers-list" id="movers-list"></div>
     </div>
@@ -500,7 +506,7 @@ function renderBreakingNews(){
 }
 
 // ---- Market chart ----
-let currentChartSymbol = 'SPX';
+let currentChartSymbol = 'SPY';
 // Captured once at load — the original SPY/QQQ/GLD/IWM/Bitcoin tab markup,
 // so switching back from "sectors" mode can restore it verbatim instead of
 // re-generating it from scratch.
@@ -549,6 +555,7 @@ let sectorDataCache = {};       // period -> API response (avoid re-fetching on 
 let latestSectorData = null;
 const SECTOR_COLORS = ['#ef5b5b','#5b8def','#3ecf7e','#c65bef','#35b3a3','#e8a33d','#8a5bef','#5b6fef','#8fef5b','#ef5ba3','#efa35b'];
 function switchChart(symbol){
+  currentChartSymbol = symbol;
   document.querySelectorAll('.chart-tab').forEach(t=>{
     t.classList.toggle('active', t.textContent.trim().startsWith(symbol.replace('BTCUSD','Bitcoin').replace('IWM','IWM')));
   });
@@ -663,7 +670,7 @@ function renderSectorChart(data){
       },
       scales:{
         x:{ grid:{display:false}, ticks:{ font:{size:9}, maxRotation:0, autoSkip:true, maxTicksLimit:8 } },
-        y:{ grid:{color:'rgba(255,255,255,0.06)'}, ticks:{ font:{size:9}, callback:(v)=>v+'%' } },
+        y:{ position:'right', grid:{color:'rgba(255,255,255,0.06)'}, ticks:{ font:{size:9}, callback:(v)=>v+'%' } },
       }
     }
   });
@@ -678,8 +685,10 @@ function destroySectorChart(){
 // (sectors mode) — reuses the same .mover-row markup/styling either way.
 function renderMoversOrSectorList(){
   const toggleEl = document.querySelector('.movers-toggle');
+  const addBtn = document.getElementById('watchlist-add-btn');
   if(chartMode === 'sectors'){
     if(toggleEl) toggleEl.style.display = 'none';
+    if(addBtn) addBtn.style.display = 'none';
     document.getElementById('movers-title').textContent =
       lang==='en' ? `US Sectors (${sectorPeriod})` : `סקטורים בארה"ב (${sectorPeriod})`;
     const el = document.getElementById('movers-list');
@@ -707,10 +716,12 @@ function renderMoversOrSectorList(){
 
   if(toggleEl) toggleEl.style.display = '';
   if(moversPanelMode === 'watchlist'){
+    if(addBtn) addBtn.style.display = '';
     document.getElementById('movers-title').textContent = lang==='en' ? 'Watchlist' : 'רשימת מעקב';
     renderWatchlistPanel();
     return;
   }
+  if(addBtn) addBtn.style.display = 'none';
   document.getElementById('movers-title').textContent = UI[lang].movers_title;
   renderMovers();
 }
@@ -817,10 +828,37 @@ function setMoversPanelMode(mode){
   moversPanelMode = mode;
   document.getElementById('movers-toggle-hot').classList.toggle('active', mode==='hot');
   document.getElementById('movers-toggle-watchlist').classList.toggle('active', mode==='watchlist');
+  const addBtn = document.getElementById('watchlist-add-btn');
+  if(addBtn) addBtn.style.display = mode==='watchlist' ? '' : 'none';
   if(mode === 'watchlist'){
     loadWatchlist();
   } else {
     renderMoversOrSectorList();
+  }
+}
+
+async function promptAddToWatchlist(){
+  const t = lang==='en';
+  const raw = prompt(t?'Ticker to add to your watchlist:':'טיקר להוספה לרשימת המעקב:');
+  if(!raw) return;
+  const ticker = raw.trim().toUpperCase();
+  if(!ticker) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/watchlist`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticker }),
+    });
+    if(!res.ok) throw new Error('add failed');
+    track('watchlist_add', ticker);
+    await refreshWatchlistData();
+    if(moversPanelMode === 'watchlist') renderWatchlistPanel();
+    // keep any open drawer's star in sync if this ticker happens to be showing
+    const starEl = document.getElementById(`watchlist-star-${ticker}`);
+    if(starEl) starEl.classList.add('active');
+  } catch(e) {
+    console.error('[watchlist] prompt-add failed', e);
+    alert(t?'Could not add that ticker — check the symbol and try again.':'לא ניתן היה להוסיף את הטיקר — בדוק את הסימול ונסה שוב.');
   }
 }
 
@@ -854,17 +892,19 @@ function renderWatchlistPanel(){
   const el = document.getElementById('movers-list');
   if(!el) return;
   if(!latestWatchlistData.length){
-    el.innerHTML = `<div class="movers-empty">${lang==='en'?"No tickers yet — add one from any stock's page (★ next to the ticker).":'עדיין אין מניות ברשימת המעקב — הוסף אחת מעמוד המניה (★ ליד שם הטיקר).'}</div>`;
+    el.innerHTML = `<div class="movers-empty">${lang==='en'?"No tickers yet — tap + above to add one.":'עדיין אין מניות ברשימת המעקב — לחץ על + למעלה כדי להוסיף אחת.'}</div>`;
     return;
   }
   el.innerHTML = latestWatchlistData.map(r=>{
     const has = r.price!=null;
     const cls = has && r.change_pct>=0 ? 'up' : 'down';
     const sign = has && r.change_pct>=0 ? '+' : '';
+    const name = r.name && r.name!==r.ticker ? r.name : '';
+    const atrText = r.atr_pct!=null ? ` · ATR ${r.atr_pct}%` : '';
     return `
       <div class="mover-row" onclick="showTickerDrawer('${r.ticker}')">
         <div class="mover-ticker">${r.ticker}</div>
-        <div class="mover-trigger">${has ? '$'+r.price : (lang==='en'?'price unavailable':'מחיר לא זמין')}</div>
+        <div class="mover-trigger">${name?name+' · ':''}${has ? '$'+r.price : (lang==='en'?'price unavailable':'מחיר לא זמין')}${atrText}</div>
         <div class="mover-pct ${cls}">${has ? sign+r.change_pct.toFixed(2)+'%' : '—'}</div>
       </div>
     `;
@@ -1050,7 +1090,7 @@ function fundBarOptions(valueFormatter){
     },
     scales:{
       x:{ grid:{display:false}, ticks:{font:{size:9}, maxRotation:0, autoSkip:true, maxTicksLimit:12} },
-      y:{ grid:{color:'rgba(255,255,255,0.06)'}, ticks:{font:{size:9}, callback: valueFormatter ? (v)=>valueFormatter(v) : undefined} },
+      y:{ position:'right', grid:{color:'rgba(255,255,255,0.06)'}, ticks:{font:{size:9}, callback: valueFormatter ? (v)=>valueFormatter(v) : undefined} },
     }
   };
 }
@@ -1063,7 +1103,7 @@ function fundLineOptions(valueFormatter){
     },
     scales:{
       x:{ grid:{display:false}, ticks:{font:{size:8}, maxRotation:0, autoSkip:true, maxTicksLimit:8} },
-      y:{ grid:{color:'rgba(255,255,255,0.06)'}, ticks:{font:{size:9}, callback: valueFormatter ? (v)=>valueFormatter(v) : undefined} },
+      y:{ position:'right', grid:{color:'rgba(255,255,255,0.06)'}, ticks:{font:{size:9}, callback: valueFormatter ? (v)=>valueFormatter(v) : undefined} },
     }
   };
 }
@@ -1084,6 +1124,10 @@ function fundLegendHtml(items){
 // "what is this" + "what's a good sign vs a warning sign" rather than
 // textbook definitions.
 const FUND_TIPS = {
+  rs_rating: {
+    he: 'דירוג עוצמה יחסית (RS Rating) בסולם 1-99: כמה המניה הזו הצליחה בהשוואה לכל שאר המניות שנסרקו, ביחס לביצועי מדד S&P 500 ב-3/6/9/12 החודשים האחרונים (עם משקל גבוה יותר לתקופה האחרונה). RS 90 = המניה עלתה יותר מ-90% מכל שאר המניות שנסרקו. ציון גבוה (80+) מעיד על "מובילת שוק" אמיתית — פריצה טכנית על מניה כזו נחשבת סיגנל הרבה יותר אמין מאשר אותה פריצה על מניה עם RS נמוך (מפגרת אחרי השוק).',
+    en: 'Relative Strength (RS) Rating, on a 1-99 scale: how this stock performed compared to every other stock scanned, relative to the S&P 500 over the past 3/6/9/12 months (weighted toward the most recent period). RS 90 means this stock outperformed 90% of everything else scanned. A high score (80+) marks a genuine market leader — a technical breakout on such a stock is a meaningfully more reliable signal than the same breakout on a stock with a low RS (lagging the market).'
+  },
   rev_ni_fcf: {
     he: 'הכנסות = סך המכירות. רווח נקי = מה שנשאר אחרי כל ההוצאות. FCF (תזרים מזומנים חופשי) = מזומן שנשאר בפועל אחרי השקעות בציוד/נכסים — לרוב הכי "אמין" כי קשה לייפות אותו חשבונאית. חפשו מגמת עלייה עקבית בשלושתם; פער גדול בין רווח נקי ל-FCF (למשל רווח חיובי אך FCF שלילי לאורך זמן) יכול לרמז על איכות רווחים נמוכה.',
     en: 'Revenue = total sales. Net Income = what\'s left after all expenses. FCF (Free Cash Flow) = actual cash left after capital spending — often the most "honest" number since it\'s harder to dress up. Look for a steady uptrend across all three; a persistent gap where profit is positive but FCF is weak/negative can signal lower earnings quality.'
@@ -1546,7 +1590,7 @@ function renderTrendBlock(s){
   let rsRow = '';
   if(s.rsRating!=null){
     const rsColor = s.rsRating>=80 ? 'var(--green)' : s.rsRating>=60 ? 'var(--amber)' : 'var(--red)';
-    rsRow = `<div class="trend-ma-row"><span>RS Rating</span><span style="color:${rsColor};font-weight:700;">${s.rsRating}</span></div>`;
+    rsRow = `<div class="trend-ma-row"><span>RS Rating${fundInfoIcon('rs_rating')}</span><span style="color:${rsColor};font-weight:700;">${s.rsRating}</span></div>`;
   }
   let earningsRow = '';
   if(s.daysToEarnings!=null){

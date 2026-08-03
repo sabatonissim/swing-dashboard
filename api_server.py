@@ -349,6 +349,27 @@ def lookup_stock(ticker: str):
 # needed here — just persisted tickers.
 # ------------------------------------------------------------------
 
+def _compute_atr_pct(hist: pd.DataFrame, period: int = 14) -> Optional[float]:
+    """Same ATR math as the scanner, duplicated here (rather than imported)
+    so api_server.py doesn't depend on pipeline_a_scanner.py's module — the
+    two are deployed/run independently."""
+    if len(hist) < period + 1:
+        return None
+    high, low, close = hist["High"], hist["Low"], hist["Close"]
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1 / period, adjust=False).mean()
+    atr_val = float(atr.iloc[-1])
+    price = float(close.iloc[-1])
+    if price <= 0:
+        return None
+    return round(atr_val / price * 100, 2)
+
+
 @app.get("/api/watchlist")
 def get_watchlist():
     conn = get_conn()
@@ -361,30 +382,35 @@ def get_watchlist():
     if not tickers:
         return []
 
-    # One batch yf.Tickers() call instead of N individual lookups — keeps
-    # this fast and avoids hammering Yahoo with a separate request per
-    # watchlist item every time the panel refreshes.
+    # Price/change/ATR all come from .history() — the endpoint already
+    # proven reliable from Railway elsewhere in this file — rather than
+    # fast_info/quoteSummary-style calls. Company name has no way around
+    # needing .info; that call is wrapped separately so a name lookup
+    # failure never costs us the price/ATR data for that same ticker.
     out = []
-    try:
-        batch = yf.Tickers(" ".join(tickers))
-        for t in tickers:
+    for t in tickers:
+        row = {"ticker": t, "name": t, "price": None, "change_pct": None, "atr_pct": None}
+        try:
+            tk = yf.Ticker(t)
+            hist = tk.history(period="1mo", interval="1d")
+            closes = hist["Close"].dropna()
+            if len(closes) >= 2:
+                price = float(closes.iloc[-1])
+                prev = float(closes.iloc[-2])
+                row["price"] = round(price, 2)
+                row["change_pct"] = round((price / prev - 1) * 100, 2)
+            atr_pct = _compute_atr_pct(hist)
+            if atr_pct is not None:
+                row["atr_pct"] = atr_pct
             try:
-                tk = batch.tickers.get(t)
-                if tk is None:
-                    continue
-                fast = tk.fast_info
-                price = fast.get("lastPrice")
-                prev_close = fast.get("previousClose")
-                if price is None:
-                    continue
-                change_pct = round(((price - prev_close) / prev_close) * 100, 2) if prev_close else 0.0
-                out.append({"ticker": t, "price": round(float(price), 2), "change_pct": change_pct})
+                name = tk.info.get("longName") or tk.info.get("shortName")
+                if name:
+                    row["name"] = name
             except Exception as e:
-                print(f"[warn] watchlist quote failed for {t}: {e}")
-                out.append({"ticker": t, "price": None, "change_pct": None})
-    except Exception as e:
-        print(f"[warn] watchlist batch quote fetch failed: {e}")
-        out = [{"ticker": t, "price": None, "change_pct": None} for t in tickers]
+                print(f"[warn] watchlist name fetch failed for {t}: {e}")
+        except Exception as e:
+            print(f"[warn] watchlist history fetch failed for {t}: {e}")
+        out.append(row)
 
     return out
 
