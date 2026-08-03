@@ -149,6 +149,9 @@ def init_db():
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS atr_value REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS atr_pct REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS rs_rating INTEGER;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS pattern_type TEXT;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS forward_return_10d REAL;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS forward_return_20d REAL;")
     conn.commit()
     cur.close()
     conn.close()
@@ -175,6 +178,35 @@ def get_stocks(limit: int = Query(default=25, le=100)):
             d["resistance_targets"] = []
         result.append(d)
     return result
+
+
+@app.get("/api/pattern-stats")
+def get_pattern_stats():
+    """Win-rate and average forward return per pattern type, computed from
+    our own scan history — only counts signals old enough to have a known
+    10-day outcome (see backfill_forward_returns in pipeline_a_scanner.py).
+    Patterns with fewer than 5 resolved signals are excluded — too small a
+    sample to mean anything yet, and will fill in naturally as more days
+    of scan history accumulate."""
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute(
+            """
+            SELECT
+                pattern_type,
+                COUNT(*) AS n,
+                ROUND(100.0 * COUNT(*) FILTER (WHERE forward_return_10d > 0) / COUNT(*), 1) AS win_rate_10d,
+                ROUND(AVG(forward_return_10d)::numeric, 2) AS avg_return_10d,
+                ROUND(100.0 * COUNT(*) FILTER (WHERE forward_return_20d > 0) / NULLIF(COUNT(*) FILTER (WHERE forward_return_20d IS NOT NULL), 0), 1) AS win_rate_20d,
+                ROUND(AVG(forward_return_20d)::numeric, 2) AS avg_return_20d
+            FROM scanned_stocks
+            WHERE pattern_type IS NOT NULL AND forward_return_10d IS NOT NULL
+            GROUP BY pattern_type
+            HAVING COUNT(*) >= 5
+            ORDER BY win_rate_10d DESC NULLS LAST
+            """
+        )
+        rows = cur.fetchall()
+    return [dict(r) for r in rows]
 
 
 @app.get("/api/macro-news")

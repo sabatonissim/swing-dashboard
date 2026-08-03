@@ -52,7 +52,7 @@ import psycopg2
 import psycopg2.extras
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict
 
 import numpy as np
@@ -177,6 +177,7 @@ class ScanResult:
     atr_value: Optional[float] = None
     atr_pct: Optional[float] = None
     rs_rating: Optional[int] = None
+    pattern_type: Optional[str] = None
 
 
 # ------------------------------------------------------------------
@@ -884,6 +885,9 @@ def init_db():
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS atr_value REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS atr_pct REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS rs_rating INTEGER;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS pattern_type TEXT;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS forward_return_10d REAL;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS forward_return_20d REAL;")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS universe_movers (
             ticker TEXT PRIMARY KEY,
@@ -921,8 +925,9 @@ def upsert_scan_result(conn, result):
             entry_price, support_level, resistance_targets,
             social_volume_spike_pct, ai_summary_he, ai_summary_en,
             market_cap, avg_volume_20d, breakout_volume_pct, exchange,
-            change_pct, sma50, sma150, sma200, trend_stage, atr_value, atr_pct, rs_rating, timestamp
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            change_pct, sma50, sma150, sma200, trend_stage, atr_value, atr_pct,
+            rs_rating, pattern_type, timestamp
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             result.ticker, result.trigger_text_he, result.trigger_text_en,
@@ -932,7 +937,7 @@ def upsert_scan_result(conn, result):
             _native(result.avg_volume_20d), _native(result.breakout_volume_pct), result.exchange,
             _native(result.change_pct), _native(result.sma50), _native(result.sma150), _native(result.sma200),
             result.trend_stage, _native(result.atr_value), _native(result.atr_pct), _native(result.rs_rating),
-            datetime.now(timezone.utc).isoformat(),
+            result.pattern_type, datetime.now(timezone.utc).isoformat(),
         ),
     )
     conn.commit()
@@ -1142,46 +1147,57 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             trigger_en = "Cup & Handle breakout"
             trigger_he = "פריצת תבנית כוס וידית (Cup & Handle)"
             tech_score = min(100, 80 + int(vol_pct / 5))
+            pattern_type = "cup_handle"
         elif double_bottom:
             trigger_en = f"Double Bottom breakout above ${double_bottom['neckline']}"
             trigger_he = f"פריצת תבנית תחתית כפולה (W) מעל ${double_bottom['neckline']}"
             tech_score = min(100, 79 + int(vol_pct / 5))
+            pattern_type = "double_bottom"
         elif high_52w:
             trigger_en = "Breaking above 52-week high"
             trigger_he = "פריצת שיא 52 שבועות"
             tech_score = min(100, 78 + int(vol_pct / 5))
+            pattern_type = "52w_high"
         elif golden_cross:
             trigger_en = "Golden Cross (50D SMA crossed above 200D SMA)"
             trigger_he = "פריצת גולדן קרוס (ממוצע 50 יום חצה מעל ממוצע 200 יום)"
             tech_score = min(100, 74 + int(vol_pct / 5))
+            pattern_type = "golden_cross"
         elif bull_flag:
             trigger_en = f"Bull Flag breakout (pole +{bull_flag['pole_pct']}%)"
             trigger_he = f"פריצת דגל שורי (עמוד +{bull_flag['pole_pct']}%)"
             tech_score = min(100, 72 + int(vol_pct / 5))
+            pattern_type = "bull_flag"
         elif asc_triangle:
             trigger_en = f"Ascending Triangle breakout above ${asc_triangle['resistance']}"
             trigger_he = f"פריצת משולש עולה מעל ${asc_triangle['resistance']}"
             tech_score = min(100, 68 + int(vol_pct / 5))
+            pattern_type = "ascending_triangle"
         elif asc_trendline:
             trigger_en = f"Bouncing off rising trendline support (~${asc_trendline['trendline_value']})"
             trigger_he = f"התאוששות מקו מגמה עולה (סביב ${asc_trendline['trendline_value']})"
             tech_score = 66
+            pattern_type = "ascending_trendline"
         elif macd_cross:
             trigger_en = "MACD bullish crossover"
             trigger_he = "חציית MACD שורית"
             tech_score = min(100, 64 + int(vol_pct / 5))
+            pattern_type = "macd_cross"
         elif momentum:
             trigger_en = f"Strong momentum surge (+{momentum['pct_change_5d']}% / 5 days)"
             trigger_he = f"מומנטום חזק ב-5 ימים (+{momentum['pct_change_5d']}%)"
             tech_score = min(100, 62 + int(vol_pct / 5))
+            pattern_type = "momentum_surge"
         elif rsi_bounce:
             trigger_en = f"RSI oversold bounce (RSI {rsi_bounce['rsi']})"
             trigger_he = f"התאוששות מאזור מכירת יתר (RSI {rsi_bounce['rsi']})"
             tech_score = min(100, 58 + int(vol_pct / 5))
+            pattern_type = "rsi_bounce"
         else:
             trigger_en = "Breakout above descending trendline on strong volume"
             trigger_he = "פריצת שיאים יורדים בווליום חזק"
             tech_score = min(100, 55 + int(vol_pct / 4))
+            pattern_type = "descending_trendline_breakout"
 
         # Trend-quality adjustment: the same pattern is a meaningfully
         # better setup when the broader trend structure backs it up (Stage
@@ -1232,6 +1248,7 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             trend_stage=trend_stage,
             atr_value=atr["atr_value"] if atr else None,
             atr_pct=atr["atr_pct"] if atr else None,
+            pattern_type=pattern_type,
         )
         results.append(result)
 
@@ -1283,9 +1300,82 @@ def upsert_universe_movers(all_changes: List[tuple]):
     print(f"Updated universe_movers fallback table for {len(all_changes)} tickers.")
 
 
+# ------------------------------------------------------------------
+# Pattern win-rate stats — filling in "what actually happened" after the
+# fact. A signal from N trading days ago now has a knowable outcome; this
+# looks up each such row's price ~10 and ~20 trading days after it was
+# flagged and records the return, so /api/pattern-stats can later show
+# real win rates per pattern instead of nothing. Runs at the start of every
+# scan (cheap: only touches rows that don't have an outcome yet).
+# ------------------------------------------------------------------
+
+FORWARD_RETURN_HORIZONS = {"forward_return_10d": 10, "forward_return_20d": 20}
+BACKFILL_BATCH_SIZE = 300  # cap per run so a huge backlog can't blow out scan runtime
+
+
+def backfill_forward_returns():
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    # 20 trading days is ~28 calendar days; only pull rows old enough that
+    # BOTH horizons could plausibly already be known, and that still have at
+    # least one horizon un-filled.
+    cur.execute(
+        """
+        SELECT id, ticker, entry_price, timestamp FROM scanned_stocks
+        WHERE pattern_type IS NOT NULL
+          AND timestamp <= NOW() - INTERVAL '30 days'
+          AND (forward_return_10d IS NULL OR forward_return_20d IS NULL)
+        ORDER BY timestamp ASC
+        LIMIT %s
+        """,
+        (BACKFILL_BATCH_SIZE,),
+    )
+    rows = cur.fetchall()
+    cur.close()
+
+    if not rows:
+        conn.close()
+        return
+
+    filled = 0
+    for row in rows:
+        ticker, entry_price, ts = row["ticker"], row["entry_price"], row["timestamp"]
+        if not entry_price:
+            continue
+        try:
+            hist = yf.Ticker(ticker).history(
+                start=ts.date(), end=ts.date() + timedelta(days=45), interval="1d"
+            )
+            closes = hist["Close"]
+            if len(closes) < 2:
+                continue
+            updates = {}
+            for col, horizon in FORWARD_RETURN_HORIZONS.items():
+                if len(closes) > horizon:
+                    fwd_close = float(closes.iloc[horizon])
+                    updates[col] = round((fwd_close / float(entry_price) - 1) * 100, 2)
+            if not updates:
+                continue
+            set_clause = ", ".join(f"{col} = %s" for col in updates)
+            upd_cur = conn.cursor()
+            upd_cur.execute(
+                f"UPDATE scanned_stocks SET {set_clause} WHERE id = %s",
+                (*updates.values(), row["id"]),
+            )
+            conn.commit()
+            upd_cur.close()
+            filled += 1
+        except Exception as e:
+            print(f"[warn] forward-return backfill failed for {ticker} (id={row['id']}): {e}")
+        time.sleep(INTER_TICKER_DELAY_SEC)
+
+    conn.close()
+    print(f"Forward-return backfill: updated {filled}/{len(rows)} rows.")
+
 
 def main():
     init_db()
+    backfill_forward_returns()
     conn = get_conn()
     try:
         results = scan_universe()

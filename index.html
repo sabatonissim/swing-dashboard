@@ -156,6 +156,7 @@
   .trend-stage-badge{display:inline-block;padding:4px 11px;border:1px solid;border-radius:20px;font-size:11px;font-weight:700;margin:2px 0 10px;}
   .trend-ma-row{display:flex;justify-content:space-between;font-size:12.5px;padding:5px 0;border-bottom:1px solid var(--line);font-family:'JetBrains Mono',monospace;}
   .trend-ma-row:last-child{border-bottom:none;}
+  .pattern-stats-blurb{margin-top:10px;padding:9px 11px;border-inline-start:3px solid;border-radius:6px;background:var(--panel-2);font-size:12px;line-height:1.5;color:var(--text-dim);}
   .ai-box .label{color:var(--amber);font-size:11px;letter-spacing:1px;text-transform:uppercase;margin-bottom:5px;}
   .deep-btn{display:block;width:100%;text-align:center;padding:11px;border-radius:9px;background:var(--amber);color:#1a1300;font-weight:700;border:none;cursor:pointer;font-size:14px;}
 
@@ -490,6 +491,40 @@ let chartMode = 'indices';      // 'indices' | 'sectors'
 let moversPanelMode = 'hot';    // 'hot' | 'watchlist' — independent of chartMode
 let watchlistTickers = new Set();
 let latestWatchlistData = [];
+let patternStatsCache = null; // {pattern_type: {n, win_rate_10d, avg_return_10d, win_rate_20d, avg_return_20d}}
+
+async function loadPatternStats(){
+  try {
+    const res = await fetch(`${API_BASE}/api/pattern-stats`);
+    if(!res.ok) throw new Error('bad response');
+    const data = await res.json();
+    patternStatsCache = {};
+    for(const row of (Array.isArray(data)?data:[])){
+      patternStatsCache[row.pattern_type] = row;
+    }
+  } catch(e) {
+    console.warn('[pattern-stats] load failed:', e);
+    patternStatsCache = {};
+  }
+}
+
+// Historical win-rate blurb for the specific pattern that matched this
+// stock — ties the stats directly to the signal being shown, right where
+// the trade decision actually gets made.
+function renderPatternStatsBlurb(patternType){
+  if(!patternType || !patternStatsCache) return '';
+  const stat = patternStatsCache[patternType];
+  if(!stat) return '';
+  const t = lang==='en';
+  const wr = stat.win_rate_10d;
+  const avg = stat.avg_return_10d;
+  const n = stat.n;
+  const color = wr>=55 ? 'var(--green)' : wr>=45 ? 'var(--amber)' : 'var(--red)';
+  const text = t
+    ? `Historically, this pattern was profitable ${wr}% of the time over the next 10 trading days (avg ${avg>=0?'+':''}${avg}%), based on ${n} past signals from our own scans.`
+    : `מבחינה היסטורית, התבנית הזו הייתה רווחית ב-${wr}% מהמקרים תוך 10 ימי מסחר (ממוצע ${avg>=0?'+':''}${avg}%), על בסיס ${n} איתותים קודמים מהסריקות שלנו.`;
+  return `<div class="pattern-stats-blurb" style="border-color:${color}"><span style="color:${color};font-weight:700;">${wr}%</span> ${text}</div>`;
+}
 let sectorPeriod = 'YTD';       // '1M' | '3M' | 'YTD' | '1Y'
 let sectorChartInstance = null;
 let sectorDataCache = {};       // period -> API response (avoid re-fetching on every toggle)
@@ -765,6 +800,7 @@ function openDrawer(i){
       <div class="label">${lang==='en'?'Match Reason':'סיבת ההתאמה'}</div>
       <div style="font-weight:600;margin-bottom:6px;">${triggerText}</div>
       ${s.summary||s.ai_summary_he||'זוהתה פריצה טכנית עם נפח גבוה מהממוצע.'}
+      ${renderPatternStatsBlurb(s.patternType)}
     </div>
     <div id="fundamentals-section"></div>
     <div class="gauge-wrap">
@@ -1426,6 +1462,7 @@ function mapDbRowToStock(r){
     trendStage: r.trend_stage,
     atrValue: r.atr_value, atrPct: r.atr_pct,
     rsRating: r.rs_rating,
+    patternType: r.pattern_type,
   };
 }
 
@@ -1580,6 +1617,7 @@ setInterval(loadFromApi, 20000);
 loadMarketMovers();
 setInterval(loadMarketMovers, 60000);
 refreshWatchlistData();
+loadPatternStats();
 
 window.addEventListener('load', ()=>{
   applyLang();
