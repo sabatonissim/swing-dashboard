@@ -152,6 +152,7 @@ def init_db():
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS pattern_type TEXT;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS forward_return_10d REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS forward_return_20d REAL;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS days_to_earnings INTEGER;")
     conn.commit()
     cur.close()
     conn.close()

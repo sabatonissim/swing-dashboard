@@ -1415,7 +1415,7 @@ const STAGE_COLOR = {
 // the stock drawer right under the chart — the "higher level analysis"
 // context (is this actually a healthy uptrend, not just an isolated pattern).
 function renderTrendBlock(s){
-  if(!s.trendStage && s.sma150==null && s.atrValue==null && s.rsRating==null) return '';
+  if(!s.trendStage && s.sma150==null && s.atrValue==null && s.rsRating==null && s.daysToEarnings==null) return '';
   const t = lang==='en';
   const stageLabel = t ? (s.trendStage||'—') : (STAGE_HE[s.trendStage] || s.trendStage || '—');
   const stageColor = STAGE_COLOR[s.trendStage] || 'var(--text-dim)';
@@ -1432,6 +1432,17 @@ function renderTrendBlock(s){
     const rsColor = s.rsRating>=80 ? 'var(--green)' : s.rsRating>=60 ? 'var(--amber)' : 'var(--red)';
     rsRow = `<div class="trend-ma-row"><span>RS Rating</span><span style="color:${rsColor};font-weight:700;">${s.rsRating}</span></div>`;
   }
+  let earningsRow = '';
+  if(s.daysToEarnings!=null){
+    const soon = s.daysToEarnings>=0 && s.daysToEarnings<=7;
+    const color = soon ? 'var(--red)' : 'var(--text-dim)';
+    const label = t ? 'Earnings' : 'דוחות';
+    const valueText = s.daysToEarnings<0
+      ? (t?`${-s.daysToEarnings}d ago`:`לפני ${-s.daysToEarnings} ימים`)
+      : (t?`in ${s.daysToEarnings}d`:`בעוד ${s.daysToEarnings} ימים`);
+    const warn = soon ? ' ⚠️' : '';
+    earningsRow = `<div class="trend-ma-row"><span>${label}</span><span style="color:${color};font-weight:${soon?700:400};">${valueText}${warn}</span></div>`;
+  }
   return `
     <div class="ai-box trend-box">
       <div class="label">${t?'Trend Structure':'מבנה מגמה'}</div>
@@ -1441,6 +1452,7 @@ function renderTrendBlock(s){
       ${maRow(t?'SMA 150':'ממוצע 150', s.sma150)}
       ${maRow(t?'SMA 200':'ממוצע 200', s.sma200)}
       ${s.atrValue!=null ? `<div class="trend-ma-row"><span>ATR (14D)</span><span>$${s.atrValue} (${s.atrPct}%)</span></div>` : ''}
+      ${earningsRow}
     </div>
   `;
 }
@@ -1463,6 +1475,7 @@ function mapDbRowToStock(r){
     atrValue: r.atr_value, atrPct: r.atr_pct,
     rsRating: r.rs_rating,
     patternType: r.pattern_type,
+    daysToEarnings: r.days_to_earnings,
   };
 }
 

@@ -24,6 +24,10 @@ Flow:
                           support bounce / continuation pattern breakout
                           (see detect_* functions below)
   4. Volatility         -> ATR(14), both absolute and as % of price
+  5. Earnings awareness -> flags + score penalty if a report is due within
+                          the next 7 days (info["earningsTimestamp"] — no
+                          extra API call, already part of the per-ticker
+                          info dict fetched for market cap/exchange)
   5. Volume filter      -> breakout candle volume >= 20% above 20-day average volume
   6. Support/resistance -> real swing-high/swing-low levels (see
                           compute_support_resistance), not an arbitrary % of price
@@ -178,6 +182,7 @@ class ScanResult:
     atr_pct: Optional[float] = None
     rs_rating: Optional[int] = None
     pattern_type: Optional[str] = None
+    days_to_earnings: Optional[int] = None
 
 
 # ------------------------------------------------------------------
@@ -888,6 +893,7 @@ def init_db():
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS pattern_type TEXT;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS forward_return_10d REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS forward_return_20d REAL;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS days_to_earnings INTEGER;")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS universe_movers (
             ticker TEXT PRIMARY KEY,
@@ -926,8 +932,8 @@ def upsert_scan_result(conn, result):
             social_volume_spike_pct, ai_summary_he, ai_summary_en,
             market_cap, avg_volume_20d, breakout_volume_pct, exchange,
             change_pct, sma50, sma150, sma200, trend_stage, atr_value, atr_pct,
-            rs_rating, pattern_type, timestamp
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            rs_rating, pattern_type, days_to_earnings, timestamp
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             result.ticker, result.trigger_text_he, result.trigger_text_en,
@@ -937,7 +943,7 @@ def upsert_scan_result(conn, result):
             _native(result.avg_volume_20d), _native(result.breakout_volume_pct), result.exchange,
             _native(result.change_pct), _native(result.sma50), _native(result.sma150), _native(result.sma200),
             result.trend_stage, _native(result.atr_value), _native(result.atr_pct), _native(result.rs_rating),
-            result.pattern_type, datetime.now(timezone.utc).isoformat(),
+            result.pattern_type, _native(result.days_to_earnings), datetime.now(timezone.utc).isoformat(),
         ),
     )
     conn.commit()
@@ -1041,6 +1047,30 @@ def compute_rs_ratings(rs_raw_by_ticker: Dict[str, float]) -> Dict[str, int]:
 
 
 # ------------------------------------------------------------------
+# Earnings-date awareness — a real risk-management concern for swing
+# trades: entering a breakout right before an earnings report means the
+# stock can gap hard against you overnight, regardless of how good the
+# technical setup looked the day before. Uses info["earningsTimestamp"],
+# which is already part of the per-ticker info dict fetched for market cap
+# etc. — no extra API call needed.
+# ------------------------------------------------------------------
+
+EARNINGS_WARNING_WINDOW_DAYS = 7  # flag + score penalty inside this window
+
+
+def compute_days_to_earnings(info: dict) -> Optional[int]:
+    ts = info.get("earningsTimestamp")
+    if not ts:
+        return None
+    try:
+        earnings_date = datetime.fromtimestamp(ts, tz=timezone.utc).date()
+        today = datetime.now(timezone.utc).date()
+        return (earnings_date - today).days
+    except Exception:
+        return None
+
+
+# ------------------------------------------------------------------
 # Orchestration
 # ------------------------------------------------------------------
 
@@ -1114,6 +1144,7 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         vol_pct = check_breakout_volume(hist)
         trend = compute_trend_structure(hist)
         atr = compute_atr(hist)
+        days_to_earnings = compute_days_to_earnings(info)
 
         # Volume confirmation gate: a genuine breakout should show real
         # buying volume behind it. Without this, "breakout" patterns were
@@ -1214,6 +1245,14 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             elif trend["stage"] == "Stage 3 - Topping":
                 tech_score = max(1, tech_score - 10)
 
+        # A technically great setup right before earnings is still a much
+        # riskier trade — the stock can gap against the position overnight
+        # regardless of the chart. Penalize (don't disqualify) so it's a
+        # visible warning rather than a hidden risk.
+        earnings_soon = days_to_earnings is not None and 0 <= days_to_earnings <= EARNINGS_WARNING_WINDOW_DAYS
+        if earnings_soon:
+            tech_score = max(1, tech_score - 12)
+
         ai_summary_en = f"{trigger_en}. Volume {vol_pct:.0f}% above 20d average."
         ai_summary_he = f"{trigger_he}. נפח גבוה ב-{vol_pct:.0f}% מהממוצע."
         if trend_stage:
@@ -1225,6 +1264,9 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
                 "Stage 4 - Downtrend": "שלב 4 - מגמת ירידה",
             }.get(trend_stage, trend_stage)
             ai_summary_he += f" מגמה: {stage_he}."
+        if earnings_soon:
+            ai_summary_en += f" ⚠️ Earnings report in {days_to_earnings} day(s) — expect elevated volatility risk."
+            ai_summary_he += f" ⚠️ דוחות כספיים בעוד {days_to_earnings} ימים — צפויה תנודתיות מוגברת."
 
         result = ScanResult(
             ticker=ticker,
@@ -1249,6 +1291,7 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             atr_value=atr["atr_value"] if atr else None,
             atr_pct=atr["atr_pct"] if atr else None,
             pattern_type=pattern_type,
+            days_to_earnings=days_to_earnings,
         )
         results.append(result)
 
