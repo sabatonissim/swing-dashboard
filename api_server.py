@@ -38,14 +38,19 @@ DB_URL = os.environ.get("SWING_DB_PATH") or os.environ.get("DATABASE_URL")
 
 app = FastAPI(title="Swing Desk API")
 
+# Allowed frontend origins for CORS. Set via the ALLOWED_ORIGINS env var
+# (comma-separated) on whatever host runs this — e.g.
+#   ALLOWED_ORIGINS=https://your-new-domain.com,https://your-frontend.vercel.app
+# so moving to a new domain or a different hosting provider is a config
+# change, not a code change. Falls back to the current known origins if the
+# env var isn't set (keeps working as-is with no setup needed).
+_default_origins = "https://swing-desk-tau.vercel.app,http://localhost:8000,http://localhost:3000"
+ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", _default_origins).split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://swing-desk-tau.vercel.app",
-        "http://localhost:8000",
-        "http://localhost:3000",
-    ],
-    allow_methods=["GET", "POST"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 

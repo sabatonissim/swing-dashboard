@@ -1534,6 +1534,12 @@ function tickClock(){
 setInterval(tickClock,1000); tickClock();
 
 // ---- API ----
+// ⚠️ THE ONE LINE TO CHANGE IF YOU MOVE HOSTING PROVIDERS OR BUY A DOMAIN:
+// this must point to wherever api_server.py ends up running (Railway,
+// Render, Fly.io, a VPS, etc.) — not to the frontend's own domain. If you
+// move the backend, update this URL; if you also move the frontend to a
+// new domain, add that new domain to ALLOWED_ORIGINS in api_server.py too
+// (see CLAUDE.md "Moving to a different host" section).
 const API_BASE = "https://swing-dashboard-production-438f.up.railway.app";
 
 function getSessionId(){
