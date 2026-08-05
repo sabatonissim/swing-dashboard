@@ -270,6 +270,9 @@ const API_BASE = "https://swing-dashboard-production-438f.up.railway.app";
 - [x] עיצוב כפתורי טוגל (מדדים/סקטורים) שהיו בלי CSS בכלל
 - [x] תוויות ציר Y בכל הגרפים הועברו לימין (RTL)
 - [x] CORS דרך משתנה סביבה לפורטביליות
+- [x] מודל מקורות מידע/הבהרה (ⓘ בכותרת) — מסביר בפירוט מאיפה כל נתון מגיע (מחירים מ-Yahoo Finance, פונדמנטלס מ-SEC EDGAR, חדשות מ-RSS, הסריקה הטכנית אינה ייעוץ השקעות)
+- [x] תיקון RTL בגרפי TradingView — `direction:ltr` על מכולי הגרף מנע מהם להיפתח גלולים לנתונים ישנים במקום לנקודה העדכנית ביותר
+- [x] קיפול/פתיחה של קבוצות "סריקה אחרונה"/"ימים קודמים" ברשימת המניות (חץ ליד כל כותרת קבוצה)
 
 ---
 
@@ -315,6 +318,7 @@ const API_BASE = "https://swing-dashboard-production-438f.up.railway.app";
 | טיקר SQ→XYZ | Block Inc שינתה טיקר ב-2025 — מעודכן ב-universe הקבוע |
 | numpy → psycopg2 | `_native()` ממיר כל טיפוס numpy ל-Python רגיל לפני INSERT — מונע קריסת סריקה מטיפוס לא-נתמך |
 | macro_news כפילויות | UNIQUE constraint על source_url + ניקוי כפילויות ישנות לפני יצירת ה-constraint (ראה סעיף 8) |
+| RTL הופך גרפי TradingView | הדף כולו `dir="rtl"`, וזה יורש למכולי ה-iframe של TradingView — למרות שזמן בגרף תמיד זורם משמאל לימין בלי קשר לשפת הדף. גרם לגרף להיפתח גלול לנתונים ישנים (התחלת הטווח) במקום לנקודה העדכנית ביותר. תוקן עם `direction:ltr` מפורש על `.tv-chart-box` ו-`#market-tv-chart`. |
 
 ---
 
@@ -349,4 +353,4 @@ const API_BASE = "https://swing-dashboard-production-438f.up.railway.app";
 
 ---
 
-*עדכון אחרון: אוגוסט 2026 | גרסה: MVP v2.0*
+*עדכון אחרון: אוגוסט 2026 | גרסה: MVP v2.1*

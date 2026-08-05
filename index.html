@@ -64,7 +64,7 @@
   .chart-tab{padding:5px 13px;border-radius:20px;font-size:12px;font-family:'JetBrains Mono',monospace;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--text-dim);transition:all .15s;}
   .chart-tab.active{background:var(--amber);color:#1a1300;border-color:var(--amber);font-weight:700;}
   .chart-tab:hover:not(.active){border-color:var(--amber-dim);color:var(--text);}
-  #market-tv-chart{height:220px;border-radius:10px;overflow:hidden;background:var(--panel);}
+  #market-tv-chart{height:220px;border-radius:10px;overflow:hidden;background:var(--panel);direction:ltr;}
   .sector-chart-wrap{height:220px;border-radius:10px;overflow:hidden;background:var(--panel);border:1px solid var(--line);padding:8px;box-sizing:border-box;}
   .pct-up{color:var(--green);}
   .pct-down{color:var(--red);}
@@ -121,9 +121,11 @@
   .score-badge{font-family:'JetBrains Mono',monospace;font-weight:600;font-size:13px;padding:4px 9px;border-radius:20px;min-width:36px;text-align:center;}
   .score-hi{background:rgba(62,207,126,.15);color:var(--green);}
   .score-mid{background:rgba(232,163,61,.15);color:var(--amber);}
-  .stock-group-title{font-size:11px;letter-spacing:1px;color:var(--text-dim);text-transform:uppercase;margin:4px 2px 9px;padding-top:6px;}
+  .stock-group-title{font-size:11px;letter-spacing:1px;color:var(--text-dim);text-transform:uppercase;margin:4px 2px 9px;padding-top:6px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none;}
   .stock-group-title.first{margin-top:0;padding-top:0;}
   .stock-group-title.previous{border-top:1px solid var(--line);padding-top:14px;margin-top:14px;}
+  .group-arrow{font-size:13px;transition:transform .15s;color:var(--text-dim);}
+  .group-arrow.collapsed{transform:rotate(-90deg);}
 
   /* ---- Macro items ---- */
   .macro-item{display:flex;gap:12px;padding:12px 4px;border-bottom:1px solid var(--line);cursor:pointer;}
@@ -145,7 +147,7 @@
   .drawer-head h2{font-family:'JetBrains Mono',monospace;font-size:22px;margin:0;}
   .close-btn{background:none;border:1px solid var(--line);color:var(--text-dim);width:30px;height:30px;border-radius:8px;cursor:pointer;font-size:15px;}
   .close-btn:hover{color:var(--text);}
-  .tv-chart-box{height:260px;border-radius:10px;overflow:hidden;margin-bottom:16px;background:var(--panel);}
+  .tv-chart-box{height:260px;border-radius:10px;overflow:hidden;margin-bottom:16px;background:var(--panel);direction:ltr;}
   .news-section{margin-bottom:16px;}
   .news-item{padding:9px 0;border-bottom:1px solid var(--line);}
   .news-item a{color:var(--text);font-size:13px;text-decoration:none;line-height:1.5;display:block;}
@@ -177,6 +179,11 @@
   .risk-calc-warning{margin-top:10px;font-size:11.5px;color:var(--red);line-height:1.5;}
   .risk-calc-close{display:block;width:100%;text-align:center;padding:10px;border-radius:9px;background:transparent;border:1px solid var(--line);color:var(--text-dim);cursor:pointer;font-size:12.5px;margin-top:14px;font-family:'Heebo',sans-serif;}
   .risk-calc-close:hover{color:var(--text);border-color:var(--text-dim);}
+  .info-badge-btn{background:var(--panel);border:1px solid var(--line);color:var(--amber);border-radius:8px;width:32px;height:32px;font-size:16px;cursor:pointer;transition:border-color .15s;}
+  .info-badge-btn:hover{border-color:var(--amber);}
+  .info-modal-section{margin-bottom:14px;}
+  .info-modal-section h4{margin:0 0 5px;font-size:13px;color:var(--amber);}
+  .info-modal-section p{margin:0;font-size:12.5px;line-height:1.6;color:var(--text-dim);}
   .ai-box .label{color:var(--amber);font-size:11px;letter-spacing:1px;text-transform:uppercase;margin-bottom:5px;}
   .deep-btn{display:block;width:100%;text-align:center;padding:11px;border-radius:9px;background:var(--amber);color:#1a1300;font-weight:700;border:none;cursor:pointer;font-size:14px;}
 
@@ -257,6 +264,7 @@
     <button class="search-btn" onclick="handleSearch()" id="search-btn-label">חפש</button>
   </div>
   <div style="display:flex;align-items:center;gap:12px;">
+    <button class="info-badge-btn" onclick="openInfoModal()" title="מקורות המידע">ⓘ</button>
     <button id="lang-toggle" onclick="toggleLang()" style="background:var(--panel);border:1px solid var(--line);color:var(--text-dim);border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;font-family:'JetBrains Mono',monospace;transition:all .15s;" onmouseover="this.style.borderColor='var(--amber)'" onmouseout="this.style.borderColor='var(--line)'">EN</button>
     <div class="clock mono" id="clock"></div>
   </div>
@@ -334,6 +342,9 @@
   <div class="risk-calc-overlay" id="risk-calc-overlay" onclick="if(event.target===this) closeRiskCalc();">
     <div class="risk-calc-modal" id="risk-calc-modal"></div>
   </div>
+  <div class="risk-calc-overlay" id="info-modal-overlay" onclick="if(event.target===this) closeInfoModal();">
+    <div class="risk-calc-modal" id="info-modal"></div>
+  </div>
 </div>
 
 <script>
@@ -374,6 +385,13 @@ function stockRowHtml(s,i){
   `;
 }
 
+let collapsedStockGroups = { recent: false, previous: false };
+
+function toggleStockGroup(key){
+  collapsedStockGroups[key] = !collapsedStockGroups[key];
+  renderStocks();
+}
+
 function renderStocks(){
   const el = document.getElementById("stocks");
   if(!stocks.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${UI[lang].no_stocks}</div>`; return; }
@@ -383,12 +401,20 @@ function renderStocks(){
 
   let html = "";
   if(recent.length){
-    html += `<div class="stock-group-title first">${UI[lang].recent_stocks_title}</div>`;
-    html += recent.map(i=>stockRowHtml(stocks[i],i)).join("");
+    const collapsed = collapsedStockGroups.recent;
+    html += `<div class="stock-group-title first" onclick="toggleStockGroup('recent')">
+      <span>${UI[lang].recent_stocks_title}</span>
+      <span class="group-arrow ${collapsed?'collapsed':''}">▾</span>
+    </div>`;
+    if(!collapsed) html += recent.map(i=>stockRowHtml(stocks[i],i)).join("");
   }
   if(previous.length){
-    html += `<div class="stock-group-title previous">${UI[lang].previous_stocks_title}</div>`;
-    html += previous.map(i=>stockRowHtml(stocks[i],i)).join("");
+    const collapsed = collapsedStockGroups.previous;
+    html += `<div class="stock-group-title previous" onclick="toggleStockGroup('previous')">
+      <span>${UI[lang].previous_stocks_title}</span>
+      <span class="group-arrow ${collapsed?'collapsed':''}">▾</span>
+    </div>`;
+    if(!collapsed) html += previous.map(i=>stockRowHtml(stocks[i],i)).join("");
   }
   el.innerHTML = html;
 }
@@ -768,6 +794,41 @@ function openRiskCalc(prefill){
 
 function closeRiskCalc(){
   const overlay = document.getElementById('risk-calc-overlay');
+  if(overlay) overlay.classList.remove('open');
+}
+
+// ---- Data sources / reliability disclaimer modal ----
+function openInfoModal(){
+  const t = lang==='en';
+  document.getElementById('info-modal').innerHTML = `
+    <h3>ⓘ ${t?'Where this data comes from':'מאיפה המידע מגיע'}</h3>
+    <div class="info-modal-section">
+      <h4>${t?'Live prices & market data':'מחירים ונתוני שוק בזמן אמת'}</h4>
+      <p>${t?'Yahoo Finance — the same data source used by most free finance sites and apps.':'Yahoo Finance — אותו מקור נתונים ששימוש בו רוב אתרי/אפליקציות הפיננסים החינמיות.'}</p>
+    </div>
+    <div class="info-modal-section">
+      <h4>${t?'Financial statements (fundamentals)':'דוחות כספיים (פונדמנטלס)'}</h4>
+      <p>${t?"Pulled directly from SEC EDGAR — the official U.S. government filing system. These are the exact same numbers the company itself files with the regulator, not a third-party estimate. Every stock's page links directly to the raw filing so you can verify it yourself.":'נשלף ישירות מ-SEC EDGAR — מערכת הדיווח הרשמית של ממשלת ארה"ב. אלו בדיוק אותם מספרים שהחברה עצמה מגישה לרגולטור, לא הערכה של צד שלישי. בכל עמוד מניה יש קישור ישיר לדוח הגולמי כדי שתוכל לוודא בעצמך.'}</p>
+    </div>
+    <div class="info-modal-section">
+      <h4>${t?'News':'חדשות'}</h4>
+      <p>${t?'Aggregated automatically from established financial RSS feeds (Reuters, CNBC, MarketWatch, Investing.com and others) and machine-translated to Hebrew. Every item links back to its original source.':'מרוכזות אוטומטית מפידי RSS פיננסיים מוכרים (Reuters, CNBC, MarketWatch, Investing.com ועוד) ומתורגמות אוטומטית לעברית. לכל כתבה יש קישור חזרה למקור המקורי.'}</p>
+    </div>
+    <div class="info-modal-section">
+      <h4>${t?'Technical scanner & scores':'הסריקה הטכנית והציונים'}</h4>
+      <p>${t?'Pure algorithmic technical analysis — price patterns, moving averages, volume, and relative strength vs. the S&P 500 — computed directly from the price data above. This is not a recommendation to buy or sell anything.':'ניתוח טכני אלגוריתמי בלבד — תבניות מחיר, ממוצעים נעים, נפח מסחר, ועוצמה יחסית מול S&P 500 — מחושב ישירות מנתוני המחיר שלמעלה. זו אינה המלצה לקנות או למכור דבר.'}</p>
+    </div>
+    <div class="info-modal-section">
+      <h4>${t?'Disclaimer':'הבהרה'}</h4>
+      <p>${t?'All content on this site is for informational purposes only and does not constitute investment advice or a recommendation to execute any transaction.':'כל התוכן באתר זה להמחשה בלבד ואינו מהווה ייעוץ השקעות או המלצה לביצוע עסקה.'}</p>
+    </div>
+    <button class="risk-calc-close" onclick="closeInfoModal()">${t?'Close':'סגור'}</button>
+  `;
+  document.getElementById('info-modal-overlay').classList.add('open');
+}
+
+function closeInfoModal(){
+  const overlay = document.getElementById('info-modal-overlay');
   if(overlay) overlay.classList.remove('open');
 }
 
