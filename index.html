@@ -181,9 +181,12 @@
   .risk-calc-close:hover{color:var(--text);border-color:var(--text-dim);}
   .info-badge-btn{background:var(--panel);border:1px solid var(--line);color:var(--amber);border-radius:8px;width:32px;height:32px;font-size:16px;cursor:pointer;transition:border-color .15s;}
   .info-badge-btn:hover{border-color:var(--amber);}
-  .info-modal-section{margin-bottom:14px;}
-  .info-modal-section h4{margin:0 0 5px;font-size:13px;color:var(--amber);}
-  .info-modal-section p{margin:0;font-size:12.5px;line-height:1.6;color:var(--text-dim);}
+  .info-accordion-item{border-bottom:1px solid var(--line);}
+  .info-accordion-item:last-of-type{border-bottom:none;}
+  .info-accordion-head{display:flex;justify-content:space-between;align-items:center;padding:11px 2px;cursor:pointer;font-size:13px;font-weight:600;color:var(--amber);user-select:none;}
+  .info-accordion-body{padding:0 2px 12px;font-size:12.5px;line-height:1.6;color:var(--text-dim);}
+  .info-source-list{margin:8px 0;padding-inline-start:18px;}
+  .info-source-list li{margin-bottom:3px;}
   .ai-box .label{color:var(--amber);font-size:11px;letter-spacing:1px;text-transform:uppercase;margin-bottom:5px;}
   .deep-btn{display:block;width:100%;text-align:center;padding:11px;border-radius:9px;background:var(--amber);color:#1a1300;font-weight:700;border:none;cursor:pointer;font-size:14px;}
 
@@ -599,7 +602,7 @@ function switchChart(symbol){
     interval:'D',
     theme:'dark',
     style:'1',
-    locale:'he_IL',
+    locale: lang==='en' ? 'en' : 'he_IL',
     toolbar_bg:'#161a20',
     hide_side_toolbar:true,
     allow_symbol_change:false,
@@ -798,32 +801,60 @@ function closeRiskCalc(){
 }
 
 // ---- Data sources / reliability disclaimer modal ----
-function openInfoModal(){
+let infoModalCollapsed = { prices: false, scans: true, news: true, disclaimer: true };
+
+function toggleInfoSection(key){
+  infoModalCollapsed[key] = !infoModalCollapsed[key];
+  renderInfoModal();
+}
+
+function infoAccordionSection(key, titleHe, titleEn, bodyHtml){
   const t = lang==='en';
+  const collapsed = infoModalCollapsed[key];
+  return `
+    <div class="info-accordion-item">
+      <div class="info-accordion-head" onclick="toggleInfoSection('${key}')">
+        <span>${t?titleEn:titleHe}</span>
+        <span class="group-arrow ${collapsed?'collapsed':''}">▾</span>
+      </div>
+      ${collapsed ? '' : `<div class="info-accordion-body">${bodyHtml}</div>`}
+    </div>
+  `;
+}
+
+function renderInfoModal(){
+  const t = lang==='en';
+  const pricesBody = t
+    ? `Live prices, daily change %, market cap, and volume come from Yahoo Finance — the same data source used by most free finance sites and apps. Sector performance charts also use Yahoo Finance data for all 11 SPDR sector ETFs.`
+    : `מחירים חיים, שינוי יומי באחוזים, שווי שוק, ונפח מסחר מגיעים מ-Yahoo Finance — אותו מקור נתונים ששימוש בו רוב אתרי/אפליקציות הפיננסים החינמיות. גם גרף ביצועי הסקטורים משתמש בנתוני Yahoo Finance עבור כל 11 תעודות הסל הסקטוריאליות.`;
+
+  const scansBody = t
+    ? `Technical scans are pure algorithmic analysis computed directly from Yahoo Finance price/volume history — price patterns (Cup & Handle, breakouts, trendlines, etc.), moving averages (50/150/200-day), ATR volatility, and Relative Strength Rating vs. the S&P 500. Financial statements (fundamentals) are pulled directly from <b>SEC EDGAR</b> — the official U.S. government filing system. These are the exact same numbers the company itself files with the regulator, not a third-party estimate; every stock's page links directly to the raw filing so you can verify it yourself. None of this is a recommendation to buy or sell anything.`
+    : `הסריקות הטכניות הן ניתוח אלגוריתמי בלבד, מחושב ישירות מהיסטוריית מחיר/נפח של Yahoo Finance — תבניות מחיר (כוס וידית, פריצות, קווי מגמה וכו'), ממוצעים נעים (50/150/200 יום), תנודתיות ATR, ודירוג עוצמה יחסית (RS) מול S&P 500. הדוחות הכספיים (פונדמנטלס) נשלפים ישירות מ-<b>SEC EDGAR</b> — מערכת הדיווח הרשמית של ממשלת ארה"ב. אלו בדיוק אותם מספרים שהחברה עצמה מגישה לרגולטור, לא הערכה של צד שלישי; בכל עמוד מניה יש קישור ישיר לדוח הגולמי כדי שתוכל לוודא בעצמך. שום דבר מכל זה אינו המלצה לקנות או למכור דבר.`;
+
+  const newsSourcesHe = ['Reuters (דרך Google News)', 'CNBC — חדשות מובילות', 'CNBC — שווקים', 'CNBC — עולם', 'Yahoo Finance', 'Seeking Alpha — Market Currents', 'MarketWatch', 'Investing.com', 'Google News — חיפוש רחב: מאקרו ושווקים', 'Google News — חיפוש רחב: גאופוליטיקה'];
+  const newsSourcesEn = ['Reuters (via Google News)', 'CNBC Top News', 'CNBC Markets', 'CNBC World', 'Yahoo Finance', 'Seeking Alpha — Market Currents', 'MarketWatch', 'Investing.com', 'Google News — broad search: macro & markets', 'Google News — broad search: geopolitics'];
+  const newsList = (t?newsSourcesEn:newsSourcesHe).map(s=>`<li>${s}</li>`).join('');
+  const newsBody = t
+    ? `News is aggregated automatically from these RSS sources, then machine-translated to Hebrew (with a manually-curated glossary for financial terms so key terms translate correctly): <ul class="info-source-list">${newsList}</ul> Every item links back to its original source article.`
+    : `החדשות מרוכזות אוטומטית מהמקורות הבאים, ומתורגמות אוטומטית לעברית (עם מילון מונחים ידני למונחי פייננס כדי שמונחים חשובים יתורגמו נכון): <ul class="info-source-list">${newsList}</ul> לכל כתבה יש קישור חזרה למקור המקורי.`;
+
+  const disclaimerBody = t
+    ? `All content on this site is for informational purposes only and does not constitute investment advice or a recommendation to execute any transaction. Past performance (including any pattern win-rate statistics shown) does not guarantee future results.`
+    : `כל התוכן באתר זה להמחשה בלבד ואינו מהווה ייעוץ השקעות או המלצה לביצוע עסקה. ביצועים בעבר (כולל כל סטטיסטיקת הצלחה לתבניות המוצגת) אינם מבטיחים תוצאות דומות בעתיד.`;
+
   document.getElementById('info-modal').innerHTML = `
     <h3>ⓘ ${t?'Where this data comes from':'מאיפה המידע מגיע'}</h3>
-    <div class="info-modal-section">
-      <h4>${t?'Live prices & market data':'מחירים ונתוני שוק בזמן אמת'}</h4>
-      <p>${t?'Yahoo Finance — the same data source used by most free finance sites and apps.':'Yahoo Finance — אותו מקור נתונים ששימוש בו רוב אתרי/אפליקציות הפיננסים החינמיות.'}</p>
-    </div>
-    <div class="info-modal-section">
-      <h4>${t?'Financial statements (fundamentals)':'דוחות כספיים (פונדמנטלס)'}</h4>
-      <p>${t?"Pulled directly from SEC EDGAR — the official U.S. government filing system. These are the exact same numbers the company itself files with the regulator, not a third-party estimate. Every stock's page links directly to the raw filing so you can verify it yourself.":'נשלף ישירות מ-SEC EDGAR — מערכת הדיווח הרשמית של ממשלת ארה"ב. אלו בדיוק אותם מספרים שהחברה עצמה מגישה לרגולטור, לא הערכה של צד שלישי. בכל עמוד מניה יש קישור ישיר לדוח הגולמי כדי שתוכל לוודא בעצמך.'}</p>
-    </div>
-    <div class="info-modal-section">
-      <h4>${t?'News':'חדשות'}</h4>
-      <p>${t?'Aggregated automatically from established financial RSS feeds (Reuters, CNBC, MarketWatch, Investing.com and others) and machine-translated to Hebrew. Every item links back to its original source.':'מרוכזות אוטומטית מפידי RSS פיננסיים מוכרים (Reuters, CNBC, MarketWatch, Investing.com ועוד) ומתורגמות אוטומטית לעברית. לכל כתבה יש קישור חזרה למקור המקורי.'}</p>
-    </div>
-    <div class="info-modal-section">
-      <h4>${t?'Technical scanner & scores':'הסריקה הטכנית והציונים'}</h4>
-      <p>${t?'Pure algorithmic technical analysis — price patterns, moving averages, volume, and relative strength vs. the S&P 500 — computed directly from the price data above. This is not a recommendation to buy or sell anything.':'ניתוח טכני אלגוריתמי בלבד — תבניות מחיר, ממוצעים נעים, נפח מסחר, ועוצמה יחסית מול S&P 500 — מחושב ישירות מנתוני המחיר שלמעלה. זו אינה המלצה לקנות או למכור דבר.'}</p>
-    </div>
-    <div class="info-modal-section">
-      <h4>${t?'Disclaimer':'הבהרה'}</h4>
-      <p>${t?'All content on this site is for informational purposes only and does not constitute investment advice or a recommendation to execute any transaction.':'כל התוכן באתר זה להמחשה בלבד ואינו מהווה ייעוץ השקעות או המלצה לביצוע עסקה.'}</p>
-    </div>
+    ${infoAccordionSection('prices', 'מחירי מניות', 'Stock Prices', pricesBody)}
+    ${infoAccordionSection('scans', 'סריקות', 'Scans', scansBody)}
+    ${infoAccordionSection('news', 'חדשות', 'News', newsBody)}
+    ${infoAccordionSection('disclaimer', 'הבהרות', 'Disclaimers', disclaimerBody)}
     <button class="risk-calc-close" onclick="closeInfoModal()">${t?'Close':'סגור'}</button>
   `;
+}
+
+function openInfoModal(){
+  renderInfoModal();
   document.getElementById('info-modal-overlay').classList.add('open');
 }
 
@@ -1083,7 +1114,7 @@ function renderTradingViewChart(ticker){
   container.innerHTML="";
   new TradingView.widget({
     autosize:true, symbol:ticker, interval:"D",
-    timezone:"Asia/Jerusalem", theme:"dark", style:"1", locale:"he_IL",
+    timezone:"Asia/Jerusalem", theme:"dark", style:"1", locale: lang==='en' ? 'en' : 'he_IL',
     toolbar_bg:"#161a20", hide_top_toolbar:false, hide_legend:false,
     save_image:false, container_id:"tv-chart",
   });
