@@ -201,7 +201,7 @@
   .fund-section-title{font-size:11px;letter-spacing:1.5px;color:var(--amber);text-transform:uppercase;margin:18px 0 10px;}
   .fund-card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 12px 8px;margin-bottom:12px;}
   .fund-card-title{font-size:12px;color:var(--text-dim);margin-bottom:8px;}
-  .fund-scroll{overflow-x:auto;}
+  .fund-scroll{overflow-x:auto;direction:ltr;}
   .fund-scroll::-webkit-scrollbar{height:5px;}
   .fund-scroll::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px;}
   .fund-stat-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;}
@@ -342,12 +342,12 @@
 
 <div class="overlay" id="overlay">
   <div class="drawer" id="drawer"></div>
-  <div class="risk-calc-overlay" id="risk-calc-overlay" onclick="if(event.target===this) closeRiskCalc();">
-    <div class="risk-calc-modal" id="risk-calc-modal"></div>
-  </div>
-  <div class="risk-calc-overlay" id="info-modal-overlay" onclick="if(event.target===this) closeInfoModal();">
-    <div class="risk-calc-modal" id="info-modal"></div>
-  </div>
+</div>
+<div class="risk-calc-overlay" id="risk-calc-overlay" onclick="if(event.target===this) closeRiskCalc();">
+  <div class="risk-calc-modal" id="risk-calc-modal"></div>
+</div>
+<div class="risk-calc-overlay" id="info-modal-overlay" onclick="if(event.target===this) closeInfoModal();">
+  <div class="risk-calc-modal" id="info-modal"></div>
 </div>
 
 <script>
@@ -791,7 +791,9 @@ function openRiskCalc(prefill){
     <div class="risk-calc-results" id="risk-calc-results"></div>
     <button class="risk-calc-close" onclick="closeRiskCalc()">${t?'Close':'סגור'}</button>
   `;
-  document.getElementById('risk-calc-overlay').classList.add('open');
+  const overlay = document.getElementById('risk-calc-overlay');
+  overlay.classList.add('open');
+  void overlay.offsetHeight;
   recalcRisk();
 }
 
@@ -801,7 +803,7 @@ function closeRiskCalc(){
 }
 
 // ---- Data sources / reliability disclaimer modal ----
-let infoModalCollapsed = { prices: false, scans: true, news: true, disclaimer: true };
+let infoModalCollapsed = { prices: false, fundamentals: true, news: true, scans: true, disclaimer: true };
 
 function toggleInfoSection(key){
   infoModalCollapsed[key] = !infoModalCollapsed[key];
@@ -824,20 +826,25 @@ function infoAccordionSection(key, titleHe, titleEn, bodyHtml){
 
 function renderInfoModal(){
   const t = lang==='en';
-  const pricesBody = t
-    ? `Live prices, daily change %, market cap, and volume come from Yahoo Finance — the same data source used by most free finance sites and apps. Sector performance charts also use Yahoo Finance data for all 11 SPDR sector ETFs.`
-    : `מחירים חיים, שינוי יומי באחוזים, שווי שוק, ונפח מסחר מגיעים מ-Yahoo Finance — אותו מקור נתונים ששימוש בו רוב אתרי/אפליקציות הפיננסים החינמיות. גם גרף ביצועי הסקטורים משתמש בנתוני Yahoo Finance עבור כל 11 תעודות הסל הסקטוריאליות.`;
 
-  const scansBody = t
-    ? `Technical scans are pure algorithmic analysis computed directly from Yahoo Finance price/volume history — price patterns (Cup & Handle, breakouts, trendlines, etc.), moving averages (50/150/200-day), ATR volatility, and Relative Strength Rating vs. the S&P 500. Financial statements (fundamentals) are pulled directly from <b>SEC EDGAR</b> — the official U.S. government filing system. These are the exact same numbers the company itself files with the regulator, not a third-party estimate; every stock's page links directly to the raw filing so you can verify it yourself. None of this is a recommendation to buy or sell anything.`
-    : `הסריקות הטכניות הן ניתוח אלגוריתמי בלבד, מחושב ישירות מהיסטוריית מחיר/נפח של Yahoo Finance — תבניות מחיר (כוס וידית, פריצות, קווי מגמה וכו'), ממוצעים נעים (50/150/200 יום), תנודתיות ATR, ודירוג עוצמה יחסית (RS) מול S&P 500. הדוחות הכספיים (פונדמנטלס) נשלפים ישירות מ-<b>SEC EDGAR</b> — מערכת הדיווח הרשמית של ממשלת ארה"ב. אלו בדיוק אותם מספרים שהחברה עצמה מגישה לרגולטור, לא הערכה של צד שלישי; בכל עמוד מניה יש קישור ישיר לדוח הגולמי כדי שתוכל לוודא בעצמך. שום דבר מכל זה אינו המלצה לקנות או למכור דבר.`;
+  const pricesBody = t
+    ? `Live prices, daily change %, market cap, and volume come from Yahoo Finance — the same data source used by most free finance sites and apps.`
+    : `מחירים חיים, שינוי יומי באחוזים, שווי שוק, ונפח מסחר מגיעים מ-Yahoo Finance — אותו מקור נתונים ששימוש בו רוב אתרי/אפליקציות הפיננסים החינמיות.`;
+
+  const fundamentalsBody = t
+    ? `Pulled directly from <b>SEC EDGAR</b> — the official U.S. government filing system. These are the exact same numbers the company itself files with the regulator, not a third-party estimate. Every stock's page links directly to the raw filing so you can verify it yourself.`
+    : `נשלף ישירות מ-<b>SEC EDGAR</b> — מערכת הדיווח הרשמית של ממשלת ארה"ב. אלו בדיוק אותם מספרים שהחברה עצמה מגישה לרגולטור, לא הערכה של צד שלישי. בכל עמוד מניה יש קישור ישיר לדוח הגולמי כדי שתוכל לוודא בעצמך.`;
 
   const newsSourcesHe = ['Reuters (דרך Google News)', 'CNBC — חדשות מובילות', 'CNBC — שווקים', 'CNBC — עולם', 'Yahoo Finance', 'Seeking Alpha — Market Currents', 'MarketWatch', 'Investing.com', 'Google News — חיפוש רחב: מאקרו ושווקים', 'Google News — חיפוש רחב: גאופוליטיקה'];
   const newsSourcesEn = ['Reuters (via Google News)', 'CNBC Top News', 'CNBC Markets', 'CNBC World', 'Yahoo Finance', 'Seeking Alpha — Market Currents', 'MarketWatch', 'Investing.com', 'Google News — broad search: macro & markets', 'Google News — broad search: geopolitics'];
   const newsList = (t?newsSourcesEn:newsSourcesHe).map(s=>`<li>${s}</li>`).join('');
   const newsBody = t
-    ? `News is aggregated automatically from these RSS sources, then machine-translated to Hebrew (with a manually-curated glossary for financial terms so key terms translate correctly): <ul class="info-source-list">${newsList}</ul> Every item links back to its original source article.`
-    : `החדשות מרוכזות אוטומטית מהמקורות הבאים, ומתורגמות אוטומטית לעברית (עם מילון מונחים ידני למונחי פייננס כדי שמונחים חשובים יתורגמו נכון): <ul class="info-source-list">${newsList}</ul> לכל כתבה יש קישור חזרה למקור המקורי.`;
+    ? `Aggregated automatically from these RSS sources, then machine-translated to Hebrew (with a manually-curated glossary for financial terms so key terms translate correctly), every single one of them: <ul class="info-source-list">${newsList}</ul> Every item links back to its original source article.`
+    : `מרוכזות אוטומטית מכל אחד מהמקורות הבאים, ומתורגמות אוטומטית לעברית (עם מילון מונחים ידני למונחי פייננס כדי שמונחים חשובים יתורגמו נכון): <ul class="info-source-list">${newsList}</ul> לכל כתבה יש קישור חזרה למקור המקורי.`;
+
+  const scansBody = t
+    ? `Pure algorithmic technical analysis — price patterns (Cup & Handle, breakouts, trendlines, etc.), moving averages (50/150/200-day), ATR volatility, and Relative Strength Rating vs. the S&P 500 — computed directly from the Yahoo Finance price/volume data above. This is not a recommendation to buy or sell anything.`
+    : `ניתוח טכני אלגוריתמי בלבד — תבניות מחיר (כוס וידית, פריצות, קווי מגמה וכו'), ממוצעים נעים (50/150/200 יום), תנודתיות ATR, ודירוג עוצמה יחסית (RS) מול S&P 500 — מחושב ישירות מנתוני המחיר/נפח של Yahoo Finance שלמעלה. זו אינה המלצה לקנות או למכור דבר.`;
 
   const disclaimerBody = t
     ? `All content on this site is for informational purposes only and does not constitute investment advice or a recommendation to execute any transaction. Past performance (including any pattern win-rate statistics shown) does not guarantee future results.`
@@ -845,17 +852,23 @@ function renderInfoModal(){
 
   document.getElementById('info-modal').innerHTML = `
     <h3>ⓘ ${t?'Where this data comes from':'מאיפה המידע מגיע'}</h3>
-    ${infoAccordionSection('prices', 'מחירי מניות', 'Stock Prices', pricesBody)}
-    ${infoAccordionSection('scans', 'סריקות', 'Scans', scansBody)}
+    ${infoAccordionSection('prices', 'מחירים ונתוני שוק בזמן אמת', 'Live Prices & Market Data', pricesBody)}
+    ${infoAccordionSection('fundamentals', 'דוחות כספיים (פונדמנטלס)', 'Financial Statements (Fundamentals)', fundamentalsBody)}
     ${infoAccordionSection('news', 'חדשות', 'News', newsBody)}
-    ${infoAccordionSection('disclaimer', 'הבהרות', 'Disclaimers', disclaimerBody)}
+    ${infoAccordionSection('scans', 'הסריקה הטכנית והציונים', 'Technical Scanning & Scores', scansBody)}
+    ${infoAccordionSection('disclaimer', 'הבהרה', 'Disclaimer', disclaimerBody)}
     <button class="risk-calc-close" onclick="closeInfoModal()">${t?'Close':'סגור'}</button>
   `;
 }
 
 function openInfoModal(){
   renderInfoModal();
-  document.getElementById('info-modal-overlay').classList.add('open');
+  const overlay = document.getElementById('info-modal-overlay');
+  overlay.classList.add('open');
+  void overlay.offsetHeight; // force an immediate reflow/repaint — some mobile
+                             // browsers otherwise delay showing a newly-toggled
+                             // position:fixed element until an unrelated layout
+                             // change happens elsewhere on the page
 }
 
 function closeInfoModal(){
@@ -1149,6 +1162,25 @@ function fundChartCanvas(id){
   return `<div class="fund-scroll"><canvas id="${id}" style="display:block;"></canvas></div>`;
 }
 
+// Fund charts are often wider than their container (one column per quarter)
+// and scroll horizontally. Left unset, the scroll position defaults
+// inconsistently across browsers on this RTL page — sometimes landing on
+// the oldest data instead of the most recent. Force it to the most recent
+// (right/end) explicitly every time a chart is (re)built.
+function scrollFundChartToEnd(canvasEl){
+  const wrap = canvasEl && canvasEl.parentElement;
+  if(!wrap) return;
+  // Double rAF: the first frame lets the browser finish laying out the
+  // canvas at its new (wide) width; the second guarantees Chart.js's own
+  // render pass (triggered synchronously in safeChart, just before this is
+  // called) has fully settled too. A single rAF was landing before
+  // scrollWidth had stabilized often enough to matter, leaving the chart
+  // scrolled to the oldest data instead of the latest.
+  requestAnimationFrame(()=>{
+    requestAnimationFrame(()=>{ wrap.scrollLeft = wrap.scrollWidth; });
+  });
+}
+
 // Formats a raw number into a compact, human-readable form for chart axes
 // and tooltips — e.g. 186000000000 -> "$186.00B" instead of the full digit
 // string, which is unreadable on a hover tooltip or a cramped y-axis.
@@ -1387,6 +1419,7 @@ function renderFundamentals(data){
       ]},
       options: fundBarOptions(fmtCompactMoney)
     });
+    scrollFundChartToEnd(revCtx);
   }
 
   const marginCtx = document.getElementById('chart-margin');
@@ -1399,6 +1432,7 @@ function renderFundamentals(data){
       ]},
       options: fundLineOptions(v=>v.toFixed(1)+'%')
     });
+    scrollFundChartToEnd(marginCtx);
   }
 
   const debtCtx = document.getElementById('chart-netdebt');
@@ -1411,6 +1445,7 @@ function renderFundamentals(data){
       ]},
       options: fundBarOptions(fmtCompactMoney)
     });
+    scrollFundChartToEnd(debtCtx);
   }
 
   const epsCtx = document.getElementById('chart-eps');
@@ -1424,6 +1459,7 @@ function renderFundamentals(data){
       ]},
       options: fundBarOptions(v=>'$'+v.toFixed(2))
     });
+    scrollFundChartToEnd(epsCtx);
   }
 
   const epsActualOnlyCtx = document.getElementById('chart-eps-actual-only');
@@ -1436,6 +1472,7 @@ function renderFundamentals(data){
       ]},
       options: fundBarOptions(v=>'$'+v.toFixed(2))
     });
+    scrollFundChartToEnd(epsActualOnlyCtx);
   }
 
   const peCtx = document.getElementById('chart-pe');
@@ -1452,6 +1489,7 @@ function renderFundamentals(data){
       ]},
       options: fundLineOptions(v=>v.toFixed(1))
     });
+    scrollFundChartToEnd(peCtx);
   }
 }
 
