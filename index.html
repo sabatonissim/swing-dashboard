@@ -196,6 +196,31 @@
   .sector-btn:hover:not(.active){border-color:var(--teal-dim);color:var(--text);}
 
   .disclaimer-strip{font-size:11px;color:var(--text-dim);text-align:center;padding:10px 24px;border-top:1px solid var(--line);}
+  .page-nav{display:flex;gap:6px;padding:10px 24px;border-bottom:1px solid var(--line);background:var(--panel);}
+  .page-nav-btn{background:transparent;border:none;color:var(--text-dim);font-size:13px;font-weight:600;padding:7px 16px;border-radius:8px;cursor:pointer;font-family:'Heebo',sans-serif;}
+  .page-nav-btn.active{background:var(--amber);color:#1a1a1a;}
+  .page-nav-btn:not(.active):hover{background:var(--panel-2);color:var(--text);}
+  .pulse-page-wrap{padding:20px 24px;max-width:1100px;margin:0 auto;}
+  .pulse-section-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;}
+  .pulse-section-title{font-size:13px;letter-spacing:1px;color:var(--text-dim);text-transform:uppercase;}
+  .heatmap-grid{display:grid;grid-template-columns:repeat(auto-fill, minmax(84px, 1fr));gap:4px;}
+  .heatmap-tile{border-radius:6px;padding:8px 6px;text-align:center;cursor:pointer;transition:transform .1s;}
+  .heatmap-tile:hover{transform:scale(1.05);}
+  .heatmap-tile .ticker{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:12px;color:#0a0a0a;}
+  .heatmap-tile .pct{font-family:'JetBrains Mono',monospace;font-size:11px;color:#0a0a0a;opacity:.85;}
+  .fg-gauge-box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;text-align:center;}
+  .fg-score{font-family:'JetBrains Mono',monospace;font-size:46px;font-weight:700;}
+  .fg-rating{font-size:15px;font-weight:700;margin-top:4px;}
+  .fg-bar-track{height:10px;border-radius:5px;background:linear-gradient(90deg,#ef5b5b,#e8a33d,#3ecf7e);margin:16px 0 8px;position:relative;}
+  .fg-bar-marker{position:absolute;top:-4px;width:3px;height:18px;background:#fff;border-radius:2px;transform:translateX(-50%);}
+  .fg-history-row{display:flex;justify-content:space-between;margin-top:16px;padding-top:14px;border-top:1px solid var(--line);font-size:11.5px;}
+  .fg-history-item{text-align:center;flex:1;}
+  .fg-history-item .k{color:var(--text-dim);margin-bottom:3px;}
+  .fg-history-item .v{font-family:'JetBrains Mono',monospace;font-weight:700;}
+  .fg-components{margin-top:16px;display:grid;grid-template-columns:repeat(auto-fit, minmax(140px,1fr));gap:8px;}
+  .fg-component{background:var(--panel-2);border-radius:8px;padding:9px 11px;font-size:11.5px;}
+  .fg-component .name{color:var(--text-dim);margin-bottom:3px;}
+  .fg-component .val{font-weight:700;}
 
   /* ---- Fundamentals (drawer) ---- */
   .fund-section-title{font-size:11px;letter-spacing:1.5px;color:var(--amber);text-transform:uppercase;margin:18px 0 10px;}
@@ -273,6 +298,13 @@
   </div>
 </header>
 
+<div class="page-nav">
+  <button class="page-nav-btn active" id="page-nav-home" onclick="setPage('home')">בית</button>
+  <button class="page-nav-btn" id="page-nav-pulse" onclick="setPage('pulse')">פעימת השוק</button>
+</div>
+
+<div id="page-home">
+
 <!-- Mobile Search Bar (visible only on small screens) -->
 <div class="mobile-search">
   <input type="text" id="search-input-mobile" class="search-input mono" placeholder="חפש טיקר... (למשל AAPL)" />
@@ -333,6 +365,26 @@
     <div class="col-title"><span class="dot"></span> מוקד מאקרו וחדשות עולם</div>
     <div class="sector-filter" id="sector-filter"></div>
     <div id="macro"></div>
+  </div>
+</div>
+
+</div><!-- /page-home -->
+
+<div id="page-pulse" style="display:none;">
+  <div class="pulse-page-wrap">
+    <div class="pulse-section-head">
+      <div class="pulse-section-title">מפת חום</div>
+      <div class="movers-toggle">
+        <button class="movers-toggle-btn active" id="heatmap-toggle-sp500" onclick="setHeatmapIndex('sp500')">S&P 500</button>
+        <button class="movers-toggle-btn" id="heatmap-toggle-nasdaq100" onclick="setHeatmapIndex('nasdaq100')">Nasdaq 100</button>
+      </div>
+    </div>
+    <div class="heatmap-grid" id="heatmap-grid"></div>
+
+    <div class="pulse-section-head" style="margin-top:24px;">
+      <div class="pulse-section-title">מדד סנטימנט שוק (Fear &amp; Greed)</div>
+    </div>
+    <div id="fear-greed-wrap"></div>
   </div>
 </div>
 
@@ -611,6 +663,154 @@ function switchChart(symbol){
     save_image:false,
   });
 }
+
+// ---- Page navigation (Home / Market Pulse) ----
+let currentPage = 'home';
+let pulseLoaded = false;
+
+function setPage(page){
+  if(currentPage === page) return;
+  currentPage = page;
+  document.getElementById('page-nav-home').classList.toggle('active', page==='home');
+  document.getElementById('page-nav-pulse').classList.toggle('active', page==='pulse');
+  document.getElementById('page-home').style.display = page==='home' ? '' : 'none';
+  document.getElementById('page-pulse').style.display = page==='pulse' ? '' : 'none';
+  if(page === 'pulse' && !pulseLoaded){
+    pulseLoaded = true;
+    loadHeatmap(heatmapIndex);
+    loadFearGreed();
+  }
+}
+
+// ---- Heatmap ----
+let heatmapIndex = 'sp500';
+
+function setHeatmapIndex(idx){
+  if(heatmapIndex === idx) return;
+  heatmapIndex = idx;
+  document.getElementById('heatmap-toggle-sp500').classList.toggle('active', idx==='sp500');
+  document.getElementById('heatmap-toggle-nasdaq100').classList.toggle('active', idx==='nasdaq100');
+  loadHeatmap(idx);
+}
+
+async function loadHeatmap(idx){
+  const el = document.getElementById('heatmap-grid');
+  const t = lang==='en';
+  if(el) el.innerHTML = `<div class="movers-empty">${UI[lang].loading}</div>`;
+  try {
+    const res = await fetch(`${API_BASE}/api/heatmap?index=${idx}`);
+    if(!res.ok) throw new Error('bad response');
+    const data = await res.json();
+    renderHeatmap(data.stocks || []);
+  } catch(e) {
+    console.error('[heatmap] load failed', e);
+    if(el) el.innerHTML = `<div class="movers-empty">${t?'Could not load heatmap.':'לא ניתן לטעון מפת חום.'}</div>`;
+  }
+}
+
+function heatmapColor(pct){
+  // Green for gains, red for losses, intensity scaled by magnitude (capped at ±4% for saturation)
+  const clamped = Math.max(-4, Math.min(4, pct));
+  const intensity = Math.abs(clamped) / 4; // 0..1
+  if(pct >= 0){
+    const g = Math.round(60 + intensity*80);
+    return `rgb(${Math.round(30+intensity*20)},${g+70},${Math.round(60+intensity*40)})`;
+  }
+  const r = Math.round(120 + intensity*100);
+  return `rgb(${r},${Math.round(40+intensity*20)},${Math.round(50+intensity*20)})`;
+}
+
+function renderHeatmap(stocks){
+  const el = document.getElementById('heatmap-grid');
+  if(!el) return;
+  if(!stocks.length){
+    el.innerHTML = `<div class="movers-empty">${lang==='en'?'No heatmap data yet — check back after the next scan.':'עדיין אין נתוני מפת חום — נסה שוב אחרי הסריקה הבאה.'}</div>`;
+    return;
+  }
+  el.innerHTML = stocks.map(s=>{
+    const pct = s.change_pct==null ? 0 : s.change_pct;
+    const sign = pct>=0 ? '+' : '';
+    return `<div class="heatmap-tile" style="background:${heatmapColor(pct)}" onclick="showTickerDrawer('${s.ticker}')">
+      <div class="ticker">${s.ticker}</div>
+      <div class="pct">${sign}${pct.toFixed(1)}%</div>
+    </div>`;
+  }).join('');
+}
+
+// ---- Fear & Greed ----
+const FG_RATING_HE = {
+  'extreme fear': 'פחד קיצוני', 'fear': 'פחד', 'neutral': 'ניטרלי',
+  'greed': 'תאווה', 'extreme greed': 'תאווה קיצונית',
+};
+const FG_COMPONENT_NAMES = {
+  market_momentum_sp500: {he:'מומנטום S&P 500', en:'S&P 500 Momentum'},
+  market_momentum_sp125: {he:'מומנטום מול ממוצע 125 יום', en:'Momentum vs 125-day avg'},
+  stock_price_strength: {he:'עוצמת מחירי מניות', en:'Stock Price Strength'},
+  stock_price_breadth: {he:'רוחב השוק', en:'Stock Price Breadth'},
+  put_call_options: {he:'יחס אופציות Put/Call', en:'Put/Call Options'},
+  market_volatility_vix: {he:'תנודתיות (VIX)', en:'Market Volatility (VIX)'},
+  market_volatility_vix_50: {he:'VIX מול ממוצע 50 יום', en:'VIX vs 50-day avg'},
+  junk_bond_demand: {he:'ביקוש לאג"ח זבל', en:'Junk Bond Demand'},
+  safe_haven_demand: {he:'ביקוש למקלט בטוח', en:'Safe Haven Demand'},
+};
+
+async function loadFearGreed(){
+  const el = document.getElementById('fear-greed-wrap');
+  const t = lang==='en';
+  if(el) el.innerHTML = `<div class="movers-empty">${UI[lang].loading}</div>`;
+  try {
+    const res = await fetch(`${API_BASE}/api/fear-greed`);
+    if(!res.ok) throw new Error('bad response');
+    const data = await res.json();
+    renderFearGreed(data);
+  } catch(e) {
+    console.error('[fear-greed] load failed', e);
+    if(el) el.innerHTML = `<div class="movers-empty">${t?'Could not load the Fear & Greed index right now.':'לא ניתן לטעון את מדד הפחד והתאווה כרגע.'}</div>`;
+  }
+}
+
+function renderFearGreed(data){
+  const el = document.getElementById('fear-greed-wrap');
+  if(!el) return;
+  const t = lang==='en';
+  const score = data.score;
+  if(score == null){
+    el.innerHTML = `<div class="movers-empty">${t?'Fear & Greed data unavailable.':'נתוני מדד הפחד והתאווה לא זמינים.'}</div>`;
+    return;
+  }
+  const ratingKey = (data.rating||'').toLowerCase();
+  const ratingLabel = t ? (data.rating||'—') : (FG_RATING_HE[ratingKey] || data.rating || '—');
+  const ratingColor = score>=75?'var(--green)':score>=55?'#9ed17a':score>=45?'var(--amber)':score>=25?'#e08a5b':'var(--red)';
+
+  const historyRow = (label, val) => {
+    if(val==null) return '';
+    return `<div class="fg-history-item"><div class="k">${label}</div><div class="v">${Math.round(val)}</div></div>`;
+  };
+
+  const componentsHtml = Object.keys(data.components||{}).map(key=>{
+    const comp = data.components[key];
+    const name = FG_COMPONENT_NAMES[key] ? (t?FG_COMPONENT_NAMES[key].en:FG_COMPONENT_NAMES[key].he) : key;
+    const compRatingKey = (comp.rating||'').toLowerCase();
+    const compLabel = t ? (comp.rating||'—') : (FG_RATING_HE[compRatingKey] || comp.rating || '—');
+    return `<div class="fg-component"><div class="name">${name}</div><div class="val">${compLabel}</div></div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="fg-gauge-box">
+      <div class="fg-score" style="color:${ratingColor}">${Math.round(score)}</div>
+      <div class="fg-rating" style="color:${ratingColor}">${ratingLabel}</div>
+      <div class="fg-bar-track"><div class="fg-bar-marker" style="left:${score}%;"></div></div>
+      <div class="fg-history-row">
+        ${historyRow(t?'Yesterday':'אתמול', data.previous_close)}
+        ${historyRow(t?'1 Week Ago':'לפני שבוע', data.previous_1_week)}
+        ${historyRow(t?'1 Month Ago':'לפני חודש', data.previous_1_month)}
+        ${historyRow(t?'1 Year Ago':'לפני שנה', data.previous_1_year)}
+      </div>
+      ${componentsHtml ? `<div class="fg-components">${componentsHtml}</div>` : ''}
+    </div>
+  `;
+}
+
 
 // ---- Indices vs Sectors chart mode (Koyfin-style "US Sectors" view) ----
 function setChartMode(mode){

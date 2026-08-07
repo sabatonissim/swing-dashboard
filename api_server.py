@@ -146,6 +146,8 @@ def init_db():
     """)
     # Patches an already-deployed table that predates this column
     # (CREATE TABLE IF NOT EXISTS above is a no-op once the table exists).
+    cur.execute("ALTER TABLE universe_movers ADD COLUMN IF NOT EXISTS in_sp500 BOOLEAN DEFAULT FALSE;")
+    cur.execute("ALTER TABLE universe_movers ADD COLUMN IF NOT EXISTS in_nasdaq100 BOOLEAN DEFAULT FALSE;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS change_pct REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sma50 REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sma150 REAL;")
@@ -675,6 +677,88 @@ def _fetch_sector_performance(period: str) -> dict:
 
     table.sort(key=lambda r: r["change_pct"], reverse=True)
     return {"period": period, "dates": all_dates, "series": series, "table": table}
+
+
+@app.get("/api/heatmap")
+def get_heatmap(index: str = Query(default="sp500", pattern="^(sp500|nasdaq100)$")):
+    """Index heatmap data (ticker + today's % change) for the Market Pulse
+    page. Reuses universe_movers — already populated by every scan run
+    with the whole universe's daily change, tagged by index membership —
+    so this needs zero extra yfinance calls of its own."""
+    column = "in_sp500" if index == "sp500" else "in_nasdaq100"
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute(
+            f"""
+            SELECT ticker, change_pct, close_price, timestamp
+            FROM universe_movers
+            WHERE {column} = TRUE AND change_pct IS NOT NULL
+            ORDER BY change_pct DESC
+            """
+        )
+        rows = cur.fetchall()
+    return {"index": index, "count": len(rows), "stocks": [dict(r) for r in rows]}
+
+
+# ------------------------------------------------------------------
+# Fear & Greed Index — the real CNN number, via the same unofficial JSON
+# endpoint CNN's own website widget calls (no official public API exists
+# for this; this endpoint is widely used by independent trackers/bots for
+# exactly that reason). Since it's undocumented, it could change or get
+# blocked without notice — cached for an hour, and on failure this serves
+# the last successfully-fetched value rather than nothing, so a temporary
+# hiccup upstream doesn't blank out the page.
+# ------------------------------------------------------------------
+
+_fear_greed_cache = {"data": None, "ts": 0}
+FEAR_GREED_CACHE_TTL = 3600  # 1 hour — this index doesn't move faster than that anyway
+
+FEAR_GREED_COMPONENT_KEYS = [
+    "market_momentum_sp500", "market_momentum_sp125",
+    "stock_price_strength", "stock_price_breadth",
+    "put_call_options", "market_volatility_vix", "market_volatility_vix_50",
+    "junk_bond_demand", "safe_haven_demand",
+]
+
+
+@app.get("/api/fear-greed")
+def get_fear_greed():
+    now = time.time()
+    if _fear_greed_cache["data"] and (now - _fear_greed_cache["ts"]) < FEAR_GREED_CACHE_TTL:
+        return _fear_greed_cache["data"]
+
+    try:
+        resp = requests.get(
+            "https://production.dataviz.cnn.io/index/fearandgreed/graphdata",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        raw = resp.json()
+        main = raw.get("fear_and_greed", {})
+        result = {
+            "score": main.get("score"),
+            "rating": main.get("rating"),
+            "previous_close": main.get("previous_close"),
+            "previous_1_week": main.get("previous_1_week"),
+            "previous_1_month": main.get("previous_1_month"),
+            "previous_1_year": main.get("previous_1_year"),
+            "components": {},
+            "source": "cnn",
+        }
+        for key in FEAR_GREED_COMPONENT_KEYS:
+            comp = raw.get(key)
+            if isinstance(comp, dict) and comp.get("score") is not None:
+                result["components"][key] = {"score": comp.get("score"), "rating": comp.get("rating")}
+        if result["score"] is None:
+            raise ValueError("CNN response didn't include a score — endpoint shape may have changed")
+        _fear_greed_cache["data"] = result
+        _fear_greed_cache["ts"] = now
+        return result
+    except Exception as e:
+        print(f"[warn] CNN Fear & Greed fetch failed: {e}")
+        if _fear_greed_cache["data"]:
+            return _fear_greed_cache["data"]  # serve the last good value rather than nothing
+        raise HTTPException(status_code=502, detail="Fear & Greed index temporarily unavailable")
 
 
 @app.get("/api/sector-performance")

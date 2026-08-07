@@ -147,12 +147,45 @@ def fetch_sp500_tickers() -> List[str]:
         return []
 
 
+def fetch_nasdaq100_tickers() -> List[str]:
+    """Same idea as fetch_sp500_tickers, for the Nasdaq-100 — used both to
+    widen the scan universe and to tag each ticker's index membership for
+    the heatmap feature (see SP500_SET/NASDAQ100_SET below)."""
+    try:
+        import requests
+        import io
+        resp = requests.get(
+            "https://yfiua.github.io/index-constituents/constituents-nasdaq100.csv",
+            timeout=15,
+        )
+        resp.raise_for_status()
+        table = pd.read_csv(io.StringIO(resp.text))
+        col = "Symbol" if "Symbol" in table.columns else table.columns[0]
+        symbols_col = table[col].astype(str).tolist()
+        return [s.strip().replace(".", "-") for s in symbols_col if s.strip()]
+    except Exception as e:
+        print(f"[warn] failed to fetch Nasdaq-100 list: {e}")
+        return []
+
+
+# Populated once per scan run (see scan_universe) so every ticker's
+# universe_movers row can be tagged with which index(es) it belongs to —
+# this is what powers the S&P 500 / Nasdaq 100 heatmap toggle without
+# needing any separate data fetch for that feature.
+SP500_SET: set = set()
+NASDAQ100_SET: set = set()
+
+
 def build_scan_universe() -> List[str]:
-    """S&P 500 (broad coverage) + the curated extras below (liquid names and
-    ETFs that aren't S&P 500 constituents, like QQQ/IWM/ARKK or newer
-    high-momentum names not yet added to the index) — deduplicated."""
+    """S&P 500 (broad coverage) + Nasdaq 100 + the curated extras below
+    (liquid names and ETFs that aren't in either index, like QQQ/IWM/ARKK
+    or newer high-momentum names) — deduplicated."""
+    global SP500_SET, NASDAQ100_SET
     sp500 = fetch_sp500_tickers()
-    combined = list(dict.fromkeys(sp500 + DEFAULT_UNIVERSE))  # dedup, preserve order
+    nasdaq100 = fetch_nasdaq100_tickers()
+    SP500_SET = set(sp500)
+    NASDAQ100_SET = set(nasdaq100)
+    combined = list(dict.fromkeys(sp500 + nasdaq100 + DEFAULT_UNIVERSE))  # dedup, preserve order
     return combined
 
 
@@ -902,6 +935,8 @@ def init_db():
             timestamp TIMESTAMPTZ DEFAULT NOW()
         );
     """)
+    cur.execute("ALTER TABLE universe_movers ADD COLUMN IF NOT EXISTS in_sp500 BOOLEAN DEFAULT FALSE;")
+    cur.execute("ALTER TABLE universe_movers ADD COLUMN IF NOT EXISTS in_nasdaq100 BOOLEAN DEFAULT FALSE;")
     conn.commit()
     cur.close()
     conn.close()
@@ -1320,7 +1355,9 @@ def upsert_universe_movers(all_changes: List[tuple]):
     pattern-matched stocks) — used by api_server.py's /api/market-movers
     as a fallback when Yahoo's whole-market screener endpoint is
     unavailable, since this data comes from .history(), which is
-    proven to work reliably from this deployment."""
+    proven to work reliably from this deployment. Also tagged with index
+    membership (SP500_SET/NASDAQ100_SET, populated by build_scan_universe)
+    so /api/heatmap can filter to one index without any separate fetch."""
     if not all_changes:
         return
     conn = get_conn()
@@ -1328,14 +1365,17 @@ def upsert_universe_movers(all_changes: List[tuple]):
     for ticker, chg, close_price in all_changes:
         cur.execute(
             """
-            INSERT INTO universe_movers (ticker, change_pct, close_price, timestamp)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO universe_movers (ticker, change_pct, close_price, in_sp500, in_nasdaq100, timestamp)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT (ticker) DO UPDATE SET
                 change_pct = EXCLUDED.change_pct,
                 close_price = EXCLUDED.close_price,
+                in_sp500 = EXCLUDED.in_sp500,
+                in_nasdaq100 = EXCLUDED.in_nasdaq100,
                 timestamp = EXCLUDED.timestamp
             """,
-            (ticker, _native(chg), _native(close_price), datetime.now(timezone.utc).isoformat()),
+            (ticker, _native(chg), _native(close_price), ticker in SP500_SET, ticker in NASDAQ100_SET,
+             datetime.now(timezone.utc).isoformat()),
         )
     conn.commit()
     cur.close()
