@@ -266,6 +266,58 @@ def get_macro_news(limit: int = Query(default=25, le=100)):
     return [{k: v for k, v in dict(r).items() if k != "rn"} for r in combined]
 
 
+@app.get("/api/macro-news/search")
+def search_macro_news(
+    q: str = Query(default="", max_length=100),
+    days: int = Query(default=7, ge=1, le=30),
+    limit: int = Query(default=60, le=200),
+):
+    """Full search across macro_news, independent of the diversity/rotation
+    algorithm the main feed (/api/macro-news) uses. That endpoint only ever
+    returns ~25 recent items so the feed stays fresh and balanced across
+    categories — great for browsing, but it means a search box wired to it
+    can only ever search the last half hour or so of news, which is why
+    older-but-relevant stories seemed to "disappear". This endpoint instead
+    queries the full macro_news table directly over a wider window (default
+    7 days), so search actually has something to find."""
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    query = q.strip()
+    if not query:
+        cur.execute(
+            """
+            SELECT * FROM macro_news
+            WHERE timestamp > NOW() - make_interval(days => %s)
+            ORDER BY timestamp DESC
+            LIMIT %s
+            """,
+            (days, limit),
+        )
+    else:
+        like_pattern = f"%{query}%"
+        cur.execute(
+            """
+            SELECT * FROM macro_news
+            WHERE timestamp > NOW() - make_interval(days => %s)
+              AND (
+                summary_he ILIKE %s OR
+                summary_en ILIKE %s OR
+                category_tag ILIKE %s OR
+                hook_he ILIKE %s
+              )
+            ORDER BY timestamp DESC
+            LIMIT %s
+            """,
+            (days, like_pattern, like_pattern, like_pattern, like_pattern, limit),
+        )
+
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 @app.get("/api/ui-strings")
 def get_ui_strings(lang: str = Query(default="he", pattern="^(he|en)$")):
     conn = get_conn()

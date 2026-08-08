@@ -194,6 +194,12 @@
   .sector-btn{padding:4px 11px;border-radius:20px;font-size:11.5px;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--text-dim);transition:all .15s;font-family:'Heebo',sans-serif;}
   .sector-btn.active{background:var(--teal);color:#0a1a18;border-color:var(--teal);font-weight:700;}
   .sector-btn:hover:not(.active){border-color:var(--teal-dim);color:var(--text);}
+  .news-search-wrap{position:relative;margin-bottom:10px;}
+  .news-search-input{width:100%;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 34px 8px 12px;font-size:13px;outline:none;font-family:'Heebo',sans-serif;}
+  .news-search-input:focus{border-color:var(--teal-dim);}
+  .news-search-icon{position:absolute;top:50%;transform:translateY(-50%);inset-inline-end:11px;color:var(--text-dim);font-size:13px;pointer-events:none;}
+  .news-search-clear{position:absolute;top:50%;transform:translateY(-50%);inset-inline-end:10px;color:var(--text-dim);font-size:15px;cursor:pointer;display:none;background:none;border:none;padding:2px 4px;}
+  .news-search-count{font-size:11px;color:var(--text-dim);margin-bottom:8px;}
 
   .disclaimer-strip{font-size:11px;color:var(--text-dim);text-align:center;padding:10px 24px;border-top:1px solid var(--line);}
   .page-nav{display:flex;gap:6px;padding:10px 24px;border-bottom:1px solid var(--line);background:var(--panel);}
@@ -363,6 +369,11 @@
   <div class="divider"></div>
   <div class="col left">
     <div class="col-title"><span class="dot"></span> מוקד מאקרו וחדשות עולם</div>
+    <div class="news-search-wrap">
+      <input type="text" class="news-search-input" id="news-search-input" placeholder="חפש בחדשות..." oninput="setNewsSearch(this.value)">
+      <span class="news-search-icon" id="news-search-icon">🔍</span>
+      <button class="news-search-clear" id="news-search-clear" onclick="clearNewsSearch()">✕</button>
+    </div>
     <div class="sector-filter" id="sector-filter"></div>
     <div id="macro"></div>
   </div>
@@ -516,6 +527,60 @@ function renderMovers(){
 }
 
 let activeSector = 'הכל';
+let newsSearchQuery = '';
+let newsSearchResults = null;   // null = not searching, use normal `macro` feed. array = search mode.
+let newsSearchDebounce = null;
+let newsSearchToken = 0;        // guards against out-of-order responses (slow request landing after a newer one)
+
+function setNewsSearch(value){
+  newsSearchQuery = value.trim();
+  const clearBtn = document.getElementById('news-search-clear');
+  const icon = document.getElementById('news-search-icon');
+  if(clearBtn) clearBtn.style.display = newsSearchQuery ? 'block' : 'none';
+  if(icon) icon.style.display = newsSearchQuery ? 'none' : 'block';
+
+  clearTimeout(newsSearchDebounce);
+  if(!newsSearchQuery){
+    newsSearchResults = null;
+    renderMacro();
+    return;
+  }
+  // Debounce: wait for a pause in typing before hitting the server,
+  // and search a wide 7-day window (not just the ~25 items shown in the feed)
+  newsSearchDebounce = setTimeout(() => runNewsSearch(newsSearchQuery), 350);
+}
+
+async function runNewsSearch(query){
+  const myToken = ++newsSearchToken;
+  const el = document.getElementById('macro');
+  if(el) el.innerHTML = `<div style="color:var(--text-dim);padding:20px;text-align:center;">${UI[lang].loading}</div>`;
+  try {
+    const res = await fetch(`${API_BASE}/api/macro-news/search?q=${encodeURIComponent(query)}&days=7&limit=60`);
+    if(!res.ok) throw new Error('search failed');
+    const rows = await res.json();
+    if(myToken !== newsSearchToken) return; // a newer search has since started, ignore this stale response
+    newsSearchResults = rows.map(mapDbRowToMacro);
+    renderMacro();
+  } catch(e){
+    console.error('[news search] failed', e);
+    if(myToken !== newsSearchToken) return;
+    newsSearchResults = [];
+    renderMacro();
+  }
+}
+
+function clearNewsSearch(){
+  newsSearchQuery = '';
+  newsSearchResults = null;
+  newsSearchToken++; // invalidate any in-flight search response
+  const input = document.getElementById('news-search-input');
+  if(input) input.value = '';
+  const clearBtn = document.getElementById('news-search-clear');
+  const icon = document.getElementById('news-search-icon');
+  if(clearBtn) clearBtn.style.display = 'none';
+  if(icon) icon.style.display = 'block';
+  renderMacro();
+}
 
 function renderSectorFilter(){
   const el = document.getElementById("sector-filter");
@@ -545,12 +610,36 @@ function getNewsText(m){
 
 function renderMacro(){
   const el = document.getElementById("macro");
+  const t = lang==='en';
+
+  // Search mode: results come straight from the server (wide 7-day window,
+  // not limited to the ~25 items in the normal rotating feed). Sector filter
+  // doesn't apply here — search already looks across everything.
+  if(newsSearchResults !== null){
+    if(!newsSearchResults.length){
+      const msg = t ? `No news matches "${newsSearchQuery}"` : `אין חדשות התואמות ל"${newsSearchQuery}"`;
+      el.innerHTML = `<div style="color:var(--text-dim);padding:20px;text-align:center;">${msg}</div>`;
+      return;
+    }
+    el.innerHTML = newsSearchResults.map((m,i)=>`
+      <div class="macro-item" onclick="openMacroDrawer(${i}, true)">
+        <div class="macro-tag ${m.impact==='Critical'?'tag-critical':'tag-high'}">${m.tag}</div>
+        <div>
+          <div class="macro-text">${getNewsText(m)}</div>
+          ${(lang==='he' && m.hook_he) ? `<div class="macro-hook">💡 ${m.hook_he}</div>` : ''}
+          <div class="macro-time">${m.time}</div>
+        </div>
+      </div>
+    `).join("");
+    return;
+  }
+
   if(!macro.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${UI[lang].loading}</div>`; return; }
   const filtered = activeSector==='הכל' ? macro : macro.filter(m=>{
     const s = (m.sectors||m.sector||'');
     return s.includes(activeSector);
   });
-  if(!filtered.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">אין חדשות בסקטור זה</div>`; return; }
+  if(!filtered.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${t?'No news in this sector':'אין חדשות בסקטור זה'}</div>`; return; }
   el.innerHTML = filtered.map((m,i)=>`
     <div class="macro-item" onclick="openMacroDrawer(${macro.indexOf(m)})">
       <div class="macro-tag ${m.impact==='Critical'?'tag-critical':'tag-high'}">${m.tag}</div>
@@ -1288,8 +1377,9 @@ function openDrawer(i){
   track('view_stock', s.ticker);
 }
 
-function openMacroDrawer(i){
-  const m = macro[i];
+function openMacroDrawer(i, fromSearch){
+  const m = fromSearch ? newsSearchResults[i] : macro[i];
+  if(!m) return;
   const drawer = document.getElementById("drawer");
   drawer.innerHTML = `
     <div class="drawer-head">
@@ -1999,6 +2089,21 @@ function dedupeByTicker(list){
   return out;
 }
 
+function mapDbRowToMacro(r){
+  return {
+    tag: r.category_tag,
+    impact: r.impact_level,
+    text: lang==='en' ? (r.summary_en||r.summary_he) : (r.summary_he||r.summary_en),
+    summary_he: r.summary_he,
+    summary_en: r.summary_en,
+    hook_he: r.hook_he || '',
+    time: new Date(r.timestamp).toLocaleString(lang==='he'?'he-IL':'en-US'),
+    source: r.source_url ? new URL(r.source_url).hostname.replace('www.','') : '',
+    link: r.source_url||'#',
+    sectors: r.category_tag || '',  // use tag as sector fallback until API sends sector data
+  };
+}
+
 async function loadFromApi(){
   try {
     const [stocksRes, macroRes] = await Promise.all([
@@ -2025,6 +2130,7 @@ const UI = {
   he: {
     sub: 'דשבורד מסחר בזמן אמת',
     search_placeholder: 'חפש טיקר... (למשל AAPL)',
+    news_search_placeholder: 'חפש בחדשות...',
     search_btn: 'חפש',
     breaking_title: 'חדשות שוברות — קריטי',
     scanner_title: 'סורק סווינג — משימות פתוחות',
@@ -2043,6 +2149,7 @@ const UI = {
   en: {
     sub: 'Real-time trading dashboard',
     search_placeholder: 'Search ticker... (e.g. AAPL)',
+    news_search_placeholder: 'Search news...',
     search_btn: 'Search',
     breaking_title: 'Breaking News — Critical',
     scanner_title: 'Swing Scanner — Open Setups',
@@ -2067,6 +2174,7 @@ function applyLang(){
   document.getElementById('header-sub').textContent = t.sub;
   document.getElementById('search-input').placeholder = t.search_placeholder;
   document.getElementById('search-input-mobile').placeholder = t.search_placeholder;
+  document.getElementById('news-search-input').placeholder = t.news_search_placeholder;
   document.getElementById('search-btn-label').textContent = t.search_btn;
   document.getElementById('search-btn-mobile').textContent = t.search_btn;
   document.getElementById('lang-toggle').textContent = t.lang_btn;
@@ -2086,18 +2194,7 @@ function applyLang(){
   if(rawMacro.length > 0){
     macro.length = 0;
     for(const r of rawMacro){
-      macro.push({
-        tag: r.category_tag,
-        impact: r.impact_level,
-        text: lang==='en' ? (r.summary_en||r.summary_he) : (r.summary_he||r.summary_en),
-        summary_he: r.summary_he,
-        summary_en: r.summary_en,
-        hook_he: r.hook_he || '',
-        time: new Date(r.timestamp).toLocaleString(lang==='he'?'he-IL':'en-US'),
-        source: r.source_url ? new URL(r.source_url).hostname.replace('www.','') : '',
-        link: r.source_url||'#',
-        sectors: r.category_tag || '',  // use tag as sector fallback until API sends sector data
-      });
+      macro.push(mapDbRowToMacro(r));
     }
   }
 
