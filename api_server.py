@@ -517,6 +517,98 @@ def stock_news(ticker: str, limit: int = 6):
 # on demand - no OpenAI call here, so it's instant and free to run.
 # ------------------------------------------------------------------
 
+# yfinance's `sector` field uses GICS sector names, which don't exactly
+# match the "Cons. Discretionary"-style labels used for the SECTOR_ETFS
+# dict above (that dict is for display; this one is for matching a stock's
+# reported sector to the right SPDR ETF ticker).
+YF_SECTOR_TO_ETF = {
+    "Technology": "XLK",
+    "Financial Services": "XLF",
+    "Healthcare": "XLV",
+    "Consumer Cyclical": "XLY",
+    "Consumer Defensive": "XLP",
+    "Energy": "XLE",
+    "Industrials": "XLI",
+    "Basic Materials": "XLB",
+    "Real Estate": "XLRE",
+    "Communication Services": "XLC",
+    "Utilities": "XLU",
+}
+
+
+@app.get("/api/sector-comparison/{ticker}")
+def get_sector_comparison(ticker: str):
+    """How has this stock performed vs. the SPDR ETF for its own sector,
+    over the same 1-year window? Answers 'is this stock actually
+    outperforming its peers, or just going up with the tide.'"""
+    ticker = ticker.upper().strip()
+    try:
+        tk = yf.Ticker(ticker)
+        info = tk.info
+        stock_hist = tk.history(period="1y", interval="1d")
+    except Exception:
+        raise HTTPException(status_code=502, detail="שגיאה בשליפת הנתונים")
+
+    if stock_hist.empty:
+        raise HTTPException(status_code=404, detail=f"הטיקר {ticker} לא נמצא")
+
+    sector_name = info.get("sector")
+    etf_ticker = YF_SECTOR_TO_ETF.get(sector_name)
+
+    stock_return = round((float(stock_hist["Close"].iloc[-1]) / float(stock_hist["Close"].iloc[0]) - 1) * 100, 2)
+
+    etf_return = None
+    if etf_ticker:
+        try:
+            etf_hist = yf.Ticker(etf_ticker).history(period="1y", interval="1d")
+            if not etf_hist.empty:
+                etf_return = round((float(etf_hist["Close"].iloc[-1]) / float(etf_hist["Close"].iloc[0]) - 1) * 100, 2)
+        except Exception as e:
+            print(f"[warn] sector-comparison: ETF fetch failed for {etf_ticker}: {e}")
+
+    return {
+        "ticker": ticker,
+        "sector": sector_name,
+        "sector_etf": etf_ticker,
+        "stock_return_1y": stock_return,
+        "sector_return_1y": etf_return,
+        "outperformance": round(stock_return - etf_return, 2) if etf_return is not None else None,
+    }
+
+
+@app.get("/api/signal-history/{ticker}")
+def get_signal_history(ticker: str, limit: int = Query(default=20, le=100)):
+    """Every past scan signal for one specific ticker — the pattern that
+    fired, when, and (once resolved) how it played out. Powers the
+    'has this stock done this before?' section of the stock deep-dive page."""
+    ticker = ticker.upper().strip()
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute(
+            """
+            SELECT ticker, timestamp, pattern_type, swing_score, rs_rating,
+                   entry_price, forward_return_10d, forward_return_20d
+            FROM scanned_stocks
+            WHERE ticker = %s AND pattern_type IS NOT NULL
+            ORDER BY timestamp DESC
+            LIMIT %s
+            """,
+            (ticker, limit),
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "date": r["timestamp"].strftime("%Y-%m-%d"),
+            "pattern_type": r["pattern_type"],
+            "swing_score": r["swing_score"],
+            "rs_rating": r["rs_rating"],
+            "entry_price": r["entry_price"],
+            "return_10d": r["forward_return_10d"],
+            "return_20d": r["forward_return_20d"],
+        }
+        for r in rows
+    ]
+
+
 @app.get("/api/lookup/{ticker}")
 def lookup_stock(ticker: str):
     ticker = ticker.upper().strip()

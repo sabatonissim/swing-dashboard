@@ -133,6 +133,25 @@
   .bt-signals-table td{padding:7px 8px;border-bottom:1px solid var(--line);font-family:'JetBrains Mono',monospace;}
   .bt-signals-table tr:hover td{background:var(--panel-2);}
   .bt-empty{color:var(--text-dim);padding:40px 20px;text-align:center;font-size:13px;line-height:1.6;}
+  .dd-search-row{display:flex;gap:8px;margin-bottom:18px;}
+  .dd-header{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:10px;margin-bottom:16px;}
+  .dd-header .ticker{font-family:'JetBrains Mono',monospace;font-size:26px;font-weight:700;}
+  .dd-header .name{color:var(--text-dim);font-size:13px;margin-inline-start:8px;}
+  .dd-header .price{font-family:'JetBrains Mono',monospace;font-size:20px;font-weight:700;}
+  .dd-chart-wrap{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:16px;height:340px;}
+  .dd-stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px;}
+  .dd-stat-card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;text-align:center;}
+  .dd-stat-card .k{font-size:10px;color:var(--text-dim);text-transform:uppercase;margin-bottom:4px;}
+  .dd-stat-card .v{font-family:'JetBrains Mono',monospace;font-size:14.5px;font-weight:700;}
+  .dd-section-title{font-size:13px;font-weight:700;margin:20px 0 10px;color:var(--text);}
+  .dd-sector-compare{display:flex;gap:14px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:10px;}
+  .dd-sector-compare .col{flex:1;text-align:center;}
+  .dd-sector-compare .col .k{font-size:11px;color:var(--text-dim);margin-bottom:6px;}
+  .dd-sector-compare .col .v{font-family:'JetBrains Mono',monospace;font-size:18px;font-weight:700;}
+  .dd-news-item{padding:10px 0;border-bottom:1px solid var(--line);}
+  .dd-news-item a{color:var(--text);text-decoration:none;font-size:13px;line-height:1.5;}
+  .dd-news-item a:hover{color:var(--teal);}
+  .dd-news-item .meta{font-size:10.5px;color:var(--text-dim);margin-top:3px;}
   .score-badge{font-family:'JetBrains Mono',monospace;font-weight:600;font-size:13px;padding:4px 9px;border-radius:20px;min-width:36px;text-align:center;}
   .score-hi{background:rgba(62,207,126,.15);color:var(--green);}
   .score-mid{background:rgba(232,163,61,.15);color:var(--amber);}
@@ -324,6 +343,7 @@
   <button class="page-nav-btn active" id="page-nav-home" onclick="setPage('home')">בית</button>
   <button class="page-nav-btn" id="page-nav-pulse" onclick="setPage('pulse')">פעימת השוק</button>
   <button class="page-nav-btn" id="page-nav-backtest" onclick="setPage('backtest')">בדיקה היסטורית</button>
+  <button class="page-nav-btn" id="page-nav-deepdive" onclick="setPage('deepdive')">ניתוח מניה</button>
 </div>
 
 <div id="page-home">
@@ -429,6 +449,16 @@
     <div class="sector-filter" id="backtest-pattern-filter"></div>
 
     <div id="backtest-content"></div>
+  </div>
+</div>
+
+<div id="page-deepdive" style="display:none;">
+  <div class="pulse-page-wrap">
+    <div class="dd-search-row">
+      <input type="text" id="dd-ticker-input" class="news-search-input" placeholder="הקלד טיקר... (למשל AAPL)" style="max-width:280px;" onkeydown="if(event.key==='Enter') loadDeepDive()">
+      <button class="search-btn" onclick="loadDeepDive()">חפש</button>
+    </div>
+    <div id="deepdive-content"></div>
   </div>
 </div>
 
@@ -925,6 +955,154 @@ function renderBacktestContent(data){
   });
 }
 
+// ---- Deep Dive page ----
+let deepDiveTvChart = null;
+
+async function loadDeepDive(){
+  const input = document.getElementById('dd-ticker-input');
+  const ticker = (input.value || '').trim().toUpperCase();
+  const el = document.getElementById('deepdive-content');
+  const t = lang === 'en';
+
+  if(!ticker){
+    el.innerHTML = `<div class="bt-empty">${t?'Enter a ticker to see full analysis.':'הקלד טיקר כדי לראות ניתוח מלא.'}</div>`;
+    return;
+  }
+
+  el.innerHTML = `<div class="bt-empty">${UI[lang].loading}</div>`;
+
+  try {
+    const [lookupRes, sectorRes, signalsRes, newsRes] = await Promise.allSettled([
+      fetch(`${API_BASE}/api/lookup/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
+      fetch(`${API_BASE}/api/sector-comparison/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
+      fetch(`${API_BASE}/api/signal-history/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
+      fetch(`${API_BASE}/api/stock-news/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
+    ]);
+
+    if(lookupRes.status !== 'fulfilled'){
+      el.innerHTML = `<div class="bt-empty">${t?`Couldn't find ticker "${ticker}".`:`הטיקר "${ticker}" לא נמצא.`}</div>`;
+      return;
+    }
+
+    const quote = lookupRes.value;
+    const sector = sectorRes.status === 'fulfilled' ? sectorRes.value : null;
+    const signals = signalsRes.status === 'fulfilled' ? signalsRes.value : [];
+    const news = newsRes.status === 'fulfilled' ? newsRes.value : [];
+
+    renderDeepDive(quote, sector, signals, news);
+  } catch(e) {
+    console.error('[deep dive] failed', e);
+    el.innerHTML = `<div class="bt-empty">${t?'Something went wrong loading this stock.':'משהו השתבש בטעינת המניה.'}</div>`;
+  }
+}
+
+function renderDeepDive(quote, sector, signals, news){
+  const el = document.getElementById('deepdive-content');
+  const t = lang === 'en';
+  const changeColor = quote.change_pct >= 0 ? 'var(--green)' : 'var(--red)';
+
+  let html = `
+    <div class="dd-header">
+      <div>
+        <span class="ticker">${quote.ticker}</span>
+        <span class="name">${quote.name||''}</span>
+      </div>
+      <div>
+        <span class="price">$${quote.price}</span>
+        <span style="color:${changeColor};font-family:'JetBrains Mono',monospace;font-size:14px;margin-inline-start:8px;">${quote.change_pct>=0?'+':''}${quote.change_pct}%</span>
+      </div>
+    </div>
+
+    <div class="dd-chart-wrap" id="dd-tv-chart"></div>
+
+    <div class="dd-stats-row">
+      <div class="dd-stat-card"><div class="k">${t?'52w High':'שיא 52ש'}</div><div class="v">${quote.week52_high ?? '—'}</div></div>
+      <div class="dd-stat-card"><div class="k">${t?'52w Low':'שפל 52ש'}</div><div class="v">${quote.week52_low ?? '—'}</div></div>
+      <div class="dd-stat-card"><div class="k">${t?'Market Cap':'שווי שוק'}</div><div class="v">${formatMarketCap(quote.market_cap)}</div></div>
+      <div class="dd-stat-card"><div class="k">P/E</div><div class="v">${quote.pe_ratio ? Number(quote.pe_ratio).toFixed(1) : '—'}</div></div>
+      <div class="dd-stat-card"><div class="k">${t?'Avg Vol 20d':'ווליום ממוצע'}</div><div class="v">${formatMarketCap(quote.avg_volume_20d)}</div></div>
+    </div>
+  `;
+
+  if(sector && sector.sector_return_1y != null){
+    const stockColor = sector.stock_return_1y >= 0 ? 'var(--green)' : 'var(--red)';
+    const secColor = sector.sector_return_1y >= 0 ? 'var(--green)' : 'var(--red)';
+    const outColor = sector.outperformance >= 0 ? 'var(--green)' : 'var(--red)';
+    html += `
+      <div class="dd-section-title">${t?'Stock vs. Sector (1Y)':'מניה מול סקטור (שנה)'}</div>
+      <div class="dd-sector-compare">
+        <div class="col"><div class="k">${quote.ticker}</div><div class="v" style="color:${stockColor}">${sector.stock_return_1y>=0?'+':''}${sector.stock_return_1y}%</div></div>
+        <div class="col"><div class="k">${sector.sector_etf||sector.sector||'—'}</div><div class="v" style="color:${secColor}">${sector.sector_return_1y>=0?'+':''}${sector.sector_return_1y}%</div></div>
+        <div class="col"><div class="k">${t?'Outperformance':'עודף ביצוע'}</div><div class="v" style="color:${outColor}">${sector.outperformance>=0?'+':''}${sector.outperformance}%</div></div>
+      </div>
+    `;
+  }
+
+  html += `<div class="dd-section-title">${t?'Signal History':'היסטוריית איתותים'}</div>`;
+  if(signals && signals.length){
+    html += `
+      <div style="overflow-x:auto;">
+        <table class="bt-signals-table">
+          <thead><tr>
+            <th>${t?'Date':'תאריך'}</th>
+            <th>${t?'Pattern':'תבנית'}</th>
+            <th>${t?'Score':'ציון'}</th>
+            <th>RS</th>
+            <th>${t?'Return 10d':'תשואה 10י'}</th>
+          </tr></thead>
+          <tbody>
+            ${signals.map(s => `
+              <tr>
+                <td>${s.date}</td>
+                <td>${s.pattern_type}</td>
+                <td>${s.swing_score ?? '—'}</td>
+                <td>${s.rs_rating ?? '—'}</td>
+                <td style="color:${s.return_10d==null?'var(--text-dim)':s.return_10d>=0?'var(--green)':'var(--red)'}">${s.return_10d==null ? (t?'pending':'ממתין') : (s.return_10d>=0?'+':'')+s.return_10d+'%'}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  } else {
+    html += `<div class="bt-empty">${t?'No past signals for this ticker in our scan history yet.':'אין עדיין איתותים קודמים לטיקר הזה בהיסטוריית הסריקות שלנו.'}</div>`;
+  }
+
+  html += `<div class="dd-section-title">${t?'Recent News':'חדשות אחרונות'}</div>`;
+  if(news && news.length){
+    html += news.map(n => `
+      <div class="dd-news-item">
+        <a href="${n.link}" target="_blank" rel="noopener">${n.title}</a>
+        <div class="meta">${n.publisher||''}</div>
+      </div>
+    `).join('');
+  } else {
+    html += `<div class="bt-empty">${t?'No recent news found.':'לא נמצאו כתבות עדכניות.'}</div>`;
+  }
+
+  el.innerHTML = html;
+
+  if(typeof TradingView !== 'undefined'){
+    new TradingView.widget({
+      autosize: true, symbol: quote.ticker, interval: 'D',
+      timezone: 'Asia/Jerusalem', theme: 'dark', style: '1',
+      locale: lang==='en' ? 'en' : 'he_IL',
+      toolbar_bg: '#161a20', hide_top_toolbar: false, hide_legend: false,
+      save_image: false, container_id: 'dd-tv-chart',
+    });
+  }
+}
+
+function formatMarketCap(n){
+  if(n == null) return '—';
+  n = Number(n);
+  if(n >= 1e12) return (n/1e12).toFixed(2)+'T';
+  if(n >= 1e9) return (n/1e9).toFixed(2)+'B';
+  if(n >= 1e6) return (n/1e6).toFixed(1)+'M';
+  if(n >= 1e3) return (n/1e3).toFixed(0)+'K';
+  return String(n);
+}
+
 let sectorPeriod = 'YTD';       // '1M' | '3M' | 'YTD' | '1Y'
 let sectorChartInstance = null;
 let sectorDataCache = {};       // period -> API response (avoid re-fetching on every toggle)
@@ -968,9 +1146,11 @@ function setPage(page){
   document.getElementById('page-nav-home').classList.toggle('active', page==='home');
   document.getElementById('page-nav-pulse').classList.toggle('active', page==='pulse');
   document.getElementById('page-nav-backtest').classList.toggle('active', page==='backtest');
+  document.getElementById('page-nav-deepdive').classList.toggle('active', page==='deepdive');
   document.getElementById('page-home').style.display = page==='home' ? '' : 'none';
   document.getElementById('page-pulse').style.display = page==='pulse' ? '' : 'none';
   document.getElementById('page-backtest').style.display = page==='backtest' ? '' : 'none';
+  document.getElementById('page-deepdive').style.display = page==='deepdive' ? '' : 'none';
   if(page === 'pulse' && !pulseLoaded){
     pulseLoaded = true;
     loadHeatmap(heatmapIndex);
@@ -1581,6 +1761,7 @@ function openDrawer(i){
     </div>
     <button class="compare-btn" onclick="openCompare('${s.ticker}')">⇄ ${lang==='en'?'Compare with another stock':'השווה מול מניה אחרת'}</button>
     <button class="compare-btn" style="border-color:var(--amber);color:var(--amber);" onclick='openRiskCalc(${JSON.stringify({entry:s.entry, stop:s.support, target:(Array.isArray(s.resistance)&&s.resistance.length?s.resistance[0]:null)})})'>🧮 ${lang==='en'?'Position Size Calculator':'מחשבון גודל פוזיציה'}</button>
+    <button class="compare-btn" style="border-color:var(--teal);color:var(--teal);" onclick="closeDrawer(); setPage('deepdive'); document.getElementById('dd-ticker-input').value='${s.ticker}'; loadDeepDive();">🔎 ${lang==='en'?'Full Stock Analysis':'ניתוח מלא למניה'}</button>
     <div id="compare-section"></div>
   `;
   document.getElementById("overlay").classList.add("open");
@@ -2350,6 +2531,8 @@ const UI = {
     macro_title: 'מוקד מאקרו וחדשות עולם',
     charts_title: 'גרפי מדדים',
     nav_backtest: 'בדיקה היסטורית',
+    nav_deepdive: 'ניתוח מניה',
+    dd_placeholder: 'הקלד טיקר... (למשל AAPL)',
     no_stocks: 'אין מניות מסומנות כרגע — הסורק ירוץ בשעות המסחר הבאות',
     no_breaking: 'אין חדשות קריטיות כרגע',
     loading: 'טוען...',
@@ -2370,6 +2553,8 @@ const UI = {
     macro_title: 'Macro & World News Hub',
     charts_title: 'Market Charts',
     nav_backtest: 'Backtest',
+    nav_deepdive: 'Deep Dive',
+    dd_placeholder: 'Enter ticker... (e.g. AAPL)',
     no_stocks: 'No stocks flagged yet — scanner runs during market hours',
     no_breaking: 'No critical news at this time',
     loading: 'Loading...',
@@ -2399,6 +2584,8 @@ function applyLang(){
   document.querySelector('.market-charts-title').textContent = t.charts_title;
   document.getElementById('movers-title').textContent = t.movers_title;
   document.getElementById('page-nav-backtest').textContent = t.nav_backtest;
+  document.getElementById('page-nav-deepdive').textContent = t.nav_deepdive;
+  document.getElementById('dd-ticker-input').placeholder = t.dd_placeholder;
 
   // Rebuild stocks and macro arrays from raw API data in the active language
   if(rawStocks.length > 0){
