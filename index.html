@@ -119,13 +119,28 @@
   .trend.up{color:var(--green);}.trend.down{color:var(--red);}
   .stock-row .trigger{flex:1;font-size:13px;color:var(--text-dim);}
   .win-rate-badge{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;padding:2px 7px;border:1px solid;border-radius:20px;white-space:nowrap;}
+  .bt-stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px;}
+  .bt-stat-card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;text-align:center;}
+  .bt-stat-card .k{font-size:10.5px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;}
+  .bt-stat-card .v{font-family:'JetBrains Mono',monospace;font-size:19px;font-weight:700;}
+  .bt-chart-wrap{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;height:260px;margin-bottom:16px;}
+  .bt-rs-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px;}
+  .bt-rs-card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;}
+  .bt-rs-card .label{font-size:11px;color:var(--text-dim);margin-bottom:6px;}
+  .bt-rs-card .row{display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;font-size:12.5px;}
+  .bt-signals-table{width:100%;border-collapse:collapse;font-size:12.5px;}
+  .bt-signals-table th{text-align:start;color:var(--text-dim);font-weight:600;font-size:10.5px;text-transform:uppercase;padding:6px 8px;border-bottom:1px solid var(--line);}
+  .bt-signals-table td{padding:7px 8px;border-bottom:1px solid var(--line);font-family:'JetBrains Mono',monospace;}
+  .bt-signals-table tr:hover td{background:var(--panel-2);}
+  .bt-empty{color:var(--text-dim);padding:40px 20px;text-align:center;font-size:13px;line-height:1.6;}
   .score-badge{font-family:'JetBrains Mono',monospace;font-weight:600;font-size:13px;padding:4px 9px;border-radius:20px;min-width:36px;text-align:center;}
   .score-hi{background:rgba(62,207,126,.15);color:var(--green);}
   .score-mid{background:rgba(232,163,61,.15);color:var(--amber);}
-  .stock-group-title{font-size:11px;letter-spacing:1px;color:var(--text-dim);text-transform:uppercase;margin:4px 2px 9px;padding-top:6px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none;}
+  .stock-group-title{font-size:12px;letter-spacing:1px;color:var(--text-dim);text-transform:uppercase;margin:4px 2px 9px;padding:8px 6px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none;border-radius:6px;transition:background .15s;}
+  .stock-group-title:hover{background:var(--panel-2);}
   .stock-group-title.first{margin-top:0;padding-top:0;}
   .stock-group-title.previous{border-top:1px solid var(--line);padding-top:14px;margin-top:14px;}
-  .group-arrow{font-size:13px;transition:transform .15s;color:var(--text-dim);}
+  .group-arrow{font-size:22px;line-height:1;transition:transform .15s;color:var(--text);font-weight:700;padding:2px 6px;}
   .group-arrow.collapsed{transform:rotate(-90deg);}
 
   /* ---- Macro items ---- */
@@ -308,6 +323,7 @@
 <div class="page-nav">
   <button class="page-nav-btn active" id="page-nav-home" onclick="setPage('home')">בית</button>
   <button class="page-nav-btn" id="page-nav-pulse" onclick="setPage('pulse')">פעימת השוק</button>
+  <button class="page-nav-btn" id="page-nav-backtest" onclick="setPage('backtest')">בדיקה היסטורית</button>
 </div>
 
 <div id="page-home">
@@ -397,6 +413,22 @@
       <div class="pulse-section-title">מדד סנטימנט שוק (Fear &amp; Greed)</div>
     </div>
     <div id="fear-greed-wrap"></div>
+  </div>
+</div>
+
+<div id="page-backtest" style="display:none;">
+  <div class="pulse-page-wrap">
+    <div class="pulse-section-head">
+      <div class="pulse-section-title" id="backtest-title">בדיקה היסטורית</div>
+      <div class="movers-toggle" id="backtest-horizon-toggle">
+        <button class="movers-toggle-btn active" id="backtest-horizon-10" onclick="setBacktestHorizon(10)">10 ימים</button>
+        <button class="movers-toggle-btn" id="backtest-horizon-20" onclick="setBacktestHorizon(20)">20 ימים</button>
+      </div>
+    </div>
+
+    <div class="sector-filter" id="backtest-pattern-filter"></div>
+
+    <div id="backtest-content"></div>
   </div>
 </div>
 
@@ -737,6 +769,162 @@ function renderPatternStatsBlurb(patternType){
     : `מבחינה היסטורית, התבנית הזו הייתה רווחית ב-${wr}% מהמקרים תוך 10 ימי מסחר (ממוצע ${avg>=0?'+':''}${avg}%), על בסיס ${n} איתותים קודמים מהסריקות שלנו.`;
   return `<div class="pattern-stats-blurb" style="border-color:${color}"><span style="color:${color};font-weight:700;">${wr}%</span> ${text}</div>`;
 }
+
+// ---- Backtest page ----
+let backtestPattern = 'all';
+let backtestHorizon = 10;
+let backtestPatternsCache = null;
+let backtestChartInstance = null;
+let backtestLoaded = false;
+
+async function loadBacktestPatterns(){
+  try {
+    const res = await fetch(`${API_BASE}/api/backtest/patterns`);
+    if(!res.ok) throw new Error('bad response');
+    backtestPatternsCache = await res.json();
+  } catch(e) {
+    console.warn('[backtest patterns] load failed:', e);
+    backtestPatternsCache = [];
+  }
+  renderBacktestPatternFilter();
+}
+
+function renderBacktestPatternFilter(){
+  const el = document.getElementById('backtest-pattern-filter');
+  if(!el) return;
+  const t = lang === 'en';
+  const patterns = backtestPatternsCache || [];
+  const allLabel = t ? 'All Patterns' : 'כל התבניות';
+  let html = `<button class="sector-btn ${backtestPattern==='all'?'active':''}" onclick="setBacktestPattern('all')">${allLabel}</button>`;
+  html += patterns.map(p => `<button class="sector-btn ${backtestPattern===p?'active':''}" onclick="setBacktestPattern('${p.replace(/'/g,"\\'")}')">${p}</button>`).join('');
+  el.innerHTML = html;
+}
+
+function setBacktestPattern(p){
+  backtestPattern = p;
+  renderBacktestPatternFilter();
+  loadBacktestData();
+}
+
+function setBacktestHorizon(h){
+  backtestHorizon = h;
+  document.getElementById('backtest-horizon-10').classList.toggle('active', h===10);
+  document.getElementById('backtest-horizon-20').classList.toggle('active', h===20);
+  loadBacktestData();
+}
+
+async function loadBacktestData(){
+  const el = document.getElementById('backtest-content');
+  const t = lang === 'en';
+  el.innerHTML = `<div class="bt-empty">${UI[lang].loading}</div>`;
+  try {
+    const res = await fetch(`${API_BASE}/api/backtest?pattern=${encodeURIComponent(backtestPattern)}&horizon=${backtestHorizon}`);
+    if(!res.ok) throw new Error('bad response');
+    const data = await res.json();
+    renderBacktestContent(data);
+  } catch(e) {
+    console.error('[backtest] load failed', e);
+    el.innerHTML = `<div class="bt-empty">${t?'Could not load backtest data.':'לא ניתן לטעון נתוני בדיקה היסטורית.'}</div>`;
+  }
+}
+
+function renderBacktestContent(data){
+  const el = document.getElementById('backtest-content');
+  const t = lang === 'en';
+
+  if(!data.n || data.n === 0){
+    el.innerHTML = `<div class="bt-empty">${t
+      ? "No resolved signals yet for this selection. Signals need to \"mature\" (10–20 trading days) after being scanned before they count here — check back as scan history builds up."
+      : 'אין עדיין איתותים שהבשילו עבור הבחירה הזו. איתותים צריכים "להבשיל" (10–20 ימי מסחר) אחרי שנסרקו כדי להיספר כאן — חזור לבדוק ככל שנצברת היסטוריית סריקה.'}</div>`;
+    return;
+  }
+
+  const wr = data.win_rate;
+  const wrColor = wr>=55 ? 'var(--green)' : wr>=45 ? 'var(--amber)' : 'var(--red)';
+  const avgColor = data.avg_return >= 0 ? 'var(--green)' : 'var(--red)';
+
+  let html = `
+    <div class="bt-stats-row">
+      <div class="bt-stat-card"><div class="k">${t?'Signals':'איתותים'}</div><div class="v">${data.n}</div></div>
+      <div class="bt-stat-card"><div class="k">${t?'Win Rate':'אחוז הצלחה'}</div><div class="v" style="color:${wrColor}">${wr}%</div></div>
+      <div class="bt-stat-card"><div class="k">${t?'Avg Return':'תשואה ממוצעת'}</div><div class="v" style="color:${avgColor}">${data.avg_return>=0?'+':''}${data.avg_return}%</div></div>
+      <div class="bt-stat-card"><div class="k">${t?'Max Drawdown':'ירידה מקסימלית'}</div><div class="v" style="color:var(--red)">${data.max_drawdown}%</div></div>
+    </div>
+    <div class="bt-chart-wrap"><canvas id="backtest-equity-canvas"></canvas></div>
+  `;
+
+  if(data.rs_breakdown && data.rs_breakdown.length){
+    const bucketLabels = {'80+': t?'RS 80+':'RS 80+', '50-79': t?'RS 50-79':'RS 50-79', 'under_50': t?'RS under 50':'RS מתחת ל-50'};
+    html += `<div class="bt-rs-row">` + data.rs_breakdown.map(b => `
+      <div class="bt-rs-card">
+        <div class="label">${bucketLabels[b.rs_bucket]||b.rs_bucket} (${b.n})</div>
+        <div class="row"><span>${t?'Win rate':'הצלחה'}</span><span style="color:${b.win_rate>=55?'var(--green)':b.win_rate>=45?'var(--amber)':'var(--red)'}">${b.win_rate}%</span></div>
+        <div class="row"><span>${t?'Avg return':'תשואה ממוצעת'}</span><span style="color:${b.avg_return>=0?'var(--green)':'var(--red)'}">${b.avg_return>=0?'+':''}${b.avg_return}%</span></div>
+      </div>
+    `).join('') + `</div>`;
+  }
+
+  html += `
+    <div style="overflow-x:auto;">
+      <table class="bt-signals-table">
+        <thead><tr>
+          <th>${t?'Ticker':'טיקר'}</th>
+          <th>${t?'Date':'תאריך'}</th>
+          <th>${t?'Pattern':'תבנית'}</th>
+          <th>RS</th>
+          <th>${t?'Return':'תשואה'}</th>
+        </tr></thead>
+        <tbody>
+          ${data.signals.slice(0, 100).map(s => `
+            <tr>
+              <td style="font-weight:700;">${s.ticker}</td>
+              <td>${s.date}</td>
+              <td>${s.pattern_type}</td>
+              <td>${s.rs_rating ?? '—'}</td>
+              <td style="color:${s.return>=0?'var(--green)':'var(--red)'}">${s.return>=0?'+':''}${s.return}%</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  el.innerHTML = html;
+
+  if(typeof Chart === 'undefined') return;
+  const ctx = document.getElementById('backtest-equity-canvas').getContext('2d');
+  if(backtestChartInstance) backtestChartInstance.destroy();
+  const lineColor = data.equity_curve[data.equity_curve.length-1].equity >= 1 ? '#3ecf7e' : '#ef5b5b';
+  backtestChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: data.equity_curve.map(p => p.date),
+      datasets: [{
+        data: data.equity_curve.map(p => p.equity),
+        borderColor: lineColor,
+        backgroundColor: lineColor + '1a',
+        borderWidth: 1.8,
+        pointRadius: 0,
+        fill: true,
+        tension: 0.1,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: (ctx) => `${t?'Equity':'הון'}: ${ctx.parsed.y.toFixed(3)}x` } }
+      },
+      scales: {
+        x: { display: false },
+        y: { position: 'right', grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8a93a3', font: { size: 10 } } }
+      }
+    }
+  });
+}
+
 let sectorPeriod = 'YTD';       // '1M' | '3M' | 'YTD' | '1Y'
 let sectorChartInstance = null;
 let sectorDataCache = {};       // period -> API response (avoid re-fetching on every toggle)
@@ -779,12 +967,19 @@ function setPage(page){
   currentPage = page;
   document.getElementById('page-nav-home').classList.toggle('active', page==='home');
   document.getElementById('page-nav-pulse').classList.toggle('active', page==='pulse');
+  document.getElementById('page-nav-backtest').classList.toggle('active', page==='backtest');
   document.getElementById('page-home').style.display = page==='home' ? '' : 'none';
   document.getElementById('page-pulse').style.display = page==='pulse' ? '' : 'none';
+  document.getElementById('page-backtest').style.display = page==='backtest' ? '' : 'none';
   if(page === 'pulse' && !pulseLoaded){
     pulseLoaded = true;
     loadHeatmap(heatmapIndex);
     loadFearGreed();
+  }
+  if(page === 'backtest' && !backtestLoaded){
+    backtestLoaded = true;
+    loadBacktestPatterns();
+    loadBacktestData();
   }
 }
 
@@ -2154,6 +2349,7 @@ const UI = {
     scanner_title: 'סורק סווינג — משימות פתוחות',
     macro_title: 'מוקד מאקרו וחדשות עולם',
     charts_title: 'גרפי מדדים',
+    nav_backtest: 'בדיקה היסטורית',
     no_stocks: 'אין מניות מסומנות כרגע — הסורק ירוץ בשעות המסחר הבאות',
     no_breaking: 'אין חדשות קריטיות כרגע',
     loading: 'טוען...',
@@ -2173,6 +2369,7 @@ const UI = {
     scanner_title: 'Swing Scanner — Open Setups',
     macro_title: 'Macro & World News Hub',
     charts_title: 'Market Charts',
+    nav_backtest: 'Backtest',
     no_stocks: 'No stocks flagged yet — scanner runs during market hours',
     no_breaking: 'No critical news at this time',
     loading: 'Loading...',
@@ -2201,6 +2398,7 @@ function applyLang(){
   document.querySelector('.left .col-title').innerHTML = `<span class="dot"></span> ${t.macro_title}`;
   document.querySelector('.market-charts-title').textContent = t.charts_title;
   document.getElementById('movers-title').textContent = t.movers_title;
+  document.getElementById('page-nav-backtest').textContent = t.nav_backtest;
 
   // Rebuild stocks and macro arrays from raw API data in the active language
   if(rawStocks.length > 0){

@@ -188,6 +188,154 @@ def get_stocks(limit: int = Query(default=25, le=100)):
     return result
 
 
+@app.get("/api/backtest/patterns")
+def get_backtest_patterns():
+    """Distinct pattern types that have at least one resolved (10d) signal —
+    for populating the pattern picker on the backtest page."""
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute(
+            """
+            SELECT DISTINCT pattern_type FROM scanned_stocks
+            WHERE pattern_type IS NOT NULL AND forward_return_10d IS NOT NULL
+            ORDER BY pattern_type
+            """
+        )
+        rows = cur.fetchall()
+    return [r["pattern_type"] for r in rows]
+
+
+@app.get("/api/backtest")
+def get_backtest(
+    pattern: str = Query(default="all"),
+    horizon: int = Query(default=10),
+):
+    """Backtest view over our own scan history: an equity curve (what a
+    $1 stake compounded through every signal, in chronological order, would
+    have grown to), max drawdown, a breakdown by RS Rating bucket, and the
+    full list of resolved signals behind the numbers — so a win-rate % isn't
+    just a number to trust blindly, it's traceable back to real signals.
+
+    horizon must be 10 or 20 (trading days). Query param arrives as a
+    plain int; FastAPI's pattern= on an int doesn't apply, so validate
+    manually and fail clearly rather than silently coercing."""
+    if horizon not in (10, 20):
+        raise HTTPException(status_code=400, detail="horizon must be 10 or 20")
+    return_col = f"forward_return_{horizon}d"
+
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        if pattern and pattern != "all":
+            cur.execute(
+                f"""
+                SELECT ticker, timestamp, pattern_type, rs_rating, entry_price, {return_col} AS fwd_return
+                FROM scanned_stocks
+                WHERE pattern_type = %s AND {return_col} IS NOT NULL
+                ORDER BY timestamp ASC
+                """,
+                (pattern,),
+            )
+        else:
+            cur.execute(
+                f"""
+                SELECT ticker, timestamp, pattern_type, rs_rating, entry_price, {return_col} AS fwd_return
+                FROM scanned_stocks
+                WHERE pattern_type IS NOT NULL AND {return_col} IS NOT NULL
+                ORDER BY timestamp ASC
+                """
+            )
+        rows = cur.fetchall()
+
+    if not rows:
+        return {
+            "pattern": pattern, "horizon": horizon, "n": 0,
+            "win_rate": None, "avg_return": None, "max_drawdown": None,
+            "equity_curve": [], "rs_breakdown": [], "signals": [],
+        }
+
+    # Equity curve: treat every signal as a full-stake, non-overlapping trade
+    # taken in chronological order (position closed before the next opens).
+    # This is a simplification — real trades would overlap — but it's the
+    # standard, honest way to show "did this pattern make money over time"
+    # without pretending we know real position sizing or concurrency.
+    equity = 1.0
+    peak = 1.0
+    max_dd = 0.0
+    equity_curve = []
+    wins = 0
+    total_return = 0.0
+
+    for r in rows:
+        pct = float(r["fwd_return"])
+        equity *= (1 + pct / 100)
+        peak = max(peak, equity)
+        drawdown = (equity - peak) / peak * 100
+        max_dd = min(max_dd, drawdown)
+        equity_curve.append({
+            "date": r["timestamp"].strftime("%Y-%m-%d"),
+            "ticker": r["ticker"],
+            "equity": round(equity, 4),
+        })
+        if pct > 0:
+            wins += 1
+        total_return += pct
+
+    n = len(rows)
+    win_rate = round(100 * wins / n, 1)
+    avg_return = round(total_return / n, 2)
+
+    # RS Rating breakdown — does this pattern work better on stronger stocks?
+    bucket_rows = {"80+": [], "50-79": [], "under_50": []}
+    for r in rows:
+        rs = r["rs_rating"]
+        pct = float(r["fwd_return"])
+        if rs is None:
+            continue
+        if rs >= 80:
+            bucket_rows["80+"].append(pct)
+        elif rs >= 50:
+            bucket_rows["50-79"].append(pct)
+        else:
+            bucket_rows["under_50"].append(pct)
+
+    rs_breakdown = []
+    for label, returns in bucket_rows.items():
+        if not returns:
+            continue
+        wins_b = sum(1 for p in returns if p > 0)
+        rs_breakdown.append({
+            "rs_bucket": label,
+            "n": len(returns),
+            "win_rate": round(100 * wins_b / len(returns), 1),
+            "avg_return": round(sum(returns) / len(returns), 2),
+        })
+
+    signals = [
+        {
+            "ticker": r["ticker"],
+            "date": r["timestamp"].strftime("%Y-%m-%d"),
+            "pattern_type": r["pattern_type"],
+            "rs_rating": r["rs_rating"],
+            "entry_price": r["entry_price"],
+            "return": round(float(r["fwd_return"]), 2),
+        }
+        for r in rows
+    ]
+    # Most recent first for the signal table — chronological order matters
+    # for the equity curve above, but a human scanning the list wants newest first.
+    signals.reverse()
+
+    return {
+        "pattern": pattern,
+        "horizon": horizon,
+        "n": n,
+        "win_rate": win_rate,
+        "avg_return": avg_return,
+        "max_drawdown": round(max_dd, 2),
+        "equity_curve": equity_curve,
+        "rs_breakdown": rs_breakdown,
+        "signals": signals,
+    }
+
+
 @app.get("/api/pattern-stats")
 def get_pattern_stats():
     """Win-rate and average forward return per pattern type, computed from
