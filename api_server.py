@@ -754,7 +754,13 @@ def get_vix(period: str = Query(default="3M", pattern="^(1M|3M|YTD|1Y)$")):
             chart_hist = full_hist.tail(days_map[period])
 
         history = [
-            {"date": idx.strftime("%Y-%m-%d"), "close": round(row["Close"], 2)}
+            {
+                "date": idx.strftime("%Y-%m-%d"),
+                "open": round(row["Open"], 2),
+                "high": round(row["High"], 2),
+                "low": round(row["Low"], 2),
+                "close": round(row["Close"], 2),
+            }
             for idx, row in chart_hist.iterrows()
         ]
 
