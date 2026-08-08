@@ -709,9 +709,6 @@ def get_heatmap(index: str = Query(default="sp500", pattern="^(sp500|nasdaq100)$
 # hiccup upstream doesn't blank out the page.
 # ------------------------------------------------------------------
 
-_vix_cache = {}
-VIX_CACHE_TTL = 900  # 15 minutes — VIX updates during market hours
-
 _fear_greed_cache = {"data": None, "ts": 0}
 FEAR_GREED_CACHE_TTL = 3600  # 1 hour — this index doesn't move faster than that anyway
 
@@ -721,70 +718,6 @@ FEAR_GREED_COMPONENT_KEYS = [
     "put_call_options", "market_volatility_vix", "market_volatility_vix_50",
     "junk_bond_demand", "safe_haven_demand",
 ]
-
-
-@app.get("/api/vix")
-def get_vix(period: str = Query(default="3M", pattern="^(1M|3M|YTD|1Y)$")):
-    """Fetch real VIX (Volatility Index) history from yfinance for charting.
-    Returns: {price, change, change_pct, 52w_high, 52w_low, history: [{date, close}], timestamp}"""
-    now = time.time()
-    cache_key = period
-    cached = _vix_cache.get(cache_key)
-    if cached and (now - cached["ts"]) < VIX_CACHE_TTL:
-        return cached["data"]
-
-    try:
-        vix = yf.Ticker("^VIX")
-        full_hist = vix.history(period="1y")
-
-        if full_hist.empty:
-            raise ValueError("VIX history is empty")
-
-        current_price = full_hist["Close"].iloc[-1]
-        previous_close = full_hist["Close"].iloc[-2] if len(full_hist) > 1 else current_price
-        change = current_price - previous_close
-        change_pct = (change / previous_close * 100) if previous_close != 0 else 0
-
-        # Slice history to the requested period for the chart
-        days_map = {"1M": 22, "3M": 66, "YTD": None, "1Y": 252}
-        if period == "YTD":
-            year_start = pd.Timestamp(dt.now().year, 1, 1, tz=full_hist.index.tz)
-            chart_hist = full_hist[full_hist.index >= year_start]
-        else:
-            chart_hist = full_hist.tail(days_map[period])
-
-        history = [
-            {
-                "date": idx.strftime("%Y-%m-%d"),
-                "open": round(row["Open"], 2),
-                "high": round(row["High"], 2),
-                "low": round(row["Low"], 2),
-                "close": round(row["Close"], 2),
-            }
-            for idx, row in chart_hist.iterrows()
-        ]
-
-        result = {
-            "price": round(current_price, 2),
-            "change": round(change, 2),
-            "change_pct": round(change_pct, 2),
-            "52w_high": round(full_hist["Close"].max(), 2),
-            "52w_low": round(full_hist["Close"].min(), 2),
-            "history": history,
-            "period": period,
-            "timestamp": dt.now().isoformat(),
-            "source": "yfinance",
-        }
-
-        _vix_cache[cache_key] = {"data": result, "ts": now}
-        return result
-
-    except Exception as e:
-        print(f"[warn] VIX fetch failed: {e}")
-        if cached:
-            return cached["data"]
-        raise HTTPException(status_code=502, detail="VIX data temporarily unavailable")
-
 
 @app.get("/api/fear-greed")
 def get_fear_greed():

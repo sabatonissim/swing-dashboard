@@ -262,7 +262,6 @@
   .close-compare-btn:hover{color:var(--text);border-color:var(--text-dim);}
 </style>
 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <script>
 (function(){
   var s = document.createElement('script');
@@ -335,7 +334,6 @@
         <button class="chart-tab" onclick="switchChart('GLD')">GLD (זהב)</button>
         <button class="chart-tab" onclick="switchChart('IWM')">IWM (ראסל)</button>
         <button class="chart-tab" onclick="switchChart('BTCUSD')">Bitcoin</button>
-        <button class="chart-tab" onclick="switchChart('VIX')">VIX (תנודתיות)</button>
       </div>
       <div id="market-tv-chart"></div>
       <div id="sector-chart-wrap" class="sector-chart-wrap" style="display:none;">
@@ -640,20 +638,10 @@ const SECTOR_COLORS = ['#ef5b5b','#5b8def','#3ecf7e','#c65bef','#35b3a3','#e8a33
 function switchChart(symbol){
   currentChartSymbol = symbol;
   document.querySelectorAll('.chart-tab').forEach(t=>{
-    t.classList.toggle('active', t.textContent.trim().includes(symbol) || t.textContent.trim().startsWith(symbol.replace('BTCUSD','Bitcoin').replace('IWM','IWM')));
+    t.classList.toggle('active', t.textContent.trim().startsWith(symbol.replace('BTCUSD','Bitcoin').replace('IWM','IWM')));
   });
   const container = document.getElementById('market-tv-chart');
   container.innerHTML = '';
-  
-  // VIX: TradingView's free widget doesn't support the real index under any
-  // symbol format we've tried (INDEX:VIX, CBOE:VIX, TVC:VIX all fail to render).
-  // So VIX uses its own chart, built from the real ^VIX ticker via yfinance —
-  // same data source as the rest of this dashboard, just drawn with Chart.js.
-  if(symbol === 'VIX'){
-    displayVIXCard(container);
-    return;
-  }
-  
   if(typeof TradingView === 'undefined'){ return; }
   // SPY, QQQ, IWM are regular ETF tickers — always work on TradingView free widget
   // Bitcoin needs specific exchange prefix
@@ -673,97 +661,6 @@ function switchChart(symbol){
     width:'100%',
     save_image:false,
   });
-}
-
-let vixChartInstance = null;
-async function displayVIXCard(container){
-  const t = lang === 'en';
-  container.innerHTML = `<div class="movers-empty">${t ? 'Loading VIX...' : 'טוען VIX...'}</div>`;
-  
-  try {
-    const res = await fetch(`${API_BASE}/api/vix?period=3M`);
-    if(!res.ok) throw new Error('API response not ok');
-    const data = await res.json();
-    
-    const {price, change, change_pct, history} = data;
-    const h = data['52w_high'];
-    const l = data['52w_low'];
-    
-    let accentColor = '#3ecf7e';
-    if(price >= 25) accentColor = '#ef5b5b';
-    else if(price >= 15) accentColor = '#e8a33d';
-    
-    const changeSymbol = change >= 0 ? '▲' : '▼';
-    
-    container.innerHTML = `
-      <div style="background:var(--panel);border-radius:10px;padding:10px 14px;height:220px;display:flex;flex-direction:column;direction:ltr;">
-        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;flex-wrap:wrap;gap:8px;">
-          <div style="display:flex;align-items:baseline;gap:10px;">
-            <span style="font-size:22px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${accentColor};">VIX ${price}</span>
-            <span style="font-size:12px;font-family:'JetBrains Mono',monospace;color:${accentColor};">${changeSymbol} ${Math.abs(change).toFixed(2)} (${change_pct >= 0 ? '+' : ''}${change_pct.toFixed(2)}%)</span>
-          </div>
-          <div style="font-size:10px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;">
-            52w: ${l?.toFixed(1)} – ${h?.toFixed(1)}
-          </div>
-        </div>
-        <div id="vix-lw-chart" style="flex:1;min-height:0;"></div>
-      </div>
-    `;
-    
-    if(typeof LightweightCharts === 'undefined'){
-      console.warn('[VIX] lightweight-charts not loaded yet');
-      return;
-    }
-    
-    const chartEl = document.getElementById('vix-lw-chart');
-    if(vixChartInstance){
-      vixChartInstance.remove();
-      vixChartInstance = null;
-    }
-    
-    const chart = LightweightCharts.createChart(chartEl, {
-      width: chartEl.clientWidth,
-      height: chartEl.clientHeight,
-      layout: { background: { color: 'transparent' }, textColor: '#8a93a3', fontSize: 10 },
-      grid: { vertLines: { visible: false }, horzLines: { color: 'rgba(255,255,255,0.05)' } },
-      rightPriceScale: { borderColor: '#262c36' },
-      timeScale: { borderColor: '#262c36', timeVisible: false },
-      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-      handleScroll: true,
-      handleScale: true,
-    });
-    
-    const candleSeries = chart.addCandlestickSeries({
-      upColor: '#3ecf7e',
-      downColor: '#ef5b5b',
-      borderVisible: false,
-      wickUpColor: '#3ecf7e',
-      wickDownColor: '#ef5b5b',
-    });
-    
-    candleSeries.setData(history.map(p => ({
-      time: p.date,
-      open: p.open,
-      high: p.high,
-      low: p.low,
-      close: p.close,
-    })));
-    
-    chart.timeScale().fitContent();
-    vixChartInstance = chart;
-    
-    // Keep it responsive if the panel resizes
-    const resizeObserver = new ResizeObserver(entries => {
-      if(entries[0] && vixChartInstance){
-        vixChartInstance.applyOptions({ width: entries[0].contentRect.width, height: entries[0].contentRect.height });
-      }
-    });
-    resizeObserver.observe(chartEl);
-    
-  } catch(e) {
-    console.error('[VIX] fetch failed', e);
-    container.innerHTML = `<div class="movers-empty">${t ? 'VIX data unavailable' : 'נתוני VIX לא זמינים'}</div>`;
-  }
 }
 
 // ---- Page navigation (Home / Market Pulse) ----
