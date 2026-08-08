@@ -671,54 +671,82 @@ function switchChart(symbol){
   });
 }
 
+let vixChartInstance = null;
 async function displayVIXCard(container){
   const t = lang === 'en';
   container.innerHTML = `<div class="movers-empty">${t ? 'Loading VIX...' : 'טוען VIX...'}</div>`;
   
   try {
-    const res = await fetch(`${API_BASE}/api/vix`);
+    const res = await fetch(`${API_BASE}/api/vix?period=3M`);
     if(!res.ok) throw new Error('API response not ok');
     const data = await res.json();
     
-    const {price, change, change_pct, avg_52w_high, avg_52w_low, timestamp} = data;
-    const h = avg_52w_high || data['52w_high'];
-    const l = avg_52w_low || data['52w_low'];
+    const {price, change, change_pct, history} = data;
+    const h = data['52w_high'];
+    const l = data['52w_low'];
     
-    // Color intensity: VIX > 25 is red, 15-25 is orange, < 15 is green
-    let bgColor = 'rgba(62, 207, 126, 0.15)'; // green
-    let textColor = '#3ecf7e';
-    if(price >= 25) {
-      bgColor = 'rgba(239, 91, 91, 0.15)';
-      textColor = '#ef5b5b';
-    } else if(price >= 15) {
-      bgColor = 'rgba(232, 163, 61, 0.15)';
-      textColor = '#e8a33d';
-    }
+    let lineColor = '#3ecf7e';
+    if(price >= 25) lineColor = '#ef5b5b';
+    else if(price >= 15) lineColor = '#e8a33d';
     
     const changeSymbol = change >= 0 ? '▲' : '▼';
-    const changeClass = change >= 0 ? 'up' : 'down';
     
     container.innerHTML = `
-      <div style="background:${bgColor};border:1px solid ${textColor};border-radius:10px;padding:20px;text-align:center;min-height:220px;display:flex;flex-direction:column;justify-content:center;align-items:center;">
-        <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;text-transform:uppercase;letter-spacing:1px;">${t ? 'VIX (Volatility Index)' : 'מדד VIX (תנודתיות)'}</div>
-        <div style="font-size:56px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${textColor};margin-bottom:8px;">${price}</div>
-        <div style="display:flex;gap:12px;justify-content:center;align-items:center;font-size:14px;font-family:'JetBrains Mono',monospace;">
-          <span style="color:${textColor};">${changeSymbol} ${Math.abs(change).toFixed(2)}</span>
-          <span style="color:${textColor};">(${change_pct >= 0 ? '+' : ''}${change_pct.toFixed(2)}%)</span>
-        </div>
-        <div style="margin-top:16px;padding-top:16px;border-top:1px solid ${textColor};width:100%;font-size:11px;color:var(--text-dim);display:flex;justify-content:space-around;">
-          <div>
-            <div>${t ? '52w High' : 'שיא 52 שבוע'}</div>
-            <div style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${textColor};margin-top:4px;">${h?.toFixed(2) || '—'}</div>
+      <div style="background:var(--panel);border-radius:10px;padding:10px 14px;height:220px;display:flex;flex-direction:column;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;flex-wrap:wrap;gap:8px;">
+          <div style="display:flex;align-items:baseline;gap:10px;">
+            <span style="font-size:24px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${lineColor};">${price}</span>
+            <span style="font-size:12.5px;font-family:'JetBrains Mono',monospace;color:${lineColor};">${changeSymbol} ${Math.abs(change).toFixed(2)} (${change_pct >= 0 ? '+' : ''}${change_pct.toFixed(2)}%)</span>
           </div>
-          <div>
-            <div>${t ? '52w Low' : 'תחתון 52 שבוע'}</div>
-            <div style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${textColor};margin-top:4px;">${l?.toFixed(2) || '—'}</div>
+          <div style="font-size:10.5px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;">
+            52w: ${l?.toFixed(1)} – ${h?.toFixed(1)}
           </div>
         </div>
-        <div style="margin-top:12px;font-size:9px;color:var(--text-dim);">${t ? 'Real-time from yfinance' : 'בזמן אמת מ-yfinance'}</div>
+        <div style="flex:1;position:relative;min-height:0;">
+          <canvas id="vix-chart-canvas"></canvas>
+        </div>
       </div>
     `;
+    
+    if(typeof Chart === 'undefined'){
+      console.warn('[VIX] Chart.js not loaded yet');
+      return;
+    }
+    
+    const ctx = document.getElementById('vix-chart-canvas').getContext('2d');
+    if(vixChartInstance) vixChartInstance.destroy();
+    
+    vixChartInstance = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: history.map(p => p.date),
+        datasets: [{
+          data: history.map(p => p.close),
+          borderColor: lineColor,
+          backgroundColor: lineColor + '22',
+          borderWidth: 1.8,
+          pointRadius: 0,
+          fill: true,
+          tension: 0.15,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        plugins: { legend: { display: false }, tooltip: {
+          callbacks: { label: (ctx) => `VIX: ${ctx.parsed.y}` }
+        }},
+        scales: {
+          x: { display: false },
+          y: {
+            position: 'right',
+            grid: { color: 'rgba(255,255,255,0.05)' },
+            ticks: { color: '#8a93a3', font: { size: 10 } },
+          }
+        }
+      }
+    });
   } catch(e) {
     console.error('[VIX] fetch failed', e);
     container.innerHTML = `<div class="movers-empty">${t ? 'VIX data unavailable' : 'נתוני VIX לא זמינים'}</div>`;
