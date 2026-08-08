@@ -709,6 +709,9 @@ def get_heatmap(index: str = Query(default="sp500", pattern="^(sp500|nasdaq100)$
 # hiccup upstream doesn't blank out the page.
 # ------------------------------------------------------------------
 
+_vix_cache = {"data": None, "ts": 0}
+VIX_CACHE_TTL = 900  # 15 minutes — VIX updates during market hours
+
 _fear_greed_cache = {"data": None, "ts": 0}
 FEAR_GREED_CACHE_TTL = 3600  # 1 hour — this index doesn't move faster than that anyway
 
@@ -718,6 +721,48 @@ FEAR_GREED_COMPONENT_KEYS = [
     "put_call_options", "market_volatility_vix", "market_volatility_vix_50",
     "junk_bond_demand", "safe_haven_demand",
 ]
+
+
+@app.get("/api/vix")
+def get_vix():
+    """Fetch real VIX (Volatility Index) from yfinance.
+    Returns: {price, change, change_pct, 52w_high, 52w_low, timestamp}"""
+    now = time.time()
+    if _vix_cache["data"] and (now - _vix_cache["ts"]) < VIX_CACHE_TTL:
+        return _vix_cache["data"]
+    
+    try:
+        vix = yf.Ticker("^VIX")
+        hist = vix.history(period="1y")
+        
+        if hist.empty:
+            raise ValueError("VIX history is empty")
+        
+        current_price = hist["Close"].iloc[-1]
+        previous_close = hist["Close"].iloc[-2] if len(hist) > 1 else current_price
+        change = current_price - previous_close
+        change_pct = (change / previous_close * 100) if previous_close != 0 else 0
+        
+        result = {
+            "price": round(current_price, 2),
+            "change": round(change, 2),
+            "change_pct": round(change_pct, 2),
+            "52w_high": round(hist["Close"].max(), 2),
+            "52w_low": round(hist["Close"].min(), 2),
+            "timestamp": dt.now().isoformat(),
+            "source": "yfinance",
+        }
+        
+        _vix_cache["data"] = result
+        _vix_cache["ts"] = now
+        return result
+    
+    except Exception as e:
+        print(f"[warn] VIX fetch failed: {e}")
+        if _vix_cache["data"]:
+            return _vix_cache["data"]
+        # Fallback: return a minimal response rather than crashing
+        raise HTTPException(status_code=502, detail="VIX data temporarily unavailable")
 
 
 @app.get("/api/fear-greed")

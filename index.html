@@ -334,6 +334,7 @@
         <button class="chart-tab" onclick="switchChart('GLD')">GLD (זהב)</button>
         <button class="chart-tab" onclick="switchChart('IWM')">IWM (ראסל)</button>
         <button class="chart-tab" onclick="switchChart('BTCUSD')">Bitcoin</button>
+        <button class="chart-tab" onclick="switchChart('VIX')">VIX (תנודתיות)</button>
       </div>
       <div id="market-tv-chart"></div>
       <div id="sector-chart-wrap" class="sector-chart-wrap" style="display:none;">
@@ -638,15 +639,21 @@ const SECTOR_COLORS = ['#ef5b5b','#5b8def','#3ecf7e','#c65bef','#35b3a3','#e8a33
 function switchChart(symbol){
   currentChartSymbol = symbol;
   document.querySelectorAll('.chart-tab').forEach(t=>{
-    t.classList.toggle('active', t.textContent.trim().startsWith(symbol.replace('BTCUSD','Bitcoin').replace('IWM','IWM')));
+    t.classList.toggle('active', t.textContent.trim().includes(symbol) || t.textContent.trim().startsWith(symbol.replace('BTCUSD','Bitcoin').replace('IWM','IWM')));
   });
   const container = document.getElementById('market-tv-chart');
   container.innerHTML = '';
+  
+  // VIX uses custom display instead of TradingView widget
+  if(symbol === 'VIX'){
+    displayVIXCard(container);
+    return;
+  }
+  
   if(typeof TradingView === 'undefined'){ return; }
   // SPY, QQQ, IWM are regular ETF tickers — always work on TradingView free widget
-  // VIX and Bitcoin need specific exchange prefixes
+  // Bitcoin needs specific exchange prefix
   const tvSymbol =
-    symbol === 'VIX'    ? 'INDEX:VIX' :
     symbol === 'BTCUSD' ? 'BITSTAMP:BTCUSD' : symbol;
   new TradingView.widget({
     container_id:'market-tv-chart',
@@ -662,6 +669,60 @@ function switchChart(symbol){
     width:'100%',
     save_image:false,
   });
+}
+
+async function displayVIXCard(container){
+  const t = lang === 'en';
+  container.innerHTML = `<div class="movers-empty">${t ? 'Loading VIX...' : 'טוען VIX...'}</div>`;
+  
+  try {
+    const res = await fetch(`${API_BASE}/api/vix`);
+    if(!res.ok) throw new Error('API response not ok');
+    const data = await res.json();
+    
+    const {price, change, change_pct, avg_52w_high, avg_52w_low, timestamp} = data;
+    const h = avg_52w_high || data['52w_high'];
+    const l = avg_52w_low || data['52w_low'];
+    
+    // Color intensity: VIX > 25 is red, 15-25 is orange, < 15 is green
+    let bgColor = 'rgba(62, 207, 126, 0.15)'; // green
+    let textColor = '#3ecf7e';
+    if(price >= 25) {
+      bgColor = 'rgba(239, 91, 91, 0.15)';
+      textColor = '#ef5b5b';
+    } else if(price >= 15) {
+      bgColor = 'rgba(232, 163, 61, 0.15)';
+      textColor = '#e8a33d';
+    }
+    
+    const changeSymbol = change >= 0 ? '▲' : '▼';
+    const changeClass = change >= 0 ? 'up' : 'down';
+    
+    container.innerHTML = `
+      <div style="background:${bgColor};border:1px solid ${textColor};border-radius:10px;padding:20px;text-align:center;min-height:220px;display:flex;flex-direction:column;justify-content:center;align-items:center;">
+        <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;text-transform:uppercase;letter-spacing:1px;">${t ? 'VIX (Volatility Index)' : 'מדד VIX (תנודתיות)'}</div>
+        <div style="font-size:56px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${textColor};margin-bottom:8px;">${price}</div>
+        <div style="display:flex;gap:12px;justify-content:center;align-items:center;font-size:14px;font-family:'JetBrains Mono',monospace;">
+          <span style="color:${textColor};">${changeSymbol} ${Math.abs(change).toFixed(2)}</span>
+          <span style="color:${textColor};">(${change_pct >= 0 ? '+' : ''}${change_pct.toFixed(2)}%)</span>
+        </div>
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid ${textColor};width:100%;font-size:11px;color:var(--text-dim);display:flex;justify-content:space-around;">
+          <div>
+            <div>${t ? '52w High' : 'שיא 52 שבוע'}</div>
+            <div style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${textColor};margin-top:4px;">${h?.toFixed(2) || '—'}</div>
+          </div>
+          <div>
+            <div>${t ? '52w Low' : 'תחתון 52 שבוע'}</div>
+            <div style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${textColor};margin-top:4px;">${l?.toFixed(2) || '—'}</div>
+          </div>
+        </div>
+        <div style="margin-top:12px;font-size:9px;color:var(--text-dim);">${t ? 'Real-time from yfinance' : 'בזמן אמת מ-yfinance'}</div>
+      </div>
+    `;
+  } catch(e) {
+    console.error('[VIX] fetch failed', e);
+    container.innerHTML = `<div class="movers-empty">${t ? 'VIX data unavailable' : 'נתוני VIX לא זמינים'}</div>`;
+  }
 }
 
 // ---- Page navigation (Home / Market Pulse) ----
