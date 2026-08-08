@@ -118,6 +118,7 @@
   .stock-row .trend{font-size:17px;width:20px;text-align:center;}
   .trend.up{color:var(--green);}.trend.down{color:var(--red);}
   .stock-row .trigger{flex:1;font-size:13px;color:var(--text-dim);}
+  .win-rate-badge{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;padding:2px 7px;border:1px solid;border-radius:20px;white-space:nowrap;}
   .score-badge{font-family:'JetBrains Mono',monospace;font-weight:600;font-size:13px;padding:4px 9px;border-radius:20px;min-width:36px;text-align:center;}
   .score-hi{background:rgba(62,207,126,.15);color:var(--green);}
   .score-mid{background:rgba(232,163,61,.15);color:var(--amber);}
@@ -440,12 +441,28 @@ let rawMacro = [];
 // ---- Render functions ----
 function scoreClass(s){ return s>=60 ? "score-hi" : "score-mid"; }
 
+// Small inline badge showing this pattern's historical win-rate, so the
+// stat is visible right in the list — not just buried inside the drawer
+// that most people won't click into for every row.
+function winRateBadgeHtml(patternType){
+  if(!patternType || !patternStatsCache) return '';
+  const stat = patternStatsCache[patternType];
+  if(!stat || stat.win_rate_10d == null) return '';
+  const wr = stat.win_rate_10d;
+  const color = wr>=55 ? 'var(--green)' : wr>=45 ? 'var(--amber)' : 'var(--red)';
+  const title = lang==='en'
+    ? `${patternType}: profitable ${wr}% of the time historically (${stat.n} past signals)`
+    : `${patternType}: רווחי ב-${wr}% מהמקרים היסטורית (${stat.n} איתותים קודמים)`;
+  return `<div class="win-rate-badge" style="color:${color};border-color:${color}" title="${title}">${wr}%</div>`;
+}
+
 function stockRowHtml(s,i){
   return `
     <div class="stock-row" onclick="openDrawer(${i})">
       <div class="ticker">${s.ticker}</div>
       <div class="trend ${s.trend}">${s.trend==="up"?"▲":"▼"}</div>
       <div class="trigger">${lang==='en'?(s.trigger_en||s.trigger||''):(s.trigger||s.trigger_he||'')}</div>
+      ${winRateBadgeHtml(s.patternType)}
       <div class="score-badge ${scoreClass(s.score)}">${s.score}</div>
     </div>
   `;
@@ -696,6 +713,7 @@ async function loadPatternStats(){
     for(const row of (Array.isArray(data)?data:[])){
       patternStatsCache[row.pattern_type] = row;
     }
+    renderStocks(); // stocks may have already rendered without win-rate badges; refresh now that stats are in
   } catch(e) {
     console.warn('[pattern-stats] load failed:', e);
     patternStatsCache = {};
