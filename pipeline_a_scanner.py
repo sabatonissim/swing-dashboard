@@ -1399,61 +1399,57 @@ BACKFILL_BATCH_SIZE = 300  # cap per run so a huge backlog can't blow out scan r
 def backfill_forward_returns():
     conn = get_conn()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    # 20 trading days is ~28 calendar days; only pull rows old enough that
-    # BOTH horizons could plausibly already be known, and that still have at
-    # least one horizon un-filled.
-    cur.execute(
-        """
-        SELECT id, ticker, entry_price, timestamp FROM scanned_stocks
-        WHERE pattern_type IS NOT NULL
-          AND timestamp <= NOW() - INTERVAL '30 days'
-          AND (forward_return_10d IS NULL OR forward_return_20d IS NULL)
-        ORDER BY timestamp ASC
-        LIMIT %s
-        """,
-        (BACKFILL_BATCH_SIZE,),
-    )
-    rows = cur.fetchall()
-    cur.close()
-
-    if not rows:
-        conn.close()
-        return
+    # Each horizon is only fetched once enough trading days have actually
+    # passed for it — 10 trading days is ~14 calendar days, 20 is ~28.
+    # Previously both columns waited on a single 30-day gate, which meant
+    # forward_return_10d (and therefore /api/pattern-stats, which requires
+    # it) sat empty for 2+ extra weeks per signal for no reason.
+    horizon_min_age_days = {"forward_return_10d": 14, "forward_return_20d": 28}
 
     filled = 0
-    for row in rows:
-        ticker, entry_price, ts = row["ticker"], row["entry_price"], row["timestamp"]
-        if not entry_price:
-            continue
-        try:
-            hist = yf.Ticker(ticker).history(
-                start=ts.date(), end=ts.date() + timedelta(days=45), interval="1d"
-            )
-            closes = hist["Close"]
-            if len(closes) < 2:
-                continue
-            updates = {}
-            for col, horizon in FORWARD_RETURN_HORIZONS.items():
-                if len(closes) > horizon:
-                    fwd_close = float(closes.iloc[horizon])
-                    updates[col] = round((fwd_close / float(entry_price) - 1) * 100, 2)
-            if not updates:
-                continue
-            set_clause = ", ".join(f"{col} = %s" for col in updates)
-            upd_cur = conn.cursor()
-            upd_cur.execute(
-                f"UPDATE scanned_stocks SET {set_clause} WHERE id = %s",
-                (*updates.values(), row["id"]),
-            )
-            conn.commit()
-            upd_cur.close()
-            filled += 1
-        except Exception as e:
-            print(f"[warn] forward-return backfill failed for {ticker} (id={row['id']}): {e}")
-        time.sleep(INTER_TICKER_DELAY_SEC)
+    for col, min_age in horizon_min_age_days.items():
+        cur.execute(
+            f"""
+            SELECT id, ticker, entry_price, timestamp FROM scanned_stocks
+            WHERE pattern_type IS NOT NULL
+              AND timestamp <= NOW() - INTERVAL '{min_age} days'
+              AND {col} IS NULL
+            ORDER BY timestamp ASC
+            LIMIT %s
+            """,
+            (BACKFILL_BATCH_SIZE,),
+        )
+        rows = cur.fetchall()
+        horizon = FORWARD_RETURN_HORIZONS[col]
 
+        for row in rows:
+            ticker, entry_price, ts = row["ticker"], row["entry_price"], row["timestamp"]
+            if not entry_price:
+                continue
+            try:
+                hist = yf.Ticker(ticker).history(
+                    start=ts.date(), end=ts.date() + timedelta(days=45), interval="1d"
+                )
+                closes = hist["Close"]
+                if len(closes) <= horizon:
+                    continue
+                fwd_close = float(closes.iloc[horizon])
+                value = round((fwd_close / float(entry_price) - 1) * 100, 2)
+                upd_cur = conn.cursor()
+                upd_cur.execute(
+                    f"UPDATE scanned_stocks SET {col} = %s WHERE id = %s",
+                    (value, row["id"]),
+                )
+                conn.commit()
+                upd_cur.close()
+                filled += 1
+            except Exception as e:
+                print(f"[warn] {col} backfill failed for {ticker} (id={row['id']}): {e}")
+            time.sleep(INTER_TICKER_DELAY_SEC)
+
+    cur.close()
     conn.close()
-    print(f"Forward-return backfill: updated {filled}/{len(rows)} rows.")
+    print(f"Forward-return backfill: updated {filled} column-values.")
 
 
 def main():
