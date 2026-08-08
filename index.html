@@ -643,17 +643,11 @@ function switchChart(symbol){
   });
   const container = document.getElementById('market-tv-chart');
   container.innerHTML = '';
-  
-  // VIX uses custom display instead of TradingView widget
-  if(symbol === 'VIX'){
-    displayVIXCard(container);
-    return;
-  }
-  
   if(typeof TradingView === 'undefined'){ return; }
   // SPY, QQQ, IWM are regular ETF tickers — always work on TradingView free widget
-  // Bitcoin needs specific exchange prefix
+  // VIX and Bitcoin need specific exchange prefixes
   const tvSymbol =
+    symbol === 'VIX'    ? 'TVC:VIX' :
     symbol === 'BTCUSD' ? 'BITSTAMP:BTCUSD' : symbol;
   new TradingView.widget({
     container_id:'market-tv-chart',
