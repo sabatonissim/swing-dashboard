@@ -152,6 +152,19 @@
   .dd-news-item a{color:var(--text);text-decoration:none;font-size:13px;line-height:1.5;}
   .dd-news-item a:hover{color:var(--teal);}
   .dd-news-item .meta{font-size:10.5px;color:var(--text-dim);margin-top:3px;}
+  .cs-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}
+  .cs-input-wrap{position:relative;margin-bottom:8px;}
+  .cs-input-icon{position:absolute;top:50%;transform:translateY(-50%);inset-inline-start:12px;font-size:13px;color:var(--text-dim);pointer-events:none;}
+  .cs-input{width:100%;background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:10px 12px;padding-inline-start:34px;font-size:14px;outline:none;font-family:'JetBrains Mono',monospace;}
+  .cs-input:focus{border-color:var(--teal-dim);}
+  .cs-list{max-height:320px;overflow-y:auto;margin-top:6px;}
+  .cs-item{display:flex;align-items:center;gap:10px;padding:11px 10px;border-radius:8px;cursor:pointer;transition:background .12s;border-bottom:1px solid var(--line);}
+  .cs-item:last-child{border-bottom:none;}
+  .cs-item:hover{background:var(--panel-2);}
+  .cs-item .cs-ticker{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:13.5px;min-width:52px;}
+  .cs-item .cs-trigger{font-size:11.5px;color:var(--text-dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .cs-empty{color:var(--text-dim);font-size:12.5px;padding:14px 4px;text-align:center;}
+  .cs-freeform{border-top:1px solid var(--line);margin-top:8px;padding-top:10px;}
   .score-badge{font-family:'JetBrains Mono',monospace;font-weight:600;font-size:13px;padding:4px 9px;border-radius:20px;min-width:36px;text-align:center;}
   .score-hi{background:rgba(62,207,126,.15);color:var(--green);}
   .score-mid{background:rgba(232,163,61,.15);color:var(--amber);}
@@ -474,6 +487,9 @@
 </div>
 <div class="risk-calc-overlay" id="info-modal-overlay" onclick="if(event.target===this) closeInfoModal();">
   <div class="risk-calc-modal" id="info-modal"></div>
+</div>
+<div class="risk-calc-overlay" id="compare-search-overlay" onclick="if(event.target===this) closeCompareSearch();">
+  <div class="risk-calc-modal" id="compare-search-modal"></div>
 </div>
 
 <script>
@@ -2267,13 +2283,80 @@ function cmpRow(label, a, b, fmt, betterHigher=null, trendA='', trendB=''){
   </div>`;
 }
 
-async function openCompare(baseTicker){
+function openCompare(baseTicker){
   const t = lang==='en';
-  const raw = prompt(t?'Compare with which ticker?':'להשוות מול איזה טיקר?');
-  if(!raw) return;
-  const ticker2 = raw.trim().toUpperCase();
-  if(!ticker2 || ticker2===baseTicker.toUpperCase()) return;
+  const modal = document.getElementById('compare-search-modal');
+  modal.innerHTML = `
+    <div class="cs-head">
+      <h3 style="margin:0;">⇄ ${t?'Compare with...':'השווה מול...'}</h3>
+      <button class="close-btn" onclick="closeCompareSearch()">✕</button>
+    </div>
+    <div class="cs-input-wrap">
+      <span class="cs-input-icon">🔍</span>
+      <input type="text" class="cs-input" id="cs-input" placeholder="${t?'Type a ticker...':'הקלד טיקר...'}" oninput="renderCompareSearchList('${baseTicker}', this.value)" onkeydown="handleCompareSearchKey(event,'${baseTicker}')">
+    </div>
+    <div class="cs-list" id="cs-list"></div>
+  `;
+  const overlay = document.getElementById('compare-search-overlay');
+  overlay.classList.add('open');
+  void overlay.offsetHeight;
+  renderCompareSearchList(baseTicker, '');
+  setTimeout(() => document.getElementById('cs-input')?.focus(), 50);
+}
 
+function closeCompareSearch(){
+  const overlay = document.getElementById('compare-search-overlay');
+  if(overlay) overlay.classList.remove('open');
+}
+
+// Suggestions come from the tickers already loaded on this page (today's
+// scan results) — the same list the person is already looking at — so
+// picking one feels like browsing, not guessing a symbol from memory.
+// Typing something not in that list still works: Enter runs it as a
+// free-form ticker lookup via the API, same as before.
+function renderCompareSearchList(baseTicker, query){
+  const t = lang==='en';
+  const listEl = document.getElementById('cs-list');
+  if(!listEl) return;
+  const q = (query||'').trim().toUpperCase();
+  const pool = (stocks||[]).filter(s => s.ticker && s.ticker.toUpperCase() !== baseTicker.toUpperCase());
+  const filtered = q ? pool.filter(s => s.ticker.toUpperCase().includes(q)) : pool;
+
+  if(!filtered.length){
+    listEl.innerHTML = q
+      ? `<div class="cs-empty">${t?`No match in today's scan — press Enter to look up "${q}" directly.`:`אין התאמה בסריקה של היום — לחץ Enter כדי לחפש את "${q}" ישירות.`}</div>`
+      : `<div class="cs-empty">${t?'Start typing a ticker.':'התחל להקליד טיקר.'}</div>`;
+    return;
+  }
+
+  listEl.innerHTML = filtered.slice(0, 30).map(s => {
+    const triggerText = lang==='en' ? (s.trigger_en||s.trigger||'') : (s.trigger||s.trigger_he||'');
+    return `
+      <div class="cs-item" onclick="selectCompareTicker('${baseTicker}','${s.ticker}')">
+        <span class="cs-ticker">${s.ticker}</span>
+        <span class="cs-trigger">${triggerText}</span>
+        <span class="score-badge ${scoreClass(s.score)}" style="font-size:11px;padding:2px 8px;">${s.score}</span>
+      </div>
+    `;
+  }).join('');
+}
+
+function handleCompareSearchKey(event, baseTicker){
+  if(event.key !== 'Enter') return;
+  const raw = (document.getElementById('cs-input').value || '').trim().toUpperCase();
+  if(!raw) return;
+  selectCompareTicker(baseTicker, raw);
+}
+
+function selectCompareTicker(baseTicker, ticker2){
+  ticker2 = ticker2.trim().toUpperCase();
+  if(!ticker2 || ticker2 === baseTicker.toUpperCase()) return;
+  closeCompareSearch();
+  runCompare(baseTicker, ticker2);
+}
+
+async function runCompare(baseTicker, ticker2){
+  const t = lang==='en';
   const compareEl = document.getElementById('compare-section');
   if(!compareEl) return;
   compareEl.innerHTML = `<div class="fund-section-title">${t?'Comparison':'השוואת מניות'}</div><div class="fund-empty">${t?'Loading comparison...':'טוען השוואה...'}</div>`;

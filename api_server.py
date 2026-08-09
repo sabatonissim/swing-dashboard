@@ -1459,8 +1459,22 @@ def _build_fundamentals(ticker: str) -> dict:
     margin_ratio = {d: (g / r * 100) for d, (g, r) in margin_pairs.items() if r}
     margin_labels, gross_margin_pct = to_chart(margin_ratio)
 
-    debt_pairs = _nearest_pair(debt_s, cash_s)
-    net_debt_map = {d: (dv - cv) for d, (dv, cv) in debt_pairs.items()}
+    # Net debt = debt - cash. A company with little/no long-term debt (SHOP,
+    # many high-growth tech names) often has NO debt tag at all in its SEC
+    # filings — not a zero value, just nothing filed, because there's
+    # nothing to report on that line. Previously this meant debt_s was
+    # empty, _nearest_pair had nothing to anchor on, and the whole net-debt
+    # chart came back blank even though the company clearly does report
+    # (cash figures were right there). Now: if debt data exists, pair it
+    # with cash as before; if it's missing entirely, treat debt as 0 and
+    # chart net debt directly from the cash series (net cash position).
+    if debt_s:
+        debt_pairs = _nearest_pair(debt_s, cash_s)
+        net_debt_map = {d: (dv - cv) for d, (dv, cv) in debt_pairs.items()}
+    elif cash_s:
+        net_debt_map = {d: -cv for d, cv in cash_s.items()}
+    else:
+        net_debt_map = {}
     debt_labels, net_debt = to_chart(net_debt_map)
 
     eps_dates = sorted(eps_s)[-32:]
