@@ -1,0 +1,32 @@
+name: Stock Scanner (twice daily)
+
+on:
+  schedule:
+    # Times are in UTC. 07:00 UTC ≈ 10:00 Israel time (09:00 in winter),
+    # 20:00 UTC ≈ 23:00 Israel time (22:00 in winter) — adjust below if
+    # you'd rather it run at different local times.
+    - cron: '0 7 * * *'
+    - cron: '0 20 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  run-scanner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run stock scanner
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python pipeline_a_scanner.py
