@@ -1,0 +1,28 @@
+name: News Aggregator (every 30 min)
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # every 30 minutes, all day
+  workflow_dispatch: {}       # lets you also trigger it manually from the Actions tab
+
+jobs:
+  run-news-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run news aggregator
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python pipeline_b_news_aggregator.py
