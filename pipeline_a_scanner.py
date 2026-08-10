@@ -1455,12 +1455,33 @@ def backfill_forward_returns():
 def main():
     init_db()
     backfill_forward_returns()
+    # scan_universe() takes several minutes (network calls to Yahoo Finance
+    # for every ticker) and doesn't touch the database at all during that
+    # time. Neon's free tier auto-suspends its compute after ~5 minutes of
+    # DB inactivity to stay free — so a connection opened before the scan
+    # and reused after it is often already dead by the time we get here
+    # (psycopg2.OperationalError: SSL connection has been closed
+    # unexpectedly). Opening the connection fresh right before the writes
+    # avoids that entirely.
+    results = scan_universe()
+
     conn = get_conn()
     try:
-        results = scan_universe()
+        saved = 0
         for r in results:
-            upsert_scan_result(conn, r)
-        print(f"Scan complete. {len(results)} tickers flagged and saved to Postgres.")
+            try:
+                upsert_scan_result(conn, r)
+            except psycopg2.OperationalError:
+                # Belt-and-suspenders: if Neon still drops the connection
+                # mid-loop (e.g. a slow patch of tickers), reconnect once
+                # and retry this single row instead of losing everything
+                # saved so far.
+                print("[warn] DB connection dropped mid-write, reconnecting...")
+                conn.close()
+                conn = get_conn()
+                upsert_scan_result(conn, r)
+            saved += 1
+        print(f"Scan complete. {saved}/{len(results)} tickers flagged and saved to Postgres.")
     except Exception:
         # Make sure a crash is actually visible in the logs with a full
         # traceback, instead of the process just going quiet (which is
