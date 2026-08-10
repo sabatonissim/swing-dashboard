@@ -544,13 +544,22 @@ def get_sector_comparison(ticker: str):
     ticker = ticker.upper().strip()
     try:
         tk = yf.Ticker(ticker)
-        info = tk.info
         stock_hist = tk.history(period="1y", interval="1d")
     except Exception:
         raise HTTPException(status_code=502, detail="שגיאה בשליפת הנתונים")
 
     if stock_hist.empty:
         raise HTTPException(status_code=404, detail=f"הטיקר {ticker} לא נמצא")
+
+    # .info is unreliable from this deployment (see lookup_stock above) —
+    # if it fails here, we simply can't tell which sector ETF to compare
+    # against, so return the stock's own return with sector fields empty
+    # rather than failing the whole request.
+    info = {}
+    try:
+        info = tk.info or {}
+    except Exception as e:
+        print(f"[warn] sector-comparison: .info failed for {ticker}: {e}")
 
     sector_name = info.get("sector")
     etf_ticker = YF_SECTOR_TO_ETF.get(sector_name)
@@ -612,19 +621,41 @@ def get_signal_history(ticker: str, limit: int = Query(default=20, le=100)):
 @app.get("/api/lookup/{ticker}")
 def lookup_stock(ticker: str):
     ticker = ticker.upper().strip()
+
+    # .history() is the reliable call from this deployment — Yahoo Finance
+    # appears to rate-limit or block .info more aggressively from cloud
+    # hosting IPs (Render/Railway/etc.) than from a home connection, which
+    # was already worked around elsewhere in this codebase (see
+    # save_universe_movers_fallback's docstring). So: get price/volume from
+    # .history() first since that's dependable, and treat .info as optional
+    # enrichment — if it fails, the endpoint still returns real price data
+    # instead of a blanket 404/502 for every ticker.
     try:
         tk = yf.Ticker(ticker)
-        info = tk.info
         hist = tk.history(period="6mo", interval="1d")
     except Exception:
         raise HTTPException(status_code=502, detail="שגיאה בשליפת הנתונים, נסה שוב")
 
-    if hist.empty or not info.get("regularMarketPrice") and not info.get("currentPrice"):
+    if hist.empty:
         raise HTTPException(status_code=404, detail=f"הטיקר {ticker} לא נמצא")
 
-    price = info.get("currentPrice") or info.get("regularMarketPrice") or float(hist["Close"].iloc[-1])
-    prev_close = info.get("previousClose") or float(hist["Close"].iloc[-2]) if len(hist) > 1 else price
+    price = float(hist["Close"].iloc[-1])
+    prev_close = float(hist["Close"].iloc[-2]) if len(hist) > 1 else price
     change_pct = round(((price - prev_close) / prev_close) * 100, 2) if prev_close else 0.0
+
+    info = {}
+    try:
+        info = tk.info or {}
+    except Exception as e:
+        print(f"[warn] lookup: .info failed for {ticker} (continuing with history-only data): {e}")
+
+    # Prefer .info's price if it's actually there (more current intraday
+    # value) but never let a missing/failed .info block the response.
+    if info.get("currentPrice") or info.get("regularMarketPrice"):
+        price = info.get("currentPrice") or info.get("regularMarketPrice")
+        prev_close_info = info.get("previousClose")
+        if prev_close_info:
+            change_pct = round(((price - prev_close_info) / prev_close_info) * 100, 2)
 
     return {
         "ticker": ticker,
@@ -633,8 +664,8 @@ def lookup_stock(ticker: str):
         "change_pct": change_pct,
         "market_cap": info.get("marketCap"),
         "avg_volume_20d": round(float(hist["Volume"].tail(20).mean()), 0) if len(hist) >= 20 else None,
-        "week52_high": info.get("fiftyTwoWeekHigh"),
-        "week52_low": info.get("fiftyTwoWeekLow"),
+        "week52_high": info.get("fiftyTwoWeekHigh") or round(float(hist["Close"].max()), 2),
+        "week52_low": info.get("fiftyTwoWeekLow") or round(float(hist["Close"].min()), 2),
         "exchange": info.get("exchange"),
         "sector": info.get("sector"),
         "pe_ratio": info.get("trailingPE"),
