@@ -20,6 +20,7 @@ import json
 import math
 import os
 import time
+import io
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
 from datetime import date, datetime as dt
@@ -536,6 +537,41 @@ YF_SECTOR_TO_ETF = {
 }
 
 
+# Ticker -> GICS sector, sourced from the same plain-CSV S&P 500 list the
+# scanner already uses (see pipeline_a_scanner.py's fetch_sp500_tickers —
+# same reasoning applies: no HTML-parsing dependency, and critically, no
+# reliance on yfinance's .info, which this deployment's cloud IP gets
+# rate-limited/blocked on far more often than a plain CSV download.
+# Cached for a day since sector/constituent changes are rare.
+_sp500_sector_cache = {"data": {}, "ts": 0}
+SP500_SECTOR_CACHE_TTL = 86400  # 24 hours
+
+
+def get_sp500_sector_map() -> dict:
+    now = time.time()
+    if _sp500_sector_cache["data"] and (now - _sp500_sector_cache["ts"]) < SP500_SECTOR_CACHE_TTL:
+        return _sp500_sector_cache["data"]
+    try:
+        resp = requests.get(
+            "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv",
+            timeout=15,
+        )
+        resp.raise_for_status()
+        table = pd.read_csv(io.StringIO(resp.text))
+        sector_col = "Sector" if "Sector" in table.columns else "GICS Sector"
+        mapping = {
+            str(row["Symbol"]).strip().replace(".", "-"): str(row[sector_col]).strip()
+            for _, row in table.iterrows()
+            if pd.notna(row.get(sector_col))
+        }
+        _sp500_sector_cache["data"] = mapping
+        _sp500_sector_cache["ts"] = now
+        return mapping
+    except Exception as e:
+        print(f"[warn] failed to fetch S&P 500 sector list: {e}")
+        return _sp500_sector_cache["data"]  # serve last-good if we have it, else empty
+
+
 @app.get("/api/sector-comparison/{ticker}")
 def get_sector_comparison(ticker: str):
     """How has this stock performed vs. the SPDR ETF for its own sector,
@@ -551,17 +587,16 @@ def get_sector_comparison(ticker: str):
     if stock_hist.empty:
         raise HTTPException(status_code=404, detail=f"הטיקר {ticker} לא נמצא")
 
-    # .info is unreliable from this deployment (see lookup_stock above) —
-    # if it fails here, we simply can't tell which sector ETF to compare
-    # against, so return the stock's own return with sector fields empty
-    # rather than failing the whole request.
-    info = {}
-    try:
-        info = tk.info or {}
-    except Exception as e:
-        print(f"[warn] sector-comparison: .info failed for {ticker}: {e}")
+    # Primary source: the CSV sector map (reliable, no .info dependency).
+    # Only covers S&P 500 names, so for anything else fall back to .info —
+    # better than nothing for smaller tickers, even if it's less reliable.
+    sector_name = get_sp500_sector_map().get(ticker)
+    if not sector_name:
+        try:
+            sector_name = (tk.info or {}).get("sector")
+        except Exception as e:
+            print(f"[warn] sector-comparison: .info fallback failed for {ticker}: {e}")
 
-    sector_name = info.get("sector")
     etf_ticker = YF_SECTOR_TO_ETF.get(sector_name)
 
     stock_return = round((float(stock_hist["Close"].iloc[-1]) / float(stock_hist["Close"].iloc[0]) - 1) * 100, 2)
