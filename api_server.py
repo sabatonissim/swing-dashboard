@@ -537,20 +537,20 @@ YF_SECTOR_TO_ETF = {
 }
 
 
-# Ticker -> GICS sector, sourced from the same plain-CSV S&P 500 list the
+# Ticker -> {sector, name}, sourced from the same plain-CSV S&P 500 list the
 # scanner already uses (see pipeline_a_scanner.py's fetch_sp500_tickers —
 # same reasoning applies: no HTML-parsing dependency, and critically, no
 # reliance on yfinance's .info, which this deployment's cloud IP gets
 # rate-limited/blocked on far more often than a plain CSV download.
 # Cached for a day since sector/constituent changes are rare.
-_sp500_sector_cache = {"data": {}, "ts": 0}
-SP500_SECTOR_CACHE_TTL = 86400  # 24 hours
+_sp500_info_cache = {"data": {}, "ts": 0}
+SP500_INFO_CACHE_TTL = 86400  # 24 hours
 
 
-def get_sp500_sector_map() -> dict:
+def get_sp500_info_map() -> dict:
     now = time.time()
-    if _sp500_sector_cache["data"] and (now - _sp500_sector_cache["ts"]) < SP500_SECTOR_CACHE_TTL:
-        return _sp500_sector_cache["data"]
+    if _sp500_info_cache["data"] and (now - _sp500_info_cache["ts"]) < SP500_INFO_CACHE_TTL:
+        return _sp500_info_cache["data"]
     try:
         resp = requests.get(
             "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv",
@@ -558,25 +558,33 @@ def get_sp500_sector_map() -> dict:
         )
         resp.raise_for_status()
         table = pd.read_csv(io.StringIO(resp.text))
-        sector_col = "Sector" if "Sector" in table.columns else "GICS Sector"
-        mapping = {
-            str(row["Symbol"]).strip().replace(".", "-"): str(row[sector_col]).strip()
-            for _, row in table.iterrows()
-            if pd.notna(row.get(sector_col))
-        }
-        _sp500_sector_cache["data"] = mapping
-        _sp500_sector_cache["ts"] = now
+        sector_col = "GICS Sector" if "GICS Sector" in table.columns else "Sector"
+        sub_industry_col = "GICS Sub-Industry" if "GICS Sub-Industry" in table.columns else None
+        name_col = "Security" if "Security" in table.columns else "Name"
+        mapping = {}
+        for _, row in table.iterrows():
+            symbol = str(row["Symbol"]).strip().replace(".", "-")
+            mapping[symbol] = {
+                "sector": str(row[sector_col]).strip() if pd.notna(row.get(sector_col)) else None,
+                "sub_industry": str(row[sub_industry_col]).strip() if sub_industry_col and pd.notna(row.get(sub_industry_col)) else None,
+                "name": str(row[name_col]).strip() if pd.notna(row.get(name_col)) else None,
+            }
+        _sp500_info_cache["data"] = mapping
+        _sp500_info_cache["ts"] = now
         return mapping
     except Exception as e:
-        print(f"[warn] failed to fetch S&P 500 sector list: {e}")
-        return _sp500_sector_cache["data"]  # serve last-good if we have it, else empty
+        print(f"[warn] failed to fetch S&P 500 sector/name list: {e}")
+        return _sp500_info_cache["data"]  # serve last-good if we have it, else empty
 
 
 @app.get("/api/sector-comparison/{ticker}")
 def get_sector_comparison(ticker: str):
     """How has this stock performed vs. the SPDR ETF for its own sector,
-    over the same 1-year window? Answers 'is this stock actually
-    outperforming its peers, or just going up with the tide.'"""
+    over the same 1-year window? Also compares against a small sample of
+    same-GICS-sub-industry peers (a narrower, more specific grouping than
+    the 11 broad SPDR sectors — e.g. 'Semiconductors' rather than just
+    'Technology') since there's no free ETF for most sub-industries to
+    compare against directly."""
     ticker = ticker.upper().strip()
     try:
         tk = yf.Ticker(ticker)
@@ -587,10 +595,13 @@ def get_sector_comparison(ticker: str):
     if stock_hist.empty:
         raise HTTPException(status_code=404, detail=f"הטיקר {ticker} לא נמצא")
 
-    # Primary source: the CSV sector map (reliable, no .info dependency).
-    # Only covers S&P 500 names, so for anything else fall back to .info —
-    # better than nothing for smaller tickers, even if it's less reliable.
-    sector_name = get_sp500_sector_map().get(ticker)
+    sp500_map = get_sp500_info_map()
+    own_info = sp500_map.get(ticker) or {}
+    sector_name = own_info.get("sector")
+    sub_industry = own_info.get("sub_industry")
+    # Only fall back to .info if the CSV didn't have this ticker at all
+    # (i.e. it's not in the S&P 500) — .info is unreliable from this
+    # deployment, so it's a last resort, not a first choice.
     if not sector_name:
         try:
             sector_name = (tk.info or {}).get("sector")
@@ -598,7 +609,6 @@ def get_sector_comparison(ticker: str):
             print(f"[warn] sector-comparison: .info fallback failed for {ticker}: {e}")
 
     etf_ticker = YF_SECTOR_TO_ETF.get(sector_name)
-
     stock_return = round((float(stock_hist["Close"].iloc[-1]) / float(stock_hist["Close"].iloc[0]) - 1) * 100, 2)
 
     etf_return = None
@@ -610,13 +620,35 @@ def get_sector_comparison(ticker: str):
         except Exception as e:
             print(f"[warn] sector-comparison: ETF fetch failed for {etf_ticker}: {e}")
 
+    # Sub-industry peers: up to 4 other S&P 500 names in the same narrow
+    # GICS Sub-Industry bucket, each with their own 1Y return, so you can
+    # see how this stock stacks up against its closest real competitors —
+    # not just "Technology" broadly, but e.g. specifically other
+    # semiconductor names.
+    peers = []
+    if sub_industry:
+        peer_tickers = [
+            sym for sym, meta in sp500_map.items()
+            if meta.get("sub_industry") == sub_industry and sym != ticker
+        ][:4]
+        for peer_sym in peer_tickers:
+            try:
+                peer_hist = yf.Ticker(peer_sym).history(period="1y", interval="1d")
+                if not peer_hist.empty:
+                    peer_return = round((float(peer_hist["Close"].iloc[-1]) / float(peer_hist["Close"].iloc[0]) - 1) * 100, 2)
+                    peers.append({"ticker": peer_sym, "name": (sp500_map.get(peer_sym) or {}).get("name"), "return_1y": peer_return})
+            except Exception as e:
+                print(f"[warn] sector-comparison: peer fetch failed for {peer_sym}: {e}")
+
     return {
         "ticker": ticker,
         "sector": sector_name,
         "sector_etf": etf_ticker,
+        "sub_industry": sub_industry,
         "stock_return_1y": stock_return,
         "sector_return_1y": etf_return,
         "outperformance": round(stock_return - etf_return, 2) if etf_return is not None else None,
+        "sub_industry_peers": peers,
     }
 
 
@@ -692,18 +724,27 @@ def lookup_stock(ticker: str):
         if prev_close_info:
             change_pct = round(((price - prev_close_info) / prev_close_info) * 100, 2)
 
+    # Name/sector fall back to the reliable CSV list (see get_sp500_info_map
+    # above) when .info didn't come through — same reliability reasoning
+    # used throughout this endpoint.
+    csv_info = get_sp500_info_map().get(ticker) or {}
+
     return {
         "ticker": ticker,
-        "name": info.get("longName") or info.get("shortName") or ticker,
+        "name": info.get("longName") or info.get("shortName") or csv_info.get("name") or ticker,
         "price": round(float(price), 2),
         "change_pct": change_pct,
         "market_cap": info.get("marketCap"),
         "avg_volume_20d": round(float(hist["Volume"].tail(20).mean()), 0) if len(hist) >= 20 else None,
         "week52_high": info.get("fiftyTwoWeekHigh") or round(float(hist["Close"].max()), 2),
         "week52_low": info.get("fiftyTwoWeekLow") or round(float(hist["Close"].min()), 2),
+        "description": info.get("longBusinessSummary"),
+        "sub_industry": csv_info.get("sub_industry"),
         "exchange": info.get("exchange"),
-        "sector": info.get("sector"),
+        "sector": info.get("sector") or csv_info.get("sector"),
+        "industry": info.get("industry"),  # sub-sector — no reliable non-.info source, best-effort only
         "pe_ratio": info.get("trailingPE"),
+        "business_summary": info.get("longBusinessSummary"),  # best-effort; blank when .info is blocked
     }
 
 

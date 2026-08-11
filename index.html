@@ -1006,6 +1006,7 @@ async function loadDeepDive(){
     const news = newsRes.status === 'fulfilled' ? newsRes.value : [];
 
     renderDeepDive(quote, sector, signals, news);
+    loadFundamentals(quote.ticker, 'dd-fundamentals-section');
   } catch(e) {
     console.error('[deep dive] failed', e);
     el.innerHTML = `<div class="bt-empty">${t?'Something went wrong loading this stock.':'משהו השתבש בטעינת המניה.'}</div>`;
@@ -1040,6 +1041,18 @@ function renderDeepDive(quote, sector, signals, news){
     </div>
   `;
 
+  if(quote.sector || quote.sub_industry || quote.description){
+    html += `<div class="dd-section-title">${t?'About the Company':'על החברה'}</div>`;
+    if(quote.sector || quote.sub_industry){
+      html += `<div style="font-size:12.5px;color:var(--text-dim);margin-bottom:8px;">${[quote.sector, quote.sub_industry].filter(Boolean).join(' · ')}</div>`;
+    }
+    if(quote.description){
+      html += `<div style="font-size:13px;line-height:1.6;color:var(--text);margin-bottom:6px;">${quote.description}</div>`;
+    } else {
+      html += `<div class="bt-empty" style="padding:10px 0;">${t?'Company description unavailable right now.':'תיאור החברה לא זמין כרגע.'}</div>`;
+    }
+  }
+
   if(sector && sector.sector_return_1y != null){
     const stockColor = sector.stock_return_1y >= 0 ? 'var(--green)' : 'var(--red)';
     const secColor = sector.sector_return_1y >= 0 ? 'var(--green)' : 'var(--red)';
@@ -1053,6 +1066,22 @@ function renderDeepDive(quote, sector, signals, news){
       </div>
     `;
   }
+
+  if(sector && sector.sub_industry_peers && sector.sub_industry_peers.length){
+    html += `
+      <div class="dd-section-title">${t?`Peers in ${sector.sub_industry}`:`מתחרים ב-${sector.sub_industry}`} (1Y)</div>
+      <div class="dd-rs-row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px;">
+        ${sector.sub_industry_peers.map(p => `
+          <div class="bt-rs-card">
+            <div class="label">${p.ticker}${p.name?' · '+p.name:''}</div>
+            <div class="row"><span>${t?'1Y return':'תשואה שנתית'}</span><span style="color:${p.return_1y>=0?'var(--green)':'var(--red)'}">${p.return_1y>=0?'+':''}${p.return_1y}%</span></div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  html += `<div id="dd-fundamentals-section"></div>`;
 
   html += `<div class="dd-section-title">${t?'Signal History':'היסטוריית איתותים'}</div>`;
   if(signals && signals.length){
@@ -1097,6 +1126,7 @@ function renderDeepDive(quote, sector, signals, news){
   }
 
   el.innerHTML = html;
+  loadFundamentals(quote.ticker);
 
   if(typeof TradingView !== 'undefined'){
     new TradingView.widget({
@@ -2005,8 +2035,9 @@ document.addEventListener('click', ()=>{
   document.querySelectorAll('.fund-info.open').forEach(i=>i.classList.remove('open'));
 });
 
-async function loadFundamentals(ticker){
-  const el = document.getElementById("fundamentals-section");
+async function loadFundamentals(ticker, containerId){
+  containerId = containerId || "fundamentals-section";
+  const el = document.getElementById(containerId);
   if(!el) return;
   const t = lang==='en';
   el.innerHTML = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div><div class="fund-empty">${t?'Loading fundamentals...':'טוען נתונים פונדמנטליים...'}</div>`;
@@ -2021,15 +2052,16 @@ async function loadFundamentals(ticker){
     return;
   }
   try {
-    renderFundamentals(data);
+    renderFundamentals(data, containerId);
   } catch(e) {
     console.error('[fundamentals] render failed for', ticker, e);
     el.innerHTML = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div><div class="fund-empty">${t?'Data loaded but failed to render — check console.':'הנתונים נטענו אך הצגתם נכשלה — בדוק את הקונסול.'}</div>`;
   }
 }
 
-function renderFundamentals(data){
-  const el = document.getElementById("fundamentals-section");
+function renderFundamentals(data, containerId){
+  containerId = containerId || "fundamentals-section";
+  const el = document.getElementById(containerId);
   if(!el) return;
   destroyFundCharts();
   const t = lang==='en';
