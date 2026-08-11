@@ -518,22 +518,35 @@ def stock_news(ticker: str, limit: int = 6):
 # on demand - no OpenAI call here, so it's instant and free to run.
 # ------------------------------------------------------------------
 
-# yfinance's `sector` field uses GICS sector names, which don't exactly
-# match the "Cons. Discretionary"-style labels used for the SECTOR_ETFS
-# dict above (that dict is for display; this one is for matching a stock's
-# reported sector to the right SPDR ETF ticker).
+# Two different naming conventions map to the same 11 SPDR sector ETFs:
+# - The GICS official names used by our primary CSV source (get_sp500_info_map)
+#   — e.g. "Information Technology", "Health Care", "Financials".
+# - yfinance's .info sector field, used only as a fallback for tickers not
+#   in the S&P 500 CSV — e.g. "Technology", "Healthcare", "Financial Services".
+# Both conventions are merged into one dict so a sector name from either
+# source resolves to the right ETF. (A previous version of this dict only
+# had the yfinance-style names, so every CSV-sourced sector name failed to
+# match at all — that was the sector/peer comparison bug.)
 YF_SECTOR_TO_ETF = {
+    # GICS official names (CSV / primary source)
+    "Information Technology": "XLK",
+    "Health Care": "XLV",
+    "Financials": "XLF",
+    "Consumer Discretionary": "XLY",
+    "Consumer Staples": "XLP",
+    "Energy": "XLE",
+    "Industrials": "XLI",
+    "Materials": "XLB",
+    "Real Estate": "XLRE",
+    "Communication Services": "XLC",
+    "Utilities": "XLU",
+    # yfinance .info naming (fallback path, non-S&P-500 tickers)
     "Technology": "XLK",
     "Financial Services": "XLF",
     "Healthcare": "XLV",
     "Consumer Cyclical": "XLY",
     "Consumer Defensive": "XLP",
-    "Energy": "XLE",
-    "Industrials": "XLI",
     "Basic Materials": "XLB",
-    "Real Estate": "XLRE",
-    "Communication Services": "XLC",
-    "Utilities": "XLU",
 }
 
 
@@ -603,10 +616,7 @@ def get_sector_comparison(ticker: str):
     # (i.e. it's not in the S&P 500) — .info is unreliable from this
     # deployment, so it's a last resort, not a first choice.
     if not sector_name:
-        try:
-            sector_name = (tk.info or {}).get("sector")
-        except Exception as e:
-            print(f"[warn] sector-comparison: .info fallback failed for {ticker}: {e}")
+        sector_name = _get_info_with_retry(tk, ticker, "sector-comparison").get("sector")
 
     etf_ticker = YF_SECTOR_TO_ETF.get(sector_name)
     stock_return = round((float(stock_hist["Close"].iloc[-1]) / float(stock_hist["Close"].iloc[0]) - 1) * 100, 2)
@@ -685,6 +695,25 @@ def get_signal_history(ticker: str, limit: int = Query(default=20, le=100)):
     ]
 
 
+def _get_info_with_retry(tk, ticker: str, context: str) -> dict:
+    """yfinance's .info fails often from this deployment (see notes
+    throughout this file) — but not always for the same reason. Some
+    failures are a hard block, but some are just a transient rate-limit
+    blip, which a single short retry clears up. This isn't a fix for the
+    underlying reliability problem, just cheap insurance against the
+    failures that would have succeeded on the very next attempt."""
+    for attempt in (1, 2):
+        try:
+            info = tk.info
+            if info:
+                return info
+        except Exception as e:
+            print(f"[warn] {context}: .info attempt {attempt} failed for {ticker}: {e}")
+        if attempt == 1:
+            time.sleep(1.2)
+    return {}
+
+
 @app.get("/api/lookup/{ticker}")
 def lookup_stock(ticker: str):
     ticker = ticker.upper().strip()
@@ -710,11 +739,7 @@ def lookup_stock(ticker: str):
     prev_close = float(hist["Close"].iloc[-2]) if len(hist) > 1 else price
     change_pct = round(((price - prev_close) / prev_close) * 100, 2) if prev_close else 0.0
 
-    info = {}
-    try:
-        info = tk.info or {}
-    except Exception as e:
-        print(f"[warn] lookup: .info failed for {ticker} (continuing with history-only data): {e}")
+    info = _get_info_with_retry(tk, ticker, "lookup")
 
     # Prefer .info's price if it's actually there (more current intraday
     # value) but never let a missing/failed .info block the response.
@@ -1613,12 +1638,31 @@ def _build_fundamentals(ticker: str) -> dict:
         print(f"[info] fundamentals({ticker}): yfinance analyst EPS estimates unavailable (non-fatal): {e}")
 
     trailing_pe = forward_pe = None
+    info = {}
     try:
         info = yf.Ticker(ticker).info or {}
         trailing_pe = info.get("trailingPE")
         forward_pe = info.get("forwardPE")
     except Exception as e:
         print(f"[info] fundamentals({ticker}): yfinance trailing/forward P/E unavailable (non-fatal): {e}")
+
+    # Market cap: shares outstanding (SEC, reliable) × latest close price
+    # (.history(), reliable) — computed rather than pulled from .info
+    # directly, since .info is the piece that's most often blocked from
+    # this deployment. .info's marketCap is only a fallback if we can't
+    # compute it ourselves (e.g. shares_outstanding wasn't tagged in SEC's
+    # filings for this company).
+    market_cap = None
+    if latest_shares:
+        try:
+            price_hist = yf.Ticker(ticker).history(period="5d")
+            if not price_hist.empty:
+                last_price = float(price_hist["Close"].iloc[-1])
+                market_cap = round(last_price * latest_shares, 0)
+        except Exception as e:
+            print(f"[info] fundamentals({ticker}): could not compute market cap from price×shares: {e}")
+    if market_cap is None:
+        market_cap = info.get("marketCap")
 
     return _json_safe({
         "ticker": ticker,
@@ -1634,6 +1678,7 @@ def _build_fundamentals(ticker: str) -> dict:
         "debt_labels": debt_labels,
         "net_debt": net_debt,
         "latest_shares_outstanding": latest_shares,
+        "market_cap": market_cap,
         "diluted_eps_labels": diluted_eps_labels,
         "diluted_eps": diluted_eps,
         "eps_labels": eps_labels,
