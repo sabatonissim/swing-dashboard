@@ -2,7 +2,13 @@ name: News Aggregator (every 30 min)
 
 on:
   schedule:
-    - cron: '*/30 * * * *'   # every 30 minutes, all day
+    # Every 30 minutes turned out to be too frequent for GitHub's own
+    # scheduler to honor reliably (it silently delays/drops runs under
+    # load at high frequencies — a known GitHub Actions limitation, not
+    # a bug here). Hourly, at a non-round minute (avoids the top-of-hour
+    # congestion GitHub itself warns about), is far more likely to
+    # actually fire on schedule.
+    - cron: '17 * * * *'   # every hour, at :17
   workflow_dispatch: {}       # lets you also trigger it manually from the Actions tab
 
 jobs:
