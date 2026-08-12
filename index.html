@@ -1224,15 +1224,23 @@ async function loadHeatmap(idx){
   const el = document.getElementById('heatmap-grid');
   const t = lang==='en';
   if(el) el.innerHTML = `<div class="movers-empty">${UI[lang].loading}</div>`;
-  try {
-    const res = await fetch(`${API_BASE}/api/heatmap?index=${idx}`);
-    if(!res.ok) throw new Error('bad response');
-    const data = await res.json();
-    renderHeatmap(data.stocks || []);
-  } catch(e) {
-    console.error('[heatmap] load failed', e);
-    if(el) el.innerHTML = `<div class="movers-empty">${t?'Could not load heatmap.':'לא ניתן לטעון מפת חום.'}</div>`;
+  // Same cold-start issue as the main dashboard load: a single fetch right
+  // after the tab is opened can land while Render is still waking up.
+  // Retry a few times with growing waits before giving up.
+  const waits = [0, 4000, 10000];
+  for(let i=0; i<waits.length; i++){
+    if(waits[i]) await new Promise(r=>setTimeout(r, waits[i]));
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/api/heatmap?index=${idx}`, 15000);
+      if(!res.ok) throw new Error('bad response');
+      const data = await res.json();
+      renderHeatmap(data.stocks || []);
+      return;
+    } catch(e) {
+      console.warn(`[heatmap] attempt ${i+1}/${waits.length} failed`, e);
+    }
   }
+  if(el) el.innerHTML = `<div class="movers-empty">${t?'Could not load heatmap.':'לא ניתן לטעון מפת חום.'}</div>`;
 }
 
 function heatmapColor(pct){
