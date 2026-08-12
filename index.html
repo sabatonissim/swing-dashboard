@@ -2486,7 +2486,13 @@ const statusEl = document.createElement("div");
 statusEl.style.cssText="position:fixed;bottom:12px;left:16px;font-size:11px;font-family:'JetBrains Mono',monospace;padding:4px 9px;border-radius:6px;z-index:60;";
 document.body.appendChild(statusEl);
 
-function setStatus(connected){
+function setStatus(connected, connecting){
+  if(connecting){
+    statusEl.textContent = "● מתחבר לשרת (ייתכן שהתעורר משינה)...";
+    statusEl.style.background = "rgba(232,163,61,.15)";
+    statusEl.style.color = "var(--amber)";
+    return;
+  }
   statusEl.textContent = connected?"● מחובר ל-API":"● נתוני דמו (ה-API לא זמין)";
   statusEl.style.background = connected?"rgba(62,207,126,.15)":"rgba(232,163,61,.15)";
   statusEl.style.color = connected?"var(--green)":"var(--amber)";
@@ -2613,23 +2619,73 @@ function mapDbRowToMacro(r){
   };
 }
 
+// Render free tier can take 30-60s to wake up from sleep. A plain single
+// fetch on page load fails during that window and used to fall back to
+// demo data permanently (until a manual refresh happened to land after
+// wake-up). fetchWithTimeout + retryFetchPair fix that: several attempts
+// with growing waits cover the cold-start window, and a background retry
+// keeps trying afterwards so the page self-heals without a manual reload.
+function fetchWithTimeout(url, ms){
+  const ctrl = new AbortController();
+  const id = setTimeout(()=>ctrl.abort(), ms);
+  return fetch(url, {signal: ctrl.signal}).finally(()=>clearTimeout(id));
+}
+
+async function tryLoadOnce(timeoutMs){
+  const [stocksRes, macroRes] = await Promise.all([
+    fetchWithTimeout(`${API_BASE}/api/stocks?limit=60`, timeoutMs),
+    fetchWithTimeout(`${API_BASE}/api/macro-news`, timeoutMs),
+  ]);
+  if(!stocksRes.ok||!macroRes.ok) throw new Error("API error");
+  const dbStocks = await stocksRes.json();
+  const dbMacro = await macroRes.json();
+  if(dbStocks.length>0){ rawStocks = dbStocks; }
+  if(dbMacro.length>0){ rawMacro = dbMacro; }
+}
+
+let apiConnected = false;
+let bgRetryTimer = null;
+
 async function loadFromApi(){
-  try {
-    const [stocksRes, macroRes] = await Promise.all([
-      fetch(`${API_BASE}/api/stocks?limit=60`),
-      fetch(`${API_BASE}/api/macro-news`),
-    ]);
-    if(!stocksRes.ok||!macroRes.ok) throw new Error("API error");
-    const dbStocks = await stocksRes.json();
-    const dbMacro = await macroRes.json();
-    if(dbStocks.length>0){ rawStocks = dbStocks; }
-    if(dbMacro.length>0){ rawMacro = dbMacro; }
-    setStatus(true);
-  } catch(e){
-    console.warn("API offline, showing demo data:", e);
-    setStatus(false);
+  // Attempts spread out to cover a Render cold-start (usually 30-60s):
+  // immediate, then +5s, +12s, +20s waits between tries.
+  const waits = [0, 5000, 12000, 20000];
+  for(let i=0; i<waits.length; i++){
+    if(waits[i]) { setStatus(false, true); await new Promise(r=>setTimeout(r, waits[i])); }
+    try {
+      await tryLoadOnce(15000);
+      apiConnected = true;
+      setStatus(true);
+      applyLang();
+      if(bgRetryTimer){ clearInterval(bgRetryTimer); bgRetryTimer = null; }
+      return;
+    } catch(e){
+      console.warn(`API attempt ${i+1}/${waits.length} failed:`, e);
+    }
   }
-  applyLang(); // rebuild everything in the active language
+  // All attempts failed - show demo data but keep trying quietly in the
+  // background so the page recovers on its own once the server is up.
+  apiConnected = false;
+  setStatus(false);
+  applyLang();
+  startBackgroundRetry();
+}
+
+function startBackgroundRetry(){
+  if(bgRetryTimer) return;
+  bgRetryTimer = setInterval(async ()=>{
+    if(apiConnected) { clearInterval(bgRetryTimer); bgRetryTimer = null; return; }
+    try {
+      await tryLoadOnce(15000);
+      apiConnected = true;
+      setStatus(true);
+      applyLang();
+      clearInterval(bgRetryTimer);
+      bgRetryTimer = null;
+    } catch(e){
+      // still down - stay on demo, try again next tick
+    }
+  }, 30000);
 }
 
 // ---- Language toggle ----
