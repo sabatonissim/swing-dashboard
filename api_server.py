@@ -175,8 +175,36 @@ except Exception as e:
 
 @app.get("/api/stocks")
 def get_stocks(limit: int = Query(default=25, le=100)):
+    """One row per ticker (its most recent signal), not one row per scan
+    run. The scan runs twice a day and INSERTs a fresh row for every match
+    without deduping — a stock that keeps re-qualifying (e.g. a strong
+    Stage-2 leader firing the same pattern run after run) used to eat a
+    new slot every single time, crowding real variety out of a 60-row
+    window that's well under one day's worth of raw scan output. DISTINCT
+    ON collapses that to each ticker's latest signal. repeat_count_14d
+    tells the frontend (and the user) how many times that ticker has
+    actually shown up in the last 14 days, so repetition is visible
+    instead of just felt."""
     with db_cursor(dict_cursor=True) as (conn, cur):
-        cur.execute("SELECT * FROM scanned_stocks ORDER BY timestamp DESC LIMIT %s", (limit,))
+        cur.execute(
+            """
+            SELECT s.*, COALESCE(rc.repeat_count_14d, 1) AS repeat_count_14d
+            FROM (
+                SELECT DISTINCT ON (ticker) *
+                FROM scanned_stocks
+                ORDER BY ticker, timestamp DESC
+            ) s
+            LEFT JOIN (
+                SELECT ticker, COUNT(*) AS repeat_count_14d
+                FROM scanned_stocks
+                WHERE timestamp >= NOW() - INTERVAL '14 days'
+                GROUP BY ticker
+            ) rc ON rc.ticker = s.ticker
+            ORDER BY s.timestamp DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
         rows = cur.fetchall()
     result = []
     for r in rows:

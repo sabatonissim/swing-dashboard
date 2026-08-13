@@ -166,6 +166,7 @@
   .cs-empty{color:var(--text-dim);font-size:12.5px;padding:14px 4px;text-align:center;}
   .cs-freeform{border-top:1px solid var(--line);margin-top:8px;padding-top:10px;}
   .score-badge{font-family:'JetBrains Mono',monospace;font-weight:600;font-size:13px;padding:4px 9px;border-radius:20px;min-width:36px;text-align:center;}
+  .repeat-badge{font-family:'JetBrains Mono',monospace;font-weight:600;font-size:10px;padding:3px 7px;border-radius:20px;background:rgba(232,163,61,.12);color:var(--amber);white-space:nowrap;}
   .score-hi{background:rgba(62,207,126,.15);color:var(--green);}
   .score-mid{background:rgba(232,163,61,.15);color:var(--amber);}
   .stock-group-title{font-size:12px;letter-spacing:1px;color:var(--text-dim);text-transform:uppercase;margin:4px 2px 9px;padding:8px 6px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none;border-radius:6px;transition:background .15s;}
@@ -540,10 +541,20 @@ function stockRowHtml(s,i){
       <div class="ticker">${s.ticker}</div>
       <div class="trend ${s.trend}">${s.trend==="up"?"▲":"▼"}</div>
       <div class="trigger">${lang==='en'?(s.trigger_en||s.trigger||''):(s.trigger||s.trigger_he||'')}</div>
+      ${repeatBadgeHtml(s.repeatCount)}
       ${winRateBadgeHtml(s.patternType)}
       <div class="score-badge ${scoreClass(s.score)}">${s.score}</div>
     </div>
   `;
+}
+
+// Shows how many times this ticker has actually re-qualified in the last
+// 14 days, so a stock that keeps showing up reads as "still strong" rather
+// than a mysterious repeat. Silent for fresh (count<=1) signals.
+function repeatBadgeHtml(count){
+  if(!count || count <= 1) return '';
+  const label = lang==='en' ? `${count}× in 14d` : `${count}× ב-14 יום`;
+  return `<div class="repeat-badge" title="${lang==='en'?'Re-qualified '+count+' times in the last 14 days':'הופיעה שוב '+count+' פעמים ב-14 הימים האחרונים'}">${label}</div>`;
 }
 
 let collapsedStockGroups = { recent: false, previous: false };
@@ -1240,7 +1251,8 @@ async function loadHeatmap(idx){
       console.warn(`[heatmap] attempt ${i+1}/${waits.length} failed`, e);
     }
   }
-  if(el) el.innerHTML = `<div class="movers-empty">${t?'Could not load heatmap.':'לא ניתן לטעון מפת חום.'}</div>`;
+  if(el) el.innerHTML = `<div class="movers-empty">${t?'Could not load heatmap.':'לא ניתן לטעון מפת חום.'} <span style="text-decoration:underline;cursor:pointer" onclick="loadHeatmap('${idx}')">${t?'Try again':'נסה שוב'}</span></div>`;
+  pulseLoaded = false; // allow a fresh attempt next time this tab is opened
 }
 
 function heatmapColor(pct){
@@ -2584,6 +2596,7 @@ function mapDbRowToStock(r){
     rsRating: r.rs_rating,
     patternType: r.pattern_type,
     daysToEarnings: r.days_to_earnings,
+    repeatCount: r.repeat_count_14d || 1,
   };
 }
 

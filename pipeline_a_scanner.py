@@ -1299,6 +1299,15 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
                 "Stage 4 - Downtrend": "שלב 4 - מגמת ירידה",
             }.get(trend_stage, trend_stage)
             ai_summary_he += f" מגמה: {stage_he}."
+        # Distance to the nearest resistance target above current price —
+        # turns "here's a support/resistance number" into an actual
+        # answer to "how much room does this have before it hits a wall".
+        targets_above = [r for r in resistance if r > close] if resistance else []
+        if targets_above:
+            nearest_res = min(targets_above)
+            room_pct = round((nearest_res / close - 1) * 100, 1)
+            ai_summary_en += f" Room to next resistance (${nearest_res}): {room_pct:+.1f}%."
+            ai_summary_he += f" מרחק להתנגדות הקרובה (${nearest_res}): {room_pct:+.1f}%."
         if earnings_soon:
             ai_summary_en += f" ⚠️ Earnings report in {days_to_earnings} day(s) — expect elevated volatility risk."
             ai_summary_he += f" ⚠️ דוחות כספיים בעוד {days_to_earnings} ימים — צפויה תנודתיות מוגברת."
@@ -1341,10 +1350,16 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         if rating is not None:
             if rating >= 80:
                 result.swing_score = min(100, result.swing_score + 8)   # genuine market leader
+                result.ai_summary_en += f" RS Rating {rating}/99 — outperforming {rating}% of the scanned universe over the past year."
+                result.ai_summary_he += f" דירוג RS {rating}/99 — מתעלה על {rating}% מהיקום שנסרק בשנה האחרונה."
             elif rating >= 60:
                 result.swing_score = min(100, result.swing_score + 3)
+                result.ai_summary_en += f" RS Rating {rating}/99."
+                result.ai_summary_he += f" דירוג RS {rating}/99."
             elif rating < 40:
                 result.swing_score = max(1, result.swing_score - 15)  # pattern firing on a market laggard = low conviction
+                result.ai_summary_en += f" RS Rating {rating}/99 — this pattern is firing on a market laggard, lower conviction."
+                result.ai_summary_he += f" דירוג RS {rating}/99 — התבנית מתרחשת על מניה שפחות מובילה את השוק, רמת ביטחון נמוכה יותר."
 
     upsert_universe_movers(all_changes)
     return results
