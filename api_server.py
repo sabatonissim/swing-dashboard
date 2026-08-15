@@ -787,12 +787,28 @@ def lookup_stock(ticker: str):
     # used throughout this endpoint.
     csv_info = get_sp500_info_map().get(ticker) or {}
 
+    market_cap = info.get("marketCap")
+    pe_ratio = info.get("trailingPE")
+    # Same .info-blocked problem as elsewhere: fall back to the
+    # SEC-based numbers /api/fundamentals already computed for this
+    # ticker, if that's already sitting in cache (read-only — this
+    # endpoint doesn't trigger a fresh fundamentals computation itself,
+    # to avoid slowing down a simple quote lookup).
+    if market_cap is None or pe_ratio is None:
+        cached_fund = _fundamentals_cache.get(ticker)
+        if cached_fund:
+            _, fund_data = cached_fund
+            if market_cap is None:
+                market_cap = fund_data.get("market_cap")
+            if pe_ratio is None:
+                pe_ratio = fund_data.get("trailing_pe")
+
     return {
         "ticker": ticker,
         "name": info.get("longName") or info.get("shortName") or csv_info.get("name") or ticker,
         "price": round(float(price), 2),
         "change_pct": change_pct,
-        "market_cap": info.get("marketCap"),
+        "market_cap": market_cap,
         "avg_volume_20d": round(float(hist["Volume"].tail(20).mean()), 0) if len(hist) >= 20 else None,
         "week52_high": info.get("fiftyTwoWeekHigh") or round(float(hist["Close"].max()), 2),
         "week52_low": info.get("fiftyTwoWeekLow") or round(float(hist["Close"].min()), 2),
@@ -801,7 +817,7 @@ def lookup_stock(ticker: str):
         "exchange": info.get("exchange"),
         "sector": info.get("sector") or csv_info.get("sector"),
         "industry": info.get("industry"),  # sub-sector — no reliable non-.info source, best-effort only
-        "pe_ratio": info.get("trailingPE"),
+        "pe_ratio": pe_ratio,
         "business_summary": info.get("longBusinessSummary"),  # best-effort; blank when .info is blocked
     }
 
@@ -1576,6 +1592,7 @@ def _build_fundamentals(ticker: str) -> dict:
         facts = None
 
     usgaap = (facts or {}).get("facts", {}).get("us-gaap", {})
+    deifacts = (facts or {}).get("facts", {}).get("dei", {})
     if not usgaap:
         print(f"[warn] fundamentals({ticker}): SEC companyfacts had no us-gaap data")
         return {"ticker": ticker, "has_fundamentals": False}
@@ -1589,6 +1606,14 @@ def _build_fundamentals(ticker: str) -> dict:
     cash_s    = _sec_quarterly_series(usgaap, ["CashAndCashEquivalentsAtCarryingValue", "CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations"], instant=True)
     debt_s    = _sec_quarterly_series(usgaap, ["LongTermDebtNoncurrent", "LongTermDebt", "DebtLongtermAndShorttermCombinedAmount"], instant=True)
     shares_s  = _sec_quarterly_series(usgaap, ["CommonStockSharesOutstanding"], instant=True)
+    # dei:EntityCommonStockSharesOutstanding is the cover-page tag nearly
+    # every filer reports (it's required on every 10-Q/10-K cover page),
+    # unlike the us-gaap tag above which plenty of companies simply don't
+    # use. Missing this was the main reason market cap came back blank —
+    # merge it in as a fallback for any date the us-gaap tag doesn't have.
+    shares_dei_s = _sec_quarterly_series(deifacts, ["EntityCommonStockSharesOutstanding"], instant=True)
+    for d, v in shares_dei_s.items():
+        shares_s.setdefault(d, v)
 
     if not revenue_s and not ni_s:
         print(f"[info] fundamentals({ticker}): SEC facts had no usable revenue/net-income tags for this company")
@@ -1711,6 +1736,15 @@ def _build_fundamentals(ticker: str) -> dict:
         forward_pe = info.get("forwardPE")
     except Exception as e:
         print(f"[info] fundamentals({ticker}): yfinance trailing/forward P/E unavailable (non-fatal): {e}")
+    # yfinance's .info endpoint is the one most often blocked from this
+    # deployment's IP — trailing_pe frequently came back None even though
+    # we already compute a reliable trailing P/E ourselves for the P/E
+    # band chart (SEC EPS ÷ reliable .history() price). Use that as the
+    # fallback instead of leaving the stat blank. Forward P/E has no
+    # SEC-based equivalent (it's an analyst estimate) so it stays
+    # yfinance-only and can legitimately be unavailable.
+    if trailing_pe is None and pe_band and pe_band.get("current"):
+        trailing_pe = pe_band["current"]
 
     # Market cap: shares outstanding (SEC, reliable) × latest close price
     # (.history(), reliable) — computed rather than pulled from .info
