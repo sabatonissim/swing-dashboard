@@ -846,14 +846,48 @@ _sec_description_cache = {}  # ticker -> (timestamp, description_or_None)
 SEC_DESCRIPTION_CACHE_TTL = 86400  # 24h — this barely changes
 
 
+def _wikipedia_summary(company_name: str) -> Optional[str]:
+    """A real 2-4 sentence business description, free and keyless, for
+    when yfinance's .info-only longBusinessSummary is blocked (the usual
+    case from this deployment's IP). Resolves the likely Wikipedia page
+    via opensearch first since ticker-derived company names rarely match
+    the exact page title (e.g. SEC's "Apple Inc." vs the page
+    "Apple_Inc."), then pulls the REST summary extract."""
+    try:
+        search_resp = requests.get(
+            "https://en.wikipedia.org/w/api.php",
+            params={"action": "opensearch", "search": company_name, "limit": 1, "namespace": 0, "format": "json"},
+            headers=SEC_HEADERS, timeout=8,
+        )
+        search_resp.raise_for_status()
+        results = search_resp.json()
+        titles = results[1] if len(results) > 1 else []
+        if not titles:
+            return None
+        title = titles[0]
+        summary_resp = requests.get(
+            f"https://en.wikipedia.org/api/rest_v1/page/summary/{requests.utils.quote(title)}",
+            headers=SEC_HEADERS, timeout=8,
+        )
+        summary_resp.raise_for_status()
+        extract = summary_resp.json().get("extract")
+        # Wikipedia's opensearch can match a same-named but unrelated
+        # page (a person, a place) for an obscure ticker — a disambig
+        # stub or clearly-off-topic result isn't worth showing.
+        if extract and len(extract) > 40:
+            return extract
+        return None
+    except Exception as e:
+        print(f"[info] Wikipedia fallback description unavailable for '{company_name}' (non-fatal): {e}")
+        return None
+
+
 def _sec_fallback_description(ticker: str) -> Optional[str]:
     """yfinance's longBusinessSummary comes only from .info, which this
-    deployment's IP gets blocked from more often than not. SEC doesn't
-    publish a business-summary paragraph, but its submissions endpoint
-    does have the entity's name + SIC industry description on every
-    filer — not as rich as a real summary, but honest, sourced, and
-    available even when .info is fully blocked, instead of leaving the
-    'About the Company' section empty."""
+    deployment's IP gets blocked from more often than not. Try Wikipedia
+    first for a real business summary; fall back to SEC's minimal (but
+    always-available, sourced) name + SIC industry classification if
+    Wikipedia doesn't have a good match."""
     cached = _sec_description_cache.get(ticker)
     if cached and (time.time() - cached[0]) < SEC_DESCRIPTION_CACHE_TTL:
         return cached[1]
@@ -866,7 +900,11 @@ def _sec_fallback_description(ticker: str) -> Optional[str]:
         j = resp.json()
         name = j.get("name")
         sic_desc = j.get("sicDescription")
-        desc = f"{name} — SEC industry classification: {sic_desc}." if (name and sic_desc) else None
+
+        desc = _wikipedia_summary(name) if name else None
+        if not desc and name and sic_desc:
+            desc = f"{name} — SEC industry classification: {sic_desc}."
+
         _sec_description_cache[ticker] = (time.time(), desc)
         return desc
     except Exception as e:

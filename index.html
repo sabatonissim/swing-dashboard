@@ -1046,7 +1046,17 @@ async function loadDeepDive(){
       try { renderFundamentals(fundData, 'dd-fundamentals-section'); }
       catch(e){ console.error('[fundamentals] render failed for', quote.ticker, e); loadFundamentals(quote.ticker, 'dd-fundamentals-section'); }
     } else {
-      loadFundamentals(quote.ticker, 'dd-fundamentals-section'); // retry independently — the parallel attempt above failed
+      // The parallel attempt above failed — retry independently, and if
+      // it succeeds this time, back-fill the header P/E card too (it
+      // rendered already with "—" since fundData wasn't ready yet).
+      loadFundamentals(quote.ticker, 'dd-fundamentals-section').then(retryData => {
+        if(retryData && _dd_lastQuote === quote){
+          quote.pe_ratio_ntm = retryData.forward_pe ?? null;
+          quote.pe_ratio_ltm = retryData.trailing_pe ?? quote.pe_ratio ?? null;
+          if(quote.market_cap == null) quote.market_cap = retryData.market_cap;
+          renderDeepDivePeCard();
+        }
+      });
     }
   } catch(e) {
     console.error('[deep dive] failed', e);
@@ -1078,7 +1088,7 @@ function renderDeepDive(quote, sector, signals, news){
       <div class="dd-stat-card"><div class="k">${t?'52w High':'שיא 52ש'}</div><div class="v">${quote.week52_high ?? '—'}</div></div>
       <div class="dd-stat-card"><div class="k">${t?'52w Low':'שפל 52ש'}</div><div class="v">${quote.week52_low ?? '—'}</div></div>
       <div class="dd-stat-card"><div class="k">${t?'Market Cap':'שווי שוק'}</div><div class="v">${formatMarketCap(quote.market_cap)}</div></div>
-      <div class="dd-stat-card" id="dd-pe-card" onclick="toggleDeepDivePeMode()" style="cursor:pointer;" title="${t?'Click to toggle NTM / LTM':'לחץ להחלפה בין NTM ל-LTM'}"></div>
+      <div class="dd-stat-card" id="dd-pe-card"></div>
       <div class="dd-stat-card"><div class="k">${t?'Avg Vol 20d':'ווליום ממוצע'}</div><div class="v">${formatMarketCap(quote.avg_volume_20d)}</div></div>
     </div>
   `;
@@ -1099,30 +1109,28 @@ function renderDeepDive(quote, sector, signals, news){
     const stockColor = sector.stock_return_1y >= 0 ? 'var(--green)' : 'var(--red)';
     const secColor = sector.sector_return_1y >= 0 ? 'var(--green)' : 'var(--red)';
     const outColor = sector.outperformance >= 0 ? 'var(--green)' : 'var(--red)';
-    html += `
-      <div class="dd-section-title">${t?'Stock vs. Sector (1Y)':'מניה מול סקטור (שנה)'}</div>
-      <div class="dd-sector-compare">
-        <div class="col"><div class="k">${quote.ticker}</div><div class="v" style="color:${stockColor}">${sector.stock_return_1y>=0?'+':''}${sector.stock_return_1y}%</div></div>
-        <div class="col"><div class="k">${sector.sector_etf||sector.sector||'—'}</div><div class="v" style="color:${secColor}">${sector.sector_return_1y>=0?'+':''}${sector.sector_return_1y}%</div></div>
-        <div class="col"><div class="k">${t?'Outperformance':'עודף ביצוע'}</div><div class="v" style="color:${outColor}">${sector.outperformance>=0?'+':''}${sector.outperformance}%</div></div>
-      </div>
-    `;
+    // A sub-industry-specific ETF (e.g. SOXX for semis, IGV for software)
+    // is a much fairer benchmark than the broad sector SPDR alone —
+    // shown side-by-side with it rather than as a separate row/section,
+    // so both benchmarks read as one comparison at a glance.
+    let subCols = '';
     if(sector.sub_industry_return_1y != null){
-      // The broad sector ETF (e.g. XLK for all of tech) can hide how a
-      // stock did against its *actual* niche — this second row compares
-      // against a sub-industry-specific ETF (e.g. SOXX for semis, IGV
-      // for software) when one exists, which is a much fairer benchmark.
       const subSecColor = sector.sub_industry_return_1y >= 0 ? 'var(--green)' : 'var(--red)';
       const subOutColor = sector.sub_industry_outperformance >= 0 ? 'var(--green)' : 'var(--red)';
-      html += `
-        <div class="dd-section-title">${t?`Stock vs. ${sector.sub_industry} (1Y)`:`מניה מול ${sector.sub_industry} (שנה)`}</div>
-        <div class="dd-sector-compare">
-          <div class="col"><div class="k">${quote.ticker}</div><div class="v" style="color:${stockColor}">${sector.stock_return_1y>=0?'+':''}${sector.stock_return_1y}%</div></div>
-          <div class="col"><div class="k">${sector.sub_industry_etf}</div><div class="v" style="color:${subSecColor}">${sector.sub_industry_return_1y>=0?'+':''}${sector.sub_industry_return_1y}%</div></div>
-          <div class="col"><div class="k">${t?'Outperformance':'עודף ביצוע'}</div><div class="v" style="color:${subOutColor}">${sector.sub_industry_outperformance>=0?'+':''}${sector.sub_industry_outperformance}%</div></div>
-        </div>
+      subCols = `
+        <div class="col"><div class="k">${sector.sub_industry_etf}</div><div class="v" style="color:${subSecColor}">${sector.sub_industry_return_1y>=0?'+':''}${sector.sub_industry_return_1y}%</div></div>
+        <div class="col"><div class="k">${t?'vs. '+sector.sub_industry:'מול '+sector.sub_industry}</div><div class="v" style="color:${subOutColor}">${sector.sub_industry_outperformance>=0?'+':''}${sector.sub_industry_outperformance}%</div></div>
       `;
     }
+    html += `
+      <div class="dd-section-title">${t?'Stock vs. Sector (1Y)':'מניה מול סקטור (שנה)'}</div>
+      <div class="dd-sector-compare" style="flex-wrap:wrap;">
+        <div class="col"><div class="k">${quote.ticker}</div><div class="v" style="color:${stockColor}">${sector.stock_return_1y>=0?'+':''}${sector.stock_return_1y}%</div></div>
+        <div class="col"><div class="k">${sector.sector_etf||sector.sector||'—'}</div><div class="v" style="color:${secColor}">${sector.sector_return_1y>=0?'+':''}${sector.sector_return_1y}%</div></div>
+        <div class="col"><div class="k">${t?'vs. Sector':'מול סקטור'}</div><div class="v" style="color:${outColor}">${sector.outperformance>=0?'+':''}${sector.outperformance}%</div></div>
+        ${subCols}
+      </div>
+    `;
   } else if(sectorRes.status !== 'fulfilled'){
     html += `
       <div class="dd-section-title">${t?'Stock vs. Sector (1Y)':'מניה מול סקטור (שנה)'}</div>
@@ -1978,15 +1986,18 @@ function fundChartCanvas(id){
 function scrollFundChartToEnd(canvasEl){
   const wrap = canvasEl && canvasEl.parentElement;
   if(!wrap) return;
-  // Double rAF: the first frame lets the browser finish laying out the
-  // canvas at its new (wide) width; the second guarantees Chart.js's own
-  // render pass (triggered synchronously in safeChart, just before this is
-  // called) has fully settled too. A single rAF was landing before
-  // scrollWidth had stabilized often enough to matter, leaving the chart
-  // scrolled to the oldest data instead of the latest.
+  const goToEnd = () => { wrap.scrollLeft = wrap.scrollWidth; };
   requestAnimationFrame(()=>{
-    requestAnimationFrame(()=>{ wrap.scrollLeft = wrap.scrollWidth; });
+    requestAnimationFrame(goToEnd);
   });
+  // Extra safety net: fundamentals can now render synchronously right
+  // after the deep-dive drawer opens (data was already fetched in
+  // parallel), which sometimes lands before the drawer's own open
+  // transition/reflow has settled — scrollWidth reads too early in that
+  // case even with the double rAF above. A follow-up correction after
+  // the drawer's transition has had time to finish catches that case
+  // without affecting the normal (already-correct) path.
+  setTimeout(goToEnd, 350);
 }
 
 // Formats a raw number into a compact, human-readable form for chart axes
@@ -2115,24 +2126,24 @@ document.addEventListener('click', ()=>{
 });
 
 let _dd_lastQuote = null;
-let ddPeMode = 'ntm'; // 'ntm' (forward) is the default view; click the card to toggle to 'ltm' (trailing)
 
+// Both P/E figures shown side-by-side (not a click-to-toggle) — the
+// toggle version made NTM look permanently "unavailable" whenever
+// Yahoo's forward estimate was blocked, since LTM was hidden behind a
+// click most people never made. Two numbers, always visible, is honest
+// about which one is actually there.
 function renderDeepDivePeCard(){
   const card = document.getElementById('dd-pe-card');
   if(!card || !_dd_lastQuote) return;
   const t = lang === 'en';
   const q = _dd_lastQuote;
-  const val = ddPeMode === 'ntm' ? q.pe_ratio_ntm : q.pe_ratio_ltm;
-  const label = ddPeMode === 'ntm' ? 'P/E (NTM)' : 'P/E (LTM)';
-  const unavailableNote = (ddPeMode === 'ntm' && val == null)
-    ? `<div style="font-size:9.5px;color:var(--text-dim);margin-top:2px;">${t?'estimate unavailable':'תחזית לא זמינה'}</div>`
-    : '';
-  card.innerHTML = `<div class="k">${label}</div><div class="v">${val ? Number(val).toFixed(1) : '—'}</div>${unavailableNote}`;
-}
-
-function toggleDeepDivePeMode(){
-  ddPeMode = ddPeMode === 'ntm' ? 'ltm' : 'ntm';
-  renderDeepDivePeCard();
+  const ntm = q.pe_ratio_ntm != null ? Number(q.pe_ratio_ntm).toFixed(1) : '—';
+  const ltm = q.pe_ratio_ltm != null ? Number(q.pe_ratio_ltm).toFixed(1) : '—';
+  card.innerHTML = `
+    <div class="k">P/E (NTM / LTM)</div>
+    <div class="v" style="font-size:15px;">${ntm} <span style="color:var(--text-dim);font-weight:400;">/</span> ${ltm}</div>
+    ${q.pe_ratio_ntm == null ? `<div style="font-size:9.5px;color:var(--text-dim);margin-top:2px;">${t?'NTM estimate unavailable':'תחזית NTM לא זמינה'}</div>` : ''}
+  `;
 }
 
 // Fetches fundamentals with retry (cold-start tolerant) and returns the
@@ -2162,7 +2173,7 @@ async function fetchFundamentalsData(ticker){
 async function loadFundamentals(ticker, containerId){
   containerId = containerId || "fundamentals-section";
   const el = document.getElementById(containerId);
-  if(!el) return;
+  if(!el) return null;
   const t = lang==='en';
   el.innerHTML = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div><div class="fund-empty">${t?'Loading fundamentals...':'טוען נתונים פונדמנטליים...'}</div>`;
   let data;
@@ -2170,7 +2181,7 @@ async function loadFundamentals(ticker, containerId){
     data = await fetchFundamentalsData(ticker);
   } catch(e) {
     el.innerHTML = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div><div class="fund-empty">${t?'Could not load fundamentals right now.':'לא ניתן לטעון נתונים פונדמנטליים כרגע.'}</div>`;
-    return;
+    return null;
   }
   try {
     renderFundamentals(data, containerId);
@@ -2178,6 +2189,7 @@ async function loadFundamentals(ticker, containerId){
     console.error('[fundamentals] render failed for', ticker, e);
     el.innerHTML = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div><div class="fund-empty">${t?'Data loaded but failed to render — check console.':'הנתונים נטענו אך הצגתם נכשלה — בדוק את הקונסול.'}</div>`;
   }
+  return data;
 }
 
 function renderFundamentals(data, containerId){
