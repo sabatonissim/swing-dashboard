@@ -654,34 +654,74 @@ def get_sector_comparison(ticker: str):
     etf_ticker = YF_SECTOR_TO_ETF.get(sector_name)
     stock_return = round((float(stock_hist["Close"].iloc[-1]) / float(stock_hist["Close"].iloc[0]) - 1) * 100, 2)
 
-    etf_return = None
-    if etf_ticker:
-        try:
-            etf_hist = yf.Ticker(etf_ticker).history(period="1y", interval="1d")
-            if not etf_hist.empty:
-                etf_return = round((float(etf_hist["Close"].iloc[-1]) / float(etf_hist["Close"].iloc[0]) - 1) * 100, 2)
-        except Exception as e:
-            print(f"[warn] sector-comparison: ETF fetch failed for {etf_ticker}: {e}")
-
-    # Sub-industry peers: up to 4 other S&P 500 names in the same narrow
-    # GICS Sub-Industry bucket, each with their own 1Y return, so you can
-    # see how this stock stacks up against its closest real competitors —
-    # not just "Technology" broadly, but e.g. specifically other
-    # semiconductor names.
-    peers = []
+    peer_tickers = []
     if sub_industry:
         peer_tickers = [
             sym for sym, meta in sp500_map.items()
             if meta.get("sub_industry") == sub_industry and sym != ticker
         ][:4]
-        for peer_sym in peer_tickers:
-            try:
-                peer_hist = yf.Ticker(peer_sym).history(period="1y", interval="1d")
-                if not peer_hist.empty:
-                    peer_return = round((float(peer_hist["Close"].iloc[-1]) / float(peer_hist["Close"].iloc[0]) - 1) * 100, 2)
-                    peers.append({"ticker": peer_sym, "name": (sp500_map.get(peer_sym) or {}).get("name"), "return_1y": peer_return})
-            except Exception as e:
-                print(f"[warn] sector-comparison: peer fetch failed for {peer_sym}: {e}")
+
+    # ETF + up to 4 peers used to be fetched one at a time (up to 5
+    # sequential yfinance .history() round trips after the stock's own
+    # call) — slow enough on a cold Render/Neon wake-up to blow past the
+    # frontend's timeout and vanish silently. Fetching them concurrently
+    # cuts that to roughly the time of the single slowest call.
+    def _fetch_return_1y(sym: str):
+        try:
+            hist = yf.Ticker(sym).history(period="1y", interval="1d")
+            if hist.empty:
+                return None
+            return round((float(hist["Close"].iloc[-1]) / float(hist["Close"].iloc[0]) - 1) * 100, 2)
+        except Exception as e:
+            print(f"[warn] sector-comparison: fetch failed for {sym}: {e}")
+            return None
+
+    def _fetch_pe_and_cap(sym: str):
+        # Best-effort only (same .info reliability caveat as the rest of
+        # this deployment) — a valuation comparison across several peers
+        # doesn't justify a full SEC EDGAR fetch per peer, which would
+        # make this endpoint several times slower for a "nice to have".
+        try:
+            i = _get_info_with_retry(yf.Ticker(sym), sym, "sector-comparison-peer")
+            return {"pe_ratio": i.get("trailingPE"), "market_cap": i.get("marketCap")}
+        except Exception:
+            return {"pe_ratio": None, "market_cap": None}
+
+    etf_return = None
+    peers = []
+    own_valuation = {"pe_ratio": None, "market_cap": None}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        etf_future = pool.submit(_fetch_return_1y, etf_ticker) if etf_ticker else None
+        own_val_future = pool.submit(_fetch_pe_and_cap, ticker)
+        peer_futures = {
+            pool.submit(_fetch_return_1y, sym): (sym, pool.submit(_fetch_pe_and_cap, sym))
+            for sym in peer_tickers
+        }
+        if etf_future:
+            etf_return = etf_future.result()
+        own_valuation = own_val_future.result()
+        for fut, (sym, val_future) in peer_futures.items():
+            peer_return = fut.result()
+            val = val_future.result()
+            if peer_return is not None:
+                peers.append({
+                    "ticker": sym,
+                    "name": (sp500_map.get(sym) or {}).get("name"),
+                    "return_1y": peer_return,
+                    "pe_ratio": val.get("pe_ratio"),
+                    "market_cap": val.get("market_cap"),
+                })
+
+    # Where does this stock's own trailing P/E rank among the peer group
+    # (cheapest to most expensive)? Skipped for a peer group of 0-1 (no
+    # meaningful ranking) or when the stock's own P/E isn't available.
+    valuation_rank = None
+    if own_valuation.get("pe_ratio") and len(peers) >= 2:
+        peer_pes = [p["pe_ratio"] for p in peers if p.get("pe_ratio")]
+        if peer_pes:
+            all_pes = sorted(peer_pes + [own_valuation["pe_ratio"]])
+            rank = all_pes.index(own_valuation["pe_ratio"]) + 1  # 1 = cheapest
+            valuation_rank = {"rank": rank, "of": len(all_pes)}
 
     return {
         "ticker": ticker,
@@ -692,6 +732,9 @@ def get_sector_comparison(ticker: str):
         "sector_return_1y": etf_return,
         "outperformance": round(stock_return - etf_return, 2) if etf_return is not None else None,
         "sub_industry_peers": peers,
+        "own_pe_ratio": own_valuation.get("pe_ratio"),
+        "own_market_cap": own_valuation.get("market_cap"),
+        "valuation_rank": valuation_rank,  # {rank, of} - 1 = cheapest P/E in the peer group
     }
 
 

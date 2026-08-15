@@ -1009,7 +1009,7 @@ async function loadDeepDive(){
   try {
     const [lookupRes, sectorRes, signalsRes, newsRes] = await Promise.allSettled([
       fetch(`${API_BASE}/api/lookup/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
-      fetch(`${API_BASE}/api/sector-comparison/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
+      fetchWithTimeout(`${API_BASE}/api/sector-comparison/${ticker}`, 30000).then(r => r.ok ? r.json() : Promise.reject()),
       fetch(`${API_BASE}/api/signal-history/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
       fetch(`${API_BASE}/api/stock-news/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
     ]);
@@ -1084,16 +1084,28 @@ function renderDeepDive(quote, sector, signals, news){
         <div class="col"><div class="k">${t?'Outperformance':'עודף ביצוע'}</div><div class="v" style="color:${outColor}">${sector.outperformance>=0?'+':''}${sector.outperformance}%</div></div>
       </div>
     `;
+  } else if(sectorRes.status !== 'fulfilled'){
+    html += `
+      <div class="dd-section-title">${t?'Stock vs. Sector (1Y)':'מניה מול סקטור (שנה)'}</div>
+      <div class="bt-empty" style="padding:10px 0;">${t?'Could not load sector comparison right now — try reopening this stock in a moment.':'לא ניתן היה לטעון השוואת סקטור כרגע — נסה לפתוח את המניה שוב בעוד רגע.'}</div>
+    `;
   }
 
   if(sector && sector.sub_industry_peers && sector.sub_industry_peers.length){
     html += `
       <div class="dd-section-title">${t?`Peers in ${sector.sub_industry}`:`מתחרים ב-${sector.sub_industry}`} (1Y)</div>
-      <div class="dd-rs-row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px;">
+      ${sector.valuation_rank ? `<div style="font-size:12.5px;color:var(--text-dim);margin-bottom:8px;">${
+        t
+          ? `Trailing P/E ranks ${sector.valuation_rank.rank} of ${sector.valuation_rank.of} in this peer group (1 = cheapest).`
+          : `מכפיל ה-P/E מדורג ${sector.valuation_rank.rank} מתוך ${sector.valuation_rank.of} בקבוצת המתחרים (1 = הזול ביותר).`
+      }</div>` : ''}
+      <div class="dd-rs-row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px;">
         ${sector.sub_industry_peers.map(p => `
           <div class="bt-rs-card">
             <div class="label">${p.ticker}${p.name?' · '+p.name:''}</div>
             <div class="row"><span>${t?'1Y return':'תשואה שנתית'}</span><span style="color:${p.return_1y>=0?'var(--green)':'var(--red)'}">${p.return_1y>=0?'+':''}${p.return_1y}%</span></div>
+            <div class="row"><span>P/E</span><span>${p.pe_ratio?Number(p.pe_ratio).toFixed(1):'—'}</span></div>
+            <div class="row"><span>${t?'Mkt Cap':'שווי שוק'}</span><span>${formatMarketCap(p.market_cap)}</span></div>
           </div>
         `).join('')}
       </div>
