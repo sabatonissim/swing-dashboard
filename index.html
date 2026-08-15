@@ -1105,39 +1105,6 @@ function renderDeepDive(quote, sector, signals, news){
     }
   }
 
-  if(sector && sector.sector_return_1y != null){
-    const stockColor = sector.stock_return_1y >= 0 ? 'var(--green)' : 'var(--red)';
-    const secColor = sector.sector_return_1y >= 0 ? 'var(--green)' : 'var(--red)';
-    const outColor = sector.outperformance >= 0 ? 'var(--green)' : 'var(--red)';
-    // A sub-industry-specific ETF (e.g. SOXX for semis, IGV for software)
-    // is a much fairer benchmark than the broad sector SPDR alone —
-    // shown side-by-side with it rather than as a separate row/section,
-    // so both benchmarks read as one comparison at a glance.
-    let subCols = '';
-    if(sector.sub_industry_return_1y != null){
-      const subSecColor = sector.sub_industry_return_1y >= 0 ? 'var(--green)' : 'var(--red)';
-      const subOutColor = sector.sub_industry_outperformance >= 0 ? 'var(--green)' : 'var(--red)';
-      subCols = `
-        <div class="col"><div class="k">${sector.sub_industry_etf}</div><div class="v" style="color:${subSecColor}">${sector.sub_industry_return_1y>=0?'+':''}${sector.sub_industry_return_1y}%</div></div>
-        <div class="col"><div class="k">${t?'vs. '+sector.sub_industry:'מול '+sector.sub_industry}</div><div class="v" style="color:${subOutColor}">${sector.sub_industry_outperformance>=0?'+':''}${sector.sub_industry_outperformance}%</div></div>
-      `;
-    }
-    html += `
-      <div class="dd-section-title">${t?'Stock vs. Sector (1Y)':'מניה מול סקטור (שנה)'}</div>
-      <div class="dd-sector-compare" style="flex-wrap:wrap;">
-        <div class="col"><div class="k">${quote.ticker}</div><div class="v" style="color:${stockColor}">${sector.stock_return_1y>=0?'+':''}${sector.stock_return_1y}%</div></div>
-        <div class="col"><div class="k">${sector.sector_etf||sector.sector||'—'}</div><div class="v" style="color:${secColor}">${sector.sector_return_1y>=0?'+':''}${sector.sector_return_1y}%</div></div>
-        <div class="col"><div class="k">${t?'vs. Sector':'מול סקטור'}</div><div class="v" style="color:${outColor}">${sector.outperformance>=0?'+':''}${sector.outperformance}%</div></div>
-        ${subCols}
-      </div>
-    `;
-  } else if(sectorRes.status !== 'fulfilled'){
-    html += `
-      <div class="dd-section-title">${t?'Stock vs. Sector (1Y)':'מניה מול סקטור (שנה)'}</div>
-      <div class="bt-empty" style="padding:10px 0;">${t?'Could not load sector comparison right now — try reopening this stock in a moment.':'לא ניתן היה לטעון השוואת סקטור כרגע — נסה לפתוח את המניה שוב בעוד רגע.'}</div>
-    `;
-  }
-
   if(sector && sector.sub_industry_peers && sector.sub_industry_peers.length){
     html += `
       <div class="dd-section-title">${t?`Peers in ${sector.sub_industry}`:`מתחרים ב-${sector.sub_industry}`} (1Y)</div>
@@ -2217,7 +2184,16 @@ function renderFundamentals(data, containerId){
     {color:'#5b8def', label:t?'Revenue':'הכנסות'},
     {color:'#3ecf7e', label:t?'Net Income':'רווח נקי'},
     {color:'#e8a33d', label:'FCF'},
-  ])}${fundChartCanvas('chart-rev-ni-fcf')}</div>`;
+  ])}
+  ${(data.revenue_ltm!=null || data.net_income_ltm!=null || data.fcf_ltm!=null) ? `
+    <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--text-dim);margin-bottom:6px;">
+      ${data.revenue_ltm!=null?`<span>${t?'Revenue (LTM)':'הכנסות (LTM)'}: <b style="color:var(--text);">${fmtCompactMoney(data.revenue_ltm)}</b></span>`:''}
+      ${data.net_income_ltm!=null?`<span>${t?'Net Income (LTM)':'רווח נקי (LTM)'}: <b style="color:var(--text);">${fmtCompactMoney(data.net_income_ltm)}</b></span>`:''}
+      ${data.fcf_ltm!=null?`<span>${t?'FCF (LTM)':'FCF (LTM)'}: <b style="color:var(--text);">${fmtCompactMoney(data.fcf_ltm)}</b></span>`:''}
+    </div>
+    <div style="font-size:10px;color:var(--text-dim);margin-bottom:10px;">${t?'Bars below are per-quarter — LTM above is the trailing 4-quarter sum, comparable to how most terminals (e.g. Koyfin) report it.':'העמודות למטה הן לפי רבעון — ה-LTM למעלה הוא סכום 4 הרבעונים האחרונים, בדיוק כמו שרוב הטרמינלים (כמו Koyfin) מציגים.'}</div>
+  ` : ''}
+  ${fundChartCanvas('chart-rev-ni-fcf')}</div>`;
   html += `<div class="fund-card"><div class="fund-card-title">${t?'Gross Margin %':'שולי רווח גולמי %'}${fundInfoIcon('gross_margin')}</div>${fundChartCanvas('chart-margin')}</div>`;
   html += `<div class="fund-card"><div class="fund-card-title">${t?'Net Debt':'חוב נטו'}${fundInfoIcon('net_debt')}</div>${fundChartCanvas('chart-netdebt')}</div>`;
 

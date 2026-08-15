@@ -1947,6 +1947,23 @@ def _build_fundamentals(ticker: str) -> dict:
     if market_cap is None:
         market_cap = info.get("marketCap")
 
+    # revenue/net_income/fcf above are per-QUARTER values — Koyfin (and
+    # most terminals) show trailing-twelve-month rolling sums instead,
+    # which look completely different in scale for a fast-growing company
+    # (one quarter vs four summed) and were the actual source of an
+    # apparent "the numbers don't match Koyfin" — they weren't wrong,
+    # they were answering a different question. Surfacing the LTM sum
+    # explicitly (only when 4 consecutive recent quarters are present)
+    # lets the header stat be compared apples-to-apples against Koyfin's
+    # own LTM figures.
+    def _ltm_sum(values):
+        recent = [v for v in values[-4:] if v is not None]
+        return round(sum(recent), 2) if len(recent) == 4 else None
+
+    revenue_ltm = _ltm_sum(revenue)
+    net_income_ltm = _ltm_sum(net_income)
+    fcf_ltm = _ltm_sum(fcf)
+
     return _json_safe({
         "ticker": ticker,
         "has_fundamentals": True,
@@ -1956,6 +1973,9 @@ def _build_fundamentals(ticker: str) -> dict:
         "revenue": revenue,
         "net_income": net_income,
         "fcf": fcf,
+        "revenue_ltm": revenue_ltm,
+        "net_income_ltm": net_income_ltm,
+        "fcf_ltm": fcf_ltm,
         "margin_labels": margin_labels,
         "gross_margin_pct": gross_margin_pct,
         "debt_labels": debt_labels,
