@@ -790,6 +790,38 @@ def _get_info_with_retry(tk, ticker: str, context: str) -> dict:
     return {}
 
 
+_sec_description_cache = {}  # ticker -> (timestamp, description_or_None)
+SEC_DESCRIPTION_CACHE_TTL = 86400  # 24h — this barely changes
+
+
+def _sec_fallback_description(ticker: str) -> Optional[str]:
+    """yfinance's longBusinessSummary comes only from .info, which this
+    deployment's IP gets blocked from more often than not. SEC doesn't
+    publish a business-summary paragraph, but its submissions endpoint
+    does have the entity's name + SIC industry description on every
+    filer — not as rich as a real summary, but honest, sourced, and
+    available even when .info is fully blocked, instead of leaving the
+    'About the Company' section empty."""
+    cached = _sec_description_cache.get(ticker)
+    if cached and (time.time() - cached[0]) < SEC_DESCRIPTION_CACHE_TTL:
+        return cached[1]
+    try:
+        cik10 = _get_cik_map().get(ticker)
+        if not cik10:
+            return None
+        resp = requests.get(f"https://data.sec.gov/submissions/CIK{cik10}.json", headers=SEC_HEADERS, timeout=10)
+        resp.raise_for_status()
+        j = resp.json()
+        name = j.get("name")
+        sic_desc = j.get("sicDescription")
+        desc = f"{name} — SEC industry classification: {sic_desc}." if (name and sic_desc) else None
+        _sec_description_cache[ticker] = (time.time(), desc)
+        return desc
+    except Exception as e:
+        print(f"[info] SEC fallback description unavailable for {ticker} (non-fatal): {e}")
+        return None
+
+
 @app.get("/api/lookup/{ticker}")
 def lookup_stock(ticker: str):
     ticker = ticker.upper().strip()
@@ -855,7 +887,7 @@ def lookup_stock(ticker: str):
         "avg_volume_20d": round(float(hist["Volume"].tail(20).mean()), 0) if len(hist) >= 20 else None,
         "week52_high": info.get("fiftyTwoWeekHigh") or round(float(hist["Close"].max()), 2),
         "week52_low": info.get("fiftyTwoWeekLow") or round(float(hist["Close"].min()), 2),
-        "description": info.get("longBusinessSummary"),
+        "description": info.get("longBusinessSummary") or _sec_fallback_description(ticker),
         "sub_industry": csv_info.get("sub_industry"),
         "exchange": info.get("exchange"),
         "sector": info.get("sector") or csv_info.get("sector"),

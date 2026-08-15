@@ -1007,11 +1007,12 @@ async function loadDeepDive(){
   el.innerHTML = `<div class="bt-empty">${UI[lang].loading}</div>`;
 
   try {
-    const [lookupRes, sectorRes, signalsRes, newsRes] = await Promise.allSettled([
+    const [lookupRes, sectorRes, signalsRes, newsRes, fundRes] = await Promise.allSettled([
       fetch(`${API_BASE}/api/lookup/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
       fetchWithTimeout(`${API_BASE}/api/sector-comparison/${ticker}`, 30000).then(r => r.ok ? r.json() : Promise.reject()),
       fetch(`${API_BASE}/api/signal-history/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
       fetch(`${API_BASE}/api/stock-news/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
+      fetchFundamentalsData(ticker),
     ]);
 
     if(lookupRes.status !== 'fulfilled'){
@@ -1023,9 +1024,23 @@ async function loadDeepDive(){
     const sector = sectorRes.status === 'fulfilled' ? sectorRes.value : null;
     const signals = signalsRes.status === 'fulfilled' ? signalsRes.value : [];
     const news = newsRes.status === 'fulfilled' ? newsRes.value : [];
+    const fundData = fundRes.status === 'fulfilled' ? fundRes.value : null;
+
+    // The lookup endpoint's own market_cap/pe_ratio depend on yfinance's
+    // often-blocked .info — fundamentals computes both more reliably from
+    // SEC data. Prefer that for the header stat cards whenever it's there.
+    if(fundData){
+      if(quote.market_cap == null && fundData.market_cap != null) quote.market_cap = fundData.market_cap;
+      if(quote.pe_ratio == null && fundData.trailing_pe != null) quote.pe_ratio = fundData.trailing_pe;
+    }
 
     renderDeepDive(quote, sector, signals, news);
-    loadFundamentals(quote.ticker, 'dd-fundamentals-section');
+    if(fundData){
+      try { renderFundamentals(fundData, 'dd-fundamentals-section'); }
+      catch(e){ console.error('[fundamentals] render failed for', quote.ticker, e); loadFundamentals(quote.ticker, 'dd-fundamentals-section'); }
+    } else {
+      loadFundamentals(quote.ticker, 'dd-fundamentals-section'); // retry independently — the parallel attempt above failed
+    }
   } catch(e) {
     console.error('[deep dive] failed', e);
     el.innerHTML = `<div class="bt-empty">${t?'Something went wrong loading this stock.':'משהו השתבש בטעינת המניה.'}</div>`;
@@ -2075,36 +2090,40 @@ document.addEventListener('click', ()=>{
   document.querySelectorAll('.fund-info.open').forEach(i=>i.classList.remove('open'));
 });
 
+// Fetches fundamentals with retry (cold-start tolerant) and returns the
+// parsed data, or throws. Factored out of loadFundamentals so the header
+// stat cards (market cap / P/E) can also use this data directly instead
+// of the previous approach, which pulled from a fundamentals cache that
+// was almost always still empty at that point (fundamentals used to load
+// as a separate, later call) — so the header kept showing "—" even
+// though the fundamentals card further down the page had the real number.
+async function fetchFundamentalsData(ticker){
+  const waits = [0, 6000];
+  let lastErr;
+  for(let i=0; i<waits.length; i++){
+    if(waits[i]) await new Promise(r=>setTimeout(r, waits[i]));
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/api/fundamentals/${ticker}`, 25000);
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch(e) {
+      lastErr = e;
+      console.warn(`[fundamentals] attempt ${i+1}/${waits.length} failed for`, ticker, e);
+    }
+  }
+  throw lastErr;
+}
+
 async function loadFundamentals(ticker, containerId){
   containerId = containerId || "fundamentals-section";
   const el = document.getElementById(containerId);
   if(!el) return;
   const t = lang==='en';
   el.innerHTML = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div><div class="fund-empty">${t?'Loading fundamentals...':'טוען נתונים פונדמנטליים...'}</div>`;
-  // Fundamentals can legitimately take a while (several SEC EDGAR round
-  // trips), and on a cold Render/Neon wake-up the first request can be
-  // slow enough to fail outright. One retry with a generous per-attempt
-  // timeout instead of giving up on the first miss.
   let data;
-  const waits = [0, 6000];
-  let lastErr;
-  for(let i=0; i<waits.length; i++){
-    if(waits[i]){
-      el.innerHTML = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div><div class="fund-empty">${t?'Still loading (server may be waking up)...':'עדיין טוען (ייתכן שהשרת מתעורר)...'}</div>`;
-      await new Promise(r=>setTimeout(r, waits[i]));
-    }
-    try {
-      const res = await fetchWithTimeout(`${API_BASE}/api/fundamentals/${ticker}`, 25000);
-      if(!res.ok) throw new Error(`HTTP ${res.status}`);
-      data = await res.json();
-      lastErr = null;
-      break;
-    } catch(e) {
-      lastErr = e;
-      console.warn(`[fundamentals] attempt ${i+1}/${waits.length} failed for`, ticker, e);
-    }
-  }
-  if(lastErr){
+  try {
+    data = await fetchFundamentalsData(ticker);
+  } catch(e) {
     el.innerHTML = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div><div class="fund-empty">${t?'Could not load fundamentals right now.':'לא ניתן לטעון נתונים פונדמנטליים כרגע.'}</div>`;
     return;
   }
