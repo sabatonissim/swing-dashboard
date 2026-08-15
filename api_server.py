@@ -1767,7 +1767,18 @@ def _build_fundamentals(ticker: str) -> dict:
     gross_s   = _sec_quarterly_series(usgaap, ["GrossProfit"], instant=False)
     eps_s     = _sec_quarterly_series(usgaap, ["EarningsPerShareDiluted", "EarningsPerShareBasic"], instant=False)
     ocf_s     = _sec_cumulative_to_quarterly(usgaap, ["NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"])
-    capex_s   = _sec_cumulative_to_quarterly(usgaap, ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsForCapitalImprovements"])
+    capex_s   = _sec_cumulative_to_quarterly(usgaap, [
+        "PaymentsToAcquirePropertyPlantAndEquipment",
+        "PaymentsForCapitalImprovements",
+        # Some large filers (this was confirmed missing FCF entirely for
+        # at least one megacap) use one of these instead — expanding the
+        # candidate list rather than assuming the two original tags cover
+        # everyone.
+        "PaymentsToAcquireProductiveAssets",
+        "PaymentsForProceedsFromProductiveAssets",
+        "PaymentsToAcquireMachineryAndEquipment",
+        "PaymentsToAcquireOtherPropertyPlantAndEquipment",
+    ])
     cash_s    = _sec_quarterly_series(usgaap, ["CashAndCashEquivalentsAtCarryingValue", "CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations"], instant=True)
     debt_s    = _sec_quarterly_series(usgaap, ["LongTermDebtNoncurrent", "LongTermDebt", "DebtLongtermAndShorttermCombinedAmount"], instant=True)
     shares_s  = _sec_quarterly_series(usgaap, ["CommonStockSharesOutstanding"], instant=True)
@@ -1836,6 +1847,13 @@ def _build_fundamentals(ticker: str) -> dict:
         cv = _nearest(capex_s, d)
         if cv is not None:
             fcf_s[d] = ov - cv
+    if ocf_s and not fcf_s:
+        # OCF exists but nothing matched our CapEx tag list — most likely
+        # this filer uses a CapEx tag we don't check for yet. Logging the
+        # actual candidate tags found in their us-gaap facts makes that
+        # diagnosable instead of a silent "FCF just isn't there".
+        capex_like_tags = [k for k in usgaap if "Payments" in k and ("Property" in k or "Capital" in k or "Productive" in k or "Equipment" in k)]
+        print(f"[warn] fundamentals({ticker}): OCF present but no CapEx match — candidate us-gaap tags on file: {capex_like_tags}")
 
     income_dates = sorted(set(revenue_s) | set(ni_s) | set(fcf_s))[-32:]
     income_labels = [dt.strptime(d, "%Y-%m-%d").strftime("%b %Y") for d in income_dates]

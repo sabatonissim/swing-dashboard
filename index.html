@@ -1990,14 +1990,20 @@ function scrollFundChartToEnd(canvasEl){
   requestAnimationFrame(()=>{
     requestAnimationFrame(goToEnd);
   });
-  // Extra safety net: fundamentals can now render synchronously right
-  // after the deep-dive drawer opens (data was already fetched in
-  // parallel), which sometimes lands before the drawer's own open
-  // transition/reflow has settled — scrollWidth reads too early in that
-  // case even with the double rAF above. A follow-up correction after
-  // the drawer's transition has had time to finish catches that case
-  // without affecting the normal (already-correct) path.
-  setTimeout(goToEnd, 350);
+  // A fixed delay was a guess at how long the drawer's open transition
+  // takes, and guessing wrong (transition longer than the delay, or a
+  // slower device) meant landing back on the oldest data. ResizeObserver
+  // re-corrects scrollLeft every time this container's actual size
+  // changes — covering the drawer transition, font loading, or anything
+  // else that reflows it — for up to 2s, then stops watching.
+  if(window.ResizeObserver){
+    let watching = true;
+    const ro = new ResizeObserver(()=>{ if(watching) goToEnd(); });
+    ro.observe(wrap);
+    setTimeout(()=>{ watching = false; ro.disconnect(); }, 2000);
+  } else {
+    setTimeout(goToEnd, 350); // older browser fallback
+  }
 }
 
 // Formats a raw number into a compact, human-readable form for chart axes
