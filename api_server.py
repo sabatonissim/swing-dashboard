@@ -23,7 +23,7 @@ import time
 import io
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
-from datetime import date, datetime as dt
+from datetime import date, datetime as dt, timezone
 from typing import List, Optional
 
 import pandas as pd
@@ -143,6 +143,11 @@ def init_db():
         CREATE TABLE IF NOT EXISTS watchlist (
             ticker TEXT PRIMARY KEY,
             added_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS sec_cik_cache (
+            ticker TEXT PRIMARY KEY,
+            cik10 TEXT NOT NULL,
+            updated_at TIMESTAMPTZ DEFAULT NOW()
         );
     """)
     # Patches an already-deployed table that predates this column
@@ -1278,6 +1283,28 @@ def _get_cik_map() -> dict:
     if _cik_cache["data"] is not None and (now - _cik_cache["ts"]) < CIK_CACHE_TTL_SEC:
         return _cik_cache["data"]
 
+    # Render's free tier restarts the process on every sleep/wake cycle
+    # (and Neon suspends its own compute after ~5 min idle too), which
+    # used to wipe this in-memory cache constantly — every cold visit to
+    # fundamentals meant re-downloading SEC's ~1MB company_tickers.json
+    # from scratch before anything else could even start. Falling back to
+    # our own DB first means a cold container just does one fast SQL
+    # query instead of that slow re-fetch.
+    try:
+        with db_cursor(dict_cursor=True) as (conn, cur):
+            cur.execute("SELECT COUNT(*) AS n, MAX(updated_at) AS latest FROM sec_cik_cache")
+            row = cur.fetchone()
+            if row and row["n"] and row["n"] > 1000 and row["latest"]:
+                age_sec = (dt.now(timezone.utc) - row["latest"]).total_seconds()
+                if age_sec < CIK_CACHE_TTL_SEC:
+                    cur.execute("SELECT ticker, cik10 FROM sec_cik_cache")
+                    mapping = {r["ticker"]: r["cik10"] for r in cur.fetchall()}
+                    _cik_cache["data"] = mapping
+                    _cik_cache["ts"] = now
+                    return mapping
+    except Exception as e:
+        print(f"[warn] sec_cik_cache DB read failed, falling back to SEC fetch: {e}")
+
     last_error = None
     for attempt in range(3):
         try:
@@ -1287,6 +1314,17 @@ def _get_cik_map() -> dict:
             mapping = {row["ticker"].upper(): str(row["cik_str"]).zfill(10) for row in raw.values()}
             _cik_cache["data"] = mapping
             _cik_cache["ts"] = now
+            try:
+                with db_cursor() as (conn, cur):
+                    cur.execute("DELETE FROM sec_cik_cache")
+                    psycopg2.extras.execute_values(
+                        cur,
+                        "INSERT INTO sec_cik_cache (ticker, cik10) VALUES %s",
+                        [(t, c) for t, c in mapping.items()],
+                    )
+                    conn.commit()
+            except Exception as e:
+                print(f"[warn] sec_cik_cache DB persist failed (non-fatal, will retry SEC fetch next cold start): {e}")
             return mapping
         except Exception as e:
             last_error = e
