@@ -582,6 +582,43 @@ YF_SECTOR_TO_ETF = {
     "Basic Materials": "XLB",
 }
 
+# GICS Sub-Industry -> a more targeted ETF than the broad sector SPDR above
+# (e.g. semiconductors specifically vs. "Information Technology" broadly).
+# Covers the sub-industries that actually show up often in a US large/mid
+# cap swing-scanning universe — not exhaustive, and unmapped sub-industries
+# simply fall back to the sector-level ETF (still shown, just less precise).
+YF_SUB_INDUSTRY_TO_ETF = {
+    "Semiconductors": "SOXX",
+    "Semiconductor Materials & Equipment": "SOXX",
+    "Application Software": "IGV",
+    "Systems Software": "IGV",
+    "Interactive Media & Services": "XLC",
+    "Biotechnology": "IBB",
+    "Pharmaceuticals": "XPH",
+    "Health Care Equipment": "IHI",
+    "Managed Health Care": "IHF",
+    "Banks": "KBE",
+    "Diversified Banks": "KBE",
+    "Regional Banks": "KRE",
+    "Homebuilding": "ITB",
+    "Oil & Gas Exploration & Production": "XOP",
+    "Oil & Gas Equipment & Services": "XES",
+    "Passenger Airlines": "JETS",
+    "Aerospace & Defense": "ITA",
+    "Metals & Mining": "XME",
+    "Steel": "SLX",
+    "Homefurnishing Retail": "XRT",
+    "Broadline Retail": "XRT",
+    "Apparel Retail": "XRT",
+    "Restaurants": "XRT",
+    "Asset Management & Custody Banks": "KBWI",
+    "Life & Health Insurance": "KIE",
+    "Property & Casualty Insurance": "KIE",
+    "Investment Banking & Brokerage": "IAI",
+    "Automobile Manufacturers": "CARZ",
+    "Homeowners' Insurance": "KIE",
+}
+
 
 # Ticker -> {sector, name}, sourced from the same plain-CSV S&P 500 list the
 # scanner already uses (see pipeline_a_scanner.py's fetch_sp500_tickers —
@@ -652,6 +689,12 @@ def get_sector_comparison(ticker: str):
         sector_name = _get_info_with_retry(tk, ticker, "sector-comparison").get("sector")
 
     etf_ticker = YF_SECTOR_TO_ETF.get(sector_name)
+    # A sub-industry-specific ETF (e.g. SOXX for Semiconductors, IGV for
+    # software) is a much closer comparison than the broad 11-sector SPDR
+    # alone — "how did this stock do vs. its actual niche" rather than
+    # just "vs. tech broadly". YF_SUB_INDUSTRY_TO_ETF already existed in
+    # this file but was never actually wired into this endpoint.
+    sub_industry_etf_ticker = YF_SUB_INDUSTRY_TO_ETF.get(sub_industry) if sub_industry else None
     stock_return = round((float(stock_hist["Close"].iloc[-1]) / float(stock_hist["Close"].iloc[0]) - 1) * 100, 2)
 
     peer_tickers = []
@@ -677,21 +720,25 @@ def get_sector_comparison(ticker: str):
             return None
 
     def _fetch_pe_and_cap(sym: str):
-        # Best-effort only (same .info reliability caveat as the rest of
-        # this deployment) — a valuation comparison across several peers
-        # doesn't justify a full SEC EDGAR fetch per peer, which would
-        # make this endpoint several times slower for a "nice to have".
+        # Uses the same SEC-based fundamentals as /api/fundamentals
+        # (cached, so repeat views are instant) instead of yfinance's
+        # often-blocked .info — this was the actual reason peer P/E and
+        # market cap kept showing "—" even after the main ticker's own
+        # numbers were fixed.
         try:
-            i = _get_info_with_retry(yf.Ticker(sym), sym, "sector-comparison-peer")
-            return {"pe_ratio": i.get("trailingPE"), "market_cap": i.get("marketCap")}
-        except Exception:
+            fund = _get_fundamentals_cached(sym)
+            return {"pe_ratio": fund.get("trailing_pe"), "market_cap": fund.get("market_cap")}
+        except Exception as e:
+            print(f"[warn] sector-comparison: SEC valuation failed for {sym}: {e}")
             return {"pe_ratio": None, "market_cap": None}
 
     etf_return = None
+    sub_industry_etf_return = None
     peers = []
     own_valuation = {"pe_ratio": None, "market_cap": None}
     with ThreadPoolExecutor(max_workers=8) as pool:
         etf_future = pool.submit(_fetch_return_1y, etf_ticker) if etf_ticker else None
+        sub_etf_future = pool.submit(_fetch_return_1y, sub_industry_etf_ticker) if sub_industry_etf_ticker else None
         own_val_future = pool.submit(_fetch_pe_and_cap, ticker)
         peer_futures = {
             pool.submit(_fetch_return_1y, sym): (sym, pool.submit(_fetch_pe_and_cap, sym))
@@ -699,6 +746,8 @@ def get_sector_comparison(ticker: str):
         }
         if etf_future:
             etf_return = etf_future.result()
+        if sub_etf_future:
+            sub_industry_etf_return = sub_etf_future.result()
         own_valuation = own_val_future.result()
         for fut, (sym, val_future) in peer_futures.items():
             peer_return = fut.result()
@@ -728,9 +777,12 @@ def get_sector_comparison(ticker: str):
         "sector": sector_name,
         "sector_etf": etf_ticker,
         "sub_industry": sub_industry,
+        "sub_industry_etf": sub_industry_etf_ticker,
         "stock_return_1y": stock_return,
         "sector_return_1y": etf_return,
         "outperformance": round(stock_return - etf_return, 2) if etf_return is not None else None,
+        "sub_industry_return_1y": sub_industry_etf_return,
+        "sub_industry_outperformance": round(stock_return - sub_industry_etf_return, 2) if sub_industry_etf_return is not None else None,
         "sub_industry_peers": peers,
         "own_pe_ratio": own_valuation.get("pe_ratio"),
         "own_market_cap": own_valuation.get("market_cap"),
@@ -1889,23 +1941,30 @@ def _is_valid_fundamentals_shape(data: dict) -> bool:
     return isinstance(data.get("income_labels"), list)
 
 
-@app.get("/api/fundamentals/{ticker}")
-def get_fundamentals(ticker: str):
+def _get_fundamentals_cached(ticker: str) -> dict:
+    """Shared cache-or-compute path for SEC-based fundamentals (market cap,
+    trailing P/E, etc.) — factored out of the /api/fundamentals endpoint so
+    sector-comparison peer valuations can use the same reliable numbers
+    instead of falling back to yfinance's often-blocked .info."""
     ticker = ticker.upper().strip()
-
     cached = _fundamentals_cache.get(ticker)
     if cached:
         cached_ts, cached_data = cached
         ttl = FUNDAMENTALS_CACHE_TTL_SEC if cached_data.get("has_fundamentals") else FUNDAMENTALS_NEGATIVE_CACHE_TTL_SEC
         if (time.time() - cached_ts) < ttl and _is_valid_fundamentals_shape(cached_data):
             return cached_data
+    data = _build_fundamentals(ticker)
+    _fundamentals_cache[ticker] = (time.time(), data)
+    return data
 
+
+@app.get("/api/fundamentals/{ticker}")
+def get_fundamentals(ticker: str):
+    ticker = ticker.upper().strip()
     executor = ThreadPoolExecutor(max_workers=1)
     try:
-        future = executor.submit(_build_fundamentals, ticker)
-        data = future.result(timeout=FUNDAMENTALS_TIMEOUT_SEC)
-        _fundamentals_cache[ticker] = (time.time(), data)
-        return data
+        future = executor.submit(_get_fundamentals_cached, ticker)
+        return future.result(timeout=FUNDAMENTALS_TIMEOUT_SEC)
     except FutureTimeoutError:
         raise HTTPException(status_code=504, detail="החישוב לקח יותר מדי זמן, נסה שוב")
     except Exception as e:
