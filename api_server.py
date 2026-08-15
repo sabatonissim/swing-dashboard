@@ -661,17 +661,19 @@ def get_sp500_info_map() -> dict:
 
 
 @app.get("/api/sector-comparison/{ticker}")
-def get_sector_comparison(ticker: str):
+def get_sector_comparison(ticker: str, period: str = Query(default="1Y", pattern="^(1M|3M|YTD|1Y)$")):
     """How has this stock performed vs. the SPDR ETF for its own sector,
-    over the same 1-year window? Also compares against a small sample of
-    same-GICS-sub-industry peers (a narrower, more specific grouping than
-    the 11 broad SPDR sectors — e.g. 'Semiconductors' rather than just
+    over a selectable window (same 1M/3M/YTD/1Y choices as the home page's
+    sector view). Also compares against a small sample of same-GICS-
+    sub-industry peers (a narrower, more specific grouping than the 11
+    broad SPDR sectors — e.g. 'Semiconductors' rather than just
     'Technology') since there's no free ETF for most sub-industries to
     compare against directly."""
     ticker = ticker.upper().strip()
+    yf_period = SECTOR_PERIOD_MAP[period]
     try:
         tk = yf.Ticker(ticker)
-        stock_hist = tk.history(period="1y", interval="1d")
+        stock_hist = tk.history(period=yf_period, interval="1d")
     except Exception:
         raise HTTPException(status_code=502, detail="שגיאה בשליפת הנתונים")
 
@@ -709,9 +711,9 @@ def get_sector_comparison(ticker: str):
     # call) — slow enough on a cold Render/Neon wake-up to blow past the
     # frontend's timeout and vanish silently. Fetching them concurrently
     # cuts that to roughly the time of the single slowest call.
-    def _fetch_return_1y(sym: str):
+    def _fetch_return(sym: str):
         try:
-            hist = yf.Ticker(sym).history(period="1y", interval="1d")
+            hist = yf.Ticker(sym).history(period=yf_period, interval="1d")
             if hist.empty:
                 return None
             return round((float(hist["Close"].iloc[-1]) / float(hist["Close"].iloc[0]) - 1) * 100, 2)
@@ -737,11 +739,11 @@ def get_sector_comparison(ticker: str):
     peers = []
     own_valuation = {"pe_ratio": None, "market_cap": None}
     with ThreadPoolExecutor(max_workers=8) as pool:
-        etf_future = pool.submit(_fetch_return_1y, etf_ticker) if etf_ticker else None
-        sub_etf_future = pool.submit(_fetch_return_1y, sub_industry_etf_ticker) if sub_industry_etf_ticker else None
+        etf_future = pool.submit(_fetch_return, etf_ticker) if etf_ticker else None
+        sub_etf_future = pool.submit(_fetch_return, sub_industry_etf_ticker) if sub_industry_etf_ticker else None
         own_val_future = pool.submit(_fetch_pe_and_cap, ticker)
         peer_futures = {
-            pool.submit(_fetch_return_1y, sym): (sym, pool.submit(_fetch_pe_and_cap, sym))
+            pool.submit(_fetch_return, sym): (sym, pool.submit(_fetch_pe_and_cap, sym))
             for sym in peer_tickers
         }
         if etf_future:
@@ -756,7 +758,7 @@ def get_sector_comparison(ticker: str):
                 peers.append({
                     "ticker": sym,
                     "name": (sp500_map.get(sym) or {}).get("name"),
-                    "return_1y": peer_return,
+                    "return": peer_return,
                     "pe_ratio": val.get("pe_ratio"),
                     "market_cap": val.get("market_cap"),
                 })
@@ -774,15 +776,14 @@ def get_sector_comparison(ticker: str):
 
     return {
         "ticker": ticker,
+        "period": period,
         "sector": sector_name,
         "sector_etf": etf_ticker,
         "sub_industry": sub_industry,
         "sub_industry_etf": sub_industry_etf_ticker,
-        "stock_return_1y": stock_return,
-        "sector_return_1y": etf_return,
-        "outperformance": round(stock_return - etf_return, 2) if etf_return is not None else None,
-        "sub_industry_return_1y": sub_industry_etf_return,
-        "sub_industry_outperformance": round(stock_return - sub_industry_etf_return, 2) if sub_industry_etf_return is not None else None,
+        "stock_return": stock_return,
+        "sector_return": etf_return,
+        "sub_industry_return": sub_industry_etf_return,
         "sub_industry_peers": peers,
         "own_pe_ratio": own_valuation.get("pe_ratio"),
         "own_market_cap": own_valuation.get("market_cap"),

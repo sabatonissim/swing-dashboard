@@ -1009,7 +1009,7 @@ async function loadDeepDive(){
   try {
     const [lookupRes, sectorRes, signalsRes, newsRes, fundRes] = await Promise.allSettled([
       fetch(`${API_BASE}/api/lookup/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
-      fetchWithTimeout(`${API_BASE}/api/sector-comparison/${ticker}`, 30000).then(r => r.ok ? r.json() : Promise.reject()),
+      fetchWithTimeout(`${API_BASE}/api/sector-comparison/${ticker}?period=${ddSectorPeriod}`, 30000).then(r => r.ok ? r.json() : Promise.reject()),
       fetch(`${API_BASE}/api/signal-history/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
       fetch(`${API_BASE}/api/stock-news/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
       fetchFundamentalsData(ticker),
@@ -1105,26 +1105,7 @@ function renderDeepDive(quote, sector, signals, news){
     }
   }
 
-  if(sector && sector.sub_industry_peers && sector.sub_industry_peers.length){
-    html += `
-      <div class="dd-section-title">${t?`Peers in ${sector.sub_industry}`:`מתחרים ב-${sector.sub_industry}`} (1Y)</div>
-      ${sector.valuation_rank ? `<div style="font-size:12.5px;color:var(--text-dim);margin-bottom:8px;">${
-        t
-          ? `Trailing P/E ranks ${sector.valuation_rank.rank} of ${sector.valuation_rank.of} in this peer group (1 = cheapest).`
-          : `מכפיל ה-P/E מדורג ${sector.valuation_rank.rank} מתוך ${sector.valuation_rank.of} בקבוצת המתחרים (1 = הזול ביותר).`
-      }</div>` : ''}
-      <div class="dd-rs-row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px;">
-        ${sector.sub_industry_peers.map(p => `
-          <div class="bt-rs-card">
-            <div class="label">${p.ticker}${p.name?' · '+p.name:''}</div>
-            <div class="row"><span>${t?'1Y return':'תשואה שנתית'}</span><span style="color:${p.return_1y>=0?'var(--green)':'var(--red)'}">${p.return_1y>=0?'+':''}${p.return_1y}%</span></div>
-            <div class="row"><span>P/E</span><span>${p.pe_ratio?Number(p.pe_ratio).toFixed(1):'—'}</span></div>
-            <div class="row"><span>${t?'Mkt Cap':'שווי שוק'}</span><span>${formatMarketCap(p.market_cap)}</span></div>
-          </div>
-        `).join('')}
-      </div>
-    `;
-  }
+  html += `<div id="dd-sector-compare-section"></div>`;
 
   html += `<div id="dd-fundamentals-section"></div>`;
 
@@ -1172,6 +1153,7 @@ function renderDeepDive(quote, sector, signals, news){
 
   el.innerHTML = html;
   renderDeepDivePeCard(); // fills in the NTM/LTM P/E stat card built above
+  renderDeepDiveSectorSection(sector); // fills in dd-sector-compare-section built above
 
   if(typeof TradingView !== 'undefined'){
     new TradingView.widget({
@@ -2099,6 +2081,110 @@ document.addEventListener('click', ()=>{
 });
 
 let _dd_lastQuote = null;
+let ddSectorPeriod = '1Y'; // '1M' | '3M' | 'YTD' | '1Y' — matches the home page's sector tabs
+let ddSectorCache = {};    // ticker -> {period: data} so switching back to a period already seen is instant
+
+function renderDeepDiveSectorSection(sector){
+  const el = document.getElementById('dd-sector-compare-section');
+  if(!el || !_dd_lastQuote) return;
+  const t = lang === 'en';
+  const ticker = _dd_lastQuote.ticker;
+  if(sector) ddSectorCache[ticker] = ddSectorCache[ticker] || {};
+  if(sector) ddSectorCache[ticker][sector.period || ddSectorPeriod] = sector;
+
+  const tabsHtml = ['1M','3M','YTD','1Y'].map(p =>
+    `<button class="chart-tab ${p===ddSectorPeriod?'active':''}" onclick="switchDeepDiveSectorPeriod('${p}')">${p}</button>`
+  ).join('');
+
+  if(!sector){
+    el.innerHTML = `
+      <div class="dd-section-title" style="display:flex;align-items:center;justify-content:space-between;">
+        <span>${t?'Stock vs. Sector':'מניה מול סקטור'}</span>
+        <div class="chart-tabs" style="display:flex;gap:4px;">${tabsHtml}</div>
+      </div>
+      <div class="bt-empty" style="padding:10px 0;">${t?'Could not load sector comparison right now — try reopening this stock in a moment.':'לא ניתן היה לטעון השוואת סקטור כרגע — נסה לפתוח את המניה שוב בעוד רגע.'}</div>
+    `;
+    return;
+  }
+
+  const stockColor = sector.stock_return >= 0 ? 'var(--green)' : 'var(--red)';
+  const secColor = sector.sector_return >= 0 ? 'var(--green)' : 'var(--red)';
+  const subSecColor = sector.sub_industry_return >= 0 ? 'var(--green)' : 'var(--red)';
+
+  let cols = `<div class="col"><div class="k">${_dd_lastQuote.ticker}</div><div class="v" style="color:${stockColor}">${sector.stock_return>=0?'+':''}${sector.stock_return}%</div></div>`;
+  if(sector.sector_return != null){
+    cols += `<div class="col"><div class="k">${sector.sector_etf||sector.sector||'—'}</div><div class="v" style="color:${secColor}">${sector.sector_return>=0?'+':''}${sector.sector_return}%</div></div>`;
+  }
+  if(sector.sub_industry_return != null){
+    cols += `<div class="col"><div class="k">${sector.sub_industry_etf}</div><div class="v" style="color:${subSecColor}">${sector.sub_industry_return>=0?'+':''}${sector.sub_industry_return}%</div></div>`;
+  }
+
+  let html = `
+    <div class="dd-section-title" style="display:flex;align-items:center;justify-content:space-between;">
+      <span>${t?'Stock vs. Sector':'מניה מול סקטור'}</span>
+      <div class="chart-tabs" style="display:flex;gap:4px;">${tabsHtml}</div>
+    </div>
+    <div class="dd-sector-compare" style="flex-wrap:wrap;">${cols}</div>
+  `;
+
+  if(sector.sub_industry_peers && sector.sub_industry_peers.length){
+    html += `
+      <div class="dd-section-title">${t?`Peers in ${sector.sub_industry}`:`מתחרים ב-${sector.sub_industry}`}</div>
+      ${sector.valuation_rank ? `<div style="font-size:12.5px;color:var(--text-dim);margin-bottom:8px;">${
+        t
+          ? `Trailing P/E ranks ${sector.valuation_rank.rank} of ${sector.valuation_rank.of} in this peer group (1 = cheapest).`
+          : `מכפיל ה-P/E מדורג ${sector.valuation_rank.rank} מתוך ${sector.valuation_rank.of} בקבוצת המתחרים (1 = הזול ביותר).`
+      }</div>` : ''}
+      <div class="dd-rs-row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px;">
+        ${sector.sub_industry_peers.map(p => `
+          <div class="bt-rs-card">
+            <div class="label">${p.ticker}${p.name?' · '+p.name:''}</div>
+            <div class="row"><span>${t?'Return':'תשואה'}</span><span style="color:${p.return>=0?'var(--green)':'var(--red)'}">${p.return>=0?'+':''}${p.return}%</span></div>
+            <div class="row"><span>P/E</span><span>${p.pe_ratio?Number(p.pe_ratio).toFixed(1):'—'}</span></div>
+            <div class="row"><span>${t?'Mkt Cap':'שווי שוק'}</span><span>${formatMarketCap(p.market_cap)}</span></div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+  el.innerHTML = html;
+}
+
+async function switchDeepDiveSectorPeriod(period){
+  ddSectorPeriod = period;
+  const ticker = _dd_lastQuote && _dd_lastQuote.ticker;
+  if(!ticker) return;
+  const cached = ddSectorCache[ticker] && ddSectorCache[ticker][period];
+  if(cached){
+    renderDeepDiveSectorSection(cached);
+    return;
+  }
+  // Show the tabs immediately (with the new one active) while the new
+  // period's data loads, instead of the whole section flickering blank.
+  renderDeepDiveSectorSection((ddSectorCache[ticker] && ddSectorCache[ticker][ddSectorPeriod]) || null);
+  const el = document.getElementById('dd-sector-compare-section');
+  if(el){
+    const t = lang === 'en';
+    const loadingNote = document.createElement('div');
+    loadingNote.className = 'fund-empty';
+    loadingNote.style.padding = '6px 0';
+    loadingNote.textContent = t ? 'Loading...' : 'טוען...';
+    el.appendChild(loadingNote);
+  }
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/api/sector-comparison/${ticker}?period=${period}`, 25000);
+    if(!res.ok) throw new Error('bad response');
+    const data = await res.json();
+    if(_dd_lastQuote && _dd_lastQuote.ticker === ticker && ddSectorPeriod === period){
+      renderDeepDiveSectorSection(data);
+    }
+  } catch(e) {
+    console.warn('[sector-comparison] period switch failed', e);
+    if(_dd_lastQuote && _dd_lastQuote.ticker === ticker && ddSectorPeriod === period){
+      renderDeepDiveSectorSection(null);
+    }
+  }
+}
 
 // Both P/E figures shown side-by-side (not a click-to-toggle) — the
 // toggle version made NTM look permanently "unavailable" whenever
