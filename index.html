@@ -258,11 +258,11 @@
   .pulse-page-wrap{padding:20px 24px;max-width:1100px;margin:0 auto;}
   .pulse-section-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;}
   .pulse-section-title{font-size:13px;letter-spacing:1px;color:var(--text-dim);text-transform:uppercase;}
-  .heatmap-grid{display:grid;grid-template-columns:repeat(auto-fill, minmax(84px, 1fr));gap:4px;}
-  .heatmap-tile{border-radius:6px;padding:8px 6px;text-align:center;cursor:pointer;transition:transform .1s;}
-  .heatmap-tile:hover{transform:scale(1.05);}
-  .heatmap-tile .ticker{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:12px;color:#0a0a0a;}
-  .heatmap-tile .pct{font-family:'JetBrains Mono',monospace;font-size:11px;color:#0a0a0a;opacity:.85;}
+  .heatmap-grid{position:relative;width:100%;overflow:hidden;border-radius:8px;}
+  .heatmap-tile{position:absolute;box-sizing:border-box;border:1px solid var(--bg);border-radius:2px;padding:4px 6px;cursor:pointer;transition:filter .1s;overflow:hidden;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;}
+  .heatmap-tile:hover{filter:brightness(1.25);z-index:2;}
+  .heatmap-tile .ticker{font-family:'JetBrains Mono',monospace;font-weight:700;color:#0a0a0a;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;}
+  .heatmap-tile .pct{font-family:'JetBrains Mono',monospace;color:#0a0a0a;opacity:.85;line-height:1.15;white-space:nowrap;}
   .fg-gauge-box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;text-align:center;}
   .fg-score{font-family:'JetBrains Mono',monospace;font-size:46px;font-weight:700;}
   .fg-rating{font-size:15px;font-weight:700;margin-top:4px;}
@@ -839,6 +839,9 @@ function renderPatternStatsBlurb(patternType){
 let backtestPattern = 'all';
 let backtestHorizon = 10;
 let backtestPatternsCache = null;
+let backtestPeriodView = 'monthly'; // 'monthly' | 'quarterly'
+let backtestLastData = null;
+let backtestPeriodChartInstance = null;
 let backtestChartInstance = null;
 let backtestLoaded = false;
 
@@ -929,6 +932,24 @@ function renderBacktestContent(data){
     `).join('') + `</div>`;
   }
 
+  // Monthly/quarterly breakdown — an overall win rate can hide a pattern
+  // that only works in certain stretches (e.g. trending markets) and
+  // loses in others; this shows whether performance holds up period to
+  // period or is concentrated in a few strong months/quarters.
+  const hasPeriodData = (data.monthly_breakdown && data.monthly_breakdown.length) || (data.quarterly_breakdown && data.quarterly_breakdown.length);
+  if(hasPeriodData){
+    html += `
+      <div class="dd-section-title" style="display:flex;align-items:center;justify-content:space-between;">
+        <span>${t?'Performance by Period':'ביצועים לפי תקופה'}</span>
+        <div class="chart-tabs" style="display:flex;gap:4px;">
+          <button class="chart-tab ${backtestPeriodView==='monthly'?'active':''}" onclick="setBacktestPeriodView('monthly')">${t?'Monthly':'חודשי'}</button>
+          <button class="chart-tab ${backtestPeriodView==='quarterly'?'active':''}" onclick="setBacktestPeriodView('quarterly')">${t?'Quarterly':'רבעוני'}</button>
+        </div>
+      </div>
+      <div class="bt-chart-wrap" style="height:200px;"><canvas id="backtest-period-canvas"></canvas></div>
+    `;
+  }
+
   html += `
     <div style="overflow-x:auto;">
       <table class="bt-signals-table">
@@ -955,6 +976,7 @@ function renderBacktestContent(data){
   `;
 
   el.innerHTML = html;
+  backtestLastData = data;
 
   if(typeof Chart === 'undefined') return;
   const ctx = document.getElementById('backtest-equity-canvas').getContext('2d');
@@ -985,6 +1007,60 @@ function renderBacktestContent(data){
       scales: {
         x: { display: false },
         y: { position: 'right', grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8a93a3', font: { size: 10 } } }
+      }
+    }
+  });
+
+  renderBacktestPeriodChart();
+}
+
+function setBacktestPeriodView(view){
+  backtestPeriodView = view;
+  // Only the tab active-states + the one chart need to change — avoid
+  // re-running the whole renderBacktestContent (which would also destroy
+  // and rebuild the equity curve chart for no reason).
+  document.querySelectorAll('#backtest-content .chart-tab').forEach(b=>{
+    if(b.textContent === (lang==='en'?'Monthly':'חודשי')) b.classList.toggle('active', view==='monthly');
+    if(b.textContent === (lang==='en'?'Quarterly':'רבעוני')) b.classList.toggle('active', view==='quarterly');
+  });
+  renderBacktestPeriodChart();
+}
+
+function renderBacktestPeriodChart(){
+  const canvas = document.getElementById('backtest-period-canvas');
+  if(!canvas || typeof Chart === 'undefined' || !backtestLastData) return;
+  const t = lang === 'en';
+  const rows = backtestPeriodView === 'monthly' ? backtestLastData.monthly_breakdown : backtestLastData.quarterly_breakdown;
+  if(!rows || !rows.length) return;
+  if(backtestPeriodChartInstance) backtestPeriodChartInstance.destroy();
+  backtestPeriodChartInstance = new Chart(canvas.getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: rows.map(r => r.period),
+      datasets: [{
+        data: rows.map(r => r.avg_return),
+        backgroundColor: rows.map(r => r.avg_return >= 0 ? '#3ecf7e' : '#ef5b5b'),
+        borderRadius: 3,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const r = rows[ctx.dataIndex];
+              return `${t?'Avg return':'תשואה ממוצעת'}: ${r.avg_return>=0?'+':''}${r.avg_return}% (${t?'win rate':'הצלחה'} ${r.win_rate}%, n=${r.n})`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: '#8a93a3', font: { size: 10 } } },
+        y: { position: 'right', grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8a93a3', font: { size: 10 }, callback: v => v+'%' } }
       }
     }
   });
@@ -1283,21 +1359,127 @@ function heatmapColor(pct){
   return `rgb(${r},${Math.round(40+intensity*20)},${Math.round(50+intensity*20)})`;
 }
 
+// ---- Treemap layout (squarified algorithm, Bruls/Huizing/van Wijk) ----
+// Tiles sized by weight (market cap) instead of every ticker getting an
+// identical box — this is what makes it read as an actual heatmap
+// (a handful of megacaps dominating the view, like Finviz/TradingView)
+// instead of a uniform wall of same-size squares that just overflows
+// the screen for a 400+ ticker universe.
+function _squarifyWorstRatio(row, shortSide){
+  const sum = row.reduce((s,d)=>s+d._w_,0);
+  let max=-Infinity, min=Infinity;
+  for(const d of row){ if(d._w_>max) max=d._w_; if(d._w_<min) min=d._w_; }
+  const s2=sum*sum, ss2=shortSide*shortSide;
+  return Math.max((ss2*max)/s2, s2/(ss2*min));
+}
+function _squarifyLayoutRow(row, x, y, w, h){
+  const sum = row.reduce((s,d)=>s+d._w_,0);
+  if(w >= h){
+    const rowW = sum / h;
+    let ry = y;
+    for(const d of row){
+      const rh = (d._w_/sum) * h;
+      d.x=x; d.y=ry; d.w=rowW; d.h=rh;
+      ry += rh;
+    }
+    return {x: x+rowW, y, w: w-rowW, h};
+  } else {
+    const rowH = sum / w;
+    let rx = x;
+    for(const d of row){
+      const rw = (d._w_/sum) * w;
+      d.x=rx; d.y=y; d.w=rw; d.h=rowH;
+      rx += rw;
+    }
+    return {x, y: y+rowH, w, h: h-rowH};
+  }
+}
+function computeTreemap(items, width, height){
+  const total = items.reduce((s,d)=>s+d.weight, 0) || 1;
+  const area = width * height;
+  const data = items.map(d => ({...d, _w_: Math.max((d.weight/total) * area, 0.0001)}));
+  let x=0, y=0, w=width, h=height;
+  let row = [];
+  let remaining = data.slice();
+  while(remaining.length){
+    const next = remaining[0];
+    const testRow = [...row, next];
+    const shortSide = Math.min(w,h);
+    if(row.length === 0 || _squarifyWorstRatio(row, shortSide) >= _squarifyWorstRatio(testRow, shortSide)){
+      row = testRow;
+      remaining = remaining.slice(1);
+    } else {
+      const rest = _squarifyLayoutRow(row, x, y, w, h);
+      x=rest.x; y=rest.y; w=rest.w; h=rest.h;
+      row = [next];
+      remaining = remaining.slice(1);
+    }
+  }
+  if(row.length) _squarifyLayoutRow(row, x, y, w, h);
+  return data;
+}
+
+let heatmapResizeObserver = null;
+let lastHeatmapStocks = null;
+
 function renderHeatmap(stocks){
   const el = document.getElementById('heatmap-grid');
   if(!el) return;
+  lastHeatmapStocks = stocks;
   if(!stocks.length){
     el.innerHTML = `<div class="movers-empty">${lang==='en'?'No heatmap data yet — check back after the next scan.':'עדיין אין נתוני מפת חום — נסה שוב אחרי הסריקה הבאה.'}</div>`;
     return;
   }
-  el.innerHTML = stocks.map(s=>{
-    const pct = s.change_pct==null ? 0 : s.change_pct;
-    const sign = pct>=0 ? '+' : '';
-    return `<div class="heatmap-tile" style="background:${heatmapColor(pct)}" onclick="showTickerDrawer('${s.ticker}')">
-      <div class="ticker">${s.ticker}</div>
-      <div class="pct">${sign}${pct.toFixed(1)}%</div>
+
+  const width = el.clientWidth || 900;
+  // A fixed aspect ratio keeps the map from ever "loading over the whole
+  // screen" (the original complaint) regardless of how many tickers are
+  // in it — more tickers just means smaller tiles, not a taller page.
+  const height = Math.max(360, Math.min(640, Math.round(width * 0.5)));
+  el.style.height = height + 'px';
+
+  // Market cap is only populated going forward (added to the scan
+  // pipeline) — rows from before that will have market_cap = null for a
+  // while. Falling back to a small fixed weight keeps them visible
+  // (small tile) instead of the whole layout erroring out or those
+  // tickers vanishing from the map entirely.
+  const FALLBACK_WEIGHT = 2e9;
+  const items = stocks
+    .map(s => ({ ticker: s.ticker, pct: s.change_pct==null?0:s.change_pct, weight: (s.market_cap && s.market_cap>0) ? s.market_cap : FALLBACK_WEIGHT }))
+    .sort((a,b) => b.weight - a.weight);
+
+  const laidOut = computeTreemap(items, width, height);
+
+  el.innerHTML = laidOut.map(d => {
+    const areaPx = d.w * d.h;
+    // Font sizes scale with tile area so small-cap tiles don't overflow
+    // their own box, and the % is dropped entirely below a size where it
+    // wouldn't be legible anyway.
+    const tickerSize = Math.max(9, Math.min(16, Math.sqrt(areaPx) / 6));
+    const showPct = d.w > 40 && d.h > 28;
+    const pctSize = Math.max(8, tickerSize - 3);
+    return `<div class="heatmap-tile" style="left:${d.x}px;top:${d.y}px;width:${d.w}px;height:${d.h}px;background:${heatmapColor(d.pct)}" onclick="showTickerDrawer('${d.ticker}')" title="${d.ticker} ${d.pct>=0?'+':''}${d.pct.toFixed(1)}%">
+      <div class="ticker" style="font-size:${tickerSize}px;">${d.ticker}</div>
+      ${showPct ? `<div class="pct" style="font-size:${pctSize}px;">${d.pct>=0?'+':''}${d.pct.toFixed(1)}%</div>` : ''}
     </div>`;
   }).join('');
+
+  // Re-layout on container resize (window resize, sidebar toggle, mobile
+  // rotation) instead of leaving stale pixel positions from a different
+  // width — a treemap with absolute px coordinates doesn't reflow on its
+  // own the way the old CSS grid did.
+  if(heatmapResizeObserver) heatmapResizeObserver.disconnect();
+  if(window.ResizeObserver){
+    let lastWidth = width;
+    heatmapResizeObserver = new ResizeObserver(entries => {
+      const newWidth = entries[0].contentRect.width;
+      if(Math.abs(newWidth - lastWidth) > 20 && lastHeatmapStocks){
+        lastWidth = newWidth;
+        renderHeatmap(lastHeatmapStocks);
+      }
+    });
+    heatmapResizeObserver.observe(el);
+  }
 }
 
 // ---- Fear & Greed ----

@@ -154,6 +154,7 @@ def init_db():
     # (CREATE TABLE IF NOT EXISTS above is a no-op once the table exists).
     cur.execute("ALTER TABLE universe_movers ADD COLUMN IF NOT EXISTS in_sp500 BOOLEAN DEFAULT FALSE;")
     cur.execute("ALTER TABLE universe_movers ADD COLUMN IF NOT EXISTS in_nasdaq100 BOOLEAN DEFAULT FALSE;")
+    cur.execute("ALTER TABLE universe_movers ADD COLUMN IF NOT EXISTS market_cap REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS change_pct REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sma50 REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sma150 REAL;")
@@ -342,6 +343,32 @@ def get_backtest(
             "avg_return": round(sum(returns) / len(returns), 2),
         })
 
+    # Monthly + quarterly breakdown — the overall win rate can hide a lot:
+    # a pattern that only works in trending/bullish stretches and loses
+    # money in choppy ones still averages out to "profitable overall".
+    # Grouping by the signal's own timestamp (not the resolution date)
+    # shows whether performance is consistent period to period or
+    # concentrated in a few strong months.
+    def _period_breakdown(rows, period_key_fn):
+        buckets = {}
+        for r in rows:
+            key = period_key_fn(r["timestamp"])
+            buckets.setdefault(key, []).append(float(r["fwd_return"]))
+        out = []
+        for key in sorted(buckets.keys()):
+            returns = buckets[key]
+            wins_b = sum(1 for p in returns if p > 0)
+            out.append({
+                "period": key,
+                "n": len(returns),
+                "win_rate": round(100 * wins_b / len(returns), 1),
+                "avg_return": round(sum(returns) / len(returns), 2),
+            })
+        return out
+
+    monthly_breakdown = _period_breakdown(rows, lambda ts: ts.strftime("%Y-%m"))
+    quarterly_breakdown = _period_breakdown(rows, lambda ts: f"{ts.year}-Q{(ts.month-1)//3+1}")
+
     signals = [
         {
             "ticker": r["ticker"],
@@ -366,6 +393,8 @@ def get_backtest(
         "max_drawdown": round(max_dd, 2),
         "equity_curve": equity_curve,
         "rs_breakdown": rs_breakdown,
+        "monthly_breakdown": monthly_breakdown,
+        "quarterly_breakdown": quarterly_breakdown,
         "signals": signals,
     }
 
@@ -1320,15 +1349,16 @@ def _fetch_sector_performance(period: str) -> dict:
 
 @app.get("/api/heatmap")
 def get_heatmap(index: str = Query(default="sp500", pattern="^(sp500|nasdaq100)$")):
-    """Index heatmap data (ticker + today's % change) for the Market Pulse
-    page. Reuses universe_movers — already populated by every scan run
-    with the whole universe's daily change, tagged by index membership —
+    """Index heatmap data (ticker + today's % change + market cap, for
+    treemap tile sizing) for the Market Pulse page. Reuses
+    universe_movers — already populated by every scan run with the whole
+    universe's daily change and market cap, tagged by index membership —
     so this needs zero extra yfinance calls of its own."""
     column = "in_sp500" if index == "sp500" else "in_nasdaq100"
     with db_cursor(dict_cursor=True) as (conn, cur):
         cur.execute(
             f"""
-            SELECT ticker, change_pct, close_price, timestamp
+            SELECT ticker, change_pct, close_price, market_cap, timestamp
             FROM universe_movers
             WHERE {column} = TRUE AND change_pct IS NOT NULL
             ORDER BY change_pct DESC
