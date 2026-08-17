@@ -466,6 +466,8 @@
 
     <div class="sector-filter" id="backtest-pattern-filter"></div>
 
+    <div id="backtest-pattern-summary"></div>
+
     <div id="backtest-content"></div>
   </div>
 </div>
@@ -875,6 +877,7 @@ function renderBacktestPatternFilter(){
 function setBacktestPattern(p){
   backtestPattern = p;
   renderBacktestPatternFilter();
+  renderBacktestPatternSummary(); // re-highlight the active row
   loadBacktestData();
 }
 
@@ -882,7 +885,77 @@ function setBacktestHorizon(h){
   backtestHorizon = h;
   document.getElementById('backtest-horizon-10').classList.toggle('active', h===10);
   document.getElementById('backtest-horizon-20').classList.toggle('active', h===20);
+  renderBacktestPatternSummary(); // re-sort by the newly selected horizon's win rate
   loadBacktestData();
+}
+
+let backtestPatternStatsCache = null;
+
+async function loadBacktestPatternSummary(){
+  const el = document.getElementById('backtest-pattern-summary');
+  if(!el) return;
+  const t = lang === 'en';
+  el.innerHTML = `<div class="fund-empty" style="padding:8px 0;">${UI[lang].loading}</div>`;
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/api/pattern-stats`, 20000);
+    if(!res.ok) throw new Error('bad response');
+    backtestPatternStatsCache = await res.json();
+    renderBacktestPatternSummary();
+  } catch(e) {
+    console.warn('[backtest pattern summary] load failed', e);
+    el.innerHTML = '';
+  }
+}
+
+// All patterns side-by-side, ranked by 10d win rate — answers "which of
+// these patterns is actually working" without clicking through each one
+// individually via the filter buttons above. Reuses the same
+// /api/pattern-stats data that already silently drives the scan list's
+// win-rate badges and composite sort, just made visible here as a table.
+function renderBacktestPatternSummary(){
+  const el = document.getElementById('backtest-pattern-summary');
+  if(!el) return;
+  const t = lang === 'en';
+  const rows = backtestPatternStatsCache || [];
+  if(!rows.length){
+    el.innerHTML = '';
+    return;
+  }
+  const winKey = backtestHorizon === 20 ? 'win_rate_20d' : 'win_rate_10d';
+  const retKey = backtestHorizon === 20 ? 'avg_return_20d' : 'avg_return_10d';
+  const sorted = rows.slice().filter(r => r[winKey] != null).sort((a,b) => b[winKey] - a[winKey]);
+  if(!sorted.length){
+    el.innerHTML = '';
+    return;
+  }
+  el.innerHTML = `
+    <div class="dd-section-title">${t?`Pattern Comparison (${backtestHorizon}d)`:`השוואת תבניות (${backtestHorizon} ימים)`}</div>
+    <div style="overflow-x:auto;margin-bottom:16px;">
+      <table class="bt-signals-table">
+        <thead><tr>
+          <th>${t?'Pattern':'תבנית'}</th>
+          <th>${t?'Signals':'איתותים'}</th>
+          <th>${t?'Win Rate':'אחוז הצלחה'}</th>
+          <th>${t?'Avg Return':'תשואה ממוצעת'}</th>
+        </tr></thead>
+        <tbody>
+          ${sorted.map(r => {
+            const wr = r[winKey];
+            const ret = r[retKey];
+            const wrColor = wr>=55?'var(--green)':wr>=45?'var(--amber)':'var(--red)';
+            const retColor = ret>=0?'var(--green)':'var(--red)';
+            const isActive = backtestPattern === r.pattern_type;
+            return `<tr style="cursor:pointer;${isActive?'background:rgba(232,163,61,.08);':''}" onclick="setBacktestPattern('${r.pattern_type.replace(/'/g,"\\'")}')">
+              <td>${r.pattern_type}</td>
+              <td>${r.n}</td>
+              <td style="color:${wrColor}">${wr}%</td>
+              <td style="color:${retColor}">${ret>=0?'+':''}${ret}%</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
 }
 
 async function loadBacktestData(){
@@ -1312,6 +1385,7 @@ function setPage(page){
   if(page === 'backtest' && !backtestLoaded){
     backtestLoaded = true;
     loadBacktestPatterns();
+    loadBacktestPatternSummary();
     loadBacktestData();
   }
 }
