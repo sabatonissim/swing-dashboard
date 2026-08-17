@@ -402,6 +402,66 @@ def detect_ascending_trendline_support(hist: pd.DataFrame) -> Optional[dict]:
     return None
 
 
+def detect_horizontal_level_bounce(hist: pd.DataFrame, lookback: int = 150) -> Optional[dict]:
+    """The AMZN/AVGO pattern from the request: price repeatedly testing the
+    SAME horizontal price level (not a diagonal trendline — that's
+    detect_ascending_trendline_support above) and bouncing off it again.
+    A level only counts as "real" support/resistance here if price has
+    actually touched it 2+ times before — a single old swing low isn't a
+    validated level, it's just a random dip. More touches = a level more
+    traders are watching = a stronger reaction when price returns to it.
+
+    Method: cluster nearby swing lows (within LEVEL_CLUSTER_PCT of each
+    other) to find levels tested multiple times; flag when today's low
+    came within BOUNCE_TOLERANCE_PCT of that level and today's close
+    finished back above it (a bounce, not a breakdown through it)."""
+    LEVEL_CLUSTER_PCT = 0.02     # swing lows within 2% of each other = "the same level"
+    BOUNCE_TOLERANCE_PCT = 0.015  # today's low must come within 1.5% of the level to count as "testing" it
+    MIN_TOUCHES = 2
+
+    window = hist.tail(lookback).reset_index(drop=True)
+    if len(window) < 30:
+        return None
+
+    swing_lows = find_swing_points(window["Low"].values, mode="low")
+    if len(swing_lows) < MIN_TOUCHES:
+        return None
+
+    vals = sorted(v for _, v in swing_lows)
+    # Simple 1D clustering: walk the sorted lows, group consecutive ones
+    # that stay within LEVEL_CLUSTER_PCT of the group's running average.
+    clusters = []
+    current = [vals[0]]
+    for v in vals[1:]:
+        avg = sum(current) / len(current)
+        if abs(v - avg) / avg <= LEVEL_CLUSTER_PCT:
+            current.append(v)
+        else:
+            clusters.append(current)
+            current = [v]
+    clusters.append(current)
+
+    validated_levels = [(sum(c) / len(c), len(c)) for c in clusters if len(c) >= MIN_TOUCHES]
+    if not validated_levels:
+        return None
+
+    today_low = float(window["Low"].iloc[-1])
+    today_close = float(window["Close"].iloc[-1])
+
+    # If several validated levels qualify, the one closest to today's low
+    # is the one actually in play right now.
+    best = None
+    for level, touches in validated_levels:
+        if level <= 0:
+            continue
+        dist_pct = abs(today_low - level) / level
+        if dist_pct <= BOUNCE_TOLERANCE_PCT and today_close > level:
+            if best is None or dist_pct < best["distance_pct"]:
+                best = {"level": round(level, 2), "touches": touches, "distance_pct": round(dist_pct * 100, 2)}
+    return best
+
+
+
 def detect_descending_trendline_breakout(hist: pd.DataFrame) -> Optional[dict]:
     """
     Heuristic descending-trendline breakout detector.
@@ -445,6 +505,62 @@ def detect_descending_trendline_breakout(hist: pd.DataFrame) -> Optional[dict]:
             "breakout_price": float(today_close),
         }
     return None
+
+
+def detect_horizontal_resistance_breakout(hist: pd.DataFrame, lookback: int = 150) -> Optional[dict]:
+    """The FTI pattern from the request: price tests a horizontal
+    resistance level, pulls back, then comes back and actually breaks
+    through it — the mirror image of detect_horizontal_level_bounce
+    above, but for a breakout instead of a bounce.
+
+    A single prior swing high counts too (per the request's GOOGL 2025
+    example — one spike high that later got reclaimed and broken was
+    still a genuinely good signal), not just a level tested 2+ times.
+    More touches still means a stronger, more validated level, so that's
+    reflected in the score upstream rather than used as a hard filter
+    here.
+
+    Method: cluster nearby swing highs (within LEVEL_CLUSTER_PCT) to
+    group repeat tests of the same level; flag when today's close breaks
+    above the level by at least MIN_BREAKOUT_PCT (a hair above it isn't a
+    convincing break — FTI's example cleared its ~$77.78 level by several
+    points, not a few cents)."""
+    LEVEL_CLUSTER_PCT = 0.02
+    MIN_BREAKOUT_PCT = 0.01   # close must clear the level by at least 1%
+
+    window = hist.tail(lookback).reset_index(drop=True)
+    if len(window) < 30:
+        return None
+
+    swing_highs = find_swing_points(window["High"].values, mode="high")
+    if not swing_highs:
+        return None
+
+    vals = sorted(v for _, v in swing_highs)
+    clusters = []
+    current = [vals[0]]
+    for v in vals[1:]:
+        avg = sum(current) / len(current)
+        if abs(v - avg) / avg <= LEVEL_CLUSTER_PCT:
+            current.append(v)
+        else:
+            clusters.append(current)
+            current = [v]
+    clusters.append(current)
+
+    levels = [(sum(c) / len(c), len(c)) for c in clusters]
+
+    today_close = float(window["Close"].iloc[-1])
+    # Only a level BELOW today's close can have just been broken through;
+    # among those, the highest one is the most recent/relevant ceiling
+    # that was cleared (breaking a lower old level isn't news if a higher
+    # one was already broken earlier).
+    broken = [(lvl, touches) for lvl, touches in levels
+              if lvl > 0 and today_close >= lvl * (1 + MIN_BREAKOUT_PCT)]
+    if not broken:
+        return None
+    level, touches = max(broken, key=lambda x: x[0])
+    return {"level": round(level, 2), "touches": touches, "breakout_pct": round((today_close/level - 1) * 100, 2)}
 
 
 def detect_52w_high_breakout(hist: pd.DataFrame) -> Optional[dict]:
@@ -496,8 +612,15 @@ def detect_cup_and_handle(hist: pd.DataFrame) -> Optional[dict]:
     - Left rim: local high in the first third of the window
     - Cup bottom: price drops at least 15% from left rim, then recovers
     - Right rim: price recovers to within 5% of left rim high
-    - Handle: last 5-15 bars consolidate (range < 8% of cup depth)
-    - Breakout: today's close above the right rim
+    - Handle (optional): last 5-15 bars consolidate tightly (range < 8% of
+      cup depth), breakout above the right rim. When present this is a
+      stronger, more classic setup.
+    - Cup-only breakout (no handle): per the FTI-style request — a cup
+      that breaks out directly, without ever forming a tight handle
+      first, still counts. Distinguished from the full pattern via the
+      "handle" flag in the result so the trigger text/score can reflect
+      the difference honestly rather than claiming a handle that wasn't
+      there.
     Uses a 60-bar window (approx 3 months daily).
     """
     if len(hist) < 65:
@@ -527,16 +650,13 @@ def detect_cup_and_handle(hist: pd.DataFrame) -> Optional[dict]:
     if right_rim < left_rim * 0.95:  # must recover to within 5% of left rim
         return None
 
-    # handle = last 5-15 bars consolidate tightly
     handle = closes[-12:]
     handle_range = (handle.max() - handle.min()) / right_rim
-    if handle_range > 0.08:  # handle consolidation should be tight
-        return None
+    has_tight_handle = handle_range <= 0.08
 
-    # breakout = today close above right rim
     today_close = closes[-1]
     if today_close >= right_rim:
-        return {"left_rim": round(float(left_rim), 2), "cup_bottom": round(float(cup_bottom), 2)}
+        return {"left_rim": round(float(left_rim), 2), "cup_bottom": round(float(cup_bottom), 2), "handle": has_tight_handle}
     return None
 
 
@@ -937,6 +1057,7 @@ def init_db():
     """)
     cur.execute("ALTER TABLE universe_movers ADD COLUMN IF NOT EXISTS in_sp500 BOOLEAN DEFAULT FALSE;")
     cur.execute("ALTER TABLE universe_movers ADD COLUMN IF NOT EXISTS in_nasdaq100 BOOLEAN DEFAULT FALSE;")
+    cur.execute("ALTER TABLE universe_movers ADD COLUMN IF NOT EXISTS market_cap REAL;")
     conn.commit()
     cur.close()
     conn.close()
@@ -1113,7 +1234,7 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
     universe = universe or build_scan_universe()
     results: List[ScanResult] = []
     consecutive_timeouts = 0
-    all_changes: List[tuple] = []  # (ticker, change_pct, close) for EVERY ticker fetched —
+    all_changes: List[tuple] = []  # (ticker, change_pct, close, market_cap) for EVERY ticker fetched —
                                      # a reliable fallback for the movers strip if Yahoo's
                                      # whole-market screener endpoint is unavailable, since
                                      # this uses .history(), the endpoint proven to work here.
@@ -1152,7 +1273,13 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
                 _close_now = float(hist["Close"].iloc[-1])
                 _prev_close = float(hist["Close"].iloc[-2])
                 _chg = round(((_close_now - _prev_close) / _prev_close) * 100, 2) if _prev_close else 0.0
-                all_changes.append((ticker, _chg, round(_close_now, 2)))
+                # info is already fetched above for the liquidity/cap
+                # filter — capturing market_cap here too (for the WHOLE
+                # universe, not just tickers that end up flagged) is
+                # what lets the heatmap size tiles by actual company
+                # size instead of every ticker getting an identical box.
+                _mcap = (info or {}).get("marketCap")
+                all_changes.append((ticker, _chg, round(_close_now, 2), _mcap))
             except Exception as e:
                 print(f"[warn] change_pct calc failed for {ticker}: {e}")
 
@@ -1166,6 +1293,8 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         # Run all pattern detectors
         trendline_break  = detect_descending_trendline_breakout(hist)
         asc_trendline    = detect_ascending_trendline_support(hist)
+        level_bounce     = detect_horizontal_level_bounce(hist)
+        resistance_break = detect_horizontal_resistance_breakout(hist)
         high_52w         = detect_52w_high_breakout(hist)
         momentum         = detect_momentum_surge(hist)
         cup_handle       = detect_cup_and_handle(hist)
@@ -1184,21 +1313,25 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         # Volume confirmation gate: a genuine breakout should show real
         # buying volume behind it. Without this, "breakout" patterns were
         # being flagged even on weak/below-average volume, which is a
-        # classic false-breakout setup. Trend/momentum signals (golden
-        # cross, MACD cross, RSI bounce, ascending trendline support)
-        # don't require the full breakout threshold since they aren't
-        # breakout-on-a-volume-spike patterns by nature.
+        # classic false-breakout setup. Structural patterns based on a
+        # real, validated support/resistance level (ascending trendline,
+        # horizontal support bounce, horizontal resistance breakout, cup
+        # breakout with or without a handle) are exempted per an explicit
+        # request — the level itself, tested and now held/broken, is
+        # considered a strong enough signal on its own even without a
+        # volume spike. 52w-high, bull-flag, ascending-triangle, and
+        # double-bottom breakouts are more purely volume-driven setups by
+        # nature and keep the gate.
         volume_confirmed = vol_pct >= BREAKOUT_VOLUME_THRESHOLD_PCT
         if not volume_confirmed:
-            cup_handle = None
             double_bottom = None
             high_52w = None
             bull_flag = None
             asc_triangle = None
-            trendline_break = None
+            trendline_break = None  # descending-trendline breakout — a different, older pattern not part of this request; left gated as before
 
         # Skip if no pattern found at all
-        if not any([trendline_break, asc_trendline, high_52w, momentum, cup_handle, bull_flag,
+        if not any([trendline_break, asc_trendline, level_bounce, resistance_break, high_52w, momentum, cup_handle, bull_flag,
                     asc_triangle, golden_cross, double_bottom, macd_cross, rsi_bounce]):
             continue
 
@@ -1209,7 +1342,7 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         change_pct = round(((close - prev_close) / prev_close) * 100, 2) if prev_close else 0.0
 
         # Priority: strongest/rarest patterns get highest score
-        if cup_handle:
+        if cup_handle and cup_handle.get("handle"):
             trigger_en = "Cup & Handle breakout"
             trigger_he = "פריצת תבנית כוס וידית (Cup & Handle)"
             tech_score = min(100, 80 + int(vol_pct / 5))
@@ -1224,6 +1357,21 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             trigger_he = "פריצת שיא 52 שבועות"
             tech_score = min(100, 78 + int(vol_pct / 5))
             pattern_type = "52w_high"
+        elif cup_handle:
+            # Cup formed and broke out, but never built the tight handle
+            # consolidation first — the "just a cup that broke" case from
+            # the request. Still a real, valid breakout; scored a bit
+            # below the full Cup & Handle since the handle normally adds
+            # confirmation (a final shakeout before the real move).
+            trigger_en = "Cup breakout (no handle)"
+            trigger_he = "פריצת תבנית כוס (ללא ידית)"
+            tech_score = min(100, 76 + int(vol_pct / 5))
+            pattern_type = "cup_no_handle"
+        elif resistance_break:
+            trigger_en = f"Breaking above horizontal resistance at ${resistance_break['level']} (tested {resistance_break['touches']}x)"
+            trigger_he = f"פריצת התנגדות אופקית ב-${resistance_break['level']} (נבדקה {resistance_break['touches']} פעמים)"
+            tech_score = min(100, 75 + min(resistance_break['touches'] - 2, 4) * 2 + int(vol_pct / 10))
+            pattern_type = "horizontal_resistance_breakout"
         elif golden_cross:
             trigger_en = "Golden Cross (50D SMA crossed above 200D SMA)"
             trigger_he = "פריצת גולדן קרוס (ממוצע 50 יום חצה מעל ממוצע 200 יום)"
@@ -1242,22 +1390,43 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         elif asc_trendline:
             trigger_en = f"Bouncing off rising trendline support (~${asc_trendline['trendline_value']})"
             trigger_he = f"התאוששות מקו מגמה עולה (סביב ${asc_trendline['trendline_value']})"
-            tech_score = 66
+            tech_score = 69
             pattern_type = "ascending_trendline"
+        elif level_bounce:
+            # Score scales gently with touch count — a level tested 4
+            # times is more validated (more traders watching it, stronger
+            # reaction) than one tested twice, but this stays a secondary
+            # factor, not a dominant one. Floor raised to 68 (was 65) so
+            # this always outranks the pure-indicator patterns below,
+            # regardless of how much volume bonus those pick up — a
+            # validated support/resistance level is considered a
+            # stronger signal than an indicator crossover on its own.
+            trigger_en = f"Bouncing off horizontal support at ${level_bounce['level']} (tested {level_bounce['touches']}x)"
+            trigger_he = f"התאוששות מרמת תמיכה אופקית ב-${level_bounce['level']} (נבדקה {level_bounce['touches']} פעמים)"
+            tech_score = min(76, 68 + min(level_bounce['touches'] - 2, 4) * 2)
+            pattern_type = "horizontal_level_bounce"
+        # Below this point: pure-indicator patterns (MACD crossover,
+        # momentum/volume surge, RSI bounce) — no real chart structure
+        # (a validated support/resistance level, a trendline, a cup)
+        # behind them, just an indicator or volume reading. Capped below
+        # 65 so a high-volume MACD cross or momentum spike can never
+        # outrank any of the structural patterns above, per an explicit
+        # request that those matter more for technical analysis than a
+        # generic indicator/volume signal.
         elif macd_cross:
             trigger_en = "MACD bullish crossover"
             trigger_he = "חציית MACD שורית"
-            tech_score = min(100, 64 + int(vol_pct / 5))
+            tech_score = min(60, 45 + int(vol_pct / 10))
             pattern_type = "macd_cross"
         elif momentum:
             trigger_en = f"Strong momentum surge (+{momentum['pct_change_5d']}% / 5 days)"
             trigger_he = f"מומנטום חזק ב-5 ימים (+{momentum['pct_change_5d']}%)"
-            tech_score = min(100, 62 + int(vol_pct / 5))
+            tech_score = min(58, 44 + int(vol_pct / 10))
             pattern_type = "momentum_surge"
         elif rsi_bounce:
             trigger_en = f"RSI oversold bounce (RSI {rsi_bounce['rsi']})"
             trigger_he = f"התאוששות מאזור מכירת יתר (RSI {rsi_bounce['rsi']})"
-            tech_score = min(100, 58 + int(vol_pct / 5))
+            tech_score = min(55, 40 + int(vol_pct / 10))
             pattern_type = "rsi_bounce"
         else:
             trigger_en = "Breakout above descending trendline on strong volume"
@@ -1377,20 +1546,21 @@ def upsert_universe_movers(all_changes: List[tuple]):
         return
     conn = get_conn()
     cur = conn.cursor()
-    for ticker, chg, close_price in all_changes:
+    for ticker, chg, close_price, mcap in all_changes:
         cur.execute(
             """
-            INSERT INTO universe_movers (ticker, change_pct, close_price, in_sp500, in_nasdaq100, timestamp)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO universe_movers (ticker, change_pct, close_price, in_sp500, in_nasdaq100, market_cap, timestamp)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (ticker) DO UPDATE SET
                 change_pct = EXCLUDED.change_pct,
                 close_price = EXCLUDED.close_price,
                 in_sp500 = EXCLUDED.in_sp500,
                 in_nasdaq100 = EXCLUDED.in_nasdaq100,
+                market_cap = EXCLUDED.market_cap,
                 timestamp = EXCLUDED.timestamp
             """,
             (ticker, _native(chg), _native(close_price), ticker in SP500_SET, ticker in NASDAQ100_SET,
-             datetime.now(timezone.utc).isoformat()),
+             _native(mcap), datetime.now(timezone.utc).isoformat()),
         )
     conn.commit()
     cur.close()
