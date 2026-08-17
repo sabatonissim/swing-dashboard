@@ -304,15 +304,19 @@
   /* ---- Compare two stocks ---- */
   .compare-btn{display:block;width:100%;text-align:center;padding:11px;border-radius:9px;background:transparent;border:1px solid var(--teal);color:var(--teal);font-weight:700;cursor:pointer;font-size:13px;margin-bottom:16px;font-family:'Heebo',sans-serif;}
   .compare-btn:hover{background:var(--teal);color:#0a1a18;}
-  .cmp-head{display:grid;grid-template-columns:1fr 1.3fr 1fr;gap:6px;margin-bottom:4px;}
-  .cmp-ticker{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:13.5px;text-align:center;color:var(--amber);}
-  .cmp-row{display:grid;grid-template-columns:1fr 1.3fr 1fr;gap:6px;padding:8px 0;border-bottom:1px solid var(--line);align-items:center;}
+  .cmp-head{display:grid;gap:6px;margin-bottom:4px;align-items:center;}
+  .cmp-ticker{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:13.5px;text-align:center;color:var(--amber);position:relative;}
+  .cmp-row{display:grid;gap:6px;padding:8px 0;border-bottom:1px solid var(--line);align-items:center;}
   .cmp-row:last-of-type{border-bottom:none;}
   .cmp-val{font-family:'JetBrains Mono',monospace;font-size:12.5px;text-align:center;}
   .cmp-trend{font-family:'Heebo',sans-serif;font-size:9px;color:var(--text-dim);text-align:center;margin-top:3px;line-height:1.3;}
   .cmp-open-full{display:block;font-family:'Heebo',sans-serif;font-size:9.5px;font-weight:400;color:var(--teal);cursor:pointer;margin-top:2px;}
   .cmp-open-full:hover{text-decoration:underline;}
   .cmp-label{font-size:10.5px;color:var(--text-dim);text-align:center;line-height:1.3;}
+  .cmp-remove{position:absolute;top:-6px;left:-6px;width:16px;height:16px;border-radius:50%;background:var(--panel-2);border:1px solid var(--line);color:var(--text-dim);font-size:10px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;}
+  .cmp-remove:hover{color:var(--red);border-color:var(--red);}
+  .cmp-add-btn{display:block;width:100%;text-align:center;padding:8px;border-radius:8px;background:transparent;border:1px dashed var(--line);color:var(--text-dim);cursor:pointer;font-size:12px;font-family:'Heebo',sans-serif;margin:10px 0;}
+  .cmp-add-btn:hover{border-color:var(--amber);color:var(--amber);}
   .close-compare-btn{display:block;width:100%;text-align:center;padding:10px;border-radius:9px;background:transparent;border:1px solid var(--line);color:var(--text-dim);cursor:pointer;font-size:12.5px;margin-top:12px;font-family:'Heebo',sans-serif;}
   .close-compare-btn:hover{color:var(--text);border-color:var(--text-dim);}
 </style>
@@ -2684,21 +2688,15 @@ function trendStr(arr, formatter){
   if(vals.length<2) return '';
   return vals.map(formatter).join(' → ');
 }
-function cmpRow(label, a, b, fmt, betterHigher=null, trendA='', trendB=''){
-  let ca='color:var(--text)', cb='color:var(--text)';
-  if(betterHigher!==null && a!=null && b!=null && a!==b){
-    const aBetter = betterHigher ? a>b : a<b;
-    ca = 'color:'+(aBetter?'var(--green)':'var(--text-dim)');
-    cb = 'color:'+(aBetter?'var(--text-dim)':'var(--green)');
-  }
-  return `<div class="cmp-row">
-    <div class="cmp-val" style="${cb}">${b!=null?fmt(b):'—'}${trendB?`<div class="cmp-trend">${trendB}</div>`:''}</div>
-    <div class="cmp-label">${label}</div>
-    <div class="cmp-val" style="${ca}">${a!=null?fmt(a):'—'}${trendA?`<div class="cmp-trend">${trendA}</div>`:''}</div>
-  </div>`;
-}
+// (an old single-pair cmpRow(label, a, b, ...) used to live here — the
+// array-based version further down replaced it for the 2-or-3-way
+// comparison, this stub is gone since nothing calls the old signature
+// anymore)
+
+let compareTickerList = [];
 
 function openCompare(baseTicker){
+  compareTickerList = [baseTicker.toUpperCase()];
   const t = lang==='en';
   const modal = document.getElementById('compare-search-modal');
   modal.innerHTML = `
@@ -2719,6 +2717,30 @@ function openCompare(baseTicker){
   setTimeout(() => document.getElementById('cs-input')?.focus(), 50);
 }
 
+// Reopens the same search modal to append a 2nd or 3rd ticker to
+// whatever comparison is already showing, instead of starting over.
+function openAddToCompare(){
+  if(compareTickerList.length >= 3) return;
+  const t = lang==='en';
+  const modal = document.getElementById('compare-search-modal');
+  modal.innerHTML = `
+    <div class="cs-head">
+      <h3 style="margin:0;">⇄ ${t?'Add a stock...':'הוסף מניה...'}</h3>
+      <button class="close-btn" onclick="closeCompareSearch()">✕</button>
+    </div>
+    <div class="cs-input-wrap">
+      <span class="cs-input-icon">🔍</span>
+      <input type="text" class="cs-input" id="cs-input" placeholder="${t?'Type a ticker...':'הקלד טיקר...'}" oninput="renderCompareSearchList('${compareTickerList[0]}', this.value)" onkeydown="handleCompareSearchKey(event,'${compareTickerList[0]}')">
+    </div>
+    <div class="cs-list" id="cs-list"></div>
+  `;
+  const overlay = document.getElementById('compare-search-overlay');
+  overlay.classList.add('open');
+  void overlay.offsetHeight;
+  renderCompareSearchList(compareTickerList[0], '');
+  setTimeout(() => document.getElementById('cs-input')?.focus(), 50);
+}
+
 function closeCompareSearch(){
   const overlay = document.getElementById('compare-search-overlay');
   if(overlay) overlay.classList.remove('open');
@@ -2734,7 +2756,8 @@ function renderCompareSearchList(baseTicker, query){
   const listEl = document.getElementById('cs-list');
   if(!listEl) return;
   const q = (query||'').trim().toUpperCase();
-  const pool = (stocks||[]).filter(s => s.ticker && s.ticker.toUpperCase() !== baseTicker.toUpperCase());
+  const exclude = new Set(compareTickerList.map(x=>x.toUpperCase()));
+  const pool = (stocks||[]).filter(s => s.ticker && !exclude.has(s.ticker.toUpperCase()));
   const filtered = q ? pool.filter(s => s.ticker.toUpperCase().includes(q)) : pool;
 
   if(!filtered.length){
@@ -2763,14 +2786,25 @@ function handleCompareSearchKey(event, baseTicker){
   selectCompareTicker(baseTicker, raw);
 }
 
-function selectCompareTicker(baseTicker, ticker2){
-  ticker2 = ticker2.trim().toUpperCase();
-  if(!ticker2 || ticker2 === baseTicker.toUpperCase()) return;
+function selectCompareTicker(baseTicker, tickerN){
+  tickerN = tickerN.trim().toUpperCase();
+  if(!tickerN || compareTickerList.map(x=>x.toUpperCase()).includes(tickerN)) return;
   closeCompareSearch();
-  runCompare(baseTicker, ticker2);
+  compareTickerList.push(tickerN);
+  runCompare(compareTickerList);
 }
 
-async function runCompare(baseTicker, ticker2){
+function removeFromCompare(ticker){
+  if(compareTickerList.length <= 2) return; // never drop below a 2-way comparison — close it instead if you want out
+  compareTickerList = compareTickerList.filter(x => x.toUpperCase() !== ticker.toUpperCase());
+  runCompare(compareTickerList);
+}
+
+let comparePriceCache = {}; // "TICKERS_JOINED|period" -> API response, avoids refetching on period toggle re-visits
+let comparePeriod = '6M';
+
+async function runCompare(tickerList){
+  compareTickerList = tickerList;
   const t = lang==='en';
   const compareEl = document.getElementById('compare-section');
   if(!compareEl) return;
@@ -2782,59 +2816,163 @@ async function runCompare(baseTicker, ticker2){
   };
 
   try {
-    const [lookA, lookB, fundA, fundB] = await Promise.all([
-      safeFetch(`${API_BASE}/api/lookup/${baseTicker}`),
-      safeFetch(`${API_BASE}/api/lookup/${ticker2}`),
-      safeFetch(`${API_BASE}/api/fundamentals/${baseTicker}`),
-      safeFetch(`${API_BASE}/api/fundamentals/${ticker2}`),
-    ]);
-    renderCompare(compareEl, baseTicker.toUpperCase(), ticker2, lookA, lookB, fundA, fundB);
-    track('compare_stock', `${baseTicker}_vs_${ticker2}`);
+    const looks = await Promise.all(tickerList.map(tk => safeFetch(`${API_BASE}/api/lookup/${tk}`)));
+    const funds = await Promise.all(tickerList.map(tk => safeFetch(`${API_BASE}/api/fundamentals/${tk}`)));
+    const histories = await Promise.all(tickerList.map(tk => safeFetch(`${API_BASE}/api/signal-history/${tk}?limit=1`)));
+    renderCompare(compareEl, tickerList, looks, funds, histories);
+    track('compare_stock', tickerList.join('_vs_'));
   } catch(e) {
     console.error('[compare] failed', e);
     compareEl.innerHTML = `<div class="fund-section-title">${t?'Comparison':'השוואת מניות'}</div><div class="fund-empty">${t?'Could not load comparison right now.':'לא ניתן לטעון השוואה כרגע.'}</div>`;
   }
 }
 
-function renderCompare(el, tA, tB, lookA, lookB, fundA, fundB){
+function cmpRow(label, values, fmt, betterHigher=null, trends=null){
+  // values: array aligned with compareTickerList order. Coloring: the
+  // best value (if betterHigher is set) is green, others dimmed — works
+  // the same for 2 or 3 columns instead of a fixed left/right compare.
+  const present = values.filter(v => v!=null);
+  let bestIdx = -1;
+  if(betterHigher!==null && present.length>=2 && new Set(present).size>1){
+    let best = betterHigher ? Math.max(...present) : Math.min(...present);
+    bestIdx = values.indexOf(best);
+  }
+  const cells = values.map((v,i) => {
+    const color = bestIdx===-1 ? 'var(--text)' : (i===bestIdx ? 'var(--green)' : 'var(--text-dim)');
+    const trend = trends && trends[i] ? `<div class="cmp-trend">${trends[i]}</div>` : '';
+    return `<div class="cmp-val" style="color:${color}">${v!=null?fmt(v):'—'}${trend}</div>`;
+  }).join('');
+  return `<div class="cmp-row" style="grid-template-columns:1.1fr repeat(${values.length},1fr);">
+    <div class="cmp-label">${label}</div>${cells}
+  </div>`;
+}
+
+function renderCompare(el, tickerList, looks, funds, histories){
   const t = lang==='en';
-  const gmA = fundA && Array.isArray(fundA.gross_margin_pct) ? lastVal(fundA.gross_margin_pct) : null;
-  const gmB = fundB && Array.isArray(fundB.gross_margin_pct) ? lastVal(fundB.gross_margin_pct) : null;
+  const n = tickerList.length;
   const trendLabel = t?'(last 4 quarters)':'(4 רבעונים אחרונים)';
 
+  const gm = funds.map(f => f && Array.isArray(f.gross_margin_pct) ? lastVal(f.gross_margin_pct) : null);
+  const latestSignal = histories.map(h => (Array.isArray(h) && h.length) ? h[0] : null);
+
   const rows = [
-    cmpRow(t?'Price':'מחיר', lookA?.price, lookB?.price, v=>'$'+v),
-    cmpRow(t?'Daily Change %':'שינוי יומי %', lookA?.change_pct, lookB?.change_pct, v=>v.toFixed(2)+'%', true),
-    cmpRow(t?'Market Cap':'שווי שוק', lookA?.market_cap, lookB?.market_cap, v=>fmtCompactMoney(v), true),
-    cmpRow(t?'Trailing P/E':'מכפיל P/E נוכחי', fundA?.trailing_pe, fundB?.trailing_pe, v=>v.toFixed(1)),
-    cmpRow(`${t?'Revenue':'הכנסות'} ${trendLabel}`, lastVal(fundA?.revenue), lastVal(fundB?.revenue), v=>fmtCompactMoney(v), true,
-      trendStr(fundA?.revenue, fmtCompactShort), trendStr(fundB?.revenue, fmtCompactShort)),
-    cmpRow(`${t?'Net Income':'רווח נקי'} ${trendLabel}`, lastVal(fundA?.net_income), lastVal(fundB?.net_income), v=>fmtCompactMoney(v), true,
-      trendStr(fundA?.net_income, fmtCompactShort), trendStr(fundB?.net_income, fmtCompactShort)),
-    cmpRow(`FCF ${trendLabel}`, lastVal(fundA?.fcf), lastVal(fundB?.fcf), v=>fmtCompactMoney(v), true,
-      trendStr(fundA?.fcf, fmtCompactShort), trendStr(fundB?.fcf, fmtCompactShort)),
-    cmpRow(`${t?'Gross Margin %':'שולי רווח גולמי %'} ${trendLabel}`, gmA, gmB, v=>v.toFixed(1)+'%', true,
-      trendStr(fundA?.gross_margin_pct, v=>v.toFixed(0)+'%'), trendStr(fundB?.gross_margin_pct, v=>v.toFixed(0)+'%')),
-    cmpRow(`${t?'Net Debt':'חוב נטו'} ${trendLabel}`, lastVal(fundA?.net_debt), lastVal(fundB?.net_debt), v=>fmtCompactMoney(v), false,
-      trendStr(fundA?.net_debt, fmtCompactShort), trendStr(fundB?.net_debt, fmtCompactShort)),
-    cmpRow(`${t?'Diluted EPS':'EPS מדולל'} ${trendLabel}`, lastVal(fundA?.diluted_eps), lastVal(fundB?.diluted_eps), v=>v.toFixed(2), true,
-      trendStr(fundA?.diluted_eps, v=>v.toFixed(2)), trendStr(fundB?.diluted_eps, v=>v.toFixed(2))),
+    cmpRow(t?'Price':'מחיר', looks.map(l=>l?.price), v=>'$'+v),
+    cmpRow(t?'Daily Change %':'שינוי יומי %', looks.map(l=>l?.change_pct), v=>v.toFixed(2)+'%', true),
+    cmpRow(t?'Market Cap':'שווי שוק', looks.map(l=>l?.market_cap), v=>fmtCompactMoney(v), true),
+    cmpRow(t?'Swing Score':'ציון סריקה', latestSignal.map(s=>s?.swing_score), v=>String(v), true),
+    cmpRow('RS Rating', latestSignal.map(s=>s?.rs_rating), v=>String(v), true),
+    cmpRow(t?'Trailing P/E (LTM)':'מכפיל P/E (LTM)', funds.map(f=>f?.trailing_pe), v=>v.toFixed(1), false),
+    cmpRow(`${t?'Revenue':'הכנסות'} ${trendLabel}`, funds.map(f=>lastVal(f?.revenue)), v=>fmtCompactMoney(v), true,
+      funds.map(f=>trendStr(f?.revenue, fmtCompactShort))),
+    cmpRow(`${t?'Net Income':'רווח נקי'} ${trendLabel}`, funds.map(f=>lastVal(f?.net_income)), v=>fmtCompactMoney(v), true,
+      funds.map(f=>trendStr(f?.net_income, fmtCompactShort))),
+    cmpRow(`FCF ${trendLabel}`, funds.map(f=>lastVal(f?.fcf)), v=>fmtCompactMoney(v), true,
+      funds.map(f=>trendStr(f?.fcf, fmtCompactShort))),
+    cmpRow(`${t?'Gross Margin %':'שולי רווח גולמי %'} ${trendLabel}`, gm, v=>v.toFixed(1)+'%', true,
+      funds.map(f=>trendStr(f?.gross_margin_pct, v=>v.toFixed(0)+'%'))),
+    cmpRow(`${t?'Net Debt':'חוב נטו'} ${trendLabel}`, funds.map(f=>lastVal(f?.net_debt)), v=>fmtCompactMoney(v), false,
+      funds.map(f=>trendStr(f?.net_debt, fmtCompactShort))),
+    cmpRow(`${t?'Diluted EPS':'EPS מדולל'} ${trendLabel}`, funds.map(f=>lastVal(f?.diluted_eps)), v=>v.toFixed(2), true,
+      funds.map(f=>trendStr(f?.diluted_eps, v=>v.toFixed(2)))),
   ];
 
-  const noteA = (!lookA && !fundA?.has_fundamentals) ? `<div class="fund-empty">${t?`Couldn't load data for ${tA}.`:`לא ניתן היה לטעון נתונים עבור ${tA}.`}</div>` : '';
-  const noteB = (!lookB && !fundB?.has_fundamentals) ? `<div class="fund-empty">${t?`Couldn't load data for ${tB}.`:`לא ניתן היה לטעון נתונים עבור ${tB}.`}</div>` : '';
+  const notes = tickerList.map((tk,i) => (!looks[i] && !funds[i]?.has_fundamentals)
+    ? `<div class="fund-empty">${t?`Couldn't load data for ${tk}.`:`לא ניתן היה לטעון נתונים עבור ${tk}.`}</div>` : '').join('');
+
+  const headCells = tickerList.map(tk => `
+    <div class="cmp-ticker">
+      ${n>2 ? `<span class="cmp-remove" onclick="removeFromCompare('${tk}')" title="${t?'Remove':'הסר'}">✕</span>` : ''}
+      ${tk}<span class="cmp-open-full" onclick="showTickerDrawer('${tk}')">${t?'open full ↗':'פתח מלא ↗'}</span>
+    </div>
+  `).join('');
 
   el.innerHTML = `
     <div class="fund-section-title">${t?'Comparison':'השוואת מניות'}</div>
-    <div class="cmp-head">
-      <div class="cmp-ticker">${tB}<span class="cmp-open-full" onclick="showTickerDrawer('${tB}')">${t?'open full ↗':'פתח מלא ↗'}</span></div>
-      <div></div>
-      <div class="cmp-ticker">${tA}<span class="cmp-open-full" onclick="showTickerDrawer('${tA}')">${t?'open full ↗':'פתח מלא ↗'}</span></div>
+    <div class="cmp-head" style="grid-template-columns:1.1fr repeat(${n},1fr);">
+      <div></div>${headCells}
     </div>
+    <div id="cmp-price-chart-wrap"></div>
     ${rows.join('')}
-    ${noteA}${noteB}
-    <button class="close-compare-btn" onclick="document.getElementById('compare-section').innerHTML=''">${t?'Close comparison':'סגור השוואה'}</button>
+    ${notes}
+    ${n<3 ? `<button class="cmp-add-btn" onclick="openAddToCompare()">+ ${t?'Add a third stock':'הוסף מניה שלישית'}</button>` : ''}
+    <button class="close-compare-btn" onclick="document.getElementById('compare-section').innerHTML=''; compareTickerList=[];">${t?'Close comparison':'סגור השוואה'}</button>
   `;
+
+  loadComparePriceChart(tickerList);
+}
+
+const COMPARE_LINE_COLORS = ['#e8a33d', '#5b8def', '#3ecf7e'];
+
+async function loadComparePriceChart(tickerList){
+  const wrap = document.getElementById('cmp-price-chart-wrap');
+  if(!wrap) return;
+  const t = lang==='en';
+  const periods = ['1M','3M','6M','YTD','1Y'];
+  const tabsHtml = periods.map(p =>
+    `<button class="chart-tab ${p===comparePeriod?'active':''}" onclick="switchComparePeriod('${p}')">${p}</button>`
+  ).join('');
+  wrap.innerHTML = `
+    <div style="display:flex;justify-content:flex-end;gap:4px;margin-bottom:6px;">${tabsHtml}</div>
+    <div class="bt-chart-wrap" style="height:220px;"><canvas id="cmp-price-canvas"></canvas></div>
+  `;
+
+  const cacheKey = tickerList.join(',') + '|' + comparePeriod;
+  let data = comparePriceCache[cacheKey];
+  if(!data){
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/api/price-compare?tickers=${tickerList.join(',')}&period=${comparePeriod}`, 25000);
+      if(!res.ok) throw new Error('bad response');
+      data = await res.json();
+      comparePriceCache[cacheKey] = data;
+    } catch(e) {
+      console.warn('[compare] price chart load failed', e);
+      const chartWrap = document.getElementById('cmp-price-canvas')?.parentElement;
+      if(chartWrap) chartWrap.innerHTML = `<div class="fund-empty" style="height:100%;display:flex;align-items:center;justify-content:center;">${t?'Could not load price chart.':'לא ניתן לטעון גרף מחירים.'}</div>`;
+      return;
+    }
+  }
+  renderComparePriceChart(data, tickerList);
+}
+
+function switchComparePeriod(period){
+  comparePeriod = period;
+  loadComparePriceChart(compareTickerList);
+}
+
+let comparePriceChartInstance = null;
+function renderComparePriceChart(data, tickerList){
+  const canvas = document.getElementById('cmp-price-canvas');
+  if(!canvas || typeof Chart === 'undefined') return;
+  const t = lang==='en';
+  if(comparePriceChartInstance) comparePriceChartInstance.destroy();
+  const datasets = (data.series||[]).map((s,i) => ({
+    label: s.ticker,
+    data: s.values,
+    borderColor: COMPARE_LINE_COLORS[i % COMPARE_LINE_COLORS.length],
+    backgroundColor: 'transparent',
+    borderWidth: 1.8,
+    pointRadius: 0,
+    tension: 0.1,
+    spanGaps: true,
+  }));
+  comparePriceChartInstance = new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: { labels: data.dates, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: true, position: 'top', labels: { color: '#8a93a3', font: { size: 11 }, boxWidth: 12 } },
+        tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y>=0?'+':''}${ctx.parsed.y?.toFixed(1)}%` } }
+      },
+      scales: {
+        x: { display: false },
+        y: { position: 'right', grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8a93a3', font: { size: 10 }, callback: v=>v+'%' } }
+      }
+    }
+  });
 }
 
 // ---- Clock ----
