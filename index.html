@@ -339,7 +339,7 @@
 <body>
 
 <header>
-  <div class="logo">
+  <div class="logo" onclick="setPage('home')" style="cursor:pointer;">
     <div class="mark"></div>
     <div>
       <h1>Swing Desk</h1>
@@ -351,7 +351,7 @@
     <button class="search-btn" onclick="handleSearch()" id="search-btn-label">חפש</button>
   </div>
   <div style="display:flex;align-items:center;gap:12px;">
-    <button class="info-badge-btn" onclick="openInfoModal()" title="מקורות המידע">ⓘ</button>
+    <button class="info-badge-btn" id="info-badge-btn" onclick="openInfoModal()" title="מקורות המידע">ⓘ</button>
     <button id="lang-toggle" onclick="toggleLang()" style="background:var(--panel);border:1px solid var(--line);color:var(--text-dim);border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;font-family:'JetBrains Mono',monospace;transition:all .15s;" onmouseover="this.style.borderColor='var(--amber)'" onmouseout="this.style.borderColor='var(--line)'">EN</button>
     <div class="clock mono" id="clock"></div>
   </div>
@@ -392,8 +392,8 @@
       <div class="chart-tabs" id="chart-tabs-container">
         <button class="chart-tab active" onclick="switchChart('SPY')">SPY</button>
         <button class="chart-tab" onclick="switchChart('QQQ')">QQQ</button>
-        <button class="chart-tab" onclick="switchChart('GLD')">GLD (זהב)</button>
-        <button class="chart-tab" onclick="switchChart('IWM')">IWM (ראסל)</button>
+        <button class="chart-tab" onclick="switchChart('GLD')">GLD (<span id="chart-tab-gld-label">זהב</span>)</button>
+        <button class="chart-tab" onclick="switchChart('IWM')">IWM (<span id="chart-tab-iwm-label">ראסל</span>)</button>
         <button class="chart-tab" onclick="switchChart('BTCUSD')">Bitcoin</button>
       </div>
       <div id="market-tv-chart"></div>
@@ -439,7 +439,7 @@
 <div id="page-pulse" style="display:none;">
   <div class="pulse-page-wrap">
     <div class="pulse-section-head">
-      <div class="pulse-section-title">מפת חום</div>
+      <div class="pulse-section-title" id="heatmap-title">מפת חום</div>
       <div class="movers-toggle">
         <button class="movers-toggle-btn active" id="heatmap-toggle-sp500" onclick="setHeatmapIndex('sp500')">S&P 500</button>
         <button class="movers-toggle-btn" id="heatmap-toggle-nasdaq100" onclick="setHeatmapIndex('nasdaq100')">Nasdaq 100</button>
@@ -448,7 +448,7 @@
     <div class="heatmap-grid" id="heatmap-grid"></div>
 
     <div class="pulse-section-head" style="margin-top:24px;">
-      <div class="pulse-section-title">מדד סנטימנט שוק (Fear &amp; Greed)</div>
+      <div class="pulse-section-title" id="feargreed-title">מדד סנטימנט שוק (Fear &amp; Greed)</div>
     </div>
     <div id="fear-greed-wrap"></div>
   </div>
@@ -476,13 +476,13 @@
   <div class="pulse-page-wrap">
     <div class="dd-search-row">
       <input type="text" id="dd-ticker-input" class="news-search-input" placeholder="הקלד טיקר... (למשל AAPL)" style="max-width:280px;" onkeydown="if(event.key==='Enter') loadDeepDive()">
-      <button class="search-btn" onclick="loadDeepDive()">חפש</button>
+      <button class="search-btn" id="dd-search-btn" onclick="loadDeepDive()">חפש</button>
     </div>
     <div id="deepdive-content"></div>
   </div>
 </div>
 
-<div class="disclaimer-strip">
+<div class="disclaimer-strip" id="disclaimer-strip">
   התוכן להמחשה בלבד ואינו מהווה ייעוץ השקעות או המלצה לביצוע עסקה.
 </div>
 
@@ -705,7 +705,7 @@ function renderSectorFilter(){
   });
   const sectors = ['הכל', ...allSectors];
   el.innerHTML = sectors.map(s=>`
-    <button class="sector-btn ${s===activeSector?'active':''}" onclick="setSector('${s}')">${s}</button>
+    <button class="sector-btn ${s===activeSector?'active':''}" onclick="setSector('${s}')">${s==='הכל'?UI[lang].sector_all:s}</button>
   `).join("");
 }
 
@@ -2081,24 +2081,24 @@ function openDrawer(i){
     <div class="ai-box">
       <div class="label">${lang==='en'?'Match Reason':'סיבת ההתאמה'}</div>
       <div style="font-weight:600;margin-bottom:6px;">${triggerText}</div>
-      ${s.summary||s.ai_summary_he||'זוהתה פריצה טכנית עם נפח גבוה מהממוצע.'}
+      ${s.summary||s.ai_summary_he||(lang==='en'?'A technical breakout was detected on above-average volume.':'זוהתה פריצה טכנית עם נפח גבוה מהממוצע.')}
       ${renderPatternStatsBlurb(s.patternType)}
     </div>
     <div id="fundamentals-section"></div>
     <div class="gauge-wrap">
       <div class="gauge-num" style="color:${s.score>=60?'var(--green)':'var(--amber)'}">${s.score}</div>
-      <div class="gauge-label">ציון עוצמה טכנית (0–100)</div>
+      <div class="gauge-label">${lang==='en'?'Technical Strength Score (0–100)':'ציון עוצמה טכנית (0–100)'}</div>
     </div>
     <div class="stat-grid">
-      <div class="stat"><div class="k">מחיר כניסה</div><div class="v">$${s.entry||'—'}</div></div>
-      <div class="stat"><div class="k">רמת תמיכה</div><div class="v">$${s.support||'—'}</div></div>
-      <div class="stat"><div class="k">יעד 1</div><div class="v">$${s.resistance?.[0]||'—'}</div></div>
-      <div class="stat"><div class="k">יעד 2</div><div class="v">$${s.resistance?.[1]||'—'}</div></div>
+      <div class="stat"><div class="k">${lang==='en'?'Entry Price':'מחיר כניסה'}</div><div class="v">$${s.entry||'—'}</div></div>
+      <div class="stat"><div class="k">${lang==='en'?'Support Level':'רמת תמיכה'}</div><div class="v">$${s.support||'—'}</div></div>
+      <div class="stat"><div class="k">${lang==='en'?'Target 1':'יעד 1'}</div><div class="v">$${s.resistance?.[0]||'—'}</div></div>
+      <div class="stat"><div class="k">${lang==='en'?'Target 2':'יעד 2'}</div><div class="v">$${s.resistance?.[1]||'—'}</div></div>
     </div>
     <div class="news-section">
       <div class="ai-box" style="margin-bottom:0;">
-        <div class="label">חדשות אחרונות</div>
-        <div id="stock-news-list">טוען חדשות...</div>
+        <div class="label">${lang==='en'?'Recent News':'חדשות אחרונות'}</div>
+        <div id="stock-news-list">${lang==='en'?'Loading news...':'טוען חדשות...'}</div>
       </div>
     </div>
     <button class="compare-btn" onclick="openCompare('${s.ticker}')">⇄ ${lang==='en'?'Compare with another stock':'השווה מול מניה אחרת'}</button>
@@ -2123,20 +2123,20 @@ function openMacroDrawer(i, fromSearch){
       <button class="close-btn" onclick="closeDrawer()">✕</button>
     </div>
     <div class="stat-grid" style="grid-template-columns:1fr 1fr;">
-      <div class="stat"><div class="k">רמת חשיבות</div><div class="v" style="color:${m.impact==='Critical'?'var(--red)':'var(--teal)'}">${m.impact==='Critical'?'קריטית':'גבוהה'}</div></div>
-      <div class="stat"><div class="k">מקור</div><div class="v" style="font-size:12px;">${m.source||'—'}</div></div>
+      <div class="stat"><div class="k">${lang==='en'?'Importance':'רמת חשיבות'}</div><div class="v" style="color:${m.impact==='Critical'?'var(--red)':'var(--teal)'}">${m.impact==='Critical'?(lang==='en'?'Critical':'קריטית'):(lang==='en'?'High':'גבוהה')}</div></div>
+      <div class="stat"><div class="k">${lang==='en'?'Source':'מקור'}</div><div class="v" style="font-size:12px;">${m.source||'—'}</div></div>
     </div>
     <div class="ai-box">
       <div class="label">${lang==='en'?'Summary':'תקציר'}</div>
       ${getNewsText(m)}
     </div>
-    ${(lang==='he' && m.hook_he) ? `<div class="ai-box"><div class="label">💡 למה זה חשוב</div>${m.hook_he}</div>` : ''}
+    ${(lang==='he' && m.hook_he) ? `<div class="ai-box"><div class="label">💡 ${lang==='en'?'Why this matters':'למה זה חשוב'}</div>${m.hook_he}</div>` : ''}
     <div class="ai-box">
       <div class="label">${lang==='en'?'Affected Sectors':'סקטורים מושפעים'}</div>
       ${m.sectors||m.sector||'—'}
     </div>
     <div class="macro-time" style="margin-bottom:14px;">${m.time}</div>
-    ${m.link&&m.link!=='#'?`<button class="deep-btn" onclick="window.open('${m.link}','_blank')">לכתבה המקורית ←</button>`:''}
+    ${m.link&&m.link!=='#'?`<button class="deep-btn" onclick="window.open('${m.link}','_blank')">${lang==='en'?'To original article ←':'לכתבה המקורית ←'}</button>`:''}
   `;
   document.getElementById("overlay").classList.add("open");
   track('view_macro', m.tag);
@@ -2166,14 +2166,14 @@ async function loadStockNews(ticker){
     const res = await fetch(`${API_BASE}/api/stock-news/${ticker}`);
     if(!res.ok) throw new Error();
     const items = await res.json();
-    if(!items.length){ el.innerHTML=`<div class="macro-time">לא נמצאו כתבות עדכניות</div>`; return; }
+    if(!items.length){ el.innerHTML=`<div class="macro-time">${lang==='en'?'No recent articles found':'לא נמצאו כתבות עדכניות'}</div>`; return; }
     el.innerHTML = items.map(n=>`
       <div class="news-item">
         <a href="${n.link}" target="_blank" rel="noopener">${n.title}</a>
         <div class="macro-time">${n.publisher||''}</div>
       </div>
     `).join("");
-  } catch { el.innerHTML=`<div class="macro-time">לא ניתן לטעון חדשות כרגע</div>`; }
+  } catch { el.innerHTML=`<div class="macro-time">${lang==='en'?'Could not load news right now':'לא ניתן לטעון חדשות כרגע'}</div>`; }
 }
 
 // ---- Fundamentals (quarterly financials, EPS surprises, P/E band) ----
@@ -2691,13 +2691,13 @@ async function showTickerDrawer(ticker){
   drawer.innerHTML = `
     <div class="drawer-head"><h2>${ticker} <span class="watchlist-star ${watchlistTickers.has(ticker)?'active':''}" id="watchlist-star-${ticker}" onclick="toggleWatchlist('${ticker}')" title="${lang==='en'?'Add/remove from watchlist':'הוסף/הסר מרשימת המעקב'}">★</span></h2><button class="close-btn" onclick="closeDrawer()">✕</button></div>
     <div id="tv-chart" class="tv-chart-box"></div>
-    <div class="ai-box" id="loading-box">טוען נתונים...</div>
+    <div class="ai-box" id="loading-box">${lang==='en'?'Loading data...':'טוען נתונים...'}</div>
   `;
   document.getElementById("overlay").classList.add("open");
   renderTradingViewChart(ticker);
   try {
     const res = await fetch(`${API_BASE}/api/lookup/${ticker}`);
-    if(!res.ok){ document.getElementById("loading-box").textContent="לא נמצא מידע נוסף, מציג גרף בלבד."; return; }
+    if(!res.ok){ document.getElementById("loading-box").textContent=lang==='en'?"No further info found, showing chart only.":"לא נמצא מידע נוסף, מציג גרף בלבד."; return; }
     const d = await res.json();
     const changeColor = d.change_pct>=0?'var(--green)':'var(--red)';
     document.getElementById("loading-box").remove();
@@ -2706,19 +2706,19 @@ async function showTickerDrawer(ticker){
       <div id="fundamentals-section"></div>
       <div class="gauge-wrap">
         <div class="gauge-num" style="color:${changeColor}">$${d.price}</div>
-        <div class="gauge-label">שינוי יומי: <span style="color:${changeColor}">${d.change_pct}%</span></div>
+        <div class="gauge-label">${lang==='en'?'Daily Change':'שינוי יומי'}: <span style="color:${changeColor}">${d.change_pct}%</span></div>
       </div>
       <div class="stat-grid">
-        <div class="stat"><div class="k">שווי שוק</div><div class="v">${d.market_cap?(d.market_cap/1e9).toFixed(1)+'B$':'—'}</div></div>
-        <div class="stat"><div class="k">נפח ממוצע 20י</div><div class="v">${d.avg_volume_20d?Math.round(d.avg_volume_20d/1e6)+'M':'—'}</div></div>
-        <div class="stat"><div class="k">שיא 52 שבועות</div><div class="v">$${d.week52_high??'—'}</div></div>
-        <div class="stat"><div class="k">שפל 52 שבועות</div><div class="v">$${d.week52_low??'—'}</div></div>
-        <div class="stat"><div class="k">סקטור</div><div class="v" style="font-size:11px;">${d.sector||'—'}</div></div>
-        <div class="stat"><div class="k">מכפיל P/E</div><div class="v">${d.pe_ratio?d.pe_ratio.toFixed(1):'—'}</div></div>
+        <div class="stat"><div class="k">${lang==='en'?'Market Cap':'שווי שוק'}</div><div class="v">${d.market_cap?(d.market_cap/1e9).toFixed(1)+'B$':'—'}</div></div>
+        <div class="stat"><div class="k">${lang==='en'?'Avg Vol 20d':'נפח ממוצע 20י'}</div><div class="v">${d.avg_volume_20d?Math.round(d.avg_volume_20d/1e6)+'M':'—'}</div></div>
+        <div class="stat"><div class="k">${lang==='en'?'52w High':'שיא 52 שבועות'}</div><div class="v">$${d.week52_high??'—'}</div></div>
+        <div class="stat"><div class="k">${lang==='en'?'52w Low':'שפל 52 שבועות'}</div><div class="v">$${d.week52_low??'—'}</div></div>
+        <div class="stat"><div class="k">${lang==='en'?'Sector':'סקטור'}</div><div class="v" style="font-size:11px;">${d.sector||'—'}</div></div>
+        <div class="stat"><div class="k">${lang==='en'?'P/E Ratio':'מכפיל P/E'}</div><div class="v">${d.pe_ratio?d.pe_ratio.toFixed(1):'—'}</div></div>
       </div>
       <div class="ai-box">
-        <div class="label">חדשות אחרונות</div>
-        <div id="stock-news-list">טוען חדשות...</div>
+        <div class="label">${lang==='en'?'Recent News':'חדשות אחרונות'}</div>
+        <div id="stock-news-list">${lang==='en'?'Loading news...':'טוען חדשות...'}</div>
       </div>
       <button class="compare-btn" onclick="openCompare('${ticker}')">⇄ ${lang==='en'?'Compare with another stock':'השווה מול מניה אחרת'}</button>
       <button class="compare-btn" style="border-color:var(--amber);color:var(--amber);" onclick='openRiskCalc(${JSON.stringify({entry:d.price, stop:d.week52_low, target:d.week52_high})})'>🧮 ${lang==='en'?'Position Size Calculator':'מחשבון גודל פוזיציה'}</button>
@@ -2727,7 +2727,7 @@ async function showTickerDrawer(ticker){
     loadStockNews(ticker);
     loadFundamentals(ticker);
     track('search_stock', ticker);
-  } catch { document.getElementById("loading-box").textContent="לא ניתן להתחבר לשרת כרגע."; }
+  } catch { document.getElementById("loading-box").textContent=lang==='en'?"Could not connect to the server right now.":"לא ניתן להתחבר לשרת כרגע."; }
 }
 
 async function handleSearch(){
@@ -3081,14 +3081,18 @@ const statusEl = document.createElement("div");
 statusEl.style.cssText="position:fixed;bottom:12px;left:16px;font-size:11px;font-family:'JetBrains Mono',monospace;padding:4px 9px;border-radius:6px;z-index:60;";
 document.body.appendChild(statusEl);
 
+let lastConnectedState = null;
 function setStatus(connected, connecting){
+  lastConnectedState = {connected, connecting};
   if(connecting){
-    statusEl.textContent = "● מתחבר לשרת (ייתכן שהתעורר משינה)...";
+    statusEl.textContent = lang==='en' ? "● Connecting to server (may be waking up)..." : "● מתחבר לשרת (ייתכן שהתעורר משינה)...";
     statusEl.style.background = "rgba(232,163,61,.15)";
     statusEl.style.color = "var(--amber)";
     return;
   }
-  statusEl.textContent = connected?"● מחובר ל-API":"● נתוני דמו (ה-API לא זמין)";
+  statusEl.textContent = connected
+    ? (lang==='en' ? "● Connected to API" : "● מחובר ל-API")
+    : (lang==='en' ? "● Demo data (API unavailable)" : "● נתוני דמו (ה-API לא זמין)");
   statusEl.style.background = connected?"rgba(62,207,126,.15)":"rgba(232,163,61,.15)";
   statusEl.style.color = connected?"var(--green)":"var(--amber)";
 }
@@ -3327,6 +3331,24 @@ const UI = {
     previous_stocks_title: 'ימים קודמים',
     movers_title: 'הכי זזות היום בשוק',
     movers_empty: 'אין עדיין נתוני שינוי יומי להצגה',
+    nav_home: 'בית',
+    nav_pulse: 'פעימת השוק',
+    info_badge_title: 'מקורות המידע',
+    mode_indices: 'מדדים',
+    mode_sectors: 'סקטורים',
+    gld_label: 'זהב',
+    iwm_label: 'ראסל',
+    movers_hot: 'הכי זזות',
+    movers_watchlist_toggle: 'רשימת מעקב',
+    watchlist_add_title: 'הוסף מניה',
+    heatmap_title: 'מפת חום',
+    feargreed_title: 'מדד סנטימנט שוק (Fear &amp; Greed)',
+    backtest_title: 'בדיקה היסטורית',
+    horizon_10: '10 ימים',
+    horizon_20: '20 ימים',
+    dd_search_btn: 'חפש',
+    disclaimer: 'התוכן להמחשה בלבד ואינו מהווה ייעוץ השקעות או המלצה לביצוע עסקה.',
+    sector_all: 'הכל',
   },
   en: {
     sub: 'Real-time trading dashboard',
@@ -3349,13 +3371,34 @@ const UI = {
     previous_stocks_title: 'Previous Days',
     movers_title: "Today's Biggest Movers",
     movers_empty: 'No daily change data yet',
+    nav_home: 'Home',
+    nav_pulse: 'Market Pulse',
+    info_badge_title: 'Data Sources',
+    mode_indices: 'Indices',
+    mode_sectors: 'Sectors',
+    gld_label: 'Gold',
+    iwm_label: 'Russell',
+    movers_hot: 'Top Movers',
+    movers_watchlist_toggle: 'Watchlist',
+    watchlist_add_title: 'Add stock',
+    heatmap_title: 'Heatmap',
+    feargreed_title: 'Market Sentiment Index (Fear &amp; Greed)',
+    backtest_title: 'Backtest',
+    horizon_10: '10 Days',
+    horizon_20: '20 Days',
+    dd_search_btn: 'Search',
+    disclaimer: 'Content is for illustrative purposes only and does not constitute investment advice or a recommendation to execute any transaction.',
+    sector_all: 'All',
   }
 };
 
 function applyLang(){
   const t = UI[lang];
-  document.documentElement.setAttribute('dir', t.dir);
+  // dir stays fixed regardless of language so the layout never mirrors/swaps sides —
+  // only the text itself changes when switching between Hebrew and English.
+  document.documentElement.setAttribute('dir', 'rtl');
   document.documentElement.setAttribute('lang', lang === 'he' ? 'he' : 'en');
+  document.title = lang==='en' ? 'Swing Desk — Real-time trading dashboard' : 'Swing Desk — דשבורד מסחר';
   document.getElementById('header-sub').textContent = t.sub;
   document.getElementById('search-input').placeholder = t.search_placeholder;
   document.getElementById('search-input-mobile').placeholder = t.search_placeholder;
@@ -3368,9 +3411,29 @@ function applyLang(){
   document.querySelector('.left .col-title').innerHTML = `<span class="dot"></span> ${t.macro_title}`;
   document.querySelector('.market-charts-title').textContent = t.charts_title;
   document.getElementById('movers-title').textContent = t.movers_title;
+  document.getElementById('page-nav-home').textContent = t.nav_home;
+  document.getElementById('page-nav-pulse').textContent = t.nav_pulse;
   document.getElementById('page-nav-backtest').textContent = t.nav_backtest;
   document.getElementById('page-nav-deepdive').textContent = t.nav_deepdive;
   document.getElementById('dd-ticker-input').placeholder = t.dd_placeholder;
+  document.getElementById('info-badge-btn').title = t.info_badge_title;
+  document.getElementById('mode-btn-indices').textContent = t.mode_indices;
+  document.getElementById('mode-btn-sectors').textContent = t.mode_sectors;
+  document.getElementById('chart-tab-gld-label').textContent = t.gld_label;
+  document.getElementById('chart-tab-iwm-label').textContent = t.iwm_label;
+  document.getElementById('movers-toggle-hot').textContent = t.movers_hot;
+  document.getElementById('movers-toggle-watchlist').textContent = t.movers_watchlist_toggle;
+  document.getElementById('watchlist-add-btn').title = t.watchlist_add_title;
+  document.getElementById('heatmap-title').textContent = t.heatmap_title;
+  document.getElementById('feargreed-title').innerHTML = t.feargreed_title;
+  document.getElementById('backtest-title').textContent = t.backtest_title;
+  document.getElementById('backtest-horizon-10').textContent = t.horizon_10;
+  document.getElementById('backtest-horizon-20').textContent = t.horizon_20;
+  document.getElementById('dd-search-btn').textContent = t.dd_search_btn;
+  document.getElementById('disclaimer-strip').textContent = t.disclaimer;
+  if(typeof lastConnectedState !== 'undefined' && lastConnectedState !== null){
+    setStatus(lastConnectedState.connected, lastConnectedState.connecting);
+  }
 
   // Rebuild stocks and macro arrays from raw API data in the active language
   if(rawStocks.length > 0){
