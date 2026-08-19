@@ -1008,6 +1008,31 @@ def get_conn():
     return psycopg2.connect(DB_URL)
 
 
+# GitHub Actions' `schedule` trigger isn't guaranteed to fire exactly on
+# time (documented delays during high load, especially at popular
+# round-number minutes). To compensate we run this workflow twice per
+# session (a primary trigger + a backup ~15 min later) instead of once.
+# This guard makes that safe: if the primary already completed a scan
+# recently, the backup run exits immediately instead of scanning twice
+# and writing duplicate rows for the same session.
+MIN_MINUTES_BETWEEN_SCANS = 90
+
+
+def should_skip_scan(conn):
+    cur = conn.cursor()
+    cur.execute("SELECT MAX(timestamp) FROM scanned_stocks;")
+    last_ts = cur.fetchone()[0]
+    cur.close()
+    if last_ts is None:
+        return False
+    age_minutes = (datetime.now(timezone.utc) - last_ts).total_seconds() / 60
+    if age_minutes < MIN_MINUTES_BETWEEN_SCANS:
+        print(f"[info] last scan was {age_minutes:.0f} min ago (< {MIN_MINUTES_BETWEEN_SCANS}) "
+              f"— skipping, this run is treated as a backup trigger for the same session.")
+        return True
+    return False
+
+
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
@@ -1639,6 +1664,14 @@ def backfill_forward_returns():
 
 def main():
     init_db()
+
+    guard_conn = get_conn()
+    try:
+        if should_skip_scan(guard_conn):
+            return
+    finally:
+        guard_conn.close()
+
     backfill_forward_returns()
     # scan_universe() takes several minutes (network calls to Yahoo Finance
     # for every ticker) and doesn't touch the database at all during that
