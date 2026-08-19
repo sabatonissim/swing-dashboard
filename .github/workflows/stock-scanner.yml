@@ -1,15 +1,26 @@
-name: Stock Scanner (twice daily)
+name: Stock Scanner (twice daily, each with a backup trigger)
 
 on:
   schedule:
-    # Times are in UTC. Converted for 16:40 / 22:50 Israel time.
+    # Times are in UTC. Converted for Israel time (summer/DST: UTC+3).
     # Israel uses UTC+3 in daylight saving (roughly late Mar–late Oct) and
     # UTC+2 the rest of the year — cron doesn't auto-adjust for that, so
     # these times will drift by 1 hour when the clocks change. If you
     # notice the scan running an hour off after a seasonal change, that's
-    # why — just ask and these two lines get updated.
-    - cron: '40 13 * * *'   # 16:40 Israel (summer/DST)
-    - cron: '50 19 * * *'   # 22:50 Israel (summer/DST)
+    # why — just ask and these lines get updated.
+    #
+    # Each session below has two triggers: a primary and a backup ~15 min
+    # later. GitHub Actions' `schedule` isn't guaranteed to fire exactly
+    # on time — it can be delayed, especially at popular round-number
+    # minutes (:00, :15, :30, :45). Using off-peak minutes plus a backup
+    # trigger makes the actual scan time much more consistent. The
+    # scanner itself skips the backup run if the primary already
+    # completed a scan recently (see should_skip_scan in
+    # pipeline_a_scanner.py), so this never double-scans.
+    - cron: '37 13 * * *'   # 16:37 Israel (summer/DST) — primary, morning session
+    - cron: '52 13 * * *'   # 16:52 Israel (summer/DST) — backup, morning session
+    - cron: '47 19 * * *'   # 22:47 Israel (summer/DST) — primary, evening session
+    - cron: '2 20 * * *'    # 23:02 Israel (summer/DST) — backup, evening session
   workflow_dispatch: {}
 
 jobs:
