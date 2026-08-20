@@ -500,6 +500,16 @@ def detect_descending_trendline_breakout(hist: pd.DataFrame) -> Optional[dict]:
     today_close = window["Close"].iloc[-1]
 
     if today_close > trendline_value_today:
+        # Freshness check (see detect_horizontal_resistance_breakout for
+        # why): only flag this as a breakout if yesterday's close was
+        # still at/below the trendline. Otherwise a stock that broke the
+        # descending trendline a while ago and kept climbing away from it
+        # would re-flag every single day.
+        if len(window) >= 2:
+            trendline_value_yesterday = slope * (today_idx - 1) + intercept
+            prev_close = window["Close"].iloc[-2]
+            if prev_close > trendline_value_yesterday:
+                return None
         return {
             "trendline_value": float(trendline_value_today),
             "breakout_price": float(today_close),
@@ -560,6 +570,18 @@ def detect_horizontal_resistance_breakout(hist: pd.DataFrame, lookback: int = 15
     if not broken:
         return None
     level, touches = max(broken, key=lambda x: x[0])
+
+    # Freshness check: this must be the level's breakout DAY, not a level
+    # price cleared long ago and has simply stayed above since. Without
+    # this, a stock that broke out weeks/months back and kept climbing
+    # would re-flag the same stale level on every single scan forever.
+    # Yesterday's close must NOT have already cleared it — the cross has
+    # to happen on today's candle.
+    if len(window) >= 2:
+        prev_close = float(window["Close"].iloc[-2])
+        if prev_close >= level * (1 + MIN_BREAKOUT_PCT):
+            return None
+
     return {"level": round(level, 2), "touches": touches, "breakout_pct": round((today_close/level - 1) * 100, 2)}
 
 
@@ -753,6 +775,12 @@ def detect_ascending_triangle(hist: pd.DataFrame) -> Optional[dict]:
     # breakout above resistance
     today_close = float(closes[-1])
     if today_close > resistance:
+        # Freshness check (see detect_horizontal_resistance_breakout for
+        # why): yesterday's close must not have already cleared the
+        # resistance, or this is a stale breakout from days/weeks ago
+        # re-triggering, not today's actual move.
+        if len(closes) >= 2 and float(closes[-2]) > resistance:
+            return None
         return {"resistance": round(float(resistance), 2)}
     return None
 
