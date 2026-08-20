@@ -1353,7 +1353,15 @@ def get_heatmap(index: str = Query(default="sp500", pattern="^(sp500|nasdaq100)$
     treemap tile sizing) for the Market Pulse page. Reuses
     universe_movers — already populated by every scan run with the whole
     universe's daily change and market cap, tagged by index membership —
-    so this needs zero extra yfinance calls of its own."""
+    so this needs zero extra yfinance calls of its own.
+
+    Also attaches each ticker's GICS sector (from the same CSV-sourced
+    S&P 500 info map used for sector-comparison — no extra API calls),
+    so the frontend can group the treemap by sector like TradingView's
+    heatmap. Nasdaq-100 names not in that S&P 500 list (or without a
+    resolvable sector) fall back to an "Other" bucket rather than being
+    dropped from the map.
+    """
     column = "in_sp500" if index == "sp500" else "in_nasdaq100"
     with db_cursor(dict_cursor=True) as (conn, cur):
         cur.execute(
@@ -1365,7 +1373,14 @@ def get_heatmap(index: str = Query(default="sp500", pattern="^(sp500|nasdaq100)$
             """
         )
         rows = cur.fetchall()
-    return {"index": index, "count": len(rows), "stocks": [dict(r) for r in rows]}
+    info_map = get_sp500_info_map()
+    stocks = []
+    for r in rows:
+        d = dict(r)
+        sector = info_map.get(d["ticker"], {}).get("sector")
+        d["sector"] = sector or "Other"
+        stocks.append(d)
+    return {"index": index, "count": len(stocks), "stocks": stocks}
 
 
 # ------------------------------------------------------------------

@@ -264,6 +264,8 @@
   .heatmap-tile:hover{filter:brightness(1.25);z-index:2;}
   .heatmap-tile .ticker{font-family:'JetBrains Mono',monospace;font-weight:700;color:#0a0a0a;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;}
   .heatmap-tile .pct{font-family:'JetBrains Mono',monospace;color:#0a0a0a;opacity:.85;line-height:1.15;white-space:nowrap;}
+  .heatmap-sector-box{position:absolute;box-sizing:border-box;border:1px solid var(--line);border-radius:3px;overflow:hidden;}
+  .heatmap-sector-label{position:absolute;box-sizing:border-box;top:0;left:0;right:0;height:20px;line-height:20px;font-size:10.5px;color:var(--text-dim);padding:0 8px;background:var(--panel-2);border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .fg-gauge-box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;text-align:center;}
   .fg-score{font-family:'JetBrains Mono',monospace;font-size:46px;font-weight:700;}
   .fg-rating{font-size:15px;font-weight:700;margin-top:4px;}
@@ -1525,24 +1527,55 @@ function renderHeatmap(stocks){
   // tickers vanishing from the map entirely.
   const FALLBACK_WEIGHT = 2e9;
   const items = stocks
-    .map(s => ({ ticker: s.ticker, pct: s.change_pct==null?0:s.change_pct, weight: (s.market_cap && s.market_cap>0) ? s.market_cap : FALLBACK_WEIGHT }))
+    .map(s => ({ ticker: s.ticker, pct: s.change_pct==null?0:s.change_pct, sector: s.sector || 'Other', weight: (s.market_cap && s.market_cap>0) ? s.market_cap : FALLBACK_WEIGHT }));
+
+  // Grouped by sector (GICS name from the backend), like TradingView's own
+  // heatmap: sectors are laid out as their own treemap (sized by total
+  // sector market cap), and each sector gets its own labeled box with a
+  // sub-treemap of its own tickers inside — instead of one flat wall of
+  // tiles with no sense of which stocks share an industry.
+  const bySector = new Map();
+  for(const it of items){
+    if(!bySector.has(it.sector)) bySector.set(it.sector, []);
+    bySector.get(it.sector).push(it);
+  }
+  const SECTOR_LABEL_H = 20;
+  const sectorAgg = Array.from(bySector.entries())
+    .map(([sector, list]) => ({ sector, weight: list.reduce((s,d)=>s+d.weight,0), list }))
     .sort((a,b) => b.weight - a.weight);
 
-  const laidOut = computeTreemap(items, width, height);
+  const sectorRects = computeTreemap(sectorAgg, width, height);
 
-  el.innerHTML = laidOut.map(d => {
-    const areaPx = d.w * d.h;
-    // Font sizes scale with tile area so small-cap tiles don't overflow
-    // their own box, and the % is dropped entirely below a size where it
-    // wouldn't be legible anyway.
-    const tickerSize = Math.max(9, Math.min(16, Math.sqrt(areaPx) / 6));
-    const showPct = d.w > 40 && d.h > 28;
-    const pctSize = Math.max(8, tickerSize - 3);
-    return `<div class="heatmap-tile" style="left:${d.x}px;top:${d.y}px;width:${d.w}px;height:${d.h}px;background:${heatmapColor(d.pct)}" onclick="showTickerDrawer('${d.ticker}')" title="${d.ticker} ${d.pct>=0?'+':''}${d.pct.toFixed(1)}%">
-      <div class="ticker" style="font-size:${tickerSize}px;">${d.ticker}</div>
-      ${showPct ? `<div class="pct" style="font-size:${pctSize}px;">${d.pct>=0?'+':''}${d.pct.toFixed(1)}%</div>` : ''}
-    </div>`;
-  }).join('');
+  let html = '';
+  for(const sr of sectorRects){
+    // Sectors laid out too small to hold a header + any real tile still
+    // get their border (keeps the grouping visible) but skip the label
+    // to avoid an unreadable sliver of text.
+    const showLabel = sr.h >= SECTOR_LABEL_H + 24 && sr.w >= 60;
+    const innerY = showLabel ? sr.y + SECTOR_LABEL_H : sr.y;
+    const innerH = showLabel ? sr.h - SECTOR_LABEL_H : sr.h;
+    html += `<div class="heatmap-sector-box" style="left:${sr.x}px;top:${sr.y}px;width:${sr.w}px;height:${sr.h}px;"></div>`;
+    if(showLabel){
+      html += `<div class="heatmap-sector-label" style="left:${sr.x}px;top:${sr.y}px;width:${sr.w}px;">${sr.sector}</div>`;
+    }
+
+    const list = sr.list.slice().sort((a,b) => b.weight - a.weight);
+    const laidOut = computeTreemap(list, sr.w, Math.max(innerH, 1));
+    for(const d of laidOut){
+      const areaPx = d.w * d.h;
+      // Font sizes scale with tile area so small-cap tiles don't overflow
+      // their own box, and the % is dropped entirely below a size where it
+      // wouldn't be legible anyway.
+      const tickerSize = Math.max(9, Math.min(16, Math.sqrt(areaPx) / 6));
+      const showPct = d.w > 40 && d.h > 28;
+      const pctSize = Math.max(8, tickerSize - 3);
+      html += `<div class="heatmap-tile" style="left:${sr.x + d.x}px;top:${innerY + d.y}px;width:${d.w}px;height:${d.h}px;background:${heatmapColor(d.pct)}" onclick="showTickerDrawer('${d.ticker}')" title="${d.ticker} ${d.pct>=0?'+':''}${d.pct.toFixed(1)}%">
+        <div class="ticker" style="font-size:${tickerSize}px;">${d.ticker}</div>
+        ${showPct ? `<div class="pct" style="font-size:${pctSize}px;">${d.pct>=0?'+':''}${d.pct.toFixed(1)}%</div>` : ''}
+      </div>`;
+    }
+  }
+  el.innerHTML = html;
 
   // Re-layout on container resize (window resize, sidebar toggle, mobile
   // rotation) instead of leaving stale pixel positions from a different
