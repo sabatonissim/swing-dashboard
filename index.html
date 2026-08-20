@@ -64,8 +64,8 @@
   .chart-tab{padding:5px 13px;border-radius:20px;font-size:12px;font-family:'JetBrains Mono',monospace;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--text-dim);transition:all .15s;}
   .chart-tab.active{background:var(--amber);color:#1a1300;border-color:var(--amber);font-weight:700;}
   .chart-tab:hover:not(.active){border-color:var(--amber-dim);color:var(--text);}
-  #market-tv-chart{height:220px;border-radius:10px;overflow:hidden;background:var(--panel);direction:ltr;}
-  .sector-chart-wrap{height:220px;border-radius:10px;overflow:hidden;background:var(--panel);border:1px solid var(--line);padding:8px;box-sizing:border-box;}
+  #market-tv-chart{height:260px;border-radius:10px;overflow:hidden;background:var(--panel);direction:ltr;}
+  .sector-chart-wrap{height:260px;border-radius:10px;overflow:hidden;background:var(--panel);border:1px solid var(--line);padding:8px;box-sizing:border-box;}
   .pct-up{color:var(--green);}
   .pct-down{color:var(--red);}
 
@@ -86,7 +86,7 @@
   .watchlist-add-btn:hover{opacity:.85;}
   .watchlist-star{cursor:pointer;font-size:15px;line-height:1;user-select:none;color:var(--text-dim);}
   .watchlist-star.active{color:var(--amber);}
-  .movers-list{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px 10px;height:220px;overflow-y:auto;}
+  .movers-list{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px 10px;height:260px;overflow-y:auto;}
   .movers-list::-webkit-scrollbar{width:5px;}
   .movers-list::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px;}
   .mover-row{display:flex;align-items:center;gap:10px;padding:7px 2px;border-bottom:1px solid var(--line);cursor:pointer;}
@@ -1355,8 +1355,9 @@ function switchChart(symbol){
     locale: lang==='en' ? 'en' : 'he_IL',
     toolbar_bg:'#161a20',
     hide_side_toolbar:true,
+    hide_top_toolbar:true,
     allow_symbol_change:false,
-    height:220,
+    height:260,
     width:'100%',
     save_image:false,
   });
