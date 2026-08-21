@@ -260,12 +260,12 @@
   .pulse-section-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;}
   .pulse-section-title{font-size:13px;letter-spacing:1px;color:var(--text-dim);text-transform:uppercase;}
   .heatmap-grid{position:relative;width:100%;overflow:hidden;border-radius:8px;}
-  .heatmap-tile{position:absolute;box-sizing:border-box;border:1px solid var(--bg);border-radius:2px;padding:4px 6px;cursor:pointer;transition:filter .1s;overflow:hidden;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;}
-  .heatmap-tile:hover{filter:brightness(1.25);z-index:2;}
+  .heatmap-tile{position:absolute;box-sizing:border-box;border:1px solid var(--bg);border-radius:2px;padding:4px 6px;cursor:pointer;transition:filter .1s;overflow:hidden;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;z-index:1;}
+  .heatmap-tile:hover{filter:brightness(1.25);z-index:3;}
   .heatmap-tile .ticker{font-family:'JetBrains Mono',monospace;font-weight:700;color:#0a0a0a;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;}
   .heatmap-tile .pct{font-family:'JetBrains Mono',monospace;color:#0a0a0a;opacity:.85;line-height:1.15;white-space:nowrap;}
-  .heatmap-sector-box{position:absolute;box-sizing:border-box;border:1px solid var(--line);border-radius:3px;overflow:hidden;}
-  .heatmap-sector-label{position:absolute;box-sizing:border-box;top:0;left:0;right:0;height:20px;line-height:20px;font-size:10.5px;color:var(--text-dim);padding:0 8px;background:var(--panel-2);border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .heatmap-sector-box{position:absolute;box-sizing:border-box;border:1px solid var(--line);border-radius:3px;overflow:hidden;pointer-events:none;z-index:0;}
+  .heatmap-sector-label{position:absolute;box-sizing:border-box;height:20px;line-height:20px;font-size:10.5px;color:var(--text-dim);padding:0 8px;background:var(--panel-2);border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none;z-index:2;direction:ltr;text-align:start;}
   .fg-gauge-box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;text-align:center;}
   .fg-score{font-family:'JetBrains Mono',monospace;font-size:46px;font-weight:700;}
   .fg-rating{font-size:15px;font-weight:700;margin-top:4px;}
