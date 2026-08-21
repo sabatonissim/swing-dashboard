@@ -1546,17 +1546,29 @@ function renderHeatmap(stocks){
 
   const sectorRects = computeTreemap(sectorAgg, width, height);
 
+  // A visible gutter between sector groups — without insetting each
+  // sector's rendered box a couple px from its computed edges, two
+  // adjacent full-size sectors only differ by a single shared 1px
+  // border, which reads as no separation at all once real tile colors
+  // are on both sides of it (this was the actual bug: big sectors like
+  // Technology/Financials/Communication Services blended into one mass
+  // with no visible boundary or label, while small ones like Health
+  // Care/Energy happened to have enough contrast to still look distinct).
+  const GUTTER = 3;
+
   let html = '';
-  for(const sr of sectorRects){
-    // Sectors laid out too small to hold a header + any real tile still
-    // get their border (keeps the grouping visible) but skip the label
-    // to avoid an unreadable sliver of text.
-    const showLabel = sr.h >= SECTOR_LABEL_H + 24 && sr.w >= 60;
+  for(const sr0 of sectorRects){
+    const sr = { ...sr0, x: sr0.x + GUTTER/2, y: sr0.y + GUTTER/2, w: sr0.w - GUTTER, h: sr0.h - GUTTER };
+    if(sr.w <= 0 || sr.h <= 0) continue;
+    // Only skip the label on a sliver too short to hold one legible line —
+    // anything bigger always gets one (ellipsized if the box is narrow),
+    // so no sector — big or small — silently loses its heading.
+    const showLabel = sr.h >= SECTOR_LABEL_H + 6;
     const innerY = showLabel ? sr.y + SECTOR_LABEL_H : sr.y;
     const innerH = showLabel ? sr.h - SECTOR_LABEL_H : sr.h;
     html += `<div class="heatmap-sector-box" style="left:${sr.x}px;top:${sr.y}px;width:${sr.w}px;height:${sr.h}px;"></div>`;
     if(showLabel){
-      html += `<div class="heatmap-sector-label" style="left:${sr.x}px;top:${sr.y}px;width:${sr.w}px;">${sr.sector}</div>`;
+      html += `<div class="heatmap-sector-label" style="left:${sr.x}px;top:${sr.y}px;width:${sr.w}px;">${sr.sector} ›</div>`;
     }
 
     const list = sr.list.slice().sort((a,b) => b.weight - a.weight);
