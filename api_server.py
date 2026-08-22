@@ -11,6 +11,8 @@ Endpoints:
     GET /api/ui-strings?lang=he  -> UI text dictionary for a given language
     GET /api/market-movers       -> whole-US-market today's biggest movers
     GET /api/sector-performance  -> the 11 SPDR sector ETFs: 1D table + normalized period chart
+    GET /api/heatmap             -> S&P 500 / Nasdaq 100 sector-grouped treemap data
+    GET /api/earnings-calendar   -> this week's earnings dates for notable/large-cap names
 
 CORS is open for local development. Lock this down (allow_origins) before
 deploying publicly.
@@ -1381,6 +1383,34 @@ def get_heatmap(index: str = Query(default="sp500", pattern="^(sp500|nasdaq100)$
         d["sector"] = sector or "Other"
         stocks.append(d)
     return {"index": index, "count": len(stocks), "stocks": stocks}
+
+
+@app.get("/api/earnings-calendar")
+def get_earnings_calendar():
+    """This week's earnings calendar — deliberately notable-names-only
+    (the scanner keeps just the top ~40 by market cap among tickers
+    reporting in the window; see update_earnings_calendar in
+    pipeline_a_scanner.py), similar to the popular "Earnings Whispers"
+    weekly roundup rather than a wall of every ticker reporting. Costs
+    zero extra yfinance calls since it reuses info already fetched
+    during the regular scan."""
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute(
+            """
+            SELECT ticker, report_date, session, market_cap
+            FROM earnings_calendar
+            ORDER BY report_date ASC, market_cap DESC
+            """
+        )
+        rows = cur.fetchall()
+    info_map = get_sp500_info_map()
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["report_date"] = d["report_date"].isoformat() if d["report_date"] else None
+        d["name"] = info_map.get(d["ticker"], {}).get("name")
+        items.append(d)
+    return {"count": len(items), "items": items}
 
 
 # ------------------------------------------------------------------

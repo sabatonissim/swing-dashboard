@@ -58,6 +58,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -1111,6 +1112,16 @@ def init_db():
     cur.execute("ALTER TABLE universe_movers ADD COLUMN IF NOT EXISTS in_sp500 BOOLEAN DEFAULT FALSE;")
     cur.execute("ALTER TABLE universe_movers ADD COLUMN IF NOT EXISTS in_nasdaq100 BOOLEAN DEFAULT FALSE;")
     cur.execute("ALTER TABLE universe_movers ADD COLUMN IF NOT EXISTS market_cap REAL;")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS earnings_calendar (
+            ticker TEXT NOT NULL,
+            report_date DATE NOT NULL,
+            session TEXT,
+            market_cap REAL,
+            updated_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (ticker, report_date)
+        );
+    """)
     conn.commit()
     cur.close()
     conn.close()
@@ -1291,6 +1302,9 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
                                      # a reliable fallback for the movers strip if Yahoo's
                                      # whole-market screener endpoint is unavailable, since
                                      # this uses .history(), the endpoint proven to work here.
+    earnings_candidates: List[tuple] = []  # (ticker, market_cap, earnings_timestamp) — piggybacks
+                                     # on the .info fetch every ticker already gets above, so the
+                                     # weekly earnings calendar costs zero extra yfinance calls.
     benchmark_rets = fetch_benchmark_returns()
     rs_raw_by_ticker: Dict[str, float] = {}  # computed for every ticker fetched, used for
                                               # percentile ranking after the full loop below
@@ -1333,6 +1347,9 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
                 # size instead of every ticker getting an identical box.
                 _mcap = (info or {}).get("marketCap")
                 all_changes.append((ticker, _chg, round(_close_now, 2), _mcap))
+                _earnings_ts = (info or {}).get("earningsTimestamp")
+                if _earnings_ts:
+                    earnings_candidates.append((ticker, _mcap, _earnings_ts))
             except Exception as e:
                 print(f"[warn] change_pct calc failed for {ticker}: {e}")
 
@@ -1584,6 +1601,7 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
                 result.ai_summary_he += f" דירוג RS {rating}/99 — התבנית מתרחשת על מניה שפחות מובילה את השוק, רמת ביטחון נמוכה יותר."
 
     upsert_universe_movers(all_changes)
+    update_earnings_calendar(earnings_candidates)
     return results
 
 
@@ -1619,6 +1637,85 @@ def upsert_universe_movers(all_changes: List[tuple]):
     cur.close()
     conn.close()
     print(f"Updated universe_movers fallback table for {len(all_changes)} tickers.")
+
+
+# Weekly earnings calendar. This deliberately does NOT check the whole
+# universe (that would double the scan's yfinance calls, and the user
+# specifically only wants "interesting" — i.e. large/well-known — names,
+# similar to the popular "Earnings Whispers" Twitter-style weekly
+# roundup, not a wall of every micro-cap reporting). It costs zero extra
+# calls: earnings_candidates was built during the scan's normal .info
+# fetch already performed for every ticker anyway.
+EARNINGS_CALENDAR_TOP_N = 40          # how many notable names to keep, by market cap
+EARNINGS_CALENDAR_WINDOW_PAST_DAYS = 2    # still show a report from a couple days ago
+EARNINGS_CALENDAR_WINDOW_FUTURE_DAYS = 7  # ...through the coming week
+
+
+def _earnings_session(dt_utc: datetime) -> str:
+    """Before-open / after-close / during-market, based on the Eastern
+    Time hour of the reported earnings timestamp (yfinance gives this in
+    UTC as a unix timestamp)."""
+    try:
+        et = dt_utc.astimezone(ZoneInfo("America/New_York"))
+    except Exception:
+        et = dt_utc
+    if et.hour < 9 or (et.hour == 9 and et.minute < 30):
+        return "bmo"
+    if et.hour >= 16:
+        return "amc"
+    return "unknown"
+
+
+def update_earnings_calendar(earnings_candidates: List[tuple]):
+    """earnings_candidates: (ticker, market_cap, earnings_timestamp)."""
+    if not earnings_candidates:
+        return
+    today = datetime.now(timezone.utc).date()
+    window_start = today - timedelta(days=EARNINGS_CALENDAR_WINDOW_PAST_DAYS)
+    window_end = today + timedelta(days=EARNINGS_CALENDAR_WINDOW_FUTURE_DAYS)
+
+    in_window = []
+    for ticker, mcap, ts in earnings_candidates:
+        try:
+            dt_utc = datetime.fromtimestamp(ts, tz=timezone.utc)
+        except Exception:
+            continue
+        if window_start <= dt_utc.date() <= window_end:
+            in_window.append((ticker, mcap or 0, dt_utc))
+
+    # Keep only the top N by market cap — "interesting"/notable names,
+    # not the full list of everyone reporting that week.
+    in_window.sort(key=lambda r: r[1], reverse=True)
+    top = in_window[:EARNINGS_CALENDAR_TOP_N]
+    if not top:
+        print("[info] earnings calendar: nothing in this week's window among notable names.")
+        return
+
+    conn = get_conn()
+    cur = conn.cursor()
+    # Full replace each run — the notable-names watchlist naturally shifts
+    # scan to scan (market caps move, new tickers enter the window), and
+    # a plain DELETE+INSERT is far simpler than reconciling stale rows
+    # for tickers that fell out of the top N or whose date got corrected.
+    cur.execute("DELETE FROM earnings_calendar;")
+    for ticker, mcap, dt_utc in top:
+        cur.execute(
+            """
+            INSERT INTO earnings_calendar (ticker, report_date, session, market_cap, updated_at)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (ticker, report_date) DO UPDATE SET
+                session = EXCLUDED.session,
+                market_cap = EXCLUDED.market_cap,
+                updated_at = EXCLUDED.updated_at
+            """,
+            (ticker, dt_utc.date().isoformat(), _earnings_session(dt_utc), _native(mcap),
+             datetime.now(timezone.utc).isoformat()),
+        )
+    conn.commit()
+    cur.close()
+    conn.close()
+    print(f"[info] earnings calendar: {len(top)} notable tickers reporting "
+          f"{window_start.isoformat()}..{window_end.isoformat()}.")
 
 
 # ------------------------------------------------------------------

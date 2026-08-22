@@ -267,6 +267,16 @@
   .heatmap-sector-box{position:absolute;box-sizing:border-box;border:1px solid var(--line);border-radius:3px;overflow:hidden;pointer-events:none;z-index:0;}
   .heatmap-sector-label{position:absolute;box-sizing:border-box;height:20px;line-height:20px;font-size:10.5px;color:var(--text-dim);padding:0 8px;background:var(--panel-2);border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none;z-index:2;direction:ltr;text-align:start;}
   .fg-gauge-box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;text-align:center;}
+  .earnings-cal-day{margin-bottom:16px;}
+  .earnings-cal-day-label{font-size:11px;letter-spacing:1px;color:var(--text-dim);text-transform:uppercase;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--line);}
+  .earnings-cal-row{display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid var(--line);}
+  .earnings-cal-row:last-child{border-bottom:none;}
+  .earnings-cal-ticker{font-family:'JetBrains Mono',monospace;font-weight:700;min-width:64px;}
+  .earnings-cal-name{color:var(--text-dim);font-size:12.5px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .earnings-cal-session{font-size:10.5px;padding:2px 8px;border-radius:20px;white-space:nowrap;}
+  .earnings-cal-session.bmo{background:rgba(62,207,126,.15);color:var(--green);}
+  .earnings-cal-session.amc{background:rgba(122,162,255,.15);color:#7aa2ff;}
+  .earnings-cal-session.unknown{background:rgba(255,255,255,.06);color:var(--text-dim);}
   .fg-score{font-family:'JetBrains Mono',monospace;font-size:46px;font-weight:700;}
   .fg-rating{font-size:15px;font-weight:700;margin-top:4px;}
   .fg-bar-track{height:10px;border-radius:5px;background:linear-gradient(90deg,#ef5b5b,#e8a33d,#3ecf7e);margin:16px 0 8px;position:relative;}
@@ -454,6 +464,11 @@
       <div class="pulse-section-title" id="feargreed-title">מדד סנטימנט שוק (Fear &amp; Greed)</div>
     </div>
     <div id="fear-greed-wrap"></div>
+
+    <div class="pulse-section-head" style="margin-top:24px;">
+      <div class="pulse-section-title" id="earnings-cal-title">יומן דוחות השבוע</div>
+    </div>
+    <div id="earnings-cal-wrap"></div>
   </div>
 </div>
 
@@ -1385,6 +1400,7 @@ function setPage(page){
     pulseLoaded = true;
     loadHeatmap(heatmapIndex);
     loadFearGreed();
+    loadEarningsCalendar();
   }
   if(page === 'backtest' && !backtestLoaded){
     backtestLoaded = true;
@@ -1679,6 +1695,68 @@ function renderFearGreed(data){
       ${componentsHtml ? `<div class="fg-components">${componentsHtml}</div>` : ''}
     </div>
   `;
+}
+
+// ---- Weekly earnings calendar (notable/large-cap names only) ----
+let lastEarningsCalItems = null;
+
+async function loadEarningsCalendar(){
+  const el = document.getElementById('earnings-cal-wrap');
+  if(el) el.innerHTML = `<div class="movers-empty">${UI[lang].loading}</div>`;
+  try {
+    const res = await fetch(`${API_BASE}/api/earnings-calendar`);
+    if(!res.ok) throw new Error('bad response');
+    const data = await res.json();
+    renderEarningsCalendar(data.items || []);
+  } catch(e) {
+    console.error('[earnings-calendar] load failed', e);
+    const t = lang==='en';
+    if(el) el.innerHTML = `<div class="movers-empty">${t?'Could not load the earnings calendar right now.':'לא ניתן לטעון את יומן הדוחות כרגע.'}</div>`;
+  }
+}
+
+function renderEarningsCalendar(items){
+  lastEarningsCalItems = items;
+  const el = document.getElementById('earnings-cal-wrap');
+  if(!el) return;
+  const t = UI[lang];
+  if(!items.length){
+    el.innerHTML = `<div class="movers-empty">${t.earnings_cal_empty}</div>`;
+    return;
+  }
+
+  const todayStr = new Date().toISOString().slice(0,10);
+  const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1);
+  const tomorrowStr = tomorrow.toISOString().slice(0,10);
+  const dayFormatter = new Intl.DateTimeFormat(lang==='en' ? 'en-US' : 'he-IL', { weekday:'long', month:'short', day:'numeric' });
+
+  const byDay = new Map();
+  for(const it of items){
+    if(!byDay.has(it.report_date)) byDay.set(it.report_date, []);
+    byDay.get(it.report_date).push(it);
+  }
+  const days = Array.from(byDay.keys()).sort();
+
+  el.innerHTML = days.map(dateStr => {
+    let label;
+    if(dateStr === todayStr) label = t.today_label;
+    else if(dateStr === tomorrowStr) label = t.tomorrow_label;
+    else label = dayFormatter.format(new Date(dateStr + 'T12:00:00'));
+
+    const rows = byDay.get(dateStr).map(it => {
+      const sessionLabel = it.session==='bmo' ? t.session_bmo : it.session==='amc' ? t.session_amc : t.session_unknown;
+      return `<div class="earnings-cal-row">
+        <div class="earnings-cal-ticker">${it.ticker}</div>
+        <div class="earnings-cal-name">${it.name || ''}</div>
+        <div class="earnings-cal-session ${it.session||'unknown'}">${sessionLabel}</div>
+      </div>`;
+    }).join('');
+
+    return `<div class="earnings-cal-day">
+      <div class="earnings-cal-day-label">${label}</div>
+      ${rows}
+    </div>`;
+  }).join('');
 }
 
 
@@ -3396,6 +3474,13 @@ const UI = {
     dd_search_btn: 'חפש',
     disclaimer: 'התוכן להמחשה בלבד ואינו מהווה ייעוץ השקעות או המלצה לביצוע עסקה.',
     sector_all: 'הכל',
+    earnings_cal_title: 'יומן דוחות השבוע',
+    earnings_cal_empty: 'אין דיווחי תוצאות צפויים השבוע בקרב החברות הגדולות שאנחנו עוקבים אחריהן.',
+    session_bmo: 'לפני הפתיחה',
+    session_amc: 'אחרי הסגירה',
+    session_unknown: 'במהלך המסחר',
+    today_label: 'היום',
+    tomorrow_label: 'מחר',
   },
   en: {
     sub: 'Real-time trading dashboard',
@@ -3436,6 +3521,13 @@ const UI = {
     dd_search_btn: 'Search',
     disclaimer: 'Content is for illustrative purposes only and does not constitute investment advice or a recommendation to execute any transaction.',
     sector_all: 'All',
+    earnings_cal_title: "This Week's Earnings Calendar",
+    earnings_cal_empty: 'No earnings reports expected this week among the large-cap names we track.',
+    session_bmo: 'Before Open',
+    session_amc: 'After Close',
+    session_unknown: 'During Market',
+    today_label: 'Today',
+    tomorrow_label: 'Tomorrow',
   }
 };
 
@@ -3473,6 +3565,8 @@ function applyLang(){
   document.getElementById('watchlist-add-btn').title = t.watchlist_add_title;
   document.getElementById('heatmap-title').textContent = t.heatmap_title;
   document.getElementById('feargreed-title').innerHTML = t.feargreed_title;
+  document.getElementById('earnings-cal-title').textContent = t.earnings_cal_title;
+  if(lastEarningsCalItems) renderEarningsCalendar(lastEarningsCalItems);
   document.getElementById('backtest-title').textContent = t.backtest_title;
   document.getElementById('backtest-horizon-10').textContent = t.horizon_10;
   document.getElementById('backtest-horizon-20').textContent = t.horizon_20;
