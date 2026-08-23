@@ -403,6 +403,70 @@ def detect_ascending_trendline_support(hist: pd.DataFrame) -> Optional[dict]:
     return None
 
 
+def detect_ma150_support_bounce(hist: pd.DataFrame) -> Optional[dict]:
+    """The 150-day MA acting as dynamic support in an uptrend — price
+    pulls back to (or slightly through) the line and bounces off it, the
+    way a stock can repeatedly "respect" its 150-day average for months
+    before eventually breaking it (the ANET reference chart from the
+    request: repeated bounces off the rising 150 MA, each one a decent
+    entry, until it finally broke down through it).
+
+    Distinct from detect_ascending_trendline_support (a diagonal line
+    fit through swing lows) — this uses the 150-day SMA itself as the
+    level being tested, which is a specific, widely-watched level for
+    a lot of technical traders rather than a subjective trendline.
+
+    Requires: the 150 MA itself sloping up (confirms a genuine uptrend,
+    not a flat/declining average some other price action happens to sit
+    near), price was clearly trading above the MA in the days just
+    before the touch (a pullback within an uptrend, not a stock already
+    stuck below a falling average), today's low came within
+    BOUNCE_TOLERANCE_PCT of the MA, and today's close finished back
+    above it (a bounce, not a breakdown through it).
+    """
+    BOUNCE_TOLERANCE_PCT = 0.03   # today's low must come within 3% of the MA to count as "testing" it
+    MIN_PRIOR_ABOVE_PCT = 0.7     # at least 70% of the 10 closes before today were above the MA
+
+    if len(hist) < 170:
+        return None
+    closes = hist["Close"]
+    sma150 = closes.rolling(150).mean()
+    if sma150.isna().iloc[-21:].any():
+        return None
+
+    slope = float(sma150.iloc[-1] - sma150.iloc[-20])
+    if slope <= 0:
+        return None  # MA itself isn't rising -> not a genuine uptrend to "respect"
+
+    ma_today = float(sma150.iloc[-1])
+    if ma_today <= 0:
+        return None
+
+    today_low = float(hist["Low"].iloc[-1])
+    today_close = float(closes.iloc[-1])
+
+    distance_pct = abs(today_low - ma_today) / ma_today
+    if distance_pct > BOUNCE_TOLERANCE_PCT:
+        return None
+    if today_close <= ma_today:
+        return None  # still below/at the MA -> not a confirmed bounce yet
+
+    # Confirm this is a pullback within an uptrend, not a stock that was
+    # already sitting below the MA for a while (that's more like a
+    # breakout setup — see detect_ma150_breakout below — than one
+    # "respecting support").
+    prior_closes = closes.iloc[-11:-1]
+    prior_sma = sma150.iloc[-11:-1]
+    prior_above = (prior_closes > prior_sma).mean()
+    if prior_above < MIN_PRIOR_ABOVE_PCT:
+        return None
+
+    return {
+        "ma150": round(ma_today, 2),
+        "distance_pct": round(distance_pct * 100, 1),
+    }
+
+
 def detect_horizontal_level_bounce(hist: pd.DataFrame, lookback: int = 150) -> Optional[dict]:
     """The AMZN/AVGO pattern from the request: price repeatedly testing the
     SAME horizontal price level (not a diagonal trendline — that's
@@ -809,6 +873,40 @@ def detect_golden_cross(hist: pd.DataFrame) -> Optional[dict]:
                 "sma50": round(float(sma50.iloc[-1]), 2),
                 "sma200": round(float(sma200.iloc[-1]), 2),
             }
+    return None
+
+
+def detect_ma150_breakout(hist: pd.DataFrame) -> Optional[dict]:
+    """Price reclaiming the 150-day MA after being below it — often an
+    early signal of a stock going from basing/downtrend into recovery.
+    The ANET reference chart from the request shows this exact sequence:
+    repeated bounces off the MA while it acted as support, then a
+    breakdown through it (the MA flips to resistance for a while), and
+    finally a breakout back above it that led into a strong sustained
+    uptrend — "worth knowing about" per the request, as a possible good
+    entry point.
+
+    Freshness-checked like the other breakout detectors in this file:
+    yesterday's close must still have been at/below the MA, with today
+    the actual crossing day — otherwise a stock that crossed weeks ago
+    and kept climbing away from the MA would re-flag this every scan.
+    """
+    if len(hist) < 160:
+        return None
+    closes = hist["Close"]
+    sma150 = closes.rolling(150).mean()
+    if sma150.isna().iloc[-2:].any():
+        return None
+
+    ma_today = float(sma150.iloc[-1])
+    ma_yesterday = float(sma150.iloc[-2])
+    today_close = float(closes.iloc[-1])
+    prev_close = float(closes.iloc[-2])
+    if ma_today <= 0 or ma_yesterday <= 0:
+        return None
+
+    if prev_close <= ma_yesterday and today_close > ma_today:
+        return {"ma150": round(ma_today, 2)}
     return None
 
 
@@ -1366,6 +1464,7 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         # Run all pattern detectors
         trendline_break  = detect_descending_trendline_breakout(hist)
         asc_trendline    = detect_ascending_trendline_support(hist)
+        ma150_bounce     = detect_ma150_support_bounce(hist)
         level_bounce     = detect_horizontal_level_bounce(hist)
         resistance_break = detect_horizontal_resistance_breakout(hist)
         high_52w         = detect_52w_high_breakout(hist)
@@ -1374,6 +1473,7 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         bull_flag        = detect_bull_flag(hist)
         asc_triangle     = detect_ascending_triangle(hist)
         golden_cross     = detect_golden_cross(hist)
+        ma150_breakout   = detect_ma150_breakout(hist)
         double_bottom    = detect_double_bottom(hist)
         macd_cross       = detect_macd_bullish_crossover(hist)
         rsi_bounce       = detect_rsi_oversold_bounce(hist)
@@ -1389,12 +1489,12 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         # classic false-breakout setup. Structural patterns based on a
         # real, validated support/resistance level (ascending trendline,
         # horizontal support bounce, horizontal resistance breakout, cup
-        # breakout with or without a handle) are exempted per an explicit
-        # request — the level itself, tested and now held/broken, is
-        # considered a strong enough signal on its own even without a
-        # volume spike. 52w-high, bull-flag, ascending-triangle, and
-        # double-bottom breakouts are more purely volume-driven setups by
-        # nature and keep the gate.
+        # breakout with or without a handle, 150-MA support bounce) are
+        # exempted per an explicit request — the level itself, tested and
+        # now held/broken, is considered a strong enough signal on its
+        # own even without a volume spike. 52w-high, bull-flag,
+        # ascending-triangle, double-bottom, and 150-MA breakouts are more
+        # purely volume-driven setups by nature and keep the gate.
         volume_confirmed = vol_pct >= BREAKOUT_VOLUME_THRESHOLD_PCT
         if not volume_confirmed:
             double_bottom = None
@@ -1402,10 +1502,11 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             bull_flag = None
             asc_triangle = None
             trendline_break = None  # descending-trendline breakout — a different, older pattern not part of this request; left gated as before
+            ma150_breakout = None
 
         # Skip if no pattern found at all
-        if not any([trendline_break, asc_trendline, level_bounce, resistance_break, high_52w, momentum, cup_handle, bull_flag,
-                    asc_triangle, golden_cross, double_bottom, macd_cross, rsi_bounce]):
+        if not any([trendline_break, asc_trendline, ma150_bounce, level_bounce, resistance_break, high_52w, momentum, cup_handle, bull_flag,
+                    asc_triangle, golden_cross, ma150_breakout, double_bottom, macd_cross, rsi_bounce]):
             continue
 
         close   = float(hist["Close"].iloc[-1])
@@ -1450,6 +1551,11 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             trigger_he = "פריצת גולדן קרוס (ממוצע 50 יום חצה מעל ממוצע 200 יום)"
             tech_score = min(100, 74 + int(vol_pct / 5))
             pattern_type = "golden_cross"
+        elif ma150_breakout:
+            trigger_en = f"Breaking back above the 150-day MA (~${ma150_breakout['ma150']}) — possible recovery signal"
+            trigger_he = f"פריצה מעל ממוצע 150 יום (סביב ${ma150_breakout['ma150']}) — ייתכן שזה סימן להתאוששות"
+            tech_score = min(100, 73 + int(vol_pct / 5))
+            pattern_type = "ma150_breakout"
         elif bull_flag:
             trigger_en = f"Bull Flag breakout (pole +{bull_flag['pole_pct']}%)"
             trigger_he = f"פריצת דגל שורי (עמוד +{bull_flag['pole_pct']}%)"
@@ -1465,6 +1571,11 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             trigger_he = f"התאוששות מקו מגמה עולה (סביב ${asc_trendline['trendline_value']})"
             tech_score = 69
             pattern_type = "ascending_trendline"
+        elif ma150_bounce:
+            trigger_en = f"Bouncing off the 150-day MA as support (~${ma150_bounce['ma150']}, {ma150_bounce['distance_pct']}% away)"
+            trigger_he = f"התאוששות מממוצע 150 יום כתמיכה (סביב ${ma150_bounce['ma150']}, במרחק {ma150_bounce['distance_pct']}%)"
+            tech_score = 70
+            pattern_type = "ma150_support_bounce"
         elif level_bounce:
             # Score scales gently with touch count — a level tested 4
             # times is more validated (more traders watching it, stronger
