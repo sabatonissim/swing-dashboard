@@ -555,9 +555,66 @@ def health():
         return {"status": "error", "detail": str(e)}
 
 
+_headline_translation_cache: dict = {}
+_HEADLINE_CACHE_MAX = 500  # small personal-use cache; simple cap so it never grows unbounded
+
+
+def _translate_headline_free(text: str) -> str:
+    """Free (no OpenAI cost — matches the user's explicit preference)
+    on-demand translation for live per-stock news headlines, which
+    unlike the batch macro news pipeline aren't pre-translated at scan
+    time. Tries the same two free providers pipeline_b_news_aggregator.py
+    uses; on any failure, just returns the original English rather than
+    blocking the response — a live API request isn't the place for a
+    multi-second retry/backoff loop the way the batch pipeline can afford."""
+    if text in _headline_translation_cache:
+        return _headline_translation_cache[text]
+
+    translated = None
+    try:
+        resp = requests.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={"client": "gtx", "sl": "en", "tl": "he", "dt": "t", "q": text},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        translated = "".join(part[0] for part in data[0] if part[0]) or None
+    except Exception as e:
+        print(f"[warn] stock-news translation (Google gtx) failed: {type(e).__name__}: {e}")
+
+    if not translated:
+        try:
+            resp = requests.get(
+                "https://api.mymemory.translated.net/get",
+                params={"q": text, "langpair": "en|he"},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=5,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            candidate = (data.get("responseData") or {}).get("translatedText")
+            if candidate and data.get("responseStatus") in (200, "200"):
+                translated = candidate
+        except Exception as e:
+            print(f"[warn] stock-news translation (MyMemory) failed: {type(e).__name__}: {e}")
+
+    result = translated or text  # fall back to English rather than showing nothing
+    if len(_headline_translation_cache) >= _HEADLINE_CACHE_MAX:
+        _headline_translation_cache.clear()  # simple reset instead of LRU bookkeeping for this scale
+    _headline_translation_cache[text] = result
+    return result
+
+
 @app.get("/api/stock-news/{ticker}")
-def stock_news(ticker: str, limit: int = 6):
-    """Recent headlines for a specific ticker, via yfinance's built-in feed."""
+def stock_news(ticker: str, limit: int = 6, lang: str = Query(default="en", pattern="^(en|he)$")):
+    """Recent headlines for a specific ticker, via yfinance's built-in feed.
+    These are live, per-request titles from yfinance — not pre-translated
+    at scan time like the macro news feed — so when lang=he each title is
+    run through the same free (no OpenAI cost) translation providers used
+    by pipeline_b_news_aggregator.py, with a small in-memory cache since
+    the same headline gets requested repeatedly while it's current."""
     ticker = ticker.upper().strip()
     try:
         raw_items = yf.Ticker(ticker).news or []
@@ -572,8 +629,10 @@ def stock_news(ticker: str, limit: int = 6):
         publisher = (content.get("provider") or {}).get("displayName") or it.get("publisher")
         published = content.get("pubDate") or it.get("providerPublishTime")
         if title and link:
-            items.append({"title": title, "link": link, "publisher": publisher, "published": published})
+            display_title = _translate_headline_free(title) if lang == "he" else title
+            items.append({"title": display_title, "link": link, "publisher": publisher, "published": published})
     return items
+
 
 
 # ------------------------------------------------------------------
@@ -1391,13 +1450,14 @@ def get_earnings_calendar():
     (the scanner keeps just the top ~40 by market cap among tickers
     reporting in the window; see update_earnings_calendar in
     pipeline_a_scanner.py), similar to the popular "Earnings Whispers"
-    weekly roundup rather than a wall of every ticker reporting. Costs
-    zero extra yfinance calls since it reuses info already fetched
-    during the regular scan."""
+    weekly roundup rather than a wall of every ticker reporting. Once a
+    company has actually reported, eps_actual/surprise_pct are populated
+    (one extra yfinance call per notable ticker only — not the whole
+    universe) so beat/miss results show up here too, not just the date."""
     with db_cursor(dict_cursor=True) as (conn, cur):
         cur.execute(
             """
-            SELECT ticker, report_date, session, market_cap
+            SELECT ticker, report_date, session, market_cap, eps_estimate, eps_actual, surprise_pct
             FROM earnings_calendar
             ORDER BY report_date ASC, market_cap DESC
             """
@@ -1409,6 +1469,7 @@ def get_earnings_calendar():
         d = dict(r)
         d["report_date"] = d["report_date"].isoformat() if d["report_date"] else None
         d["name"] = info_map.get(d["ticker"], {}).get("name")
+        d["reported"] = d["eps_actual"] is not None
         items.append(d)
     return {"count": len(items), "items": items}
 

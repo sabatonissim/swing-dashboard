@@ -277,6 +277,7 @@
   .earnings-cal-session.bmo{background:rgba(62,207,126,.15);color:var(--green);}
   .earnings-cal-session.amc{background:rgba(122,162,255,.15);color:#7aa2ff;}
   .earnings-cal-session.unknown{background:rgba(255,255,255,.06);color:var(--text-dim);}
+  .earnings-cal-eps{font-family:'JetBrains Mono',monospace;font-size:11.5px;white-space:nowrap;}
   .fg-score{font-family:'JetBrains Mono',monospace;font-size:46px;font-weight:700;}
   .fg-rating{font-size:15px;font-weight:700;margin-top:4px;}
   .fg-bar-track{height:10px;border-radius:5px;background:linear-gradient(90deg,#ef5b5b,#e8a33d,#3ecf7e);margin:16px 0 8px;position:relative;}
@@ -1182,7 +1183,7 @@ async function loadDeepDive(){
       fetch(`${API_BASE}/api/lookup/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
       fetchWithTimeout(`${API_BASE}/api/sector-comparison/${ticker}?period=${ddSectorPeriod}`, 30000).then(r => r.ok ? r.json() : Promise.reject()),
       fetch(`${API_BASE}/api/signal-history/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
-      fetch(`${API_BASE}/api/stock-news/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
+      fetch(`${API_BASE}/api/stock-news/${ticker}?lang=${lang}`).then(r => r.ok ? r.json() : Promise.reject()),
       fetchFundamentalsData(ticker),
     ]);
 
@@ -1745,9 +1746,19 @@ function renderEarningsCalendar(items){
 
     const rows = byDay.get(dateStr).map(it => {
       const sessionLabel = it.session==='bmo' ? t.session_bmo : it.session==='amc' ? t.session_amc : t.session_unknown;
+      let epsHtml = '';
+      if(it.reported && it.eps_actual != null){
+        const beat = it.surprise_pct != null && it.surprise_pct >= 0;
+        const color = it.surprise_pct == null ? 'var(--text-dim)' : (beat ? 'var(--green)' : 'var(--red)');
+        const arrow = it.surprise_pct == null ? '' : (beat ? '▲' : '▼');
+        const estPart = it.eps_estimate != null ? ` (${lang==='en'?'est':'צפי'} $${it.eps_estimate.toFixed(2)})` : '';
+        const surprisePart = it.surprise_pct != null ? ` ${arrow} ${Math.abs(it.surprise_pct).toFixed(1)}%` : '';
+        epsHtml = `<div class="earnings-cal-eps" style="color:${color}">EPS $${it.eps_actual.toFixed(2)}${estPart}${surprisePart}</div>`;
+      }
       return `<div class="earnings-cal-row">
         <div class="earnings-cal-ticker">${it.ticker}</div>
         <div class="earnings-cal-name">${it.name || ''}</div>
+        ${epsHtml}
         <div class="earnings-cal-session ${it.session||'unknown'}">${sessionLabel}</div>
       </div>`;
     }).join('');
@@ -2288,7 +2299,7 @@ async function loadStockNews(ticker){
   const el = document.getElementById("stock-news-list");
   if(!el) return;
   try {
-    const res = await fetch(`${API_BASE}/api/stock-news/${ticker}`);
+    const res = await fetch(`${API_BASE}/api/stock-news/${ticker}?lang=${lang}`);
     if(!res.ok) throw new Error();
     const items = await res.json();
     if(!items.length){ el.innerHTML=`<div class="macro-time">${lang==='en'?'No recent articles found':'לא נמצאו כתבות עדכניות'}</div>`; return; }
@@ -3604,12 +3615,6 @@ function toggleLang(){
   lang = lang === 'he' ? 'en' : 'he';
   localStorage.setItem('swing_lang', lang);
   applyLang();
-}
-
-// Patch getNewsText/getStockText to pick right language field from API data
-function getNewsText(item){
-  if(lang === 'en') return item.summary_en || item.text || '';
-  return item.summary_he || item.text || '';
 }
 
 loadFromApi();

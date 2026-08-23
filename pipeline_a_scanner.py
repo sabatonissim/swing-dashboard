@@ -1118,6 +1118,9 @@ def init_db():
             report_date DATE NOT NULL,
             session TEXT,
             market_cap REAL,
+            eps_estimate REAL,
+            eps_actual REAL,
+            surprise_pct REAL,
             updated_at TIMESTAMPTZ NOT NULL,
             PRIMARY KEY (ticker, report_date)
         );
@@ -1666,6 +1669,42 @@ def _earnings_session(dt_utc: datetime) -> str:
     return "unknown"
 
 
+def _fetch_eps_result(ticker: str, report_date) -> tuple:
+    """Actual-vs-estimate EPS for one ticker's report closest to
+    report_date, once it's been reported. Only called for the ~40
+    notable-name tickers already in this week's window — not the whole
+    universe — so this stays a modest, deliberate extra cost (see the
+    note in update_earnings_calendar below).
+
+    Returns (eps_estimate, eps_actual, surprise_pct) — eps_actual and
+    surprise_pct are None until the company has actually reported.
+    """
+    try:
+        df = yf.Ticker(ticker).get_earnings_dates(limit=8)
+    except Exception as e:
+        print(f"[warn] earnings result fetch failed for {ticker}: {e}")
+        return (None, None, None)
+    if df is None or df.empty:
+        return (None, None, None)
+    best_row = None
+    best_diff = None
+    for ts, row in df.iterrows():
+        diff = abs((ts.date() - report_date).days)
+        if best_diff is None or diff < best_diff:
+            best_diff = diff
+            best_row = row
+    if best_row is None:
+        return (None, None, None)
+    eps_est = best_row.get("EPS Estimate")
+    eps_actual = best_row.get("Reported EPS")
+    surprise = best_row.get("Surprise(%)")
+    return (
+        _native(eps_est) if pd.notna(eps_est) else None,
+        _native(eps_actual) if pd.notna(eps_actual) else None,
+        _native(surprise) if pd.notna(surprise) else None,
+    )
+
+
 def update_earnings_calendar(earnings_candidates: List[tuple]):
     """earnings_candidates: (ticker, market_cap, earnings_timestamp)."""
     if not earnings_candidates:
@@ -1691,6 +1730,16 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
         print("[info] earnings calendar: nothing in this week's window among notable names.")
         return
 
+    # One extra yfinance call per notable ticker (~40, not the whole
+    # universe) to pick up the actual reported EPS vs estimate once
+    # available — this is what lets the dashboard show beat/miss
+    # results, not just "who's reporting when".
+    enriched = []
+    for ticker, mcap, dt_utc in top:
+        eps_est, eps_actual, surprise = _fetch_eps_result(ticker, dt_utc.date())
+        enriched.append((ticker, mcap, dt_utc, eps_est, eps_actual, surprise))
+        time.sleep(INTER_TICKER_DELAY_SEC)
+
     conn = get_conn()
     cur = conn.cursor()
     # Full replace each run — the notable-names watchlist naturally shifts
@@ -1698,24 +1747,29 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
     # a plain DELETE+INSERT is far simpler than reconciling stale rows
     # for tickers that fell out of the top N or whose date got corrected.
     cur.execute("DELETE FROM earnings_calendar;")
-    for ticker, mcap, dt_utc in top:
+    for ticker, mcap, dt_utc, eps_est, eps_actual, surprise in enriched:
         cur.execute(
             """
-            INSERT INTO earnings_calendar (ticker, report_date, session, market_cap, updated_at)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO earnings_calendar
+                (ticker, report_date, session, market_cap, eps_estimate, eps_actual, surprise_pct, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (ticker, report_date) DO UPDATE SET
                 session = EXCLUDED.session,
                 market_cap = EXCLUDED.market_cap,
+                eps_estimate = EXCLUDED.eps_estimate,
+                eps_actual = EXCLUDED.eps_actual,
+                surprise_pct = EXCLUDED.surprise_pct,
                 updated_at = EXCLUDED.updated_at
             """,
             (ticker, dt_utc.date().isoformat(), _earnings_session(dt_utc), _native(mcap),
-             datetime.now(timezone.utc).isoformat()),
+             eps_est, eps_actual, surprise, datetime.now(timezone.utc).isoformat()),
         )
     conn.commit()
     cur.close()
     conn.close()
-    print(f"[info] earnings calendar: {len(top)} notable tickers reporting "
-          f"{window_start.isoformat()}..{window_end.isoformat()}.")
+    reported_count = sum(1 for row in enriched if row[4] is not None)
+    print(f"[info] earnings calendar: {len(enriched)} notable tickers reporting "
+          f"{window_start.isoformat()}..{window_end.isoformat()} ({reported_count} already have results).")
 
 
 # ------------------------------------------------------------------

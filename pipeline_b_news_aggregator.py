@@ -306,40 +306,93 @@ GLOSSARY_TERMS = sorted(TERM_GLOSSARY.items(), key=lambda kv: -len(kv[0]))
 
 
 def translate_to_hebrew(text: str) -> str:
-    """Translate to Hebrew using Google Translate via direct HTTP request — free, no API key.
+    """Translate to Hebrew — free, no API key, with two independent
+    providers tried in order and clear logging of exactly what failed.
+
+    Both providers are unofficial/free endpoints, which occasionally
+    block or rate-limit requests coming from cloud/datacenter IP ranges
+    (which is exactly what a GitHub Actions runner is) — that shows up
+    as every headline silently staying in English, with only a generic
+    "[warn] translation failed" in the logs and no way to tell which
+    provider or HTTP status caused it. This version logs the specific
+    status/exception per provider, and falls back to a second provider
+    instead of giving up immediately, so a block on ONE of them doesn't
+    mean 100% of headlines go untranslated.
 
     Known finance/macro terms are masked with placeholders first and
     restored with a fixed correct Hebrew phrase afterward, instead of
-    trusting Google's sentence-dependent guess for those terms. This is
-    the only translation path — no paid API involved anywhere.
+    trusting a translator's sentence-dependent guess for those terms.
     """
-    try:
-        import urllib.parse, urllib.request, json as _json
-        clean = re.sub(r'<[^>]+>', '', text).strip()[:400]
+    import urllib.parse, urllib.request, urllib.error, json as _json, random, time
 
-        placeholders = {}
-        working = clean
-        for idx, (phrase, hebrew) in enumerate(GLOSSARY_TERMS):
-            token = f"Q{idx}Q"
-            working, count = re.subn(r'\b' + re.escape(phrase) + r'\b', token, working, flags=re.IGNORECASE)
-            if count:
-                placeholders[token] = hebrew
+    clean = re.sub(r'<[^>]+>', '', text).strip()[:400]
+    if not clean:
+        return text
 
-        encoded = urllib.parse.quote(working)
-        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=he&dt=t&q={encoded}"
-        req = urllib.request.Request(url, headers={'User-Agent':'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            data = _json.loads(resp.read())
-        result = ''.join(part[0] for part in data[0] if part[0])
-        if not result:
-            return text
+    placeholders = {}
+    working = clean
+    for idx, (phrase, hebrew) in enumerate(GLOSSARY_TERMS):
+        token = f"Q{idx}Q"
+        working, count = re.subn(r'\b' + re.escape(phrase) + r'\b', token, working, flags=re.IGNORECASE)
+        if count:
+            placeholders[token] = hebrew
 
+    def _restore(result: str) -> str:
         for token, hebrew in placeholders.items():
             result = result.replace(token, hebrew)
         return result
-    except Exception as e:
-        print(f"[warn] translation failed: {e}")
-        return text
+
+    encoded = urllib.parse.quote(working)
+
+    # A brief random delay before calling out — free/unofficial endpoints
+    # rate-limit by request *pattern* as much as by volume, and this runs
+    # hourly for a whole batch of headlines back-to-back, which looks
+    # exactly like the bursty traffic they're built to block. Spacing
+    # calls out a little, plus retrying each provider once on failure
+    # before giving up on it, clears a lot of transient blocks that a
+    # single immediate attempt wouldn't.
+    time.sleep(random.uniform(0.4, 1.2))
+
+    def _try_google_gtx() -> Optional[str]:
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=he&dt=t&q={encoded}"
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                          '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+        })
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = _json.loads(resp.read())
+        return ''.join(part[0] for part in data[0] if part[0]) or None
+
+    def _try_mymemory() -> Optional[str]:
+        url = f"https://api.mymemory.translated.net/get?q={encoded}&langpair=en|he"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = _json.loads(resp.read())
+        result = (data.get("responseData") or {}).get("translatedText")
+        status = data.get("responseStatus")
+        if result and status in (200, "200"):
+            return result
+        print(f"[warn] translation (MyMemory): no usable translatedText — responseStatus={status}")
+        return None
+
+    for provider_name, provider_fn in (("Google gtx", _try_google_gtx), ("MyMemory", _try_mymemory)):
+        for attempt in (1, 2):
+            try:
+                result = provider_fn()
+                if result:
+                    return _restore(result)
+                print(f"[warn] translation ({provider_name}) attempt {attempt}: empty result")
+            except urllib.error.HTTPError as e:
+                print(f"[warn] translation ({provider_name}) attempt {attempt} failed: HTTP {e.code}")
+            except Exception as e:
+                print(f"[warn] translation ({provider_name}) attempt {attempt} failed: {type(e).__name__}: {e}")
+            if attempt == 1:
+                time.sleep(random.uniform(1.5, 3.0))  # brief backoff before the same provider's 2nd try
+        print(f"[warn] translation: {provider_name} failed twice, trying next provider")
+
+    print(f"[warn] translation: all providers failed, keeping original English text: {clean[:80]!r}")
+    return text
 
 
 # ------------------------------------------------------------------
@@ -497,8 +550,50 @@ def upsert_macro_news(category_tag: str, summary_he: str,
     return inserted
 
 
+def retry_failed_translations(max_rows: int = 30):
+    """Self-healing pass, run at the start of every pipeline run: because
+    upsert_macro_news uses ON CONFLICT (source_url) DO NOTHING, a story
+    whose translation failed when it was FIRST seen stays stuck in
+    English forever — it never gets touched again once the row exists.
+    This finds recent rows where summary_he has no Hebrew characters at
+    all (a reliable sign translate_to_hebrew fell through to returning
+    the original English) and gives them one more shot. Capped at
+    max_rows per run so a bad stretch doesn't turn into a giant retry
+    burst on top of the run's normal translation load.
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, summary_en FROM macro_news
+        WHERE timestamp > NOW() - INTERVAL '72 hours'
+          AND summary_en IS NOT NULL
+          AND summary_he !~ '[\u05d0-\u05ea]'
+        ORDER BY timestamp DESC
+        LIMIT %s
+        """,
+        (max_rows,),
+    )
+    stuck = cur.fetchall()
+    if not stuck:
+        cur.close()
+        conn.close()
+        return
+    fixed = 0
+    for row_id, summary_en in stuck:
+        retried = translate_to_hebrew(summary_en)
+        if re.search(r'[\u05d0-\u05ea]', retried):
+            cur.execute("UPDATE macro_news SET summary_he = %s WHERE id = %s", (retried, row_id))
+            conn.commit()
+            fixed += 1
+    cur.close()
+    conn.close()
+    print(f"[info] translation retry: fixed {fixed}/{len(stuck)} previously-stuck-in-English headlines.")
+
+
 def run_pipeline_b():
     init_db()
+    retry_failed_translations()
     raw_items = fetch_raw_headlines()
     saved = 0
     skipped_dupe = 0
