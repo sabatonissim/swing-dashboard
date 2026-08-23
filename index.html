@@ -1334,6 +1334,12 @@ function renderDeepDive(quote, sector, signals, news){
       locale: lang==='en' ? 'en' : 'he_IL',
       toolbar_bg: '#161a20', hide_top_toolbar: false, hide_legend: false,
       save_image: false, container_id: 'dd-tv-chart',
+      studies: ["MASimple@tv-basicstudies"],
+      studies_overrides: {
+        "Moving Average.length": 150,
+        "Moving Average.plot.color": "#ef5b5b",
+        "Moving Average.plot.linewidth": 2,
+      },
     });
   }
 }
@@ -1379,6 +1385,12 @@ function switchChart(symbol){
     height:250,
     width:'100%',
     save_image:false,
+    studies: ["MASimple@tv-basicstudies"],
+    studies_overrides: {
+      "Moving Average.length": 150,
+      "Moving Average.plot.color": "#ef5b5b",
+      "Moving Average.plot.linewidth": 2,
+    },
   });
 }
 
@@ -2291,6 +2303,12 @@ function renderTradingViewChart(ticker){
     timezone:"Asia/Jerusalem", theme:"dark", style:"1", locale: lang==='en' ? 'en' : 'he_IL',
     toolbar_bg:"#161a20", hide_top_toolbar:false, hide_legend:false,
     save_image:false, container_id:"tv-chart",
+    studies: ["MASimple@tv-basicstudies"],
+    studies_overrides: {
+      "Moving Average.length": 150,
+      "Moving Average.plot.color": "#ef5b5b",
+      "Moving Average.plot.linewidth": 2,
+    },
   });
 }
 
