@@ -1219,10 +1219,16 @@ def init_db():
             eps_estimate REAL,
             eps_actual REAL,
             surprise_pct REAL,
+            revenue_estimate REAL,
+            revenue_actual REAL,
+            revenue_surprise_pct REAL,
             updated_at TIMESTAMPTZ NOT NULL,
             PRIMARY KEY (ticker, report_date)
         );
     """)
+    cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS revenue_estimate REAL;")
+    cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS revenue_actual REAL;")
+    cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS revenue_surprise_pct REAL;")
     conn.commit()
     cur.close()
     conn.close()
@@ -1816,6 +1822,43 @@ def _fetch_eps_result(ticker: str, report_date) -> tuple:
     )
 
 
+def _fetch_revenue_result(ticker: str) -> tuple:
+    """Revenue estimate vs. actual, alongside _fetch_eps_result's EPS
+    numbers. yfinance has no single endpoint with both, so this combines
+    two: the forward analyst revenue estimate (t.revenue_estimate, the
+    "0q" nearest-quarter row) and the actual reported figure once filed
+    (t.quarterly_income_stmt's "Total Revenue" for the latest quarter).
+
+    Returns (revenue_estimate, revenue_actual, revenue_surprise_pct) —
+    any of these may be None if yfinance doesn't have the data.
+    """
+    t = yf.Ticker(ticker)
+    revenue_estimate = None
+    try:
+        df = t.revenue_estimate
+        if df is not None and not df.empty and "0q" in df.index and "avg" in df.columns:
+            val = df.loc["0q", "avg"]
+            revenue_estimate = _native(val) if pd.notna(val) else None
+    except Exception as e:
+        print(f"[warn] revenue estimate fetch failed for {ticker}: {type(e).__name__}: {e}")
+
+    revenue_actual = None
+    try:
+        inc = t.quarterly_income_stmt
+        if inc is not None and not inc.empty and "Total Revenue" in inc.index:
+            latest_col = inc.columns[0]  # most recent quarter is the first column
+            val = inc.loc["Total Revenue", latest_col]
+            revenue_actual = _native(val) if pd.notna(val) else None
+    except Exception as e:
+        print(f"[warn] revenue actual fetch failed for {ticker}: {type(e).__name__}: {e}")
+
+    revenue_surprise = None
+    if revenue_estimate and revenue_actual and revenue_estimate != 0:
+        revenue_surprise = round((revenue_actual - revenue_estimate) / revenue_estimate * 100, 2)
+
+    return (revenue_estimate, revenue_actual, revenue_surprise)
+
+
 def update_earnings_calendar(earnings_candidates: List[tuple]):
     """earnings_candidates: (ticker, market_cap, earnings_timestamp)."""
     if not earnings_candidates:
@@ -1841,39 +1884,54 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
         print("[info] earnings calendar: nothing in this week's window among notable names.")
         return
 
-    # One extra yfinance call per notable ticker (~40, not the whole
-    # universe) to pick up the actual reported EPS vs estimate once
-    # available — this is what lets the dashboard show beat/miss
-    # results, not just "who's reporting when".
+    # 2 extra yfinance calls per notable ticker (~40, not the whole
+    # universe) on top of the 1 for EPS — this is what lets the
+    # dashboard show revenue beat/miss too, not just EPS.
     enriched = []
     for ticker, mcap, dt_utc in top:
-        eps_est, eps_actual, surprise = _fetch_eps_result(ticker, dt_utc.date())
-        enriched.append((ticker, mcap, dt_utc, eps_est, eps_actual, surprise))
+        eps_est, eps_actual, eps_surprise = _fetch_eps_result(ticker, dt_utc.date())
         time.sleep(INTER_TICKER_DELAY_SEC)
+        rev_est, rev_actual, rev_surprise = _fetch_revenue_result(ticker)
+        time.sleep(INTER_TICKER_DELAY_SEC)
+        enriched.append((ticker, mcap, dt_utc, eps_est, eps_actual, eps_surprise, rev_est, rev_actual, rev_surprise))
 
     conn = get_conn()
     cur = conn.cursor()
-    # Full replace each run — the notable-names watchlist naturally shifts
-    # scan to scan (market caps move, new tickers enter the window), and
-    # a plain DELETE+INSERT is far simpler than reconciling stale rows
-    # for tickers that fell out of the top N or whose date got corrected.
-    cur.execute("DELETE FROM earnings_calendar;")
-    for ticker, mcap, dt_utc, eps_est, eps_actual, surprise in enriched:
+    # Clean up rows that fell out of this week's window (old dates, or a
+    # ticker no longer in the notable-names top N) — but otherwise a real
+    # per-row UPSERT rather than a blanket delete+reinsert, because the
+    # revenue *estimate* specifically needs to survive across scans: once
+    # a company reports, yfinance's forward "0q" estimate rolls to the
+    # NEXT quarter, so if we re-fetched it fresh every run we'd lose the
+    # pre-report estimate we actually want to compare the actual against.
+    cur.execute(
+        "DELETE FROM earnings_calendar WHERE report_date < %s OR report_date > %s",
+        (window_start.isoformat(), window_end.isoformat()),
+    )
+    for ticker, mcap, dt_utc, eps_est, eps_actual, eps_surprise, rev_est, rev_actual, rev_surprise in enriched:
         cur.execute(
             """
             INSERT INTO earnings_calendar
-                (ticker, report_date, session, market_cap, eps_estimate, eps_actual, surprise_pct, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                (ticker, report_date, session, market_cap, eps_estimate, eps_actual, surprise_pct,
+                 revenue_estimate, revenue_actual, revenue_surprise_pct, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (ticker, report_date) DO UPDATE SET
                 session = EXCLUDED.session,
                 market_cap = EXCLUDED.market_cap,
-                eps_estimate = EXCLUDED.eps_estimate,
-                eps_actual = EXCLUDED.eps_actual,
-                surprise_pct = EXCLUDED.surprise_pct,
+                eps_estimate = COALESCE(EXCLUDED.eps_estimate, earnings_calendar.eps_estimate),
+                eps_actual = COALESCE(EXCLUDED.eps_actual, earnings_calendar.eps_actual),
+                surprise_pct = COALESCE(EXCLUDED.surprise_pct, earnings_calendar.surprise_pct),
+                -- revenue_estimate deliberately prefers the OLD stored value —
+                -- see the comment above on why a fresh fetch after the report
+                -- would give the wrong (next quarter's) number.
+                revenue_estimate = COALESCE(earnings_calendar.revenue_estimate, EXCLUDED.revenue_estimate),
+                revenue_actual = COALESCE(EXCLUDED.revenue_actual, earnings_calendar.revenue_actual),
+                revenue_surprise_pct = COALESCE(EXCLUDED.revenue_surprise_pct, earnings_calendar.revenue_surprise_pct),
                 updated_at = EXCLUDED.updated_at
             """,
             (ticker, dt_utc.date().isoformat(), _earnings_session(dt_utc), _native(mcap),
-             eps_est, eps_actual, surprise, datetime.now(timezone.utc).isoformat()),
+             eps_est, eps_actual, eps_surprise, rev_est, rev_actual, rev_surprise,
+             datetime.now(timezone.utc).isoformat()),
         )
     conn.commit()
     cur.close()

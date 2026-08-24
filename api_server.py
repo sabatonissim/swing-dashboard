@@ -1457,7 +1457,8 @@ def get_earnings_calendar():
     with db_cursor(dict_cursor=True) as (conn, cur):
         cur.execute(
             """
-            SELECT ticker, report_date, session, market_cap, eps_estimate, eps_actual, surprise_pct
+            SELECT ticker, report_date, session, market_cap, eps_estimate, eps_actual, surprise_pct,
+                   revenue_estimate, revenue_actual, revenue_surprise_pct
             FROM earnings_calendar
             ORDER BY report_date ASC, market_cap DESC
             """
