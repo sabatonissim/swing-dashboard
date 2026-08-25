@@ -288,7 +288,8 @@
   .earnings-cal-day-label{font-size:11px;letter-spacing:1px;color:var(--text-dim);text-transform:uppercase;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--line);}
   .earnings-cal-row{display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid var(--line);}
   .earnings-cal-row:last-child{border-bottom:none;}
-  .earnings-cal-ticker{font-family:'JetBrains Mono',monospace;font-weight:700;min-width:64px;}
+  .earnings-cal-ticker-group{display:flex;align-items:center;gap:6px;min-width:80px;flex-shrink:0;}
+  .earnings-cal-ticker{font-family:'JetBrains Mono',monospace;font-weight:700;}
   .earnings-cal-name{color:var(--text-dim);font-size:12.5px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
   .earnings-cal-results{display:flex;flex-direction:column;gap:2px;align-items:flex-end;flex-shrink:0;}
   .earnings-cal-session{font-size:15px;width:22px;text-align:center;flex-shrink:0;line-height:1;}
@@ -1771,7 +1772,9 @@ function renderEarningsCalendar(items){
     else if(dateStr === tomorrowStr) label = t.tomorrow_label;
     else label = dayFormatter.format(new Date(dateStr + 'T12:00:00'));
 
-    const rows = byDay.get(dateStr).map(it => {
+    const sessionOrder = { bmo: 0, unknown: 1, amc: 2 };
+    const sortedDay = byDay.get(dateStr).slice().sort((a, b) => (sessionOrder[a.session] ?? 1) - (sessionOrder[b.session] ?? 1));
+    const rows = sortedDay.map(it => {
       const sessionLabel = it.session==='bmo' ? t.session_bmo : it.session==='amc' ? t.session_amc : t.session_unknown;
       let epsHtml = '';
       if(it.reported && it.eps_actual != null){
@@ -1792,10 +1795,12 @@ function renderEarningsCalendar(items){
         revHtml = `<div class="earnings-cal-eps" style="color:${revColor}">${lang==='en'?'Rev':'הכנסות'} $${formatMarketCap(it.revenue_actual)}${revEstPart}${revSurprisePart}</div>`;
       }
       return `<div class="earnings-cal-row">
-        <div class="earnings-cal-ticker">${it.ticker}</div>
+        <div class="earnings-cal-ticker-group">
+          <div class="earnings-cal-session ${it.session||'unknown'}" title="${sessionLabel}">${it.session==='bmo'?'☀️':it.session==='amc'?'🌙':'—'}</div>
+          <div class="earnings-cal-ticker">${it.ticker}</div>
+        </div>
         <div class="earnings-cal-name">${it.name || ''}</div>
         <div class="earnings-cal-results">${epsHtml}${revHtml}</div>
-        <div class="earnings-cal-session ${it.session||'unknown'}" title="${sessionLabel}">${it.session==='bmo'?'☀️':it.session==='amc'?'🌙':'—'}</div>
       </div>`;
     }).join('');
 
