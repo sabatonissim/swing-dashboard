@@ -180,14 +180,25 @@ NASDAQ100_SET: set = set()
 def build_scan_universe() -> List[str]:
     """S&P 500 (broad coverage) + Nasdaq 100 + the curated extras below
     (liquid names and ETFs that aren't in either index, like QQQ/IWM/ARKK
-    or newer high-momentum names) — deduplicated."""
+    or newer high-momentum names) — deduplicated.
+
+    Rotated by day-of-year: when Yahoo rate-limits mid-scan, the circuit
+    breaker (MAX_CONSECUTIVE_TIMEOUTS) aborts early and everything after
+    that point in the list never gets checked that run. With a fixed
+    list order, that would systematically starve the SAME tail-end
+    tickers of coverage every time it happens — including for the
+    earnings calendar and every pattern detector, not just movers.
+    Rotating the starting point spreads that risk evenly across the
+    whole universe over time instead of leaving a permanent blind spot.
+    """
     global SP500_SET, NASDAQ100_SET
     sp500 = fetch_sp500_tickers()
     nasdaq100 = fetch_nasdaq100_tickers()
     SP500_SET = set(sp500)
     NASDAQ100_SET = set(nasdaq100)
     combined = list(dict.fromkeys(sp500 + nasdaq100 + DEFAULT_UNIVERSE))  # dedup, preserve order
-    return combined
+    rotate_by = datetime.now(timezone.utc).timetuple().tm_yday % len(combined)
+    return combined[rotate_by:] + combined[:rotate_by]
 
 
 

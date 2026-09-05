@@ -259,6 +259,9 @@
 
   .sector-filter{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;}
   .sector-btn{padding:4px 11px;border-radius:20px;font-size:11.5px;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--text-dim);transition:all .15s;font-family:'Heebo',sans-serif;}
+  .backtest-pattern-select{width:100%;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:9px 12px;font-size:13px;font-family:'Heebo',sans-serif;cursor:pointer;outline:none;}
+  .scan-pattern-filter{margin-bottom:10px;}
+  .scan-pattern-filter:empty{margin-bottom:0;}
   .sector-btn.active{background:var(--teal);color:#0a1a18;border-color:var(--teal);font-weight:700;}
   .sector-btn:hover:not(.active){border-color:var(--teal-dim);color:var(--text);}
   .news-search-wrap{position:relative;margin-bottom:10px;}
@@ -449,6 +452,7 @@
 <div class="board">
   <div class="col right">
     <div class="col-title"><span class="dot"></span> סורק סווינג — משימות פתוחות</div>
+    <div class="scan-pattern-filter" id="scan-pattern-filter"></div>
     <div id="stocks"></div>
   </div>
   <div class="divider"></div>
@@ -605,12 +609,39 @@ function toggleStockGroup(key){
   renderStocks();
 }
 
+let activeScanPattern = 'all';
+
+function renderScanPatternFilter(){
+  const el = document.getElementById('scan-pattern-filter');
+  if(!el) return;
+  const present = Array.from(new Set(stocks.map(s => s.patternType).filter(Boolean)));
+  if(present.length <= 1){
+    // Not worth a filter control when there's nothing meaningful to filter between.
+    el.innerHTML = '';
+    return;
+  }
+  present.sort((a,b) => patternLabel(a).localeCompare(patternLabel(b), lang==='en'?'en':'he'));
+  const allLabel = lang==='en' ? 'All Patterns' : 'כל התבניות';
+  const options = [`<option value="all" ${activeScanPattern==='all'?'selected':''}>${allLabel}</option>`]
+    .concat(present.map(p => `<option value="${p.replace(/"/g,'&quot;')}" ${activeScanPattern===p?'selected':''}>${patternLabel(p)}</option>`));
+  el.innerHTML = `<select class="backtest-pattern-select" onchange="setScanPatternFilter(this.value)">${options.join('')}</select>`;
+}
+
+function setScanPatternFilter(p){
+  activeScanPattern = p;
+  renderStocks();
+}
+
 function renderStocks(){
   const el = document.getElementById("stocks");
-  if(!stocks.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${UI[lang].no_stocks}</div>`; return; }
+  renderScanPatternFilter();
+  const visibleIdx = stocks
+    .map((s,i)=>i)
+    .filter(i => activeScanPattern==='all' || stocks[i].patternType===activeScanPattern);
+  if(!visibleIdx.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${UI[lang].no_stocks}</div>`; return; }
 
   const recent = [], previous = [];
-  stocks.forEach((s,i)=>{ (s.isRecent===false ? previous : recent).push(i); });
+  visibleIdx.forEach(i=>{ (stocks[i].isRecent===false ? previous : recent).push(i); });
 
   let html = "";
   if(recent.length){
@@ -880,6 +911,35 @@ function renderPatternStatsBlurb(patternType){
 let backtestPattern = 'all';
 let backtestHorizon = 10;
 let backtestPatternsCache = null;
+// Friendly bilingual labels for pattern_type — the raw snake_case values
+// (e.g. "ma150_support_bounce", "52w_high") are what the backend stores
+// and what the API returns, but showing that directly in a dropdown of
+// 15+ options is exactly the "too much clutter, hard to tell them apart"
+// the request was about, especially with the two new similarly-named
+// 150-MA patterns.
+const PATTERN_LABELS = {
+  cup_handle: { he: 'כוס וידית', en: 'Cup & Handle' },
+  cup_no_handle: { he: 'כוס ללא ידית', en: 'Cup (No Handle)' },
+  double_bottom: { he: 'תחתית כפולה', en: 'Double Bottom' },
+  '52w_high': { he: 'פריצת שיא 52 שבועות', en: '52-Week High Breakout' },
+  horizontal_resistance_breakout: { he: 'פריצת התנגדות אופקית', en: 'Horizontal Resistance Breakout' },
+  golden_cross: { he: 'גולדן קרוס', en: 'Golden Cross' },
+  ma150_breakout: { he: 'פריצת ממוצע 150 יום', en: '150-Day MA Breakout' },
+  bull_flag: { he: 'דגל שורי', en: 'Bull Flag' },
+  ascending_triangle: { he: 'משולש עולה', en: 'Ascending Triangle' },
+  ascending_trendline: { he: 'תמיכת קו מגמה עולה', en: 'Ascending Trendline Support' },
+  ma150_support_bounce: { he: 'תמיכת ממוצע 150 יום', en: '150-Day MA Support Bounce' },
+  horizontal_level_bounce: { he: 'תמיכה אופקית', en: 'Horizontal Support Bounce' },
+  descending_trendline_breakout: { he: 'פריצת קו מגמה יורד', en: 'Descending Trendline Breakout' },
+  macd_cross: { he: 'חציית MACD חיובית', en: 'MACD Bullish Crossover' },
+  momentum_surge: { he: 'זינוק מומנטום', en: 'Momentum Surge' },
+  rsi_bounce: { he: 'התאוששות RSI', en: 'RSI Oversold Bounce' },
+};
+function patternLabel(p){
+  const entry = PATTERN_LABELS[p];
+  if(!entry) return p;
+  return lang==='en' ? entry.en : entry.he;
+}
 let backtestPeriodView = 'monthly'; // 'monthly' | 'quarterly'
 let backtestLastData = null;
 let backtestPeriodChartInstance = null;
@@ -901,12 +961,11 @@ async function loadBacktestPatterns(){
 function renderBacktestPatternFilter(){
   const el = document.getElementById('backtest-pattern-filter');
   if(!el) return;
-  const t = lang === 'en';
-  const patterns = backtestPatternsCache || [];
-  const allLabel = t ? 'All Patterns' : 'כל התבניות';
-  let html = `<button class="sector-btn ${backtestPattern==='all'?'active':''}" onclick="setBacktestPattern('all')">${allLabel}</button>`;
-  html += patterns.map(p => `<button class="sector-btn ${backtestPattern===p?'active':''}" onclick="setBacktestPattern('${p.replace(/'/g,"\\'")}')">${p}</button>`).join('');
-  el.innerHTML = html;
+  const allLabel = lang==='en' ? 'All Patterns' : 'כל התבניות';
+  const patterns = (backtestPatternsCache || []).slice().sort((a,b) => patternLabel(a).localeCompare(patternLabel(b), lang==='en'?'en':'he'));
+  const options = [`<option value="all" ${backtestPattern==='all'?'selected':''}>${allLabel}</option>`]
+    .concat(patterns.map(p => `<option value="${p.replace(/"/g,'&quot;')}" ${backtestPattern===p?'selected':''}>${patternLabel(p)}</option>`));
+  el.innerHTML = `<select class="backtest-pattern-select" onchange="setBacktestPattern(this.value)">${options.join('')}</select>`;
 }
 
 function setBacktestPattern(p){
@@ -981,7 +1040,7 @@ function renderBacktestPatternSummary(){
             const retColor = ret>=0?'var(--green)':'var(--red)';
             const isActive = backtestPattern === r.pattern_type;
             return `<tr style="cursor:pointer;${isActive?'background:rgba(232,163,61,.08);':''}" onclick="setBacktestPattern('${r.pattern_type.replace(/'/g,"\\'")}')">
-              <td>${r.pattern_type}</td>
+              <td>${patternLabel(r.pattern_type)}</td>
               <td>${r.n}</td>
               <td style="color:${wrColor}">${wr}%</td>
               <td style="color:${retColor}">${ret>=0?'+':''}${ret}%</td>
@@ -1077,7 +1136,7 @@ function renderBacktestContent(data){
             <tr>
               <td style="font-weight:700;">${s.ticker}</td>
               <td>${s.date}</td>
-              <td>${s.pattern_type}</td>
+              <td>${patternLabel(s.pattern_type)}</td>
               <td>${s.rs_rating ?? '—'}</td>
               <td style="color:${s.return>=0?'var(--green)':'var(--red)'}">${s.return>=0?'+':''}${s.return}%</td>
             </tr>
@@ -1313,7 +1372,7 @@ function renderDeepDive(quote, sector, signals, news){
             ${signals.map(s => `
               <tr>
                 <td>${s.date}</td>
-                <td>${s.pattern_type}</td>
+                <td>${patternLabel(s.pattern_type)}</td>
                 <td>${s.swing_score ?? '—'}</td>
                 <td>${s.rs_rating ?? '—'}</td>
                 <td style="color:${s.return_10d==null?'var(--text-dim)':s.return_10d>=0?'var(--green)':'var(--red)'}">${s.return_10d==null ? (t?'pending':'ממתין') : (s.return_10d>=0?'+':'')+s.return_10d+'%'}</td>
@@ -3625,6 +3684,8 @@ function applyLang(){
   document.getElementById('feargreed-title').innerHTML = t.feargreed_title;
   document.getElementById('earnings-cal-title').textContent = t.earnings_cal_title;
   if(lastEarningsCalItems) renderEarningsCalendar(lastEarningsCalItems);
+  if(backtestPatternsCache) renderBacktestPatternFilter();
+  if(backtestPatternStatsCache) renderBacktestPatternSummary();
   document.getElementById('backtest-title').textContent = t.backtest_title;
   document.getElementById('backtest-horizon-10').textContent = t.horizon_10;
   document.getElementById('backtest-horizon-20').textContent = t.horizon_20;
