@@ -288,11 +288,22 @@ def get_backtest(
             "equity_curve": [], "rs_breakdown": [], "signals": [],
         }
 
-    # Equity curve: treat every signal as a full-stake, non-overlapping trade
-    # taken in chronological order (position closed before the next opens).
-    # This is a simplification — real trades would overlap — but it's the
-    # standard, honest way to show "did this pattern make money over time"
-    # without pretending we know real position sizing or concurrency.
+    # Equity curve: each signal risks a fixed, modest slice of capital
+    # (POSITION_SIZE_PCT) rather than a full 100%-of-equity bet, taken in
+    # chronological order.
+    #
+    # Why this matters: "all patterns" alone can have 1000+ resolved
+    # signals across many different tickers, often overlapping in real
+    # calendar time — nobody actually trades that as one all-in bet after
+    # another. Multiplying the WHOLE stake by every single trade's return
+    # in sequence means even a modest string of double-digit losing days
+    # compounds violently (0.7^30 ≈ 0.0002 — a wipeout look on the chart
+    # from ordinary variance, not from the pattern actually being bad).
+    # Sizing each trade at a realistic fraction of capital, like a real
+    # swing trader risking part of their account per position, keeps one
+    # rough stretch from reading as "lost everything" when the underlying
+    # win rate/avg return are perfectly reasonable.
+    POSITION_SIZE_PCT = 0.10  # 10% of equity per signal — a common, conservative swing-sizing assumption
     equity = 1.0
     peak = 1.0
     max_dd = 0.0
@@ -302,7 +313,7 @@ def get_backtest(
 
     for r in rows:
         pct = float(r["fwd_return"])
-        equity *= (1 + pct / 100)
+        equity *= (1 + (pct / 100) * POSITION_SIZE_PCT)
         peak = max(peak, equity)
         drawdown = (equity - peak) / peak * 100
         max_dd = min(max_dd, drawdown)

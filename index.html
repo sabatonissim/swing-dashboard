@@ -1090,6 +1090,9 @@ function renderBacktestContent(data){
       <div class="bt-stat-card"><div class="k">${t?'Max Drawdown':'ירידה מקסימלית'}</div><div class="v" style="color:var(--red)">${data.max_drawdown}%</div></div>
     </div>
     <div class="bt-chart-wrap"><canvas id="backtest-equity-canvas"></canvas></div>
+    <div style="font-size:11px;color:var(--text-dim);margin:-6px 2px 14px;">${t
+      ? 'Illustrative only: assumes 10% of capital risked per signal, taken in order — not a real position-sizing recommendation.'
+      : 'להמחשה בלבד: מניח סיכון של 10% מההון בכל איתות, לפי סדר כרונולוגי — לא המלצה אמיתית לגודל פוזיציה.'}</div>
   `;
 
   if(data.rs_breakdown && data.rs_breakdown.length){
