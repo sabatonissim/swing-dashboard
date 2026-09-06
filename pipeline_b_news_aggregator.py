@@ -9,7 +9,8 @@ Flow:
                     (a single outlet's feed can go quiet; a live topic search
                     across all of Google News rarely does)
   2. Filter      -> keep only capital-markets-relevant headlines using a
-                    two-tier keyword matrix (see matches_high_impact)
+                    two-tier keyword matrix, weighted by frequency across
+                    title+summary (see classify_headline)
   3. Translate   -> Hebrew via free Google Translate, with a large glossary of
                     macro/finance terms forced to a correct fixed rendering
                     (see translate_to_hebrew). No paid API involved.
@@ -144,45 +145,72 @@ CRITICAL_KEYWORDS = {
     "Recession", "Bankruptcy", "Crisis",
 }
 
+# Idioms/contexts where a keyword above is a common FALSE POSITIVE — these
+# veto a match even though a keyword technically appears in the text. This
+# is meant to grow over time: add a phrase here whenever you spot a junk
+# headline that slipped through, rather than trying to guess every case
+# up front.
+EXCLUSION_PHRASES = [
+    "heart attack", "panic attack", "shark attack", "attack ad", "attacking play",
+    "identity crisis", "midlife crisis", "opioid crisis",
+    "price war", "bidding war", "culture war", "war of words", "star wars",
+    "muscle tension", "sexual tension", "tension headache",
+    "poker chip", "chocolate chip", "fish and chips", "chip on his shoulder", "chip on her shoulder",
+    "gold medal", "golden retriever", "gold standard",
+    "tech support", "meta-analysis", "metaverse",
+]
+
+
+def _is_excluded(text: str) -> bool:
+    lowered = text.lower()
+    return any(phrase in lowered for phrase in EXCLUSION_PHRASES)
+
 def _has_market_context(title: str) -> bool:
     lowered = title.lower()
     return any(w in lowered for w in MARKET_CONTEXT_WORDS)
 
 
-def matches_high_impact(title: str) -> Optional[str]:
+def classify_headline(title: str, summary: str) -> Optional[dict]:
+    """Returns {"tag": ..., "impact": ...}, or None if not market-relevant.
+
+    Two improvements over the original single-title, first-match approach:
+    1. Uses the RSS summary/description too, not just the title — titles
+       are often vague or clickbait-y, and the summary usually has the
+       actual substance of the story.
+    2. Picks the category by which tag's keywords appear MOST (Tier-1 hits
+       weighted double), not "whichever keyword happens to appear earliest
+       in the title". A headline mentioning "Fed" once in passing but
+       "earnings"/"revenue"/"guidance" three times is an earnings story,
+       not a rates story — the old approach would have tagged it wrong.
     """
-    Returns the single best-matching keyword for a headline, or None if
-    it isn't capital-markets relevant.
-
-    - Word-boundary matching only, so short/ambiguous keywords (AI, Meta)
-      can't match as a substring inside unrelated words.
-    - Tier 2 keywords (AI, Tech, individual company names, etc.) only
-      count if the headline also contains a market-context word —
-      filters out non-market stories that merely mention a company or
-      "AI" in passing (e.g. a Nobel Prize / research announcement).
-    - When several keywords match, picks the one appearing earliest in
-      the headline, tie-broken by the longest (most specific) phrase —
-      so the category tag reflects what the headline is actually about,
-      not just keyword-list order.
-    """
-    candidates = []  # (position, -length, keyword)
-
-    for kw in TIER1_KEYWORDS:
-        m = re.search(r'\b' + re.escape(kw) + r'\b', title, re.IGNORECASE)
-        if m:
-            candidates.append((m.start(), -len(kw), kw))
-
-    if _has_market_context(title):
-        for kw in TIER2_KEYWORDS:
-            m = re.search(r'\b' + re.escape(kw) + r'\b', title, re.IGNORECASE)
-            if m:
-                candidates.append((m.start(), -len(kw), kw))
-
-    if not candidates:
+    combined = f"{title} {summary}"
+    if _is_excluded(combined):
         return None
 
-    candidates.sort()
-    return candidates[0][2]
+    tag_scores: dict = {}
+    earliest_position: dict = {}
+    matched_critical = False
+
+    for kw in TIER1_KEYWORDS:
+        for m in re.finditer(r'\b' + re.escape(kw) + r'\b', combined, re.IGNORECASE):
+            tag = KEYWORD_TO_TAG.get(kw, "מאקרו")
+            tag_scores[tag] = tag_scores.get(tag, 0) + 2
+            earliest_position.setdefault(tag, m.start())
+            if kw in CRITICAL_KEYWORDS:
+                matched_critical = True
+
+    if _has_market_context(combined):
+        for kw in TIER2_KEYWORDS:
+            for m in re.finditer(r'\b' + re.escape(kw) + r'\b', combined, re.IGNORECASE):
+                tag = KEYWORD_TO_TAG.get(kw, "מאקרו")
+                tag_scores[tag] = tag_scores.get(tag, 0) + 1
+                earliest_position.setdefault(tag, m.start())
+
+    if not tag_scores:
+        return None
+
+    best_tag = max(tag_scores.items(), key=lambda kv: (kv[1], -earliest_position[kv[0]]))[0]
+    return {"tag": best_tag, "impact": "Critical" if matched_critical else "High"}
 
 
 def _clean_google_news_title(title: str) -> str:
@@ -600,13 +628,13 @@ def run_pipeline_b():
     skipped_no_match = 0
 
     for item in raw_items:
-        matched_kw = matches_high_impact(item["title"])
-        if not matched_kw:
+        classification = classify_headline(item["title"], item.get("summary", ""))
+        if not classification:
             skipped_no_match += 1
             continue
 
-        tag = KEYWORD_TO_TAG.get(matched_kw, "מאקרו")
-        impact = "Critical" if matched_kw in CRITICAL_KEYWORDS else "High"
+        tag = classification["tag"]
+        impact = classification["impact"]
 
         title = item["title"]
         headline_he = translate_to_hebrew(title)

@@ -264,6 +264,8 @@
   .scan-pattern-filter:empty{margin-bottom:0;}
   .sector-btn.active{background:var(--teal);color:#0a1a18;border-color:var(--teal);font-weight:700;}
   .sector-btn:hover:not(.active){border-color:var(--teal-dim);color:var(--text);}
+  .sector-btn.muted{opacity:.4;text-decoration:line-through;}
+  .sector-clear-btn{border-color:var(--amber);color:var(--amber);}
   .news-search-wrap{position:relative;margin-bottom:10px;}
   .news-search-input{width:100%;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 34px 8px 12px;font-size:13px;outline:none;font-family:'Heebo',sans-serif;}
   .news-search-input:focus{border-color:var(--teal-dim);}
@@ -704,7 +706,6 @@ function renderMovers(){
   }).join("");
 }
 
-let activeSector = 'הכל';
 let newsSearchQuery = '';
 let newsSearchResults = null;   // null = not searching, use normal `macro` feed. array = search mode.
 let newsSearchDebounce = null;
@@ -760,25 +761,43 @@ function clearNewsSearch(){
   renderMacro();
 }
 
+// Category mute filter for the macro news feed: multi-select and
+// persisted (localStorage), unlike a single "show only this one" filter —
+// lets the user permanently hide categories they don't care about (e.g.
+// crypto, M&A) while still seeing everything else, without having to
+// re-pick a filter every visit.
+let mutedCategories = new Set(JSON.parse(localStorage.getItem('swing_muted_categories') || '[]'));
+
+function saveMutedCategories(){
+  localStorage.setItem('swing_muted_categories', JSON.stringify(Array.from(mutedCategories)));
+}
+
+function toggleMutedCategory(tag){
+  if(mutedCategories.has(tag)) mutedCategories.delete(tag);
+  else mutedCategories.add(tag);
+  saveMutedCategories();
+  renderSectorFilter();
+  renderMacro();
+}
+
+function clearMutedCategories(){
+  mutedCategories.clear();
+  saveMutedCategories();
+  renderSectorFilter();
+  renderMacro();
+}
+
 function renderSectorFilter(){
   const el = document.getElementById("sector-filter");
   if(!el) return;
-  // collect all unique sectors from all news items
-  const allSectors = new Set();
-  macro.forEach(m => {
-    if(m.sectors) m.sectors.split(',').forEach(s => { const t=s.trim(); if(t) allSectors.add(t); });
-    if(m.sector) allSectors.add(m.sector.trim());
-  });
-  const sectors = ['הכל', ...allSectors];
-  el.innerHTML = sectors.map(s=>`
-    <button class="sector-btn ${s===activeSector?'active':''}" onclick="setSector('${s}')">${s==='הכל'?UI[lang].sector_all:s}</button>
+  const allTags = Array.from(new Set(macro.map(m => m.tag).filter(Boolean))).sort();
+  if(!allTags.length){ el.innerHTML = ''; return; }
+  const clearBtn = mutedCategories.size
+    ? `<button class="sector-btn sector-clear-btn" onclick="clearMutedCategories()">${lang==='en'?'Show all':'הצג הכל'}</button>`
+    : '';
+  el.innerHTML = clearBtn + allTags.map(tag => `
+    <button class="sector-btn ${mutedCategories.has(tag)?'muted':''}" onclick="toggleMutedCategory('${tag.replace(/'/g,"\\'")}')">${tag}</button>
   `).join("");
-}
-
-function setSector(sector){
-  activeSector = sector;
-  renderSectorFilter();
-  renderMacro();
 }
 
 function getNewsText(m){
@@ -813,11 +832,8 @@ function renderMacro(){
   }
 
   if(!macro.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${UI[lang].loading}</div>`; return; }
-  const filtered = activeSector==='הכל' ? macro : macro.filter(m=>{
-    const s = (m.sectors||m.sector||'');
-    return s.includes(activeSector);
-  });
-  if(!filtered.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${t?'No news in this sector':'אין חדשות בסקטור זה'}</div>`; return; }
+  const filtered = macro.filter(m => !mutedCategories.has(m.tag));
+  if(!filtered.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${t?'All categories are hidden — tap "Show all" above.':'כל הקטגוריות מוסתרות — לחץ על "הצג הכל" למעלה.'}</div>`; return; }
   el.innerHTML = filtered.map((m,i)=>`
     <div class="macro-item" onclick="openMacroDrawer(${macro.indexOf(m)})">
       <div class="macro-tag ${m.impact==='Critical'?'tag-critical':'tag-high'}">${m.tag}</div>
