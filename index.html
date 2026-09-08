@@ -264,7 +264,6 @@
   .scan-pattern-filter:empty{margin-bottom:0;}
   .sector-btn.active{background:var(--teal);color:#0a1a18;border-color:var(--teal);font-weight:700;}
   .sector-btn:hover:not(.active){border-color:var(--teal-dim);color:var(--text);}
-  .sector-btn.muted{opacity:.4;text-decoration:line-through;}
   .sector-clear-btn{border-color:var(--amber);color:var(--amber);}
   .news-search-wrap{position:relative;margin-bottom:10px;}
   .news-search-input{width:100%;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 34px 8px 12px;font-size:13px;outline:none;font-family:'Heebo',sans-serif;}
@@ -761,28 +760,26 @@ function clearNewsSearch(){
   renderMacro();
 }
 
-// Category mute filter for the macro news feed: multi-select and
-// persisted (localStorage), unlike a single "show only this one" filter —
-// lets the user permanently hide categories they don't care about (e.g.
-// crypto, M&A) while still seeing everything else, without having to
-// re-pick a filter every visit.
-let mutedCategories = new Set(JSON.parse(localStorage.getItem('swing_muted_categories') || '[]'));
+// Category filter for the macro news feed: multi-select "show only these"
+// (click the categories you want, empty selection = show everything),
+// persisted in localStorage so the choice sticks across visits.
+let selectedCategories = new Set(JSON.parse(localStorage.getItem('swing_selected_categories') || '[]'));
 
-function saveMutedCategories(){
-  localStorage.setItem('swing_muted_categories', JSON.stringify(Array.from(mutedCategories)));
+function saveSelectedCategories(){
+  localStorage.setItem('swing_selected_categories', JSON.stringify(Array.from(selectedCategories)));
 }
 
-function toggleMutedCategory(tag){
-  if(mutedCategories.has(tag)) mutedCategories.delete(tag);
-  else mutedCategories.add(tag);
-  saveMutedCategories();
+function toggleSelectedCategory(tag){
+  if(selectedCategories.has(tag)) selectedCategories.delete(tag);
+  else selectedCategories.add(tag);
+  saveSelectedCategories();
   renderSectorFilter();
   renderMacro();
 }
 
-function clearMutedCategories(){
-  mutedCategories.clear();
-  saveMutedCategories();
+function clearSelectedCategories(){
+  selectedCategories.clear();
+  saveSelectedCategories();
   renderSectorFilter();
   renderMacro();
 }
@@ -792,11 +789,11 @@ function renderSectorFilter(){
   if(!el) return;
   const allTags = Array.from(new Set(macro.map(m => m.tag).filter(Boolean))).sort();
   if(!allTags.length){ el.innerHTML = ''; return; }
-  const clearBtn = mutedCategories.size
-    ? `<button class="sector-btn sector-clear-btn" onclick="clearMutedCategories()">${lang==='en'?'Show all':'הצג הכל'}</button>`
+  const clearBtn = selectedCategories.size
+    ? `<button class="sector-btn sector-clear-btn" onclick="clearSelectedCategories()">${lang==='en'?'Show all':'הצג הכל'}</button>`
     : '';
   el.innerHTML = clearBtn + allTags.map(tag => `
-    <button class="sector-btn ${mutedCategories.has(tag)?'muted':''}" onclick="toggleMutedCategory('${tag.replace(/'/g,"\\'")}')">${tag}</button>
+    <button class="sector-btn ${selectedCategories.has(tag)?'active':''}" onclick="toggleSelectedCategory('${tag.replace(/'/g,"\\'")}')">${tag}</button>
   `).join("");
 }
 
@@ -832,8 +829,8 @@ function renderMacro(){
   }
 
   if(!macro.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${UI[lang].loading}</div>`; return; }
-  const filtered = macro.filter(m => !mutedCategories.has(m.tag));
-  if(!filtered.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${t?'All categories are hidden — tap "Show all" above.':'כל הקטגוריות מוסתרות — לחץ על "הצג הכל" למעלה.'}</div>`; return; }
+  const filtered = selectedCategories.size ? macro.filter(m => selectedCategories.has(m.tag)) : macro;
+  if(!filtered.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${t?'No news in the selected categories.':'אין חדשות בקטגוריות שנבחרו.'}</div>`; return; }
   el.innerHTML = filtered.map((m,i)=>`
     <div class="macro-item" onclick="openMacroDrawer(${macro.indexOf(m)})">
       <div class="macro-tag ${m.impact==='Critical'?'tag-critical':'tag-high'}">${m.tag}</div>

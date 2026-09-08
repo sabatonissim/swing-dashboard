@@ -86,8 +86,8 @@ TIER1_KEYWORDS = [
     "Rate Cut", "Inflation", "OPEC", "Employment Report", "Non-Farm Payrolls",
     "Nonfarm Payrolls", "Jobs Report", "Jobless Claims", "Initial Claims",
     "GDP", "Recession", "Yield Curve",
-    # גאופוליטיקה (תמיד רלוונטי לשווקים)
-    "War", "Sanctions", "Conflict", "Tension", "Crisis", "Attack",
+    # גאופוליטיקה חד-משמעית (סנקציות תמיד כלכליות/מדיניות במהותן — לא צריך שער הקשר)
+    "Sanctions",
     # שווקים כלליים
     "Stock Market", "S&P 500", "Nasdaq", "Dow Jones", "Bull Market", "Bear Market",
     "Earnings", "Quarterly Results", "Revenue", "Profit", "Guidance",
@@ -104,6 +104,25 @@ TIER2_KEYWORDS = [
     "Artificial Intelligence", "AI", "Semiconductor", "Tech", "Chip",
     "Apple", "Microsoft", "Google", "Amazon", "Nvidia", "Meta",
     "Regulation",
+]
+
+# "War"/"Conflict"/"Tension"/"Crisis"/"Attack" are broad enough that they
+# show up constantly with nothing to do with markets — local political
+# disputes, a personal-life "crisis" story, a sports "attack" play, a
+# "tension headache" (see EXCLUSION_PHRASES for that last one). Even a
+# genuine geopolitical conflict story often has no real market angle
+# unless it's tied to something with actual economic stakes. Gated the
+# same way Tier 2 is, but against economic/strategic-impact words
+# (GEO_CONTEXT_WORDS below) rather than pure trading vocabulary — this
+# was the main source of "the geopolitical category is full of
+# irrelevant stuff".
+GEO_AMBIGUOUS_KEYWORDS = ["War", "Conflict", "Tension", "Crisis", "Attack"]
+
+GEO_CONTEXT_WORDS = [
+    "oil", "energy", "trade", "tariff", "tariffs", "embargo",
+    "supply chain", "opec", "economy", "economic", "gdp", "market", "markets",
+    "stocks", "stock", "dollar", "currency", "central bank", "inflation",
+    "exports", "imports", "shipping", "sanctions",
 ]
 
 MARKET_CONTEXT_WORDS = [
@@ -170,6 +189,11 @@ def _has_market_context(title: str) -> bool:
     return any(w in lowered for w in MARKET_CONTEXT_WORDS)
 
 
+def _has_geo_context(title: str) -> bool:
+    lowered = title.lower()
+    return any(w in lowered for w in GEO_CONTEXT_WORDS)
+
+
 def classify_headline(title: str, summary: str) -> Optional[dict]:
     """Returns {"tag": ..., "impact": ...}, or None if not market-relevant.
 
@@ -205,6 +229,15 @@ def classify_headline(title: str, summary: str) -> Optional[dict]:
                 tag = KEYWORD_TO_TAG.get(kw, "מאקרו")
                 tag_scores[tag] = tag_scores.get(tag, 0) + 1
                 earliest_position.setdefault(tag, m.start())
+
+    if _has_geo_context(combined):
+        for kw in GEO_AMBIGUOUS_KEYWORDS:
+            for m in re.finditer(r'\b' + re.escape(kw) + r'\b', combined, re.IGNORECASE):
+                tag = KEYWORD_TO_TAG.get(kw, "גאופוליטי")
+                tag_scores[tag] = tag_scores.get(tag, 0) + 2
+                earliest_position.setdefault(tag, m.start())
+                if kw in CRITICAL_KEYWORDS:
+                    matched_critical = True
 
     if not tag_scores:
         return None
