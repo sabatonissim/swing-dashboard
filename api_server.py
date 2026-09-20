@@ -1586,12 +1586,14 @@ def _fetch_market_ticker_quotes() -> list:
             prev = float(closes.iloc[-2])
             if prev == 0:
                 continue
+            change = last - prev
             items.append({
                 "symbol": sym,
                 "name_he": entry["name_he"],
                 "name_en": entry["name_en"],
                 "price": round(last, 2),
-                "change_pct": round((last - prev) / prev * 100, 2),
+                "change_points": round(change, 2),
+                "change_pct": round(change / prev * 100, 2),
             })
         except Exception as e:
             print(f"[warn] market-ticker: failed to fetch {sym}: {e}")
@@ -1643,7 +1645,7 @@ def get_market_ticker():
 # ------------------------------------------------------------------
 
 @app.get("/api/daily-digest")
-def get_daily_digest(hours: int = Query(default=24, ge=1, le=72)):
+def get_daily_digest(hours: int = Query(default=24, ge=1, le=72), top_n: int = Query(default=6, ge=1, le=15)):
     conn = get_conn()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
@@ -1659,27 +1661,35 @@ def get_daily_digest(hours: int = Query(default=24, ge=1, le=72)):
     conn.close()
 
     critical = [r for r in rows if r.get("impact_level") == "Critical"]
-    seen_tags = {r["category_tag"] for r in critical}
-    highlights = []
-    for r in rows:
-        if r.get("impact_level") == "Critical":
-            continue
-        if r["category_tag"] in seen_tags:
-            continue
-        seen_tags.add(r["category_tag"])
-        highlights.append(r)
 
-    category_counts: dict = {}
+    # "Buzz" ranking — NOT an AI-written summary (genuinely blending several
+    # articles into one narrative paragraph needs a language model; this is
+    # the honest rule-based version). The proxy for "what people are
+    # actually talking about today" is simple: which category had the most
+    # separate articles in the window. Only the busiest handful of topics
+    # are returned, each represented by its single most relevant story
+    # (Critical first, then most recent) — a real digest, not every
+    # category dumped into the response.
+    tag_groups: dict = {}
     for r in rows:
-        tag = r["category_tag"]
-        category_counts[tag] = category_counts.get(tag, 0) + 1
+        tag_groups.setdefault(r["category_tag"], []).append(r)
+
+    hot_topics = []
+    for tag, items in tag_groups.items():
+        items_sorted = sorted(items, key=lambda r: r["timestamp"], reverse=True)
+        items_sorted.sort(key=lambda r: 0 if r.get("impact_level") == "Critical" else 1)
+        hot_topics.append({
+            "tag": tag,
+            "count": len(items),
+            "representative": items_sorted[0],
+        })
+    hot_topics.sort(key=lambda h: h["count"], reverse=True)
 
     return {
         "window_hours": hours,
         "total_items": len(rows),
         "critical": critical,
-        "highlights": highlights[:12],
-        "category_counts": category_counts,
+        "hot_topics": hot_topics[:top_n],
     }
 
 

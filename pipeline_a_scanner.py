@@ -1898,6 +1898,34 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
     # not the full list of everyone reporting that week.
     in_window.sort(key=lambda r: r[1], reverse=True)
     top = in_window[:EARNINGS_CALENDAR_TOP_N]
+    top_tickers = {r[0] for r in top}
+
+    # Protect names that ALREADY reported and already have a real result
+    # sitting in the table for this window — otherwise widening the window
+    # (see EARNINGS_CALENDAR_WINDOW_PAST_DAYS) just means more candidates
+    # compete for the same fixed top-N-by-market-cap slots, and a genuine
+    # already-fetched result can get silently bumped out even though its
+    # date never left the window. A handful of extra protected rows beyond
+    # the top-N cutoff is a small, deliberate trade-off against that.
+    try:
+        conn_chk = get_conn()
+        cur_chk = conn_chk.cursor()
+        cur_chk.execute(
+            "SELECT ticker FROM earnings_calendar WHERE report_date BETWEEN %s AND %s AND eps_actual IS NOT NULL",
+            (window_start.isoformat(), window_end.isoformat()),
+        )
+        already_reported = {row[0] for row in cur_chk.fetchall()}
+        cur_chk.close()
+        conn_chk.close()
+    except Exception as e:
+        print(f"[warn] earnings calendar: failed to check already-reported protection list: {e}")
+        already_reported = set()
+
+    protected = [r for r in in_window if r[0] in already_reported and r[0] not in top_tickers]
+    if protected:
+        print(f"[info] earnings calendar: protecting {len(protected)} already-reported ticker(s) "
+              f"that fell outside the top-{EARNINGS_CALENDAR_TOP_N}-by-market-cap cut.")
+    top = top + protected
     if not top:
         print("[info] earnings calendar: nothing in this week's window among notable names.")
         return
