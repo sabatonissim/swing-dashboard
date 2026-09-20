@@ -1778,7 +1778,14 @@ def upsert_universe_movers(all_changes: List[tuple]):
 # calls: earnings_candidates was built during the scan's normal .info
 # fetch already performed for every ticker anyway.
 EARNINGS_CALENDAR_TOP_N = 40          # how many notable names to keep, by market cap
-EARNINGS_CALENDAR_WINDOW_PAST_DAYS = 2    # still show a report from a couple days ago
+# Was 2 days. revenue_actual comes from yfinance's quarterly_income_stmt,
+# which often lags the EPS release itself by several days (the statement
+# isn't refreshed the instant a company reports). A 2-day window was
+# deleting rows before revenue_actual ever had a chance to populate,
+# leaving reported companies stuck showing EPS with no revenue figure
+# forever. Widened so there's real time for it to land on a later run,
+# without keeping stale weeks-old reports around.
+EARNINGS_CALENDAR_WINDOW_PAST_DAYS = 6
 EARNINGS_CALENDAR_WINDOW_FUTURE_DAYS = 7  # ...through the coming week
 
 
@@ -1948,8 +1955,13 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
     cur.close()
     conn.close()
     reported_count = sum(1 for row in enriched if row[4] is not None)
+    # row layout: (ticker, mcap, dt_utc, eps_est, eps_actual, eps_surprise, rev_est, rev_actual, rev_surprise)
+    missing_revenue = sum(1 for row in enriched if row[4] is not None and row[7] is None)
     print(f"[info] earnings calendar: {len(enriched)} notable tickers reporting "
           f"{window_start.isoformat()}..{window_end.isoformat()} ({reported_count} already have results).")
+    if missing_revenue:
+        print(f"[info] earnings calendar: {missing_revenue} reported ticker(s) still missing "
+              f"revenue_actual (yfinance statement lag) — should backfill on a later run within the window.")
 
 
 # ------------------------------------------------------------------

@@ -13,6 +13,8 @@ Endpoints:
     GET /api/sector-performance  -> the 11 SPDR sector ETFs: 1D table + normalized period chart
     GET /api/heatmap             -> S&P 500 / Nasdaq 100 sector-grouped treemap data
     GET /api/earnings-calendar   -> this week's earnings dates for notable/large-cap names
+    GET /api/market-ticker       -> S&P 500 / Nasdaq / Dow / VIX / Bitcoin / Ethereum / Gold, for the top ticker strip
+    GET /api/daily-digest        -> non-AI daily news digest (critical items + one highlight per category)
 
 CORS is open for local development. Lock this down (allow_origins) before
 deploying publicly.
@@ -1545,6 +1547,140 @@ def get_fear_greed():
         if _fear_greed_cache["data"]:
             return _fear_greed_cache["data"]  # serve the last good value rather than nothing
         raise HTTPException(status_code=502, detail="Fear & Greed index temporarily unavailable")
+
+
+
+# ------------------------------------------------------------------
+# Market ticker strip — the thin "is the market red or green today"
+# bar pinned near the top of the page. Deliberately just a handful of
+# instruments (indices + VIX + the two majority cryptos + gold), each
+# needing only 2 daily closes to compute a %-change — cheap enough to
+# refetch every call, but still cached briefly so the frontend's
+# polling doesn't hammer Yahoo from Render's shared IP.
+# ------------------------------------------------------------------
+
+MARKET_TICKER_SYMBOLS = [
+    {"symbol": "^GSPC",  "name_he": "S&P 500",   "name_en": "S&P 500"},
+    {"symbol": "^IXIC",  "name_he": "נאסד\"ק",    "name_en": "Nasdaq"},
+    {"symbol": "^DJI",   "name_he": "דאו ג'ונס",  "name_en": "Dow Jones"},
+    {"symbol": "^VIX",   "name_he": "VIX",        "name_en": "VIX"},
+    {"symbol": "BTC-USD","name_he": "ביטקוין",     "name_en": "Bitcoin"},
+    {"symbol": "ETH-USD","name_he": "את'ריום",     "name_en": "Ethereum"},
+    {"symbol": "GC=F",   "name_he": "זהב",         "name_en": "Gold"},
+]
+
+_market_ticker_cache = {"data": None, "ts": 0}
+MARKET_TICKER_CACHE_TTL = 90  # seconds — this doesn't need to be live-live, just "not stale"
+
+
+def _fetch_market_ticker_quotes() -> list:
+    items = []
+    for entry in MARKET_TICKER_SYMBOLS:
+        sym = entry["symbol"]
+        try:
+            hist = yf.Ticker(sym).history(period="5d", interval="1d")
+            closes = hist["Close"].dropna() if hist is not None and not hist.empty else None
+            if closes is None or len(closes) < 2:
+                continue
+            last = float(closes.iloc[-1])
+            prev = float(closes.iloc[-2])
+            if prev == 0:
+                continue
+            items.append({
+                "symbol": sym,
+                "name_he": entry["name_he"],
+                "name_en": entry["name_en"],
+                "price": round(last, 2),
+                "change_pct": round((last - prev) / prev * 100, 2),
+            })
+        except Exception as e:
+            print(f"[warn] market-ticker: failed to fetch {sym}: {e}")
+            continue
+    return items
+
+
+@app.get("/api/market-ticker")
+def get_market_ticker():
+    now = time.time()
+    if _market_ticker_cache["data"] and (now - _market_ticker_cache["ts"]) < MARKET_TICKER_CACHE_TTL:
+        return {"items": _market_ticker_cache["data"]}
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        future = executor.submit(_fetch_market_ticker_quotes)
+        items = future.result(timeout=15)
+        if items:
+            _market_ticker_cache["data"] = items
+            _market_ticker_cache["ts"] = now
+            return {"items": items}
+        # Nothing fetched this round — serve the last good snapshot rather
+        # than blanking out the strip over a transient Yahoo hiccup.
+        if _market_ticker_cache["data"]:
+            return {"items": _market_ticker_cache["data"]}
+        return {"items": []}
+    except FutureTimeoutError:
+        if _market_ticker_cache["data"]:
+            return {"items": _market_ticker_cache["data"]}
+        raise HTTPException(status_code=504, detail="Market ticker fetch timed out")
+    except Exception as e:
+        if _market_ticker_cache["data"]:
+            return {"items": _market_ticker_cache["data"]}
+        raise HTTPException(status_code=502, detail=f"Market ticker fetch failed: {e}")
+    finally:
+        executor.shutdown(wait=False)
+
+
+# ------------------------------------------------------------------
+# Daily news digest — deliberately NOT an AI summary (see CLAUDE.md:
+# AI classification/summarization is on hold until this becomes more
+# than a personal free-tier project). Instead: pull the last N hours
+# from macro_news and surface what actually matters — every Critical
+# item, plus one representative (most recent) High-impact story per
+# category so the digest reads as "what happened across the board"
+# rather than five CPI stories crowding out everything else. Same
+# response shape can absorb a real AI-written summary later without
+# the frontend needing to change.
+# ------------------------------------------------------------------
+
+@app.get("/api/daily-digest")
+def get_daily_digest(hours: int = Query(default=24, ge=1, le=72)):
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """
+        SELECT * FROM macro_news
+        WHERE timestamp > NOW() - make_interval(hours => %s)
+        ORDER BY timestamp DESC
+        """,
+        (hours,),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close()
+    conn.close()
+
+    critical = [r for r in rows if r.get("impact_level") == "Critical"]
+    seen_tags = {r["category_tag"] for r in critical}
+    highlights = []
+    for r in rows:
+        if r.get("impact_level") == "Critical":
+            continue
+        if r["category_tag"] in seen_tags:
+            continue
+        seen_tags.add(r["category_tag"])
+        highlights.append(r)
+
+    category_counts: dict = {}
+    for r in rows:
+        tag = r["category_tag"]
+        category_counts[tag] = category_counts.get(tag, 0) + 1
+
+    return {
+        "window_hours": hours,
+        "total_items": len(rows),
+        "critical": critical,
+        "highlights": highlights[:12],
+        "category_counts": category_counts,
+    }
 
 
 @app.get("/api/sector-performance")

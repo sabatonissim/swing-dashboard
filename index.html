@@ -108,6 +108,10 @@
   .col::-webkit-scrollbar{width:6px;}
   .col::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px;}
   .col-title{display:flex;align-items:center;gap:10px;margin-bottom:16px;font-size:12px;letter-spacing:1.5px;color:var(--text-dim);text-transform:uppercase;}
+  .col-title-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px;}
+  .col-title-row .col-title{margin-bottom:0;}
+  .daily-digest-btn{background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;transition:border-color .15s;white-space:nowrap;flex-shrink:0;}
+  .daily-digest-btn:hover{border-color:var(--amber);}
   .col-title .dot{width:7px;height:7px;border-radius:50%;}
   .right .dot{background:var(--amber);}
   .left .dot{background:var(--teal);}
@@ -300,8 +304,6 @@
   .earnings-cal-eps{font-family:'JetBrains Mono',monospace;font-size:11px;white-space:nowrap;}
   .fg-score{font-family:'JetBrains Mono',monospace;font-size:46px;font-weight:700;}
   .fg-rating{font-size:15px;font-weight:700;margin-top:4px;}
-  .fg-bar-track{height:10px;border-radius:5px;background:linear-gradient(90deg,#ef5b5b,#e8a33d,#3ecf7e);margin:16px 0 8px;position:relative;}
-  .fg-bar-marker{position:absolute;top:-4px;width:3px;height:18px;background:#fff;border-radius:2px;transform:translateX(-50%);}
   .fg-history-row{display:flex;justify-content:space-between;margin-top:16px;padding-top:14px;border-top:1px solid var(--line);font-size:11.5px;}
   .fg-history-item{text-align:center;flex:1;}
   .fg-history-item .k{color:var(--text-dim);margin-bottom:3px;}
@@ -310,6 +312,30 @@
   .fg-component{background:var(--panel-2);border-radius:8px;padding:9px 11px;font-size:11.5px;}
   .fg-component .name{color:var(--text-dim);margin-bottom:3px;}
   .fg-component .val{font-weight:700;}
+  .fg-gauge-svg{width:100%;max-width:280px;display:block;margin:0 auto;}
+
+  /* ---- Market ticker strip ---- */
+  .ticker-tape{background:var(--panel);border-bottom:1px solid var(--line);overflow:hidden;white-space:nowrap;height:28px;display:flex;align-items:center;}
+  .ticker-tape-track{display:inline-flex;align-items:center;gap:26px;padding-inline-start:26px;animation:ticker-scroll 38s linear infinite;will-change:transform;}
+  .ticker-tape:hover .ticker-tape-track{animation-play-state:paused;}
+  .ticker-item{display:inline-flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:11.5px;white-space:nowrap;}
+  .ticker-item .t-name{color:var(--text-dim);}
+  .ticker-item .t-price{color:var(--text);}
+  .ticker-item .t-chg{font-weight:700;}
+  .ticker-item .t-chg.up{color:var(--green);}
+  .ticker-item .t-chg.down{color:var(--red);}
+  @keyframes ticker-scroll{ from{transform:translateX(0);} to{transform:translateX(-50%);} }
+
+  /* ---- Daily digest drawer content ---- */
+  .digest-section{margin-bottom:18px;}
+  .digest-section-title{font-size:11px;letter-spacing:1px;color:var(--text-dim);text-transform:uppercase;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--line);}
+  .digest-item{padding:9px 0;border-bottom:1px solid var(--line);}
+  .digest-item:last-child{border-bottom:none;}
+  .digest-item .macro-tag{display:inline-block;margin-bottom:4px;}
+  .digest-counts{display:flex;flex-wrap:wrap;gap:8px;}
+  .digest-count-chip{background:var(--panel-2);border-radius:8px;padding:5px 10px;font-size:11.5px;color:var(--text-dim);}
+  .digest-count-chip b{color:var(--text);font-weight:700;}
+  .digest-empty{color:var(--text-dim);font-size:13px;padding:12px 0;text-align:center;}
 
   /* ---- Fundamentals (drawer) ---- */
   .fund-section-title{font-size:11px;letter-spacing:1.5px;color:var(--amber);text-transform:uppercase;margin:18px 0 10px;}
@@ -391,6 +417,12 @@
   </div>
 </header>
 
+<!-- Thin, always-visible market ticker strip — glance at it and know if
+     the market is red or green without opening any tab. -->
+<div class="ticker-tape" id="ticker-tape">
+  <div class="ticker-tape-track" id="ticker-tape-track"></div>
+</div>
+
 <div class="page-nav">
   <button class="page-nav-btn active" id="page-nav-home" onclick="setPage('home')">בית</button>
   <button class="page-nav-btn" id="page-nav-pulse" onclick="setPage('pulse')">פעימת השוק</button>
@@ -458,7 +490,10 @@
   </div>
   <div class="divider"></div>
   <div class="col left">
-    <div class="col-title"><span class="dot"></span> מוקד מאקרו וחדשות עולם</div>
+    <div class="col-title-row">
+      <div class="col-title"><span class="dot"></span> מוקד מאקרו וחדשות עולם</div>
+      <button class="daily-digest-btn" id="daily-digest-btn" onclick="openDailyDigest()">📰 סיכום יומי</button>
+    </div>
     <div class="news-search-wrap">
       <input type="text" class="news-search-input" id="news-search-input" placeholder="חפש בחדשות..." oninput="setNewsSearch(this.value)">
       <span class="news-search-icon" id="news-search-icon">🔍</span>
@@ -845,14 +880,16 @@ function renderMacro(){
 
 function renderBreakingNews(){
   const el = document.getElementById("breaking-news");
-  // Show only the most market-moving macro news
-  const MACRO_CRITICAL_TAGS = ['CPI','PPI','ריבית','Interest Rate','Fed','Federal Reserve',
-    'Inflation','אינפלציה','GDP','Recession','מיתון','גאופוליטי','Geo','War','Sanctions',
-    'Employment','תעסוקה','OPEC','Trade','סחר'];
-  const critical = macro.filter(m =>
-    m.impact === 'Critical' ||
-    MACRO_CRITICAL_TAGS.some(t => (m.tag||'').includes(t))
-  );
+  // Show ONLY items the backend itself classified as Critical (Fed
+  // decisions, wars/sanctions/attacks, recession/bankruptcy signals —
+  // see CRITICAL_KEYWORDS in pipeline_b_news_aggregator.py). Previously
+  // this also re-matched a broad list of category-name substrings
+  // ("Inflation", "Employment", "Trade" etc.) on top of that, which
+  // caught almost every macro category and made this bar functionally
+  // identical to the regular feed. These items still appear in the
+  // regular feed too — this bar is just a highlighted subset, not a
+  // separate pool.
+  const critical = macro.filter(m => m.impact === 'Critical');
   if(!critical.length){
     el.innerHTML=`<div style="color:var(--text-dim);font-size:13px;padding:4px 0;">${UI[lang].no_breaking}</div>`;
     return;
@@ -1744,6 +1781,43 @@ const FG_COMPONENT_NAMES = {
   safe_haven_demand: {he:'ביקוש למקלט בטוח', en:'Safe Haven Demand'},
 };
 
+// Speedometer-style gauge (like CNN's own widget) instead of a flat bar:
+// a half-circle with 5 colored zones and a needle that rotates from
+// straight left (score 0, extreme fear) to straight right (score 100,
+// extreme greed).
+function buildFearGreedGaugeSvg(score, needleColor){
+  const cx = 120, cy = 112, arcR = 96, needleR = 76;
+  const toXY = (r, angleDeg) => {
+    const rad = angleDeg * Math.PI / 180;
+    return { x: cx + r * Math.cos(rad), y: cy - r * Math.sin(rad) };
+  };
+  const arcPath = (r, startAngle, endAngle) => {
+    const start = toXY(r, startAngle);
+    const end = toXY(r, endAngle);
+    const largeArc = Math.abs(startAngle - endAngle) > 180 ? 1 : 0;
+    return `M ${start.x.toFixed(2)} ${start.y.toFixed(2)} A ${r} ${r} 0 ${largeArc} 1 ${end.x.toFixed(2)} ${end.y.toFixed(2)}`;
+  };
+  // score -> angle: 0 -> 180deg (pointing left), 100 -> 0deg (pointing right)
+  const scoreToAngle = (s) => 180 - (Math.max(0, Math.min(100, s)) * 1.8);
+  const bands = [
+    { from: 0,  to: 25,  color: '#ef5b5b' },
+    { from: 25, to: 45,  color: '#e08a5b' },
+    { from: 45, to: 55,  color: '#e8a33d' },
+    { from: 55, to: 75,  color: '#9ed17a' },
+    { from: 75, to: 100, color: '#3ecf7e' },
+  ];
+  const bandArcs = bands.map(b => `<path d="${arcPath(arcR, scoreToAngle(b.from), scoreToAngle(b.to))}" stroke="${b.color}" stroke-width="16" fill="none" stroke-linecap="butt"/>`).join('');
+  const needleAngle = scoreToAngle(score);
+  const tip = toXY(needleR, needleAngle);
+  return `
+    <svg class="fg-gauge-svg" viewBox="0 0 240 128" xmlns="http://www.w3.org/2000/svg">
+      ${bandArcs}
+      <line x1="${cx}" y1="${cy}" x2="${tip.x.toFixed(2)}" y2="${tip.y.toFixed(2)}" stroke="${needleColor}" stroke-width="3.5" stroke-linecap="round"/>
+      <circle cx="${cx}" cy="${cy}" r="7" fill="${needleColor}"/>
+    </svg>
+  `;
+}
+
 async function loadFearGreed(){
   const el = document.getElementById('fear-greed-wrap');
   const t = lang==='en';
@@ -1770,7 +1844,8 @@ function renderFearGreed(data){
   }
   const ratingKey = (data.rating||'').toLowerCase();
   const ratingLabel = t ? (data.rating||'—') : (FG_RATING_HE[ratingKey] || data.rating || '—');
-  const ratingColor = score>=75?'var(--green)':score>=55?'#9ed17a':score>=45?'var(--amber)':score>=25?'#e08a5b':'var(--red)';
+  const ratingColor = score>=75?'#3ecf7e':score>=55?'#9ed17a':score>=45?'#e8a33d':score>=25?'#e08a5b':'#ef5b5b';
+  const gaugeSvg = buildFearGreedGaugeSvg(score, ratingColor);
 
   const historyRow = (label, val) => {
     if(val==null) return '';
@@ -1787,9 +1862,9 @@ function renderFearGreed(data){
 
   el.innerHTML = `
     <div class="fg-gauge-box">
+      ${gaugeSvg}
       <div class="fg-score" style="color:${ratingColor}">${Math.round(score)}</div>
       <div class="fg-rating" style="color:${ratingColor}">${ratingLabel}</div>
-      <div class="fg-bar-track"><div class="fg-bar-marker" style="left:${score}%;"></div></div>
       <div class="fg-history-row">
         ${historyRow(t?'Yesterday':'אתמול', data.previous_close)}
         ${historyRow(t?'1 Week Ago':'לפני שבוע', data.previous_1_week)}
@@ -1797,6 +1872,103 @@ function renderFearGreed(data){
         ${historyRow(t?'1 Year Ago':'לפני שנה', data.previous_1_year)}
       </div>
       ${componentsHtml ? `<div class="fg-components">${componentsHtml}</div>` : ''}
+    </div>
+  `;
+}
+
+// ---- Market ticker strip ----
+let lastMarketTicker = null;
+
+async function loadMarketTicker(){
+  try {
+    const res = await fetch(`${API_BASE}/api/market-ticker`);
+    if(!res.ok) throw new Error('bad response');
+    const data = await res.json();
+    if(data && data.items && data.items.length){
+      lastMarketTicker = data.items;
+      renderMarketTicker();
+    }
+  } catch(e) {
+    console.error('[market-ticker] load failed', e);
+  }
+}
+
+function renderMarketTicker(){
+  const track = document.getElementById('ticker-tape-track');
+  if(!track || !lastMarketTicker || !lastMarketTicker.length) return;
+  const t = lang==='en';
+  const itemHtml = (it) => {
+    const up = it.change_pct >= 0;
+    const name = t ? it.name_en : it.name_he;
+    const sign = up ? '+' : '';
+    const priceStr = it.price >= 1000 ? Math.round(it.price).toLocaleString(t?'en-US':'he-IL') : it.price.toFixed(2);
+    return `<span class="ticker-item"><span class="t-name">${name}</span><span class="t-price">${priceStr}</span><span class="t-chg ${up?'up':'down'}">${sign}${it.change_pct.toFixed(2)}%</span></span>`;
+  };
+  const row = lastMarketTicker.map(itemHtml).join('');
+  // Duplicated so the CSS animation (translateX 0 -> -50%) loops seamlessly.
+  track.innerHTML = row + row;
+}
+
+// ---- Daily news digest (rule-based, no AI — see /api/daily-digest) ----
+async function openDailyDigest(){
+  const drawer = document.getElementById("drawer");
+  const t = lang==='en';
+  drawer.innerHTML = `
+    <div class="drawer-head">
+      <h2>${t?'Daily Digest':'סיכום יומי'}</h2>
+      <button class="close-btn" onclick="closeDrawer()">✕</button>
+    </div>
+    <div class="digest-empty">${UI[lang].loading}</div>
+  `;
+  document.getElementById("overlay").classList.add("open");
+  try {
+    const res = await fetch(`${API_BASE}/api/daily-digest?hours=24`);
+    if(!res.ok) throw new Error('bad response');
+    const data = await res.json();
+    renderDailyDigest(data);
+  } catch(e) {
+    console.error('[daily-digest] load failed', e);
+    const body = document.getElementById("digest-body");
+    if(body) body.innerHTML = `<div class="digest-empty">${t?'Could not load the digest right now.':'לא ניתן לטעון את הסיכום כרגע.'}</div>`;
+  }
+}
+
+function renderDailyDigest(data){
+  const t = lang==='en';
+  const drawer = document.getElementById("drawer");
+  const critical = data.critical || [];
+  const highlights = data.highlights || [];
+  const counts = data.category_counts || {};
+
+  const itemRow = (r) => `
+    <div class="digest-item">
+      <div class="macro-tag ${r.impact_level==='Critical'?'tag-critical':'tag-high'}">${r.category_tag}</div>
+      <div class="macro-text">${t ? (r.summary_en||'') : (r.summary_he||'')}</div>
+    </div>
+  `;
+
+  const countsHtml = Object.keys(counts).sort((a,b)=>counts[b]-counts[a]).map(tag =>
+    `<div class="digest-count-chip">${tag}: <b>${counts[tag]}</b></div>`
+  ).join('');
+
+  drawer.innerHTML = `
+    <div class="drawer-head">
+      <h2>${t?'Daily Digest — Last 24h':'סיכום יומי — 24 השעות האחרונות'}</h2>
+      <button class="close-btn" onclick="closeDrawer()">✕</button>
+    </div>
+    <div id="digest-body">
+      <div class="digest-section">
+        <div class="digest-section-title">${t?`Critical (${critical.length})`:`קריטי (${critical.length})`}</div>
+        ${critical.length ? critical.map(itemRow).join('') : `<div class="digest-empty">${t?'No critical news in this window.':'אין חדשות קריטיות בחלון הזמן הזה.'}</div>`}
+      </div>
+      <div class="digest-section">
+        <div class="digest-section-title">${t?'Highlights by category':'עיקרי הכתבות לפי קטגוריה'}</div>
+        ${highlights.length ? highlights.map(itemRow).join('') : `<div class="digest-empty">${t?'Nothing else notable.':'אין עוד דברים בולטים.'}</div>`}
+      </div>
+      <div class="digest-section">
+        <div class="digest-section-title">${t?`All categories (${data.total_items} items)`:`כל הקטגוריות (${data.total_items} כתבות)`}</div>
+        <div class="digest-counts">${countsHtml || `<div class="digest-empty">—</div>`}</div>
+      </div>
     </div>
   `;
 }
@@ -3609,6 +3781,7 @@ const UI = {
     sector_all: 'הכל',
     earnings_cal_title: 'יומן דוחות השבוע',
     earnings_cal_empty: 'אין דיווחי תוצאות צפויים השבוע בקרב החברות הגדולות שאנחנו עוקבים אחריהן.',
+    daily_digest_btn: '📰 סיכום יומי',
     session_bmo: 'לפני הפתיחה',
     session_amc: 'אחרי הסגירה',
     session_unknown: 'במהלך המסחר',
@@ -3656,6 +3829,7 @@ const UI = {
     sector_all: 'All',
     earnings_cal_title: "This Week's Earnings Calendar",
     earnings_cal_empty: 'No earnings reports expected this week among the large-cap names we track.',
+    daily_digest_btn: '📰 Daily Digest',
     session_bmo: 'Before Open',
     session_amc: 'After Close',
     session_unknown: 'During Market',
@@ -3699,6 +3873,8 @@ function applyLang(){
   document.getElementById('heatmap-title').textContent = t.heatmap_title;
   document.getElementById('feargreed-title').innerHTML = t.feargreed_title;
   document.getElementById('earnings-cal-title').textContent = t.earnings_cal_title;
+  document.getElementById('daily-digest-btn').textContent = t.daily_digest_btn;
+  renderMarketTicker();
   if(lastEarningsCalItems) renderEarningsCalendar(lastEarningsCalItems);
   if(backtestPatternsCache) renderBacktestPatternFilter();
   if(backtestPatternStatsCache) renderBacktestPatternSummary();
@@ -3745,6 +3921,8 @@ loadFromApi();
 setInterval(loadFromApi, 20000);
 loadMarketMovers();
 setInterval(loadMarketMovers, 60000);
+loadMarketTicker();
+setInterval(loadMarketTicker, 90000);
 refreshWatchlistData();
 loadPatternStats();
 
