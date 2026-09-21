@@ -316,7 +316,7 @@
 
   /* ---- Market ticker strip ---- */
   .ticker-tape{background:var(--panel);border-bottom:1px solid var(--line);overflow:hidden;white-space:nowrap;height:28px;display:flex;align-items:center;}
-  .ticker-tape-track{display:inline-flex;align-items:center;gap:26px;padding-inline-start:26px;animation:ticker-scroll 190s linear infinite;will-change:transform;}
+  .ticker-tape-track{display:inline-flex;flex-shrink:0;align-items:center;gap:26px;padding-inline-start:26px;animation:ticker-scroll 190s linear infinite;will-change:transform;}
   .ticker-tape:hover .ticker-tape-track{animation-play-state:paused;}
   .ticker-item{display:inline-flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:11.5px;white-space:nowrap;}
   .ticker-item .t-name{color:var(--text-dim);}
@@ -1824,6 +1824,8 @@ function buildFearGreedGaugeSvg(score, needleColor){
   `;
 }
 
+let lastFearGreedData = null;
+
 async function loadFearGreed(){
   const el = document.getElementById('fear-greed-wrap');
   const t = lang==='en';
@@ -1832,6 +1834,7 @@ async function loadFearGreed(){
     const res = await fetch(`${API_BASE}/api/fear-greed`);
     if(!res.ok) throw new Error('bad response');
     const data = await res.json();
+    lastFearGreedData = data;
     renderFearGreed(data);
   } catch(e) {
     console.error('[fear-greed] load failed', e);
@@ -1977,15 +1980,15 @@ function renderDailyDigest(data){
     </div>
     <div id="digest-body">
       <div class="digest-section">
-        <div class="digest-section-title">${t?`Critical (${critical.length})`:`קריטי (${critical.length})`}</div>
-        ${critical.length ? critical.map(itemRow).join('') : `<div class="digest-empty">${t?'No critical news in this window.':'אין חדשות קריטיות בחלון הזמן הזה.'}</div>`}
-      </div>
-      <div class="digest-section">
         <div class="digest-section-title">${t?"Today's most-covered topics":'הנושאים עם הכי הרבה סיקור היום'}</div>
         <div class="digest-note">${t
           ? "Ranked by how many separate articles covered each topic in the last 24h — a volume-based proxy for \"buzz\", not an AI-written summary."
           : 'מדורג לפי כמות הכתבות הנפרדות שסיקרו כל נושא ב-24 השעות האחרונות — מדד נפח סיקור כתחליף ל"הייפ", לא סיכום שנכתב ע"י AI.'}</div>
         ${hotTopics.length ? hotTopics.map(hotTopicRow).join('') : `<div class="digest-empty">${t?'Not enough volume yet to rank topics.':'עדיין אין מספיק נפח כדי לדרג נושאים.'}</div>`}
+      </div>
+      <div class="digest-section">
+        <div class="digest-section-title">${t?`Critical (${critical.length})`:`קריטי (${critical.length})`}</div>
+        ${critical.length ? critical.map(itemRow).join('') : `<div class="digest-empty">${t?'No critical news in this window.':'אין חדשות קריטיות בחלון הזמן הזה.'}</div>`}
       </div>
       <div class="digest-note" style="margin-top:4px;">${t?`${data.total_items} items in the last ${data.window_hours}h total.`:`סה"כ ${data.total_items} כתבות ב-${data.window_hours} השעות האחרונות.`}</div>
     </div>
@@ -3893,6 +3896,7 @@ function applyLang(){
   document.getElementById('feargreed-title').innerHTML = t.feargreed_title;
   document.getElementById('earnings-cal-title').textContent = t.earnings_cal_title;
   document.getElementById('daily-digest-btn').textContent = t.daily_digest_btn;
+  if(lastFearGreedData) renderFearGreed(lastFearGreedData);
   renderMarketTicker();
   if(lastEarningsCalItems) renderEarningsCalendar(lastEarningsCalItems);
   if(backtestPatternsCache) renderBacktestPatternFilter();
