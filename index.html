@@ -315,16 +315,17 @@
   .fg-gauge-svg{width:100%;max-width:280px;display:block;margin:0 auto;}
 
   /* ---- Market ticker strip ---- */
-  .ticker-tape{background:var(--panel);border-bottom:1px solid var(--line);overflow:hidden;white-space:nowrap;height:28px;display:flex;align-items:center;}
-  .ticker-tape-track{display:inline-flex;flex-shrink:0;align-items:center;gap:26px;padding-inline-start:26px;animation:ticker-scroll 190s linear infinite;will-change:transform;}
+  .ticker-tape{background:var(--panel);border-bottom:1px solid var(--line);overflow:hidden;position:relative;height:28px;}
+  .ticker-tape-track{position:absolute;top:0;left:0;height:100%;display:flex;align-items:center;white-space:nowrap;animation:ticker-scroll linear infinite;animation-duration:60s;will-change:transform;}
   .ticker-tape:hover .ticker-tape-track{animation-play-state:paused;}
+  .ticker-tape-seg{display:flex;align-items:center;flex-shrink:0;gap:26px;padding-inline-end:26px;}
   .ticker-item{display:inline-flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:11.5px;white-space:nowrap;}
   .ticker-item .t-name{color:var(--text-dim);}
   .ticker-item .t-price{color:var(--text);}
   .ticker-item .t-chg{font-weight:700;}
   .ticker-item .t-chg.up{color:var(--green);}
   .ticker-item .t-chg.down{color:var(--red);}
-  @keyframes ticker-scroll{ from{transform:translateX(0);} to{transform:translateX(-50%);} }
+  @keyframes ticker-scroll{ from{transform:translateX(0);} to{transform:translateX(var(--ticker-shift, -50%));} }
 
   /* ---- Daily digest: large centered modal (not the narrow side drawer) ---- */
   .digest-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;align-items:center;justify-content:center;padding:24px;}
@@ -423,7 +424,10 @@
 <!-- Thin, always-visible market ticker strip — glance at it and know if
      the market is red or green without opening any tab. -->
 <div class="ticker-tape" id="ticker-tape">
-  <div class="ticker-tape-track" id="ticker-tape-track"></div>
+  <div class="ticker-tape-track" id="ticker-tape-track">
+    <div class="ticker-tape-seg" id="ticker-seg-a"></div>
+    <div class="ticker-tape-seg" id="ticker-seg-b"></div>
+  </div>
 </div>
 
 <div class="page-nav">
@@ -1903,8 +1907,11 @@ async function loadMarketTicker(){
 }
 
 function renderMarketTicker(){
+  const tape = document.getElementById('ticker-tape');
   const track = document.getElementById('ticker-tape-track');
-  if(!track || !lastMarketTicker || !lastMarketTicker.length) return;
+  const segA = document.getElementById('ticker-seg-a');
+  const segB = document.getElementById('ticker-seg-b');
+  if(!tape || !track || !segA || !segB || !lastMarketTicker || !lastMarketTicker.length) return;
   const t = lang==='en';
   const itemHtml = (it) => {
     const up = it.change_pct >= 0;
@@ -1916,13 +1923,31 @@ function renderMarketTicker(){
       : Math.abs(it.change_points).toFixed(2);
     return `<span class="ticker-item"><span class="t-name">${name}</span><span class="t-price">${priceStr}</span><span class="t-chg ${up?'up':'down'}">${sign}${pointsStr} (${sign}${it.change_pct.toFixed(2)}%)</span></span>`;
   };
-  const row = lastMarketTicker.map(itemHtml).join('');
-  // Repeated many times over — not just 2 copies — so the strip always
-  // spans the full row edge-to-edge regardless of screen width (a wide
-  // monitor showing only 7 items left a dead gap on the right, which is
-  // the "half the screen" gap that was reported). An even copy count
-  // keeps the -50% loop landing exactly on a repeat boundary either way.
-  track.innerHTML = row.repeat(10);
+  const baseRow = lastMarketTicker.map(itemHtml).join('');
+
+  // Build ONE segment that's measured in real pixels to be at least as
+  // wide as the visible strip (repeating the 7 items as many times as
+  // needed), then place an identical second segment right after it and
+  // shift the whole track by exactly that segment's pixel width. That
+  // guarantees the two segments always line up perfectly, so the loop
+  // never runs out of content and go blank — no percentage-of-a-
+  // possibly-shrunk-flexbox guessing involved.
+  const containerWidth = tape.clientWidth || window.innerWidth || 1200;
+  let html = baseRow;
+  segA.innerHTML = html;
+  let segWidth = segA.scrollWidth;
+  let guard = 0;
+  while(segWidth < containerWidth && guard < 12){
+    html += baseRow;
+    segA.innerHTML = html;
+    segWidth = segA.scrollWidth;
+    guard++;
+  }
+  segB.innerHTML = html;
+
+  track.style.setProperty('--ticker-shift', `-${segWidth}px`);
+  const PX_PER_SEC = 55;
+  track.style.animationDuration = `${Math.max(20, segWidth / PX_PER_SEC)}s`;
 }
 
 // ---- Daily news digest (rule-based, no AI — see /api/daily-digest) ----
