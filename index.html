@@ -1317,12 +1317,13 @@ async function loadDeepDive(){
   el.innerHTML = `<div class="bt-empty">${UI[lang].loading}</div>`;
 
   try {
-    const [lookupRes, sectorRes, signalsRes, newsRes, fundRes] = await Promise.allSettled([
+    const [lookupRes, sectorRes, signalsRes, newsRes, fundRes, setupRes] = await Promise.allSettled([
       fetch(`${API_BASE}/api/lookup/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
       fetchWithTimeout(`${API_BASE}/api/sector-comparison/${ticker}?period=${ddSectorPeriod}`, 30000).then(r => r.ok ? r.json() : Promise.reject()),
       fetch(`${API_BASE}/api/signal-history/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
       fetch(`${API_BASE}/api/stock-news/${ticker}?lang=${lang}`).then(r => r.ok ? r.json() : Promise.reject()),
       fetchFundamentalsData(ticker),
+      fetchWithTimeout(`${API_BASE}/api/technical-setup/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject()),
     ]);
 
     if(lookupRes.status !== 'fulfilled'){
@@ -1335,6 +1336,7 @@ async function loadDeepDive(){
     const signals = signalsRes.status === 'fulfilled' ? signalsRes.value : [];
     const news = newsRes.status === 'fulfilled' ? newsRes.value : [];
     const fundData = fundRes.status === 'fulfilled' ? fundRes.value : null;
+    const setupData = setupRes.status === 'fulfilled' ? setupRes.value : null;
 
     // The lookup endpoint's own market_cap/pe_ratio depend on yfinance's
     // often-blocked .info — fundamentals computes both more reliably from
@@ -1352,6 +1354,7 @@ async function loadDeepDive(){
     }
 
     renderDeepDive(quote, sector, signals, news);
+    renderTechnicalSetup(setupData, 'dd-technical-setup-section');
     if(fundData){
       try { renderFundamentals(fundData, 'dd-fundamentals-section'); }
       catch(e){ console.error('[fundamentals] render failed for', quote.ticker, e); loadFundamentals(quote.ticker, 'dd-fundamentals-section'); }
@@ -1402,6 +1405,8 @@ function renderDeepDive(quote, sector, signals, news){
       <div class="dd-stat-card"><div class="k">${t?'Avg Vol 20d':'ווליום ממוצע'}</div><div class="v">${formatMarketCap(quote.avg_volume_20d)}</div></div>
     </div>
   `;
+
+  html += `<div id="dd-technical-setup-section"></div>`;
 
   if(quote.sector || quote.sub_industry || quote.description){
     html += `<div class="dd-section-title">${t?'About the Company':'על החברה'}</div>`;
@@ -2820,6 +2825,121 @@ document.addEventListener('click', ()=>{
 let _dd_lastQuote = null;
 let ddSectorPeriod = '1Y'; // '1M' | '3M' | 'YTD' | '1Y' — matches the home page's sector tabs
 let ddSectorCache = {};    // ticker -> {period: data} so switching back to a period already seen is instant
+
+// ---- Deep-dive "current technical setup" (see /api/technical-setup) ----
+const TECHNICAL_SETUP_PATTERN_NAMES = {
+  cup_and_handle: {he: 'כוס וידית', en: 'Cup & Handle'},
+  ascending_triangle: {he: 'משולש עולה', en: 'Ascending Triangle'},
+  ascending_trendline_support: {he: 'תמיכה על קו עולה', en: 'Ascending Trendline Support'},
+  descending_trendline_breakout: {he: 'פריצת קו יורד', en: 'Descending Trendline Breakout'},
+  horizontal_resistance_breakout: {he: 'פריצת התנגדות אופקית', en: 'Horizontal Resistance Breakout'},
+  ma150_support: {he: 'תמיכה על ממוצע 150 יום', en: '150-Day MA Support'},
+};
+const TECHNICAL_SETUP_STAGE_LABELS = {
+  triggered: {he: 'כבר פרץ', en: 'Already broken out', color: 'var(--green)'},
+  holding: {he: 'מחזיק כתמיכה', en: 'Holding as support', color: 'var(--teal)'},
+  approaching: {he: 'מתקרב', en: 'Approaching', color: 'var(--amber)'},
+};
+
+function buildTechnicalSetupSvg(priceSeries, lines){
+  if(!priceSeries || priceSeries.length < 2) return '';
+  const W = 640, H = 190, PADX = 6, PADY = 16;
+  const prices = priceSeries.map(p => p[1]);
+  const minP = Math.min(...prices);
+  const maxP = Math.max(...prices);
+  const span = (maxP - minP) || 1;
+  const n = priceSeries.length;
+  const dateIndex = {};
+  priceSeries.forEach((p,i) => { if(!(p[0] in dateIndex)) dateIndex[p[0]] = i; });
+
+  const xOf = (i) => PADX + (i/(n-1)) * (W - PADX*2);
+  const yOf = (price) => PADY + (1 - (price-minP)/span) * (H - PADY*2);
+
+  const pricePath = priceSeries.map((p,i) => `${i===0?'M':'L'} ${xOf(i).toFixed(1)} ${yOf(p[1]).toFixed(1)}`).join(' ');
+
+  const t = lang==='en';
+  const lineSvgs = (lines||[]).map(ln => {
+    const label = t ? ln.label_en : ln.label_he;
+    if(ln.type === 'horizontal'){
+      const i1 = dateIndex[ln.from], i2 = dateIndex[ln.to];
+      if(i1===undefined || i2===undefined) return '';
+      const y = yOf(ln.price);
+      return `<line x1="${xOf(i1).toFixed(1)}" y1="${y.toFixed(1)}" x2="${xOf(i2).toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--amber)" stroke-width="1.5" stroke-dasharray="4 3"/>
+              <text x="${xOf(i2).toFixed(1)}" y="${(y-4).toFixed(1)}" font-size="9" fill="var(--amber)" text-anchor="${t?'end':'end'}">${label} $${ln.price}</text>`;
+    }
+    if(ln.type === 'trend'){
+      const pts = (ln.points||[]).map(([d,p]) => {
+        const idx = dateIndex[d];
+        return idx===undefined ? null : `${xOf(idx).toFixed(1)},${yOf(p).toFixed(1)}`;
+      }).filter(Boolean);
+      if(pts.length < 2) return '';
+      return `<polyline points="${pts.join(' ')}" fill="none" stroke="var(--teal)" stroke-width="1.5"/>`;
+    }
+    if(ln.type === 'curve'){
+      const pts = (ln.points||[]).map(([d,p]) => {
+        const idx = dateIndex[d];
+        return idx===undefined ? null : [xOf(idx), yOf(p)];
+      }).filter(Boolean);
+      if(pts.length < 2) return '';
+      let d = `M ${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
+      for(let i=1;i<pts.length;i++) d += ` L ${pts[i][0].toFixed(1)} ${pts[i][1].toFixed(1)}`;
+      return `<path d="${d}" fill="none" stroke="var(--teal)" stroke-width="1.5" stroke-dasharray="2 2"/>`;
+    }
+    return '';
+  }).join('');
+
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;margin:10px 0;">
+    <path d="${pricePath}" fill="none" stroke="var(--text-dim)" stroke-width="1.3"/>
+    ${lineSvgs}
+  </svg>`;
+}
+
+function renderTechnicalSetup(data, elId){
+  const el = document.getElementById(elId);
+  if(!el) return;
+  const t = lang==='en';
+  if(!data || !data.has_setup || !data.candidates || !data.candidates.length){
+    el.innerHTML = `
+      <div class="dd-section-title">${t?'Current Technical Setup':'מבנה טכני נוכחי'}</div>
+      <div class="bt-empty" style="padding:10px 0;">${t
+        ? 'No clear pattern forming right now — looks like plain consolidation or trend, nothing specific to flag.'
+        : 'אין כרגע תבנית ברורה שנבנית — נראה כמו התכנסות או מגמה רגילה, אין משהו ספציפי לסמן.'}</div>
+    `;
+    return;
+  }
+  const c = data.candidates[0];
+  const nameMap = TECHNICAL_SETUP_PATTERN_NAMES[c.pattern];
+  const name = nameMap ? (t?nameMap.en:nameMap.he) : c.pattern;
+  const stageMap = TECHNICAL_SETUP_STAGE_LABELS[c.stage];
+  const stageLabel = stageMap ? (t?stageMap.en:stageMap.he) : c.stage;
+  const stageColor = stageMap ? stageMap.color : 'var(--text-dim)';
+  const explanation = t ? c.explanation_en : c.explanation_he;
+  const svg = buildTechnicalSetupSvg(data.price_series, c.lines);
+
+  let statsHtml = `
+    <div class="dd-stats-row">
+      <div class="dd-stat-card"><div class="k">${t?'Key level':'רמת מפתח'}</div><div class="v">$${c.key_level}</div></div>
+      <div class="dd-stat-card"><div class="k">${t?'Distance':'מרחק'}</div><div class="v">${c.distance_pct>0?'+':''}${c.distance_pct}%</div></div>
+  `;
+  if(c.target_price){
+    statsHtml += `
+      <div class="dd-stat-card"><div class="k">${t?'Measured-move target':'יעד מדידת גובה'}</div><div class="v">$${c.target_price}</div></div>
+      <div class="dd-stat-card"><div class="k">${t?'Potential':'פוטנציאל'}</div><div class="v">+${c.target_pct}%</div></div>
+    `;
+  }
+  statsHtml += `</div>`;
+
+  el.innerHTML = `
+    <div class="dd-section-title">${t?'Current Technical Setup':'מבנה טכני נוכחי'}</div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+      <span style="font-weight:700;font-size:14px;">${name}</span>
+      <span style="font-size:11px;color:${stageColor};border:1px solid ${stageColor};border-radius:6px;padding:2px 8px;">${stageLabel}</span>
+    </div>
+    <div style="font-size:13px;line-height:1.6;color:var(--text);margin-bottom:4px;">${explanation}</div>
+    ${svg}
+    ${statsHtml}
+  `;
+}
 
 function renderDeepDiveSectorSection(sector){
   const el = document.getElementById('dd-sector-compare-section');

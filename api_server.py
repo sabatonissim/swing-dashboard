@@ -15,6 +15,7 @@ Endpoints:
     GET /api/earnings-calendar   -> this week's earnings dates for notable/large-cap names
     GET /api/market-ticker       -> S&P 500 / Nasdaq / Dow / VIX / Bitcoin / Ethereum / Gold, for the top ticker strip
     GET /api/daily-digest        -> non-AI daily news digest (critical items + one highlight per category)
+    GET /api/technical-setup/{ticker} -> deep-dive: is a chart pattern currently forming/approaching for this ticker
 
 CORS is open for local development. Lock this down (allow_origins) before
 deploying publicly.
@@ -31,6 +32,7 @@ from datetime import date, datetime as dt, timezone
 from typing import List, Optional
 
 import pandas as pd
+import numpy as np
 import requests
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -1014,6 +1016,496 @@ def _sec_fallback_description(ticker: str) -> Optional[str]:
     except Exception as e:
         print(f"[info] SEC fallback description unavailable for {ticker} (non-fatal): {e}")
         return None
+
+
+def _find_swing_points(values, mode="low", span=2):
+    """Same local-extremum logic as pipeline_a_scanner.py's
+    find_swing_points (duplicated rather than imported — api_server.py
+    deliberately doesn't depend on that module, see note above the
+    earnings-calendar endpoint): a bar strictly higher/lower than each
+    of its `span` neighbors on both sides."""
+    out = []
+    for i in range(span, len(values) - span):
+        if mode == "high":
+            if all(values[i] > values[i-k] for k in range(1, span+1)) and \
+               all(values[i] > values[i+k] for k in range(1, span+1)):
+                out.append((i, float(values[i])))
+        else:
+            if all(values[i] < values[i-k] for k in range(1, span+1)) and \
+               all(values[i] < values[i+k] for k in range(1, span+1)):
+                out.append((i, float(values[i])))
+    return out
+
+
+def _fmt_date(ts) -> str:
+    return pd.Timestamp(ts).strftime("%Y-%m-%d")
+
+
+# ------------------------------------------------------------------
+# Deep-dive "current technical setup" — an on-demand, single-ticker
+# version of the scanner's pattern detectors (see the 15 detect_*
+# functions in pipeline_a_scanner.py), reimplemented standalone here
+# rather than imported (see the note above the earnings-calendar
+# endpoint on why api_server.py doesn't depend on that module).
+#
+# The key difference from the scanner: the scanner only fires ON THE
+# DAY a pattern actually triggers (binary yes/no, for that day's alert
+# feed). This is for a person looking at ONE stock right now and asking
+# "is a setup approaching" — so these also recognize a pattern that's
+# still forming and report how far price is from the trigger, not just
+# whether it already crossed. Each detector below returns None (not a
+# candidate) or a dict with: pattern id, stage ("approaching" or
+# "triggered"/"holding"), the key price level, distance_pct (how far,
+# in %, from that level right now), an optional measured-move target
+# (only for patterns where that's a standard, well-defined technique —
+# cup & handle, triangles, flags), and `lines` — the raw coordinates
+# needed to actually draw the level/trendline/pattern on a chart.
+# ------------------------------------------------------------------
+
+def _setup_cup_and_handle(hist: pd.DataFrame) -> Optional[dict]:
+    if len(hist) < 65:
+        return None
+    window = hist.tail(65)
+    dates = window.index
+    closes = window["Close"].values
+    n = len(closes)
+
+    left_rim_idx = int(np.argmax(closes[:n // 3]))
+    left_rim = float(closes[left_rim_idx])
+
+    cup_section = closes[left_rim_idx:]
+    if len(cup_section) < 20:
+        return None
+    cup_bottom_offset = int(np.argmin(cup_section))
+    cup_bottom_idx = left_rim_idx + cup_bottom_offset
+    cup_bottom = float(cup_section[cup_bottom_offset])
+    cup_depth = left_rim - cup_bottom
+    if cup_depth <= 0 or cup_depth / left_rim < 0.15:
+        return None  # not a deep enough dip to read as a cup
+
+    right_section = closes[left_rim_idx + int(len(cup_section) * 0.4):]
+    if len(right_section) < 5:
+        return None
+    right_rim = float(right_section.max())
+    if right_rim < left_rim * 0.95:
+        return None  # hasn't recovered enough to be forming a right rim yet
+
+    today_close = float(closes[-1])
+    breakout_level = right_rim
+    distance_pct = (breakout_level - today_close) / today_close * 100
+    if distance_pct > 20:
+        return None  # too far below the rim for this to be "approaching" anything
+    target_price = breakout_level + cup_depth
+    stage = "triggered" if today_close >= breakout_level else "approaching"
+
+    return {
+        "pattern": "cup_and_handle",
+        "stage": stage,
+        "key_level": round(breakout_level, 2),
+        "distance_pct": round(distance_pct, 2),
+        "target_price": round(target_price, 2),
+        "target_pct": round((target_price - breakout_level) / breakout_level * 100, 1),
+        "cup_depth_pct": round(cup_depth / left_rim * 100, 1),
+        "lines": [
+            {"type": "curve", "label_he": "כוס", "label_en": "Cup", "points": [
+                [_fmt_date(dates[left_rim_idx]), round(left_rim, 2)],
+                [_fmt_date(dates[cup_bottom_idx]), round(cup_bottom, 2)],
+                [_fmt_date(dates[-1]), round(right_rim, 2)],
+            ]},
+            {"type": "horizontal", "label_he": "קו פריצה", "label_en": "Breakout level",
+             "price": round(breakout_level, 2),
+             "from": _fmt_date(dates[cup_bottom_idx]), "to": _fmt_date(dates[-1])},
+        ],
+    }
+
+
+def _setup_ascending_triangle(hist: pd.DataFrame) -> Optional[dict]:
+    lookback = 100
+    if len(hist) < lookback:
+        return None
+    window = hist.tail(lookback)
+    dates = window.index
+    highs = window["High"].values
+    lows = window["Low"].values
+
+    swing_highs = _find_swing_points(highs, mode="high")
+    swing_lows = _find_swing_points(lows, mode="low")
+    if len(swing_highs) < 2 or len(swing_lows) < 2:
+        return None
+
+    high_vals = [v for _, v in swing_highs]
+    flat_top = float(np.mean(high_vals))
+    if (max(high_vals) - min(high_vals)) / flat_top > 0.03:
+        return None  # highs aren't actually flat -> not this pattern
+
+    low_idx = [i for i, _ in swing_lows]
+    low_val = [v for _, v in swing_lows]
+    slope, _intercept = np.polyfit(low_idx, low_val, 1)
+    if slope <= 0:
+        return None  # lows must be rising -> squeezing toward the flat top
+
+    today_close = float(window["Close"].iloc[-1])
+    breakout_level = flat_top
+    distance_pct = (breakout_level - today_close) / today_close * 100
+    if distance_pct > 12:
+        return None
+
+    triangle_height = flat_top - min(low_val)
+    target_price = breakout_level + triangle_height
+    stage = "triggered" if today_close >= breakout_level * 1.005 else "approaching"
+
+    last_low_idx = low_idx[-1]
+    return {
+        "pattern": "ascending_triangle",
+        "stage": stage,
+        "key_level": round(breakout_level, 2),
+        "distance_pct": round(distance_pct, 2),
+        "target_price": round(target_price, 2),
+        "target_pct": round((target_price - breakout_level) / breakout_level * 100, 1),
+        "lines": [
+            {"type": "horizontal", "label_he": "התנגדות אופקית", "label_en": "Flat resistance",
+             "price": round(flat_top, 2),
+             "from": _fmt_date(dates[swing_highs[0][0]]), "to": _fmt_date(dates[-1])},
+            {"type": "trend", "label_he": "תמיכה עולה", "label_en": "Rising support",
+             "points": [
+                 [_fmt_date(dates[last_low_idx]), round(float(low_val[-1]), 2)],
+                 [_fmt_date(dates[-1]), round(float(slope * (len(window) - 1) + _intercept), 2)],
+             ]},
+        ],
+    }
+
+
+def _setup_ascending_trendline_support(hist: pd.DataFrame) -> Optional[dict]:
+    lookback = 150
+    if len(hist) < lookback:
+        return None
+    window = hist.tail(lookback)
+    dates = window.index
+    lows = window["Low"].values
+
+    swing_lows = _find_swing_points(lows, mode="low")
+    if len(swing_lows) < 3:
+        return None
+
+    idx = [i for i, _ in swing_lows]
+    val = [v for _, v in swing_lows]
+    slope, intercept = np.polyfit(idx, val, 1)
+    if slope <= 0:
+        return None
+
+    today_idx = len(window) - 1
+    trendline_today = slope * today_idx + intercept
+    today_close = float(window["Close"].iloc[-1])
+    if trendline_today <= 0:
+        return None
+
+    distance_pct = (today_close - trendline_today) / trendline_today * 100
+    if distance_pct < -3 or distance_pct > 10:
+        return None  # already broke below it, or too far above to be "testing" it
+
+    stage = "holding" if distance_pct >= 0 else "approaching"  # negative = just dipped under it
+    first_idx = idx[0]
+    return {
+        "pattern": "ascending_trendline_support",
+        "stage": stage,
+        "key_level": round(trendline_today, 2),
+        "distance_pct": round(distance_pct, 2),
+        "target_price": None,
+        "target_pct": None,
+        "lines": [
+            {"type": "trend", "label_he": "קו תמיכה עולה", "label_en": "Rising support line",
+             "points": [
+                 [_fmt_date(dates[first_idx]), round(float(slope * first_idx + intercept), 2)],
+                 [_fmt_date(dates[-1]), round(trendline_today, 2)],
+             ]},
+        ],
+    }
+
+
+def _setup_descending_trendline_breakout(hist: pd.DataFrame) -> Optional[dict]:
+    lookback = 150
+    if len(hist) < lookback:
+        return None
+    window = hist.tail(lookback)
+    dates = window.index
+    highs = window["High"].values
+
+    swing_idx, swing_val = [], []
+    for i in range(2, len(highs) - 2):
+        if highs[i] > highs[i-1] and highs[i] > highs[i-2] and highs[i] > highs[i+1] and highs[i] > highs[i+2]:
+            swing_idx.append(i)
+            swing_val.append(float(highs[i]))
+    if len(swing_idx) < 2:
+        return None
+
+    slope, intercept = np.polyfit(swing_idx, swing_val, 1)
+    if slope >= 0:
+        return None
+
+    today_idx = len(window) - 1
+    trendline_today = slope * today_idx + intercept
+    today_close = float(window["Close"].iloc[-1])
+    if trendline_today <= 0:
+        return None
+
+    distance_pct = (trendline_today - today_close) / today_close * 100  # positive = still below the line
+    if distance_pct < -5 or distance_pct > 12:
+        return None
+
+    stage = "triggered" if today_close > trendline_today else "approaching"
+    first_idx = swing_idx[0]
+    return {
+        "pattern": "descending_trendline_breakout",
+        "stage": stage,
+        "key_level": round(trendline_today, 2),
+        "distance_pct": round(distance_pct, 2),
+        "target_price": None,
+        "target_pct": None,
+        "lines": [
+            {"type": "trend", "label_he": "קו התנגדות יורד", "label_en": "Descending resistance line",
+             "points": [
+                 [_fmt_date(dates[first_idx]), round(float(slope * first_idx + intercept), 2)],
+                 [_fmt_date(dates[-1]), round(trendline_today, 2)],
+             ]},
+        ],
+    }
+
+
+def _setup_horizontal_resistance_breakout(hist: pd.DataFrame) -> Optional[dict]:
+    lookback = 150
+    if len(hist) < lookback:
+        return None
+    window = hist.tail(lookback)
+    dates = window.index
+    highs = window["High"].values
+
+    swing_highs = _find_swing_points(highs, mode="high")
+    if not swing_highs:
+        return None
+
+    vals = sorted(v for _, v in swing_highs)
+    clusters = []
+    current = [vals[0]]
+    for v in vals[1:]:
+        avg = sum(current) / len(current)
+        if abs(v - avg) / avg <= 0.02:
+            current.append(v)
+        else:
+            clusters.append(current)
+            current = [v]
+    clusters.append(current)
+    levels = [(sum(c) / len(c), len(c)) for c in clusters]
+
+    today_close = float(window["Close"].iloc[-1])
+    candidates = [(lvl, touches) for lvl, touches in levels if lvl > 0]
+    if not candidates:
+        return None
+    # the level closest to (above or just broken by) today's close is the one in play
+    level, touches = min(candidates, key=lambda x: abs(x[0] - today_close))
+    distance_pct = (level - today_close) / today_close * 100
+    if distance_pct < -8 or distance_pct > 12:
+        return None
+
+    stage = "triggered" if today_close >= level * 1.01 else "approaching"
+    # anchor the line at the first swing high that's part of this level's cluster
+    anchor_idx = next(i for i, v in swing_highs if abs(v - level) / level <= 0.02)
+    return {
+        "pattern": "horizontal_resistance_breakout",
+        "stage": stage,
+        "key_level": round(level, 2),
+        "distance_pct": round(distance_pct, 2),
+        "target_price": None,
+        "target_pct": None,
+        "touches": touches,
+        "lines": [
+            {"type": "horizontal", "label_he": "התנגדות אופקית", "label_en": "Horizontal resistance",
+             "price": round(level, 2),
+             "from": _fmt_date(dates[anchor_idx]), "to": _fmt_date(dates[-1])},
+        ],
+    }
+
+
+def _setup_ma150_support(hist: pd.DataFrame) -> Optional[dict]:
+    if len(hist) < 170:
+        return None
+    closes = hist["Close"]
+    dates = hist.index
+    sma150 = closes.rolling(150).mean()
+    if sma150.isna().iloc[-21:].any():
+        return None
+
+    slope = float(sma150.iloc[-1] - sma150.iloc[-20])
+    if slope <= 0:
+        return None  # MA itself isn't rising -> not a genuine uptrend to "respect"
+
+    ma_today = float(sma150.iloc[-1])
+    if ma_today <= 0:
+        return None
+    today_close = float(closes.iloc[-1])
+    distance_pct = (today_close - ma_today) / ma_today * 100
+    if abs(distance_pct) > 6:
+        return None
+
+    stage = "holding" if today_close >= ma_today else "approaching"
+    tail = hist.tail(60)
+    ma_tail = closes.rolling(150).mean().tail(60)
+    return {
+        "pattern": "ma150_support",
+        "stage": stage,
+        "key_level": round(ma_today, 2),
+        "distance_pct": round(distance_pct, 2),
+        "target_price": None,
+        "target_pct": None,
+        "lines": [
+            {"type": "trend", "label_he": "ממוצע נע 150 יום", "label_en": "150-day moving average",
+             "points": [
+                 [_fmt_date(tail.index[0]), round(float(ma_tail.iloc[0]), 2)],
+                 [_fmt_date(tail.index[-1]), round(ma_today, 2)],
+             ]},
+        ],
+    }
+
+
+_SETUP_DETECTORS = [
+    _setup_cup_and_handle,
+    _setup_ascending_triangle,
+    _setup_ascending_trendline_support,
+    _setup_descending_trendline_breakout,
+    _setup_horizontal_resistance_breakout,
+    _setup_ma150_support,
+]
+
+_SETUP_EXPLANATIONS = {
+    "cup_and_handle": {
+        "he": lambda d: (
+            f"המניה בונה תבנית \"כוס\" — ירידה של כ-{d['cup_depth_pct']}% ואז התאוששות חזרה לאזור השיא הקודם. "
+            + (f"קו הפריצה נמצא ב-${d['key_level']}, והמניה כבר פרצה אותו." if d['stage']=='triggered'
+               else f"קו הפריצה נמצא ב-${d['key_level']}, כ-{abs(d['distance_pct'])}% מעל המחיר הנוכחי.")
+            + (f" יעד קלאסי (מדידת גובה הכוס) הוא סביב ${d['target_price']} — כ-{d['target_pct']}% מעל נקודת הפריצה, "
+               f"אם וכאשר התבנית באמת משלימה את עצמה. זה ניתוח טכני היסטורי בלבד, לא המלצת השקעה וללא הבטחה שהתבנית תתממש." if d.get('target_price') else "")
+        ),
+        "en": lambda d: (
+            f"The stock is forming a \"cup\" — roughly a {d['cup_depth_pct']}% drop, then a recovery back toward the prior high. "
+            + (f"The breakout level is ${d['key_level']}, and price has already cleared it." if d['stage']=='triggered'
+               else f"The breakout level is ${d['key_level']}, about {abs(d['distance_pct'])}% above the current price.")
+            + (f" A classic measured-move target (the cup's own depth projected above the breakout) sits around ${d['target_price']} — "
+               f"roughly {d['target_pct']}% above the breakout point, if and when the pattern actually completes. This is historical technical analysis only, not investment advice or a guarantee." if d.get('target_price') else "")
+        ),
+    },
+    "ascending_triangle": {
+        "he": lambda d: (
+            f"נראה משולש עולה: התנגדות אופקית שטוחה סביב ${d['key_level']} מול תמיכה עולה מתחתיה — טווח המסחר מצטמצם. "
+            + (f"המניה כבר פרצה את ${d['key_level']}." if d['stage']=='triggered' else f"המחיר כרגע כ-{abs(d['distance_pct'])}% מתחת לקו ההתנגדות.")
+            + (f" יעד מדידת-גובה קלאסי לתבנית הזו הוא סביב ${d['target_price']} (כ-{d['target_pct']}% מעל הפריצה) — שוב, ניתוח טכני היסטורי בלבד, לא המלצה." if d.get('target_price') else "")
+        ),
+        "en": lambda d: (
+            f"This looks like an ascending triangle: a flat horizontal resistance around ${d['key_level']} against rising support beneath it — the range is squeezing. "
+            + (f"Price has already broken above ${d['key_level']}." if d['stage']=='triggered' else f"Price is currently about {abs(d['distance_pct'])}% below the resistance line.")
+            + (f" A classic measured-move target for this pattern sits around ${d['target_price']} (about {d['target_pct']}% above the breakout) — again, historical technical analysis only, not a recommendation." if d.get('target_price') else "")
+        ),
+    },
+    "ascending_trendline_support": {
+        "he": lambda d: (
+            f"המניה במגמת עלייה ומתמודדת כרגע עם קו תמיכה עולה (שעובר דרך שפלים קודמים) סביב ${d['key_level']}. "
+            + (f"המחיר כרגע כ-{d['distance_pct']}% מעל הקו — נראה כמו ריבאונד תקין ממנו." if d['stage']=='holding'
+               else f"המחיר ירד קלות מתחת לקו (כ-{abs(d['distance_pct'])}%) — שווה לעקוב אם זה יחזיק או יישבר.")
+            + " זה מבנה טכני, לא איתות לפעולה."
+        ),
+        "en": lambda d: (
+            f"The stock is in an uptrend and is currently testing a rising support line (drawn through prior swing lows) around ${d['key_level']}. "
+            + (f"Price is currently about {d['distance_pct']}% above the line — looks like a normal bounce off it." if d['stage']=='holding'
+               else f"Price has dipped slightly below the line (about {abs(d['distance_pct'])}%) — worth watching whether it holds or breaks.")
+            + " This is a structural read, not a trade signal."
+        ),
+    },
+    "descending_trendline_breakout": {
+        "he": lambda d: (
+            f"קו התנגדות יורד (דרך שיאים יורדים) עומד כרגע סביב ${d['key_level']}. "
+            + (f"המחיר כבר פרץ מעליו." if d['stage']=='triggered' else f"המחיר כ-{abs(d['distance_pct'])}% מתחת לקו — התקרבות אפשרית לפריצה.")
+            + " אין כאן יעד מדידת-גובה סטנדרטי — רק מבנה טכני, לא המלצה."
+        ),
+        "en": lambda d: (
+            f"A descending resistance line (through lower highs) currently sits around ${d['key_level']}. "
+            + (f"Price has already broken above it." if d['stage']=='triggered' else f"Price is about {abs(d['distance_pct'])}% below the line — a possible approach toward a breakout.")
+            + " There's no standard measured-move target for this one — just a structural read, not a recommendation."
+        ),
+    },
+    "horizontal_resistance_breakout": {
+        "he": lambda d: (
+            f"רמת התנגדות אופקית (נבחנה {d.get('touches','כמה')} פעמים בעבר) נמצאת סביב ${d['key_level']}. "
+            + (f"המחיר כבר פרץ מעליה." if d['stage']=='triggered' else f"המחיר כרגע כ-{abs(d['distance_pct'])}% מתחתיה.")
+            + " ניתוח מבני בלבד, לא המלצת השקעה."
+        ),
+        "en": lambda d: (
+            f"A horizontal resistance level (tested {d.get('touches','a few')} times before) sits around ${d['key_level']}. "
+            + (f"Price has already broken above it." if d['stage']=='triggered' else f"Price is currently about {abs(d['distance_pct'])}% below it.")
+            + " Structural read only, not investment advice."
+        ),
+    },
+    "ma150_support": {
+        "he": lambda d: (
+            f"הממוצע הנע ל-150 יום (עולה, כלומר מגמה כללית חיובית) נמצא סביב ${d['key_level']}, והמחיר בודק אותו כרגע. "
+            + (f"המחיר סוגר מעל הממוצע — התנהגות של ריבאונד." if d['stage']=='holding' else "המחיר כרגע מתחת לממוצע — שווה לעקוב אם הוא יחזיר את זה.")
+            + " רמה טכנית נפוצה, לא איתות לפעולה."
+        ),
+        "en": lambda d: (
+            f"The 150-day moving average (rising, so the broader trend is up) sits around ${d['key_level']}, and price is testing it right now. "
+            + (f"Price is closing above the average — a normal bounce-type behavior." if d['stage']=='holding' else "Price is currently below the average — worth watching whether it reclaims it.")
+            + " A widely-watched technical level, not a trade signal."
+        ),
+    },
+}
+
+
+@app.get("/api/technical-setup/{ticker}")
+def get_technical_setup(ticker: str):
+    ticker = ticker.upper().strip()
+    try:
+        hist = yf.Ticker(ticker).history(period="1y", interval="1d")
+    except Exception:
+        raise HTTPException(status_code=502, detail="שגיאה בשליפת נתוני המניה")
+    if hist.empty or len(hist) < 65:
+        raise HTTPException(status_code=404, detail=f"אין מספיק היסטוריה עבור {ticker}")
+
+    candidates = []
+    for fn in _SETUP_DETECTORS:
+        try:
+            result = fn(hist)
+        except Exception as e:
+            print(f"[warn] technical-setup: {fn.__name__} failed for {ticker}: {e}")
+            result = None
+        if result:
+            explain = _SETUP_EXPLANATIONS[result["pattern"]]
+            result["explanation_he"] = explain["he"](result)
+            result["explanation_en"] = explain["en"](result)
+            candidates.append(result)
+
+    if not candidates:
+        return {"ticker": ticker, "has_setup": False, "candidates": []}
+
+    # Priority: an already-triggered/holding setup first, then whichever
+    # approaching candidate is closest to its trigger — that's the one
+    # actually "in play" today, not just any pattern present somewhere
+    # in the last year.
+    def sort_key(c):
+        already = 0 if c["stage"] in ("triggered", "holding") else 1
+        return (already, abs(c["distance_pct"]))
+    candidates.sort(key=sort_key)
+
+    # A lightweight recent price series so the frontend can draw an
+    # accurate schematic (the detected lines' dates all fall inside this
+    # window — the longest lookback among the detectors above is 150
+    # bars, so 160 gives a little headroom).
+    tail_hist = hist.tail(160)
+    price_series = [[_fmt_date(idx), round(float(c), 2)] for idx, c in zip(tail_hist.index, tail_hist["Close"])]
+
+    return {
+        "ticker": ticker,
+        "has_setup": True,
+        "current_price": round(float(hist["Close"].iloc[-1]), 2),
+        "candidates": candidates,
+        "price_series": price_series,
+    }
 
 
 @app.get("/api/lookup/{ticker}")
