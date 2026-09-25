@@ -1138,11 +1138,23 @@ def _setup_ascending_triangle(hist: pd.DataFrame) -> Optional[dict]:
     if (max(high_vals) - min(high_vals)) / flat_top > 0.03:
         return None  # highs aren't actually flat -> not this pattern
 
-    low_idx = [i for i, _ in swing_lows]
-    low_val = [v for _, v in swing_lows]
-    slope, _intercept = np.polyfit(low_idx, low_val, 1)
-    if slope <= 0:
+    # Rising support side: connect the FIRST and LAST swing low directly
+    # (two real touched points) rather than a least-squares fit through
+    # all of them — a regression line can drift and end up not actually
+    # passing through any real low, which looks arbitrary on the chart.
+    first_idx, first_val = swing_lows[0]
+    last_idx, last_val = swing_lows[-1]
+    if last_idx == first_idx or last_val <= first_val:
         return None  # lows must be rising -> squeezing toward the flat top
+    slope = (last_val - first_val) / (last_idx - first_idx)
+    intercept = first_val - slope * first_idx
+    # every OTHER swing low must sit on/above this line — otherwise it's
+    # not a real rising floor, just two connected points with a dip
+    # between them that breaks the "squeeze" story.
+    for i, v in swing_lows[1:-1]:
+        line_val = slope * i + intercept
+        if line_val > 0 and (line_val - v) / line_val > 0.02:
+            return None
 
     today_close = float(window["Close"].iloc[-1])
     breakout_level = flat_top
@@ -1150,11 +1162,11 @@ def _setup_ascending_triangle(hist: pd.DataFrame) -> Optional[dict]:
     if distance_pct > 12:
         return None
 
-    triangle_height = flat_top - min(low_val)
+    triangle_height = flat_top - first_val
     target_price = breakout_level + triangle_height
     stage = "triggered" if today_close >= breakout_level * 1.005 else "approaching"
 
-    last_low_idx = low_idx[-1]
+    today_idx = len(window) - 1
     return {
         "pattern": "ascending_triangle",
         "stage": stage,
@@ -1168,8 +1180,8 @@ def _setup_ascending_triangle(hist: pd.DataFrame) -> Optional[dict]:
              "from": _fmt_date(dates[swing_highs[0][0]]), "to": _fmt_date(dates[-1])},
             {"type": "trend", "label_he": "תמיכה עולה", "label_en": "Rising support",
              "points": [
-                 [_fmt_date(dates[last_low_idx]), round(float(low_val[-1]), 2)],
-                 [_fmt_date(dates[-1]), round(float(slope * (len(window) - 1) + _intercept), 2)],
+                 [_fmt_date(dates[first_idx]), round(float(first_val), 2)],
+                 [_fmt_date(dates[-1]), round(float(slope * today_idx + intercept), 2)],
              ]},
         ],
     }
@@ -1187,11 +1199,25 @@ def _setup_ascending_trendline_support(hist: pd.DataFrame) -> Optional[dict]:
     if len(swing_lows) < 3:
         return None
 
-    idx = [i for i, _ in swing_lows]
-    val = [v for _, v in swing_lows]
-    slope, intercept = np.polyfit(idx, val, 1)
-    if slope <= 0:
+    # Connect the FIRST and LAST real swing low (two actual touched
+    # points) instead of a least-squares fit through every low — a
+    # regression line can drift between the touches and not visually
+    # track any of them, which reads as an arbitrary line on the chart.
+    # This is also literally how a trader draws a trendline by hand.
+    first_idx, first_val = swing_lows[0]
+    last_idx, last_val = swing_lows[-1]
+    if last_idx == first_idx or last_val <= first_val:
         return None
+    slope = (last_val - first_val) / (last_idx - first_idx)
+    intercept = first_val - slope * first_idx
+
+    # The line must actually act as a floor: no OTHER swing low should
+    # sit meaningfully (2%+) below it, or it's not a real support line —
+    # just two connected points with a violation in between.
+    for i, v in swing_lows[1:-1]:
+        line_val = slope * i + intercept
+        if line_val > 0 and (line_val - v) / line_val > 0.02:
+            return None
 
     today_idx = len(window) - 1
     trendline_today = slope * today_idx + intercept
@@ -1204,7 +1230,6 @@ def _setup_ascending_trendline_support(hist: pd.DataFrame) -> Optional[dict]:
         return None  # already broke below it, or too far above to be "testing" it
 
     stage = "holding" if distance_pct >= 0 else "approaching"  # negative = just dipped under it
-    first_idx = idx[0]
     return {
         "pattern": "ascending_trendline_support",
         "stage": stage,
@@ -1215,7 +1240,7 @@ def _setup_ascending_trendline_support(hist: pd.DataFrame) -> Optional[dict]:
         "lines": [
             {"type": "trend", "label_he": "קו תמיכה עולה", "label_en": "Rising support line",
              "points": [
-                 [_fmt_date(dates[first_idx]), round(float(slope * first_idx + intercept), 2)],
+                 [_fmt_date(dates[first_idx]), round(float(first_val), 2)],
                  [_fmt_date(dates[-1]), round(trendline_today, 2)],
              ]},
         ],
@@ -1230,17 +1255,27 @@ def _setup_descending_trendline_breakout(hist: pd.DataFrame) -> Optional[dict]:
     dates = window.index
     highs = window["High"].values
 
-    swing_idx, swing_val = [], []
+    swing_idx_val = []
     for i in range(2, len(highs) - 2):
         if highs[i] > highs[i-1] and highs[i] > highs[i-2] and highs[i] > highs[i+1] and highs[i] > highs[i+2]:
-            swing_idx.append(i)
-            swing_val.append(float(highs[i]))
-    if len(swing_idx) < 2:
+            swing_idx_val.append((i, float(highs[i])))
+    if len(swing_idx_val) < 2:
         return None
 
-    slope, intercept = np.polyfit(swing_idx, swing_val, 1)
-    if slope >= 0:
+    # Same "connect the two real touch points" approach as the ascending
+    # support line above, instead of a regression that can drift away
+    # from the actual swing highs.
+    first_idx, first_val = swing_idx_val[0]
+    last_idx, last_val = swing_idx_val[-1]
+    if last_idx == first_idx or last_val >= first_val:
         return None
+    slope = (last_val - first_val) / (last_idx - first_idx)
+    intercept = first_val - slope * first_idx
+
+    for i, v in swing_idx_val[1:-1]:
+        line_val = slope * i + intercept
+        if line_val > 0 and (v - line_val) / line_val > 0.02:
+            return None  # a high poked meaningfully above the line -> not a clean ceiling
 
     today_idx = len(window) - 1
     trendline_today = slope * today_idx + intercept
@@ -1253,7 +1288,6 @@ def _setup_descending_trendline_breakout(hist: pd.DataFrame) -> Optional[dict]:
         return None
 
     stage = "triggered" if today_close > trendline_today else "approaching"
-    first_idx = swing_idx[0]
     return {
         "pattern": "descending_trendline_breakout",
         "stage": stage,
@@ -1264,7 +1298,7 @@ def _setup_descending_trendline_breakout(hist: pd.DataFrame) -> Optional[dict]:
         "lines": [
             {"type": "trend", "label_he": "קו התנגדות יורד", "label_en": "Descending resistance line",
              "points": [
-                 [_fmt_date(dates[first_idx]), round(float(slope * first_idx + intercept), 2)],
+                 [_fmt_date(dates[first_idx]), round(first_val, 2)],
                  [_fmt_date(dates[-1]), round(trendline_today, 2)],
              ]},
         ],
@@ -1297,17 +1331,35 @@ def _setup_horizontal_resistance_breakout(hist: pd.DataFrame) -> Optional[dict]:
     levels = [(sum(c) / len(c), len(c)) for c in clusters]
 
     today_close = float(window["Close"].iloc[-1])
-    candidates = [(lvl, touches) for lvl, touches in levels if lvl > 0]
-    if not candidates:
-        return None
-    # the level closest to (above or just broken by) today's close is the one in play
-    level, touches = min(candidates, key=lambda x: abs(x[0] - today_close))
-    distance_pct = (level - today_close) / today_close * 100
-    if distance_pct < -8 or distance_pct > 12:
-        return None
 
-    stage = "triggered" if today_close >= level * 1.01 else "approaching"
-    # anchor the line at the first swing high that's part of this level's cluster
+    # Already-broken levels — the EXACT same rule the scanner uses (see
+    # detect_horizontal_resistance_breakout in pipeline_a_scanner.py):
+    # today's close clears the level by at least 1%. Among those, the
+    # HIGHEST one is the most recent/relevant ceiling that was cleared.
+    # Matching this exactly (rather than "closest to today's price",
+    # which could pick an unrelated nearby level) is what keeps this
+    # endpoint's answer consistent with what the daily scan already
+    # showed for the same stock.
+    MIN_BREAKOUT_PCT = 0.01
+    broken = [(lvl, touches) for lvl, touches in levels if lvl > 0 and today_close >= lvl * (1 + MIN_BREAKOUT_PCT)]
+    if broken:
+        level, touches = max(broken, key=lambda x: x[0])
+        stage = "triggered"
+        distance_pct = (level - today_close) / today_close * 100
+    else:
+        # Nothing broken yet — report the nearest level still overhead,
+        # so a stock that's approaching (but hasn't yet cleared) a level
+        # shows up too. The scanner itself only ever fires on the actual
+        # breakout day, so it has no equivalent to this "approaching" case.
+        overhead = [(lvl, touches) for lvl, touches in levels if lvl > today_close]
+        if not overhead:
+            return None
+        level, touches = min(overhead, key=lambda x: x[0])
+        distance_pct = (level - today_close) / today_close * 100
+        if distance_pct > 12:
+            return None
+        stage = "approaching"
+
     anchor_idx = next(i for i, v in swing_highs if abs(v - level) / level <= 0.02)
     return {
         "pattern": "horizontal_resistance_breakout",
@@ -1318,7 +1370,9 @@ def _setup_horizontal_resistance_breakout(hist: pd.DataFrame) -> Optional[dict]:
         "target_pct": None,
         "touches": touches,
         "lines": [
-            {"type": "horizontal", "label_he": "התנגדות אופקית", "label_en": "Horizontal resistance",
+            {"type": "horizontal",
+             "label_he": "התנגדות → הפכה לתמיכה" if stage == "triggered" else "התנגדות אופקית",
+             "label_en": "Resistance → now support" if stage == "triggered" else "Horizontal resistance",
              "price": round(level, 2),
              "from": _fmt_date(dates[anchor_idx]), "to": _fmt_date(dates[-1])},
         ],
@@ -1366,12 +1420,71 @@ def _setup_ma150_support(hist: pd.DataFrame) -> Optional[dict]:
     }
 
 
+def _setup_horizontal_support_bounce(hist: pd.DataFrame) -> Optional[dict]:
+    """Mirror of _setup_horizontal_resistance_breakout: the SAME horizontal
+    level tested 2+ times, but from below as support, with price currently
+    bouncing off (or just dipping under) it — the "AMZN/AVGO" pattern from
+    the scanner's own detect_horizontal_level_bounce."""
+    lookback = 150
+    if len(hist) < lookback:
+        return None
+    window = hist.tail(lookback)
+    dates = window.index
+    lows = window["Low"].values
+
+    swing_lows = _find_swing_points(lows, mode="low")
+    if len(swing_lows) < 2:
+        return None
+
+    vals = sorted(v for _, v in swing_lows)
+    clusters = []
+    current = [vals[0]]
+    for v in vals[1:]:
+        avg = sum(current) / len(current)
+        if abs(v - avg) / avg <= 0.02:
+            current.append(v)
+        else:
+            clusters.append(current)
+            current = [v]
+    clusters.append(current)
+    levels = [(sum(c) / len(c), len(c)) for c in clusters if len(c) >= 2]
+    if not levels:
+        return None
+
+    today_close = float(window["Close"].iloc[-1])
+    candidates = [(lvl, touches) for lvl, touches in levels if lvl > 0]
+    if not candidates:
+        return None
+    level, touches = min(candidates, key=lambda x: abs(x[0] - today_close))
+    distance_pct = (today_close - level) / level * 100
+    if distance_pct < -5 or distance_pct > 10:
+        return None
+
+    stage = "holding" if distance_pct >= 0 else "approaching"
+    anchor_idx = next(i for i, v in swing_lows if abs(v - level) / level <= 0.02)
+    return {
+        "pattern": "horizontal_support_bounce",
+        "stage": stage,
+        "key_level": round(level, 2),
+        "distance_pct": round(distance_pct, 2),
+        "target_price": None,
+        "target_pct": None,
+        "touches": touches,
+        "lines": [
+            {"type": "horizontal", "label_he": "תמיכה אופקית", "label_en": "Horizontal support",
+             "price": round(level, 2),
+             "from": _fmt_date(dates[anchor_idx]), "to": _fmt_date(dates[-1])},
+        ],
+    }
+
+
 _SETUP_DETECTORS = [
     _setup_cup_and_handle,
     _setup_ascending_triangle,
     _setup_ascending_trendline_support,
     _setup_descending_trendline_breakout,
     _setup_horizontal_resistance_breakout,
+    _setup_horizontal_support_bounce,
     _setup_ma150_support,
 ]
 
@@ -1442,6 +1555,18 @@ _SETUP_EXPLANATIONS = {
             + " Structural read only, not investment advice."
         ),
     },
+    "horizontal_support_bounce": {
+        "he": lambda d: (
+            f"רמת תמיכה אופקית (נבחנה {d.get('touches','כמה')} פעמים בעבר) נמצאת סביב ${d['key_level']}. "
+            + (f"המחיר מחזיק מעליה כרגע — נראה כמו ריבאונד תקין." if d['stage']=='holding' else f"המחיר ירד קלות מתחתיה (כ-{abs(d['distance_pct'])}%) — שווה לעקוב אם היא תחזיק.")
+            + " ניתוח מבני בלבד, לא המלצת השקעה."
+        ),
+        "en": lambda d: (
+            f"A horizontal support level (tested {d.get('touches','a few')} times before) sits around ${d['key_level']}. "
+            + (f"Price is currently holding above it — looks like a normal bounce." if d['stage']=='holding' else f"Price has dipped slightly below it (about {abs(d['distance_pct'])}%) — worth watching whether it holds.")
+            + " Structural read only, not investment advice."
+        ),
+    },
     "ma150_support": {
         "he": lambda d: (
             f"הממוצע הנע ל-150 יום (עולה, כלומר מגמה כללית חיובית) נמצא סביב ${d['key_level']}, והמחיר בודק אותו כרגע. "
@@ -1454,6 +1579,18 @@ _SETUP_EXPLANATIONS = {
             + " A widely-watched technical level, not a trade signal."
         ),
     },
+}
+
+
+_SCANNER_PATTERN_TO_SETUP_ID = {
+    "cup_handle": "cup_and_handle",
+    "cup_no_handle": "cup_and_handle",
+    "horizontal_resistance_breakout": "horizontal_resistance_breakout",
+    "horizontal_level_bounce": "horizontal_support_bounce",
+    "ascending_triangle": "ascending_triangle",
+    "ascending_trendline": "ascending_trendline_support",
+    "ma150_support_bounce": "ma150_support",
+    "descending_trendline_breakout": "descending_trendline_breakout",
 }
 
 
@@ -1484,24 +1621,86 @@ def get_technical_setup(ticker: str):
         return {"ticker": ticker, "has_setup": False, "candidates": []}
 
     # Priority: an already-triggered/holding setup first, then whichever
-    # approaching candidate is closest to its trigger — that's the one
-    # actually "in play" today, not just any pattern present somewhere
-    # in the last year.
+    # approaching candidate is closest to its trigger. Ties (or the
+    # "which already-active pattern matters most" question) are broken
+    # using the SAME relative ordering the scanner itself uses when a
+    # stock matches several patterns at once (see the elif-chain in
+    # pipeline_a_scanner.py) — a validated horizontal level always
+    # outranks a generic trendline there, for example, so it should here
+    # too, or this endpoint's "top pick" can silently disagree with what
+    # the scanner already showed for the same stock even before the
+    # scan-match check below runs.
+    _PRIORITY = {
+        "cup_and_handle": 1,
+        "horizontal_resistance_breakout": 2,
+        "ascending_triangle": 3,
+        "horizontal_support_bounce": 4,
+        "ascending_trendline_support": 5,
+        "ma150_support": 6,
+        "descending_trendline_breakout": 7,
+    }
     def sort_key(c):
         already = 0 if c["stage"] in ("triggered", "holding") else 1
-        return (already, abs(c["distance_pct"]))
+        if already == 0:
+            return (0, _PRIORITY.get(c["pattern"], 99))
+        return (1, round(abs(c["distance_pct"]), 1), _PRIORITY.get(c["pattern"], 99))
     candidates.sort(key=sort_key)
 
-    # A lightweight recent price series so the frontend can draw an
-    # accurate schematic (the detected lines' dates all fall inside this
-    # window — the longest lookback among the detectors above is 150
-    # bars, so 160 gives a little headroom).
+    # If the daily scanner (pipeline_a_scanner.py) already flagged THIS
+    # ticker with a pattern today (or very recently), that's the reason
+    # it's on the person's radar in the first place — it should be the
+    # headline setup here too, not whichever candidate this endpoint's
+    # own from-scratch priority happens to rank first. Re-running the
+    # SAME detector live can legitimately disagree slightly with the
+    # scanner's own run from earlier that day (price moved since, or a
+    # marginal threshold), so this only re-prioritizes among candidates
+    # this endpoint already found — it never invents one.
+    scanner_pattern_type = None
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT pattern_type, timestamp FROM scanned_stocks WHERE ticker=%s ORDER BY timestamp DESC LIMIT 1",
+            (ticker,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row and row[0]:
+            scan_age_days = (dt.now(timezone.utc) - row[1].replace(tzinfo=timezone.utc)).days if row[1] else 999
+            if scan_age_days <= 5:
+                scanner_pattern_type = row[0]
+    except Exception as e:
+        print(f"[warn] technical-setup: couldn't check today's scanner signal for {ticker}: {e}")
+
+    matched_setup_id = _SCANNER_PATTERN_TO_SETUP_ID.get(scanner_pattern_type)
+    scan_match = False
+    if matched_setup_id:
+        for i, c in enumerate(candidates):
+            if c["pattern"] == matched_setup_id:
+                c["matches_scan"] = True
+                if i != 0:
+                    candidates.insert(0, candidates.pop(i))
+                scan_match = True
+                break
+
+    # A lightweight recent OHLC series so the frontend can draw an
+    # accurate candlestick schematic — the detected lines' dates all
+    # fall inside this window (the longest lookback among the
+    # detectors above is 150 bars, so 160 gives a little headroom),
+    # and using real highs/lows (not just closes) means a swing-low
+    # trendline actually touches the candle wicks it was fit to,
+    # instead of floating through a smoothed close-only line.
     tail_hist = hist.tail(160)
-    price_series = [[_fmt_date(idx), round(float(c), 2)] for idx, c in zip(tail_hist.index, tail_hist["Close"])]
+    price_series = [
+        [_fmt_date(idx), round(float(o), 2), round(float(h), 2), round(float(l), 2), round(float(c), 2)]
+        for idx, o, h, l, c in zip(tail_hist.index, tail_hist["Open"], tail_hist["High"], tail_hist["Low"], tail_hist["Close"])
+    ]
 
     return {
         "ticker": ticker,
         "has_setup": True,
+        "scan_match": scan_match,
         "current_price": round(float(hist["Close"].iloc[-1]), 2),
         "candidates": candidates,
         "price_series": price_series,
