@@ -2388,23 +2388,35 @@ function renderInfoModal(){
   const t = lang==='en';
 
   const pricesBody = t
-    ? `Live prices, daily change %, market cap, and volume come from Yahoo Finance — the same data source used by most free finance sites and apps.`
-    : `מחירים חיים, שינוי יומי באחוזים, שווי שוק, ונפח מסחר מגיעים מ-Yahoo Finance — אותו מקור נתונים ששימוש בו רוב אתרי/אפליקציות הפיננסים החינמיות.`;
+    ? `Live prices, daily change %, market cap, and volume come from Yahoo Finance — the same data source used by most free finance sites and apps. The thin ticker strip at the very top of the page (S&P 500, Nasdaq, Dow, VIX, Bitcoin, Ethereum, Gold) comes from the same source.`
+    : `מחירים חיים, שינוי יומי באחוזים, שווי שוק, ונפח מסחר מגיעים מ-Yahoo Finance — אותו מקור נתונים ששימוש בו רוב אתרי/אפליקציות הפיננסים החינמיות. גם שורת המדדים הדקה בראש העמוד (S&P 500, נאסד"ק, דאו ג'ונס, VIX, ביטקוין, את'ריום, זהב) מגיעה מאותו מקור.`;
 
   const fundamentalsBody = t
-    ? `Pulled directly from <b>SEC EDGAR</b> — the official U.S. government filing system. These are the exact same numbers the company itself files with the regulator, not a third-party estimate. Every stock's page links directly to the raw filing so you can verify it yourself.`
-    : `נשלף ישירות מ-<b>SEC EDGAR</b> — מערכת הדיווח הרשמית של ממשלת ארה"ב. אלו בדיוק אותם מספרים שהחברה עצמה מגישה לרגולטור, לא הערכה של צד שלישי. בכל עמוד מניה יש קישור ישיר לדוח הגולמי כדי שתוכל לוודא בעצמך.`;
+    ? `Pulled directly from <b>SEC EDGAR</b> — the official U.S. government filing system. These are the exact same numbers the company itself files with the regulator, not a third-party estimate (both standard US-GAAP filers and foreign private issuers filing under IFRS are supported). Every stock's page links directly to the raw filing so you can verify it yourself. When no data is found for a ticker, it's usually a genuine ETF/index, but occasionally it's a very recent IPO or an unusual filer SEC hasn't indexed cleanly yet — a company just not showing up here isn't a guarantee it's a fund.`
+    : `נשלף ישירות מ-<b>SEC EDGAR</b> — מערכת הדיווח הרשמית של ממשלת ארה"ב. אלו בדיוק אותם מספרים שהחברה עצמה מגישה לרגולטור, לא הערכה של צד שלישי (נתמכות גם חברות שמדווחות לפי US-GAAP הרגיל וגם חברות זרות שמדווחות לפי תקן IFRS). בכל עמוד מניה יש קישור ישיר לדוח הגולמי כדי שתוכל לוודא בעצמך. כשלא נמצאים נתונים לטיקר מסוים, ברוב המקרים זה באמת ETF/מדד — אבל לפעמים זו הנפקה טרייה מאוד או חברה עם מבנה דיווח חריג שעדיין לא מסודר טוב אצל SEC; היעדר נתונים כאן הוא לא הוכחה חד-משמעית שזה קרן.`;
 
   const newsSourcesHe = ['Reuters (דרך Google News)', 'CNBC — חדשות מובילות', 'CNBC — שווקים', 'CNBC — עולם', 'Yahoo Finance', 'Seeking Alpha — Market Currents', 'MarketWatch', 'Investing.com', 'Google News — חיפוש רחב: מאקרו ושווקים', 'Google News — חיפוש רחב: גאופוליטיקה'];
   const newsSourcesEn = ['Reuters (via Google News)', 'CNBC Top News', 'CNBC Markets', 'CNBC World', 'Yahoo Finance', 'Seeking Alpha — Market Currents', 'MarketWatch', 'Investing.com', 'Google News — broad search: macro & markets', 'Google News — broad search: geopolitics'];
   const newsList = (t?newsSourcesEn:newsSourcesHe).map(s=>`<li>${s}</li>`).join('');
   const newsBody = t
-    ? `Aggregated automatically from these RSS sources, then machine-translated to Hebrew (with a manually-curated glossary for financial terms so key terms translate correctly), every single one of them: <ul class="info-source-list">${newsList}</ul> Every item links back to its original source article.`
-    : `מרוכזות אוטומטית מכל אחד מהמקורות הבאים, ומתורגמות אוטומטית לעברית (עם מילון מונחים ידני למונחי פייננס כדי שמונחים חשובים יתורגמו נכון): <ul class="info-source-list">${newsList}</ul> לכל כתבה יש קישור חזרה למקור המקורי.`;
+    ? `Aggregated automatically from these RSS sources, then machine-translated to Hebrew (with a manually-curated glossary for financial terms so key terms translate correctly), every single one of them: <ul class="info-source-list">${newsList}</ul> Every item links back to its original source article. Where the source's own RSS feed includes a short description (most direct publisher feeds do; some Google News search feeds don't), that description is shown as extra context inside the article — this is the publisher's own excerpt text, not a full copy of the article.`
+    : `מרוכזות אוטומטית מכל אחד מהמקורות הבאים, ומתורגמות אוטומטית לעברית (עם מילון מונחים ידני למונחי פייננס כדי שמונחים חשובים יתורגמו נכון): <ul class="info-source-list">${newsList}</ul> לכל כתבה יש קישור חזרה למקור המקורי. כשה-RSS של המקור כולל תקציר קצר משלו (רוב הפידים הישירים של המו"לים כן, חלק מפידי החיפוש של Google News לא), התקציר הזה מוצג כהקשר נוסף בתוך הכתבה — זה הטקסט של המו"ל עצמו, לא העתקה מלאה של הכתבה.`;
 
   const scansBody = t
-    ? `Pure algorithmic technical analysis — price patterns (Cup & Handle, breakouts, trendlines, etc.), moving averages (50/150/200-day), ATR volatility, and Relative Strength Rating vs. the S&P 500 — computed directly from the Yahoo Finance price/volume data above. This is not a recommendation to buy or sell anything.`
-    : `ניתוח טכני אלגוריתמי בלבד — תבניות מחיר (כוס וידית, פריצות, קווי מגמה וכו'), ממוצעים נעים (50/150/200 יום), תנודתיות ATR, ודירוג עוצמה יחסית (RS) מול S&P 500 — מחושב ישירות מנתוני המחיר/נפח של Yahoo Finance שלמעלה. זו אינה המלצה לקנות או למכור דבר.`;
+    ? `Pure algorithmic technical analysis — price patterns (Cup & Handle, Double Bottom, Bull Flag, breakouts, trendlines, Golden Cross, RSI, momentum, etc.), moving averages (50/150/200-day), ATR volatility, and Relative Strength Rating vs. the S&P 500 — computed directly from the Yahoo Finance price/volume data above. The same detection logic also powers the "Current Technical Setup" section on a stock's Deep Dive page (which also flags a pattern that's still forming/approaching, not just ones that already fired) and the watchlist-wide "What's Approaching" scan. This is not a recommendation to buy or sell anything.`
+    : `ניתוח טכני אלגוריתמי בלבד — תבניות מחיר (כוס וידית, תחתית כפולה, דגל שורי, פריצות, קווי מגמה, צלב זהב, RSI, מומנטום ועוד), ממוצעים נעים (50/150/200 יום), תנודתיות ATR, ודירוג עוצמה יחסית (RS) מול S&P 500 — מחושב ישירות מנתוני המחיר/נפח של Yahoo Finance שלמעלה. אותה לוגיקת זיהוי מפעילה גם את "מבנה טכני נוכחי" בעמוד הניתוח המלא למניה (שמזהה גם תבנית שעדיין נבנית/מתקרבת, לא רק כאלה שכבר קרו), וגם את סריקת "מה מתקרב" על כל רשימת המעקב. זו אינה המלצה לקנות או למכור דבר.`;
+
+  const fearGreedBody = t
+    ? `The Fear & Greed gauge is CNN's own published index (7 market-momentum/volatility/demand indicators combined into a single 0-100 score), pulled live from CNN's own data feed — not something computed on this site.`
+    : `מד הפחד/תאווה הוא המדד המוכר של CNN עצמו (7 אינדיקטורים של מומנטום שוק/תנודתיות/ביקוש, משולבים לציון אחד בין 0-100), נשלף חי מה-feed הרשמי של CNN — לא משהו שמחושב באתר הזה.`;
+
+  const earningsBody = t
+    ? `The week's earnings dates and EPS/revenue estimate-vs-actual come from Yahoo Finance, limited to notable large-cap names (the full list of every company reporting that week would be mostly noise).`
+    : `תאריכי הדיווחים לשבוע והשוואת התחזית מול הבפועל (EPS והכנסות) מגיעים מ-Yahoo Finance, מוגבל לחברות גדולות ובולטות (רשימה מלאה של כל מי שמדווח באותו שבוע הייתה בעיקר רעש).`;
+
+  const digestBody = t
+    ? `Deliberately rule-based, not AI-generated: the day's Critical-impact items are shown in full, and the rest are ranked purely by how many separate articles covered the same topic in the last 24 hours (a volume proxy for "what's being talked about"), not by any language model summarizing or judging them.`
+    : `בכוונה מבוסס-כללים ולא AI: כל הכתבות שסווגו כ"קריטי" מוצגות במלואן, והשאר מדורגים אך ורק לפי כמה כתבות נפרדות סיקרו את אותו נושא ב-24 השעות האחרונות (מדד נפח כתחליף ל"על מה מדברים") — לא על ידי מודל שפה שמסכם או שופט אותן.`;
 
   const disclaimerBody = t
     ? `All content on this site is for informational purposes only and does not constitute investment advice or a recommendation to execute any transaction. Past performance (including any pattern win-rate statistics shown) does not guarantee future results.`
@@ -2412,10 +2424,12 @@ function renderInfoModal(){
 
   document.getElementById('info-modal').innerHTML = `
     <h3>ⓘ ${t?'Where this data comes from':'מאיפה המידע מגיע'}</h3>
-    ${infoAccordionSection('prices', 'מחירים ונתוני שוק בזמן אמת', 'Live Prices & Market Data', pricesBody)}
+    ${infoAccordionSection('prices', 'מחירים, נתוני שוק ושורת המדדים', 'Live Prices, Market Data & Ticker Strip', pricesBody)}
     ${infoAccordionSection('fundamentals', 'דוחות כספיים (פונדמנטלס)', 'Financial Statements (Fundamentals)', fundamentalsBody)}
-    ${infoAccordionSection('news', 'חדשות', 'News', newsBody)}
-    ${infoAccordionSection('scans', 'הסריקה הטכנית והציונים', 'Technical Scanning & Scores', scansBody)}
+    ${infoAccordionSection('news', 'חדשות וסיכום יומי', 'News & Daily Digest', newsBody + '<br><br>' + digestBody)}
+    ${infoAccordionSection('scans', 'הסריקה הטכנית, הציונים ומבנה נוכחי', 'Technical Scanning, Scores & Current Setup', scansBody)}
+    ${infoAccordionSection('feargreed', 'מדד פחד ותאווה', 'Fear & Greed Index', fearGreedBody)}
+    ${infoAccordionSection('earnings', 'יומן דוחות רבעוניים', 'Earnings Calendar', earningsBody)}
     ${infoAccordionSection('disclaimer', 'הבהרה', 'Disclaimer', disclaimerBody)}
     <button class="risk-calc-close" onclick="closeInfoModal()">${t?'Close':'סגור'}</button>
   `;
@@ -3273,7 +3287,7 @@ function renderFundamentals(data, containerId){
   const t = lang==='en';
 
   if(!data || !data.has_fundamentals || !Array.isArray(data.income_labels)){
-    el.innerHTML = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div><div class="fund-empty">${t?'No standard financials for this ticker (likely an ETF/index).':'אין נתונים פונדמנטליים סטנדרטיים לטיקר זה (כנראה ETF/מדד).'}</div>`;
+    el.innerHTML = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div><div class="fund-empty">${t?'No standard SEC financial data found for this ticker — this happens for ETFs/indices, but also sometimes for very recent IPOs or unusual filers.':'לא נמצאו נתונים פונדמנטליים סטנדרטיים מ-SEC לטיקר זה — זה קורה עבור ETF/מדדים, אבל גם לפעמים עבור הנפקות טריות מאוד או חברות עם מבנה דיווח חריג.'}</div>`;
     return;
   }
 

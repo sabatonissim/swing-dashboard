@@ -3186,13 +3186,22 @@ def _build_fundamentals(ticker: str) -> dict:
     ticker = ticker.upper()
 
     try:
-        cik10 = _get_cik_map().get(ticker)
+        cik_map = _get_cik_map()
     except Exception as e:
         print(f"[warn] fundamentals({ticker}): SEC ticker->CIK map fetch failed: {e}")
-        cik10 = None
+        cik_map = {}
+
+    # SEC's own ticker file has no separator for dual-class shares (e.g.
+    # Berkshire Hathaway Class B is "BRKB" there), while the market
+    # convention we receive the ticker in typically uses a dash or dot
+    # ("BRK-B" / "BRK.B"). Without this fallback, every dual-class-share
+    # company would silently miss its SEC filing and get told it's
+    # "probably an ETF" — it just isn't, the direct lookup only failed on
+    # punctuation.
+    cik10 = cik_map.get(ticker) or cik_map.get(ticker.replace("-", "").replace(".", ""))
 
     if not cik10:
-        print(f"[info] fundamentals({ticker}): no SEC CIK match (likely an ETF/index, not an individual filer)")
+        print(f"[info] fundamentals({ticker}): no SEC CIK match")
         return {"ticker": ticker, "has_fundamentals": False}
 
     try:
@@ -3203,16 +3212,26 @@ def _build_fundamentals(ticker: str) -> dict:
 
     usgaap = (facts or {}).get("facts", {}).get("us-gaap", {})
     deifacts = (facts or {}).get("facts", {}).get("dei", {})
-    if not usgaap:
-        print(f"[warn] fundamentals({ticker}): SEC companyfacts had no us-gaap data")
+    # Foreign private issuers commonly file under IFRS instead of US-GAAP
+    # (their XBRL facts live under "ifrs-full", not "us-gaap") — without
+    # this fallback, every such company (plenty of large, perfectly real
+    # stocks) came back with NO usable tags at all and got the same
+    # "likely an ETF/index" treatment as an actual ETF. Merging the two
+    # taxonomies together, and adding the equivalent IFRS tag names to
+    # every candidate list below, means the same extraction logic just
+    # works for both without needing a second code path.
+    ifrsfacts = (facts or {}).get("facts", {}).get("ifrs-full", {})
+    combined = {**ifrsfacts, **usgaap}
+    if not combined:
+        print(f"[warn] fundamentals({ticker}): SEC companyfacts had no us-gaap or ifrs-full data")
         return {"ticker": ticker, "has_fundamentals": False}
 
-    revenue_s = _sec_quarterly_series(usgaap, ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"], instant=False)
-    ni_s      = _sec_quarterly_series(usgaap, ["NetIncomeLoss"], instant=False)
-    gross_s   = _sec_quarterly_series(usgaap, ["GrossProfit"], instant=False)
-    eps_s     = _sec_quarterly_series(usgaap, ["EarningsPerShareDiluted", "EarningsPerShareBasic"], instant=False)
-    ocf_s     = _sec_cumulative_to_quarterly(usgaap, ["NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"])
-    capex_s   = _sec_cumulative_to_quarterly(usgaap, [
+    revenue_s = _sec_quarterly_series(combined, ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet", "Revenue"], instant=False)
+    ni_s      = _sec_quarterly_series(combined, ["NetIncomeLoss", "ProfitLoss"], instant=False)
+    gross_s   = _sec_quarterly_series(combined, ["GrossProfit"], instant=False)
+    eps_s     = _sec_quarterly_series(combined, ["EarningsPerShareDiluted", "EarningsPerShareBasic", "DilutedEarningsLossPerShare", "BasicEarningsLossPerShare"], instant=False)
+    ocf_s     = _sec_cumulative_to_quarterly(combined, ["NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations", "CashFlowsFromUsedInOperatingActivities"])
+    capex_s   = _sec_cumulative_to_quarterly(combined, [
         "PaymentsToAcquirePropertyPlantAndEquipment",
         "PaymentsForCapitalImprovements",
         # Some large filers (this was confirmed missing FCF entirely for
@@ -3223,10 +3242,11 @@ def _build_fundamentals(ticker: str) -> dict:
         "PaymentsForProceedsFromProductiveAssets",
         "PaymentsToAcquireMachineryAndEquipment",
         "PaymentsToAcquireOtherPropertyPlantAndEquipment",
+        "PurchaseOfPropertyPlantAndEquipment",  # IFRS naming
     ])
-    cash_s    = _sec_quarterly_series(usgaap, ["CashAndCashEquivalentsAtCarryingValue", "CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations"], instant=True)
-    debt_s    = _sec_quarterly_series(usgaap, ["LongTermDebtNoncurrent", "LongTermDebt", "DebtLongtermAndShorttermCombinedAmount"], instant=True)
-    shares_s  = _sec_quarterly_series(usgaap, ["CommonStockSharesOutstanding"], instant=True)
+    cash_s    = _sec_quarterly_series(combined, ["CashAndCashEquivalentsAtCarryingValue", "CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations", "CashAndCashEquivalents"], instant=True)
+    debt_s    = _sec_quarterly_series(combined, ["LongTermDebtNoncurrent", "LongTermDebt", "DebtLongtermAndShorttermCombinedAmount", "NoncurrentBorrowings", "Borrowings"], instant=True)
+    shares_s  = _sec_quarterly_series(combined, ["CommonStockSharesOutstanding"], instant=True)
     # dei:EntityCommonStockSharesOutstanding is the cover-page tag nearly
     # every filer reports (it's required on every 10-Q/10-K cover page),
     # unlike the us-gaap tag above which plenty of companies simply don't
@@ -3297,8 +3317,8 @@ def _build_fundamentals(ticker: str) -> dict:
         # this filer uses a CapEx tag we don't check for yet. Logging the
         # actual candidate tags found in their us-gaap facts makes that
         # diagnosable instead of a silent "FCF just isn't there".
-        capex_like_tags = [k for k in usgaap if "Payments" in k and ("Property" in k or "Capital" in k or "Productive" in k or "Equipment" in k)]
-        print(f"[warn] fundamentals({ticker}): OCF present but no CapEx match — candidate us-gaap tags on file: {capex_like_tags}")
+        capex_like_tags = [k for k in combined if "Payments" in k and ("Property" in k or "Capital" in k or "Productive" in k or "Equipment" in k)]
+        print(f"[warn] fundamentals({ticker}): OCF present but no CapEx match — candidate tags on file: {capex_like_tags}")
 
     income_dates = sorted(set(revenue_s) | set(ni_s) | set(fcf_s))[-32:]
     income_labels = [dt.strptime(d, "%Y-%m-%d").strftime("%b %Y") for d in income_dates]
