@@ -482,6 +482,7 @@
           <button class="movers-toggle-btn" id="movers-toggle-watchlist" onclick="setMoversPanelMode('watchlist')">רשימת מעקב</button>
         </div>
         <button class="watchlist-add-btn" id="watchlist-add-btn" style="display:none;" onclick="promptAddToWatchlist()" title="הוסף מניה">+</button>
+        <button class="watchlist-add-btn" id="watchlist-setups-btn" style="display:none;font-size:15px;" onclick="openWatchlistSetups()" title="מה מתקרב?">📈</button>
       </div>
       <div class="movers-list" id="movers-list"></div>
     </div>
@@ -1956,6 +1957,66 @@ function renderMarketTicker(){
 }
 
 // ---- Daily news digest (rule-based, no AI — see /api/daily-digest) ----
+// ---- Watchlist-wide "what's approaching" scan (see /api/watchlist-setups) ----
+async function openWatchlistSetups(){
+  const t = lang==='en';
+  const modal = document.getElementById("digest-modal");
+  modal.innerHTML = `
+    <div class="drawer-head">
+      <h2>${t?"Watchlist — What's Approaching":'רשימת מעקב — מה מתקרב'}</h2>
+      <button class="close-btn" onclick="closeDailyDigest()">✕</button>
+    </div>
+    <div class="digest-empty">${UI[lang].loading}</div>
+  `;
+  document.getElementById("digest-overlay").classList.add("open");
+  try {
+    const res = await fetch(`${API_BASE}/api/watchlist-setups`);
+    if(!res.ok) throw new Error('bad response');
+    const data = await res.json();
+    renderWatchlistSetups(data.results || []);
+  } catch(e) {
+    console.error('[watchlist-setups] load failed', e);
+    modal.innerHTML = `
+      <div class="drawer-head">
+        <h2>${t?"Watchlist — What's Approaching":'רשימת מעקב — מה מתקרב'}</h2>
+        <button class="close-btn" onclick="closeDailyDigest()">✕</button>
+      </div>
+      <div class="digest-empty">${t?'Could not load this right now.':'לא ניתן לטעון את זה כרגע.'}</div>
+    `;
+  }
+}
+
+function renderWatchlistSetups(results){
+  const t = lang==='en';
+  const modal = document.getElementById("digest-modal");
+  const row = (r) => {
+    const nameMap = TECHNICAL_SETUP_PATTERN_NAMES[r.pattern];
+    const name = nameMap ? (t?nameMap.en:nameMap.he) : r.pattern;
+    const stageMap = TECHNICAL_SETUP_STAGE_LABELS[r.stage];
+    const stageLabel = stageMap ? (t?stageMap.en:stageMap.he) : r.stage;
+    const stageColor = stageMap ? stageMap.color : 'var(--text-dim)';
+    return `
+      <div class="digest-item" style="cursor:pointer;" onclick="closeDailyDigest(); showTickerDrawer('${r.ticker}')">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px;">
+          <span style="font-weight:700;">${r.ticker}</span>
+          <span style="font-size:11px;color:${stageColor};border:1px solid ${stageColor};border-radius:6px;padding:2px 8px;">${stageLabel}</span>
+        </div>
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:4px;">${name} · $${r.key_level} · ${r.distance_pct>0?'+':''}${r.distance_pct}%</div>
+        <div style="font-size:13px;line-height:1.5;">${t ? r.explanation_en : r.explanation_he}</div>
+      </div>
+    `;
+  };
+  modal.innerHTML = `
+    <div class="drawer-head">
+      <h2>${t?"Watchlist — What's Approaching":'רשימת מעקב — מה מתקרב'}</h2>
+      <button class="close-btn" onclick="closeDailyDigest()">✕</button>
+    </div>
+    ${results.length
+      ? results.map(row).join('')
+      : `<div class="digest-empty">${t?'Nothing on your watchlist is near a setup right now.':'שום דבר ברשימת המעקב שלך לא קרוב למבנה כרגע.'}</div>`}
+  `;
+}
+
 async function openDailyDigest(){
   const t = lang==='en';
   const modal = document.getElementById("digest-modal");
@@ -2434,6 +2495,8 @@ function setMoversPanelMode(mode){
   document.getElementById('movers-toggle-watchlist').classList.toggle('active', mode==='watchlist');
   const addBtn = document.getElementById('watchlist-add-btn');
   if(addBtn) addBtn.style.display = mode==='watchlist' ? '' : 'none';
+  const setupsBtn = document.getElementById('watchlist-setups-btn');
+  if(setupsBtn) setupsBtn.style.display = mode==='watchlist' ? '' : 'none';
   if(mode === 'watchlist'){
     loadWatchlist();
   } else {
@@ -2606,6 +2669,10 @@ function openMacroDrawer(i, fromSearch){
       <div class="label">${lang==='en'?'Summary':'תקציר'}</div>
       ${getNewsText(m)}
     </div>
+    ${(() => {
+      const body = lang==='en' ? m.body_en : m.body_he;
+      return body ? `<div class="ai-box"><div class="label">📄 ${lang==='en'?'More from the source':'עוד מהמקור'}</div>${body}</div>` : '';
+    })()}
     ${(lang==='he' && m.hook_he) ? `<div class="ai-box"><div class="label">💡 ${lang==='en'?'Why this matters':'למה זה חשוב'}</div>${m.hook_he}</div>` : ''}
     <div class="ai-box">
       <div class="label">${lang==='en'?'Affected Sectors':'סקטורים מושפעים'}</div>
@@ -2829,11 +2896,18 @@ let ddSectorCache = {};    // ticker -> {period: data} so switching back to a pe
 // ---- Deep-dive "current technical setup" (see /api/technical-setup) ----
 const TECHNICAL_SETUP_PATTERN_NAMES = {
   cup_and_handle: {he: 'כוס וידית', en: 'Cup & Handle'},
+  double_bottom: {he: 'תחתית כפולה', en: 'Double Bottom'},
+  week52_high_breakout: {he: 'פריצת שיא 52 שבועות', en: '52-Week High Breakout'},
+  bull_flag: {he: 'דגל שורי', en: 'Bull Flag'},
   ascending_triangle: {he: 'משולש עולה', en: 'Ascending Triangle'},
+  golden_cross: {he: 'צלב זהב', en: 'Golden Cross'},
   ascending_trendline_support: {he: 'תמיכה על קו עולה', en: 'Ascending Trendline Support'},
   descending_trendline_breakout: {he: 'פריצת קו יורד', en: 'Descending Trendline Breakout'},
   horizontal_resistance_breakout: {he: 'פריצת התנגדות אופקית', en: 'Horizontal Resistance Breakout'},
+  horizontal_support_bounce: {he: 'ריבאונד מתמיכה אופקית', en: 'Horizontal Support Bounce'},
   ma150_support: {he: 'תמיכה על ממוצע 150 יום', en: '150-Day MA Support'},
+  rsi_oversold_bounce: {he: 'ריבאונד RSI מקניית יתר שלילית', en: 'RSI Oversold Bounce'},
+  momentum_surge: {he: 'זינוק מומנטום', en: 'Momentum Surge'},
 };
 const TECHNICAL_SETUP_STAGE_LABELS = {
   triggered: {he: 'כבר פרץ', en: 'Already broken out', color: 'var(--green)'},
@@ -2841,56 +2915,100 @@ const TECHNICAL_SETUP_STAGE_LABELS = {
   approaching: {he: 'מתקרב', en: 'Approaching', color: 'var(--amber)'},
 };
 
+// Draws real OHLC bars (wick = high/low, colored tick = open/close) — not
+// a smoothed close-only line — specifically so a swing-low/swing-high
+// trendline visibly touches the actual wick it was fit to, instead of
+// floating through price with no obvious anchor point.
+function _fmtShortDate(dateStr){
+  try {
+    const d = new Date(dateStr + 'T00:00:00');
+    return d.toLocaleDateString(lang==='en'?'en-US':'he-IL', {day:'numeric', month:'short'});
+  } catch(e) { return dateStr; }
+}
+
 function buildTechnicalSetupSvg(priceSeries, lines){
   if(!priceSeries || priceSeries.length < 2) return '';
-  const W = 640, H = 190, PADX = 6, PADY = 16;
-  const prices = priceSeries.map(p => p[1]);
-  const minP = Math.min(...prices);
-  const maxP = Math.max(...prices);
+  const W = 640, H = 236, PADX = 6, PADY_TOP = 16, PADY_BOTTOM = 30;
+  const highs = priceSeries.map(p => p[2]);
+  const lows = priceSeries.map(p => p[3]);
+  const minP = Math.min(...lows);
+  const maxP = Math.max(...highs);
   const span = (maxP - minP) || 1;
   const n = priceSeries.length;
   const dateIndex = {};
   priceSeries.forEach((p,i) => { if(!(p[0] in dateIndex)) dateIndex[p[0]] = i; });
 
+  const chartH = H - PADY_TOP - PADY_BOTTOM;
   const xOf = (i) => PADX + (i/(n-1)) * (W - PADX*2);
-  const yOf = (price) => PADY + (1 - (price-minP)/span) * (H - PADY*2);
+  const yOf = (price) => PADY_TOP + (1 - (price-minP)/span) * chartH;
+  const barW = Math.max(1, (W - PADX*2) / n * 0.6);
+  const axisY = H - PADY_BOTTOM + 16;
 
-  const pricePath = priceSeries.map((p,i) => `${i===0?'M':'L'} ${xOf(i).toFixed(1)} ${yOf(p[1]).toFixed(1)}`).join(' ');
+  const bars = priceSeries.map((p, i) => {
+    const [, o, h, l, c] = p;
+    const x = xOf(i);
+    const up = c >= o;
+    const color = up ? 'var(--green)' : 'var(--red)';
+    return `<line x1="${x.toFixed(1)}" y1="${yOf(h).toFixed(1)}" x2="${x.toFixed(1)}" y2="${yOf(l).toFixed(1)}" stroke="${color}" stroke-width="1"/>
+            <rect x="${(x-barW/2).toFixed(1)}" y="${Math.min(yOf(o),yOf(c)).toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1, Math.abs(yOf(o)-yOf(c))).toFixed(1)}" fill="${color}"/>`;
+  }).join('');
+
+  // A dated x-axis — so the schematic doesn't just show shapes, it shows
+  // roughly WHEN they happened (days vs. weeks ago matters for judging
+  // whether a setup is still fresh or stale).
+  const axisDates = [0, Math.floor((n-1)/2), n-1].map(i => ({
+    x: xOf(i), label: _fmtShortDate(priceSeries[i][0]),
+  }));
+  const axisLabels = axisDates.map((a, i) => {
+    const anchor = i===0 ? 'start' : (i===axisDates.length-1 ? 'end' : 'middle');
+    return `<text x="${a.x.toFixed(1)}" y="${axisY}" font-size="9" fill="var(--text-dim)" text-anchor="${anchor}">${a.label}</text>`;
+  }).join('');
+  const axisLine = `<line x1="${PADX}" y1="${(H-PADY_BOTTOM).toFixed(1)}" x2="${(W-PADX).toFixed(1)}" y2="${(H-PADY_BOTTOM).toFixed(1)}" stroke="var(--line)" stroke-width="1"/>`;
 
   const t = lang==='en';
-  const lineSvgs = (lines||[]).map(ln => {
+  const lineSvgs = (lines||[]).map((ln, idx) => {
     const label = t ? ln.label_en : ln.label_he;
+    const dim = idx > 0 ? 0.65 : 1; // later lines drawn a touch fainter so overlapping structures stay legible
     if(ln.type === 'horizontal'){
       const i1 = dateIndex[ln.from], i2 = dateIndex[ln.to];
       if(i1===undefined || i2===undefined) return '';
       const y = yOf(ln.price);
-      return `<line x1="${xOf(i1).toFixed(1)}" y1="${y.toFixed(1)}" x2="${xOf(i2).toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--amber)" stroke-width="1.5" stroke-dasharray="4 3"/>
-              <text x="${xOf(i2).toFixed(1)}" y="${(y-4).toFixed(1)}" font-size="9" fill="var(--amber)" text-anchor="${t?'end':'end'}">${label} $${ln.price}</text>`;
+      return `<line x1="${xOf(i1).toFixed(1)}" y1="${y.toFixed(1)}" x2="${xOf(i2).toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--amber)" stroke-opacity="${dim}" stroke-width="2" stroke-dasharray="5 3"/>
+              <text x="${xOf(i2).toFixed(1)}" y="${(y-5).toFixed(1)}" font-size="10" fill="var(--amber)" fill-opacity="${dim}" text-anchor="end">${label} $${ln.price}</text>
+              <text x="${xOf(i1).toFixed(1)}" y="${(y+11).toFixed(1)}" font-size="8" fill="var(--amber)" fill-opacity="${dim*0.8}" text-anchor="start">${_fmtShortDate(ln.from)}</text>`;
     }
     if(ln.type === 'trend'){
       const pts = (ln.points||[]).map(([d,p]) => {
-        const idx = dateIndex[d];
-        return idx===undefined ? null : `${xOf(idx).toFixed(1)},${yOf(p).toFixed(1)}`;
+        const idx2 = dateIndex[d];
+        return idx2===undefined ? null : {x: xOf(idx2), y: yOf(p), date: d};
       }).filter(Boolean);
       if(pts.length < 2) return '';
-      return `<polyline points="${pts.join(' ')}" fill="none" stroke="var(--teal)" stroke-width="1.5"/>`;
+      const pointsStr = pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+      const last = pts[pts.length-1], first = pts[0];
+      return `<polyline points="${pointsStr}" fill="none" stroke="var(--teal)" stroke-opacity="${dim}" stroke-width="2"/>
+              <text x="${last.x.toFixed(1)}" y="${(last.y-6).toFixed(1)}" font-size="10" fill="var(--teal)" fill-opacity="${dim}" text-anchor="end">${label}</text>
+              <text x="${first.x.toFixed(1)}" y="${(first.y+13).toFixed(1)}" font-size="8" fill="var(--teal)" fill-opacity="${dim*0.8}" text-anchor="start">${_fmtShortDate(first.date)}</text>`;
     }
     if(ln.type === 'curve'){
       const pts = (ln.points||[]).map(([d,p]) => {
-        const idx = dateIndex[d];
-        return idx===undefined ? null : [xOf(idx), yOf(p)];
+        const idx2 = dateIndex[d];
+        return idx2===undefined ? null : {x: xOf(idx2), y: yOf(p), date: d};
       }).filter(Boolean);
       if(pts.length < 2) return '';
-      let d = `M ${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
-      for(let i=1;i<pts.length;i++) d += ` L ${pts[i][0].toFixed(1)} ${pts[i][1].toFixed(1)}`;
-      return `<path d="${d}" fill="none" stroke="var(--teal)" stroke-width="1.5" stroke-dasharray="2 2"/>`;
+      let d = `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
+      for(let i=1;i<pts.length;i++) d += ` L ${pts[i].x.toFixed(1)} ${pts[i].y.toFixed(1)}`;
+      const first = pts[0];
+      return `<path d="${d}" fill="none" stroke="var(--teal)" stroke-opacity="${dim}" stroke-width="2" stroke-dasharray="3 3"/>
+              <text x="${first.x.toFixed(1)}" y="${(first.y+13).toFixed(1)}" font-size="8" fill="var(--teal)" fill-opacity="${dim*0.8}" text-anchor="start">${_fmtShortDate(first.date)}</text>`;
     }
     return '';
   }).join('');
 
   return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;margin:10px 0;">
-    <path d="${pricePath}" fill="none" stroke="var(--text-dim)" stroke-width="1.3"/>
+    ${bars}
     ${lineSvgs}
+    ${axisLine}
+    ${axisLabels}
   </svg>`;
 }
 
@@ -2914,7 +3032,17 @@ function renderTechnicalSetup(data, elId){
   const stageLabel = stageMap ? (t?stageMap.en:stageMap.he) : c.stage;
   const stageColor = stageMap ? stageMap.color : 'var(--text-dim)';
   const explanation = t ? c.explanation_en : c.explanation_he;
-  const svg = buildTechnicalSetupSvg(data.price_series, c.lines);
+
+  // Other genuinely relevant candidates (already active, or close enough
+  // to matter) get drawn on the SAME schematic too, not just the top
+  // pick — two structures lining up together (say, a rising support line
+  // completing the right side of a cup) is real, useful information, not
+  // noise. Capped at 3 total so the chart doesn't turn into a tangle.
+  const others = data.candidates.slice(1).filter(o =>
+    o.stage === 'triggered' || o.stage === 'holding' || Math.abs(o.distance_pct) <= 6
+  ).slice(0, 2);
+  const drawCandidates = [c, ...others];
+  const svg = buildTechnicalSetupSvg(data.price_series, drawCandidates.flatMap(dc => dc.lines));
 
   let statsHtml = `
     <div class="dd-stats-row">
@@ -2929,15 +3057,44 @@ function renderTechnicalSetup(data, elId){
   }
   statsHtml += `</div>`;
 
+  const scanMatchBadge = c.matches_scan
+    ? `<span style="font-size:10.5px;color:var(--text-dim);border:1px solid var(--line);border-radius:6px;padding:2px 8px;">${t?'✓ matches today\'s scan':'✓ תואם לסריקה של היום'}</span>`
+    : '';
+
+  const othersHtml = others.length ? `
+    <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);">
+      <div style="font-size:11px;letter-spacing:1px;color:var(--text-dim);text-transform:uppercase;margin-bottom:8px;">${t?'Also lining up right now':'עוד מבנים שמצטרפים כרגע'}</div>
+      ${others.map(o => {
+        const on = TECHNICAL_SETUP_PATTERN_NAMES[o.pattern];
+        const oName = on ? (t?on.en:on.he) : o.pattern;
+        const os = TECHNICAL_SETUP_STAGE_LABELS[o.stage];
+        const oStageLabel = os ? (t?os.en:os.he) : o.stage;
+        const oColor = os ? os.color : 'var(--text-dim)';
+        const oExplain = t ? o.explanation_en : o.explanation_he;
+        return `
+          <div style="margin-bottom:8px;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px;">
+              <span style="font-weight:600;font-size:12.5px;">${oName}</span>
+              <span style="font-size:10px;color:${oColor};border:1px solid ${oColor};border-radius:6px;padding:1px 6px;">${oStageLabel}</span>
+            </div>
+            <div style="font-size:12px;line-height:1.5;color:var(--text-dim);">${oExplain}</div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  ` : '';
+
   el.innerHTML = `
     <div class="dd-section-title">${t?'Current Technical Setup':'מבנה טכני נוכחי'}</div>
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap;">
       <span style="font-weight:700;font-size:14px;">${name}</span>
       <span style="font-size:11px;color:${stageColor};border:1px solid ${stageColor};border-radius:6px;padding:2px 8px;">${stageLabel}</span>
+      ${scanMatchBadge}
     </div>
     <div style="font-size:13px;line-height:1.6;color:var(--text);margin-bottom:4px;">${explanation}</div>
     ${svg}
     ${statsHtml}
+    ${othersHtml}
   `;
 }
 
@@ -3827,6 +3984,8 @@ function mapDbRowToMacro(r){
     summary_he: r.summary_he,
     summary_en: r.summary_en,
     hook_he: r.hook_he || '',
+    body_he: r.body_he || '',
+    body_en: r.body_en || '',
     time: new Date(r.timestamp).toLocaleString(lang==='he'?'he-IL':'en-US'),
     source: r.source_url ? new URL(r.source_url).hostname.replace('www.','') : '',
     link: r.source_url||'#',

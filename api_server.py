@@ -16,6 +16,7 @@ Endpoints:
     GET /api/market-ticker       -> S&P 500 / Nasdaq / Dow / VIX / Bitcoin / Ethereum / Gold, for the top ticker strip
     GET /api/daily-digest        -> non-AI daily news digest (critical items + one highlight per category)
     GET /api/technical-setup/{ticker} -> deep-dive: is a chart pattern currently forming/approaching for this ticker
+    GET /api/watchlist-setups    -> same pattern scan as above, run across the whole watchlist at once
 
 CORS is open for local development. Lock this down (allow_origins) before
 deploying publicly.
@@ -1478,17 +1479,375 @@ def _setup_horizontal_support_bounce(hist: pd.DataFrame) -> Optional[dict]:
     }
 
 
+def _setup_52w_high_breakout(hist: pd.DataFrame) -> Optional[dict]:
+    if len(hist) < 252:
+        return None
+    dates = hist.index
+    prior_highs = hist["High"].iloc[-252:-1]
+    week52_high = float(prior_highs.max())
+    if week52_high <= 0:
+        return None
+    today_close = float(hist["Close"].iloc[-1])
+    distance_pct = (week52_high - today_close) / today_close * 100
+    if distance_pct < -3 or distance_pct > 8:
+        return None
+    stage = "triggered" if today_close > week52_high else "approaching"
+    anchor_pos = int(prior_highs.values.argmax())
+    anchor_date = prior_highs.index[anchor_pos]
+    return {
+        "pattern": "week52_high_breakout",
+        "stage": stage,
+        "key_level": round(week52_high, 2),
+        "distance_pct": round(distance_pct, 2),
+        "target_price": None,
+        "target_pct": None,
+        "lines": [
+            {"type": "horizontal", "label_he": "שיא 52 שבועות", "label_en": "52-week high",
+             "price": round(week52_high, 2),
+             "from": _fmt_date(anchor_date), "to": _fmt_date(dates[-1])},
+        ],
+    }
+
+
+def _setup_bull_flag(hist: pd.DataFrame) -> Optional[dict]:
+    if len(hist) < 60:
+        return None
+    window = hist.tail(80)
+    dates = window.index
+    closes = window["Close"].values
+    n = len(closes)
+    scan_start = max(0, n - 50)
+    scan = closes[scan_start:]
+
+    best_pole_pct, best_pole_end_rel, best_pole_len = 0.0, -1, 0
+    for i in range(5, len(scan) - 5):
+        for pole_len in [5, 7, 10, 12, 15]:
+            if i - pole_len < 0:
+                continue
+            pct = (scan[i] - scan[i - pole_len]) / scan[i - pole_len] * 100
+            if pct > best_pole_pct:
+                best_pole_pct, best_pole_end_rel, best_pole_len = pct, i, pole_len
+    if best_pole_pct < 8.0 or best_pole_end_rel < 0:
+        return None
+
+    pole_start_rel = best_pole_end_rel - best_pole_len
+    pole_top = scan[best_pole_end_rel]
+    flag_section = scan[best_pole_end_rel:]
+    if len(flag_section) < 5:
+        return None
+    flag_low = float(flag_section.min())
+    flag_high = float(flag_section.max())
+    pullback_pct = (pole_top - flag_low) / pole_top * 100
+    if pullback_pct > best_pole_pct * 0.5:
+        return None  # pullback too deep to still be a tight flag
+
+    today_close = float(closes[-1])
+    breakout_level = flag_high
+    distance_pct = (breakout_level - today_close) / today_close * 100
+    if distance_pct > 10:
+        return None
+    target_price = breakout_level + (pole_top - scan[pole_start_rel])
+    stage = "triggered" if today_close >= breakout_level else "approaching"
+
+    pole_start_idx = scan_start + pole_start_rel
+    pole_end_idx = scan_start + best_pole_end_rel
+    flag_high_idx = scan_start + best_pole_end_rel + int(np.argmax(flag_section))
+
+    return {
+        "pattern": "bull_flag",
+        "stage": stage,
+        "key_level": round(breakout_level, 2),
+        "distance_pct": round(distance_pct, 2),
+        "target_price": round(target_price, 2),
+        "target_pct": round((target_price - breakout_level) / breakout_level * 100, 1),
+        "lines": [
+            {"type": "trend", "label_he": "תורן העלייה", "label_en": "Flagpole",
+             "points": [
+                 [_fmt_date(dates[pole_start_idx]), round(float(scan[pole_start_rel]), 2)],
+                 [_fmt_date(dates[pole_end_idx]), round(float(pole_top), 2)],
+             ]},
+            {"type": "horizontal", "label_he": "קו פריצת הדגל", "label_en": "Flag breakout level",
+             "price": round(breakout_level, 2),
+             "from": _fmt_date(dates[flag_high_idx]), "to": _fmt_date(dates[-1])},
+        ],
+    }
+
+
+def _setup_golden_cross(hist: pd.DataFrame) -> Optional[dict]:
+    if len(hist) < 210:
+        return None
+    closes = hist["Close"]
+    sma50 = closes.rolling(50).mean()
+    sma200 = closes.rolling(200).mean()
+    if sma50.isna().iloc[-6:].any() or sma200.isna().iloc[-6:].any():
+        return None
+
+    diff_today = float(sma50.iloc[-1] - sma200.iloc[-1])
+    diff_5ago = float(sma50.iloc[-6] - sma200.iloc[-6])
+    sma200_today = float(sma200.iloc[-1])
+    if sma200_today <= 0:
+        return None
+    gap_pct = diff_today / sma200_today * 100
+
+    if diff_today > 0 and diff_5ago <= 0:
+        stage = "triggered"
+    elif diff_today <= 0 and (diff_today - diff_5ago) > 0 and gap_pct > -3:
+        stage = "approaching"  # 50-day still below, but the gap is closing
+    else:
+        return None
+
+    tail = hist.tail(60)
+    sma50_tail = closes.rolling(50).mean().tail(60)
+    sma200_tail = closes.rolling(200).mean().tail(60)
+    return {
+        "pattern": "golden_cross",
+        "stage": stage,
+        "key_level": round(sma200_today, 2),
+        "distance_pct": round(gap_pct, 2),
+        "target_price": None,
+        "target_pct": None,
+        "lines": [
+            {"type": "trend", "label_he": "ממוצע נע 50 יום", "label_en": "50-day MA",
+             "points": [
+                 [_fmt_date(tail.index[0]), round(float(sma50_tail.iloc[0]), 2)],
+                 [_fmt_date(tail.index[-1]), round(float(sma50.iloc[-1]), 2)],
+             ]},
+            {"type": "trend", "label_he": "ממוצע נע 200 יום", "label_en": "200-day MA",
+             "points": [
+                 [_fmt_date(tail.index[0]), round(float(sma200_tail.iloc[0]), 2)],
+                 [_fmt_date(tail.index[-1]), round(sma200_today, 2)],
+             ]},
+        ],
+    }
+
+
+def _setup_double_bottom(hist: pd.DataFrame) -> Optional[dict]:
+    if len(hist) < 60:
+        return None
+    window = hist.tail(60)
+    dates = window.index
+    lows = window["Low"].values
+    closes = window["Close"].values
+    n = len(lows)
+
+    swing_idx, swing_val = [], []
+    for i in range(3, n - 3):
+        if lows[i] < lows[i-1] and lows[i] < lows[i-2] and lows[i] < lows[i+1] and lows[i] < lows[i+2]:
+            swing_idx.append(i)
+            swing_val.append(float(lows[i]))
+    if len(swing_idx) < 2:
+        return None
+
+    pairs = sorted(zip(swing_idx, swing_val), key=lambda p: p[1])
+    first_idx, first_low = pairs[0]
+    second = next(((i, v) for i, v in pairs[1:] if abs(i - first_idx) >= 8), None)
+    if second is None:
+        return None
+    second_idx, second_low = second
+    lo_idx, hi_idx = sorted([first_idx, second_idx])
+    lo_low, hi_low = (first_low, second_low) if first_idx < second_idx else (second_low, first_low)
+    if abs(lo_low - hi_low) / max(lo_low, hi_low) > 0.03:
+        return None  # bottoms must be roughly equal depth
+
+    neckline = float(closes[lo_idx:hi_idx+1].max())
+    bottom_price = float(min(lo_low, hi_low))
+    if bottom_price <= 0 or (neckline - bottom_price) / bottom_price < 0.08:
+        return None
+
+    today_close = float(closes[-1])
+    distance_pct = (neckline - today_close) / today_close * 100
+    if distance_pct > 10:
+        return None
+    target_price = neckline + (neckline - bottom_price)
+    stage = "triggered" if today_close > neckline else "approaching"
+    neckline_idx = lo_idx + int(np.argmax(closes[lo_idx:hi_idx+1]))
+
+    return {
+        "pattern": "double_bottom",
+        "stage": stage,
+        "key_level": round(neckline, 2),
+        "distance_pct": round(distance_pct, 2),
+        "target_price": round(target_price, 2),
+        "target_pct": round((target_price - neckline) / neckline * 100, 1),
+        "lines": [
+            {"type": "curve", "label_he": "תחתית כפולה (W)", "label_en": "Double bottom (W)", "points": [
+                [_fmt_date(dates[lo_idx]), round(lo_low, 2)],
+                [_fmt_date(dates[neckline_idx]), round(neckline, 2)],
+                [_fmt_date(dates[hi_idx]), round(hi_low, 2)],
+            ]},
+            {"type": "horizontal", "label_he": "קו הצוואר", "label_en": "Neckline",
+             "price": round(neckline, 2),
+             "from": _fmt_date(dates[neckline_idx]), "to": _fmt_date(dates[-1])},
+        ],
+    }
+
+
+def _rsi(closes: pd.Series, period: int = 14) -> pd.Series:
+    delta = closes.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi.fillna(50)
+
+
+def _setup_rsi_oversold_bounce(hist: pd.DataFrame) -> Optional[dict]:
+    """No natural price level to draw here — RSI is an oscillator, not a
+    chart level — so this one returns with an empty `lines` list; the
+    frontend just shows the price sparkline with no overlay for it, plus
+    the RSI value in the explanation."""
+    if len(hist) < 30:
+        return None
+    rsi = _rsi(hist["Close"])
+    recent = rsi.tail(11)
+    was_oversold = bool((recent.iloc[:-1] < 30).any())
+    rsi_today = float(rsi.iloc[-1])
+    today_close = float(hist["Close"].iloc[-1])
+    yesterday_close = float(hist["Close"].iloc[-2])
+
+    if was_oversold and rsi_today > 30 and today_close > yesterday_close:
+        stage = "triggered"
+    elif was_oversold and rsi_today <= 30:
+        stage = "approaching"  # still under 30, hasn't reclaimed it yet
+    else:
+        return None
+
+    return {
+        "pattern": "rsi_oversold_bounce",
+        "stage": stage,
+        "key_level": 30.0,
+        "distance_pct": round(rsi_today - 30, 2),
+        "target_price": None,
+        "target_pct": None,
+        "rsi": round(rsi_today, 1),
+        "lines": [],
+    }
+
+
+def _setup_momentum_surge(hist: pd.DataFrame) -> Optional[dict]:
+    """Also no chart level — a 5-day % move + volume surge isn't a price
+    trigger to approach, it's already-happened-or-not. Only ever
+    "triggered", never "approaching"."""
+    if len(hist) < 25:
+        return None
+    close_5d_ago = float(hist["Close"].iloc[-6])
+    close_today = float(hist["Close"].iloc[-1])
+    pct_change = (close_today - close_5d_ago) / close_5d_ago * 100
+    avg_vol = hist["Volume"].iloc[-21:-1].mean()
+    recent_vol = hist["Volume"].iloc[-5:].mean()
+    vol_surge = ((recent_vol - avg_vol) / avg_vol) * 100 if avg_vol > 0 else 0
+    if pct_change < 5.0 or vol_surge < 15.0:
+        return None
+    return {
+        "pattern": "momentum_surge",
+        "stage": "triggered",
+        "key_level": round(close_today, 2),
+        "distance_pct": 0.0,
+        "target_price": None,
+        "target_pct": None,
+        "pct_change_5d": round(pct_change, 1),
+        "vol_surge_pct": round(vol_surge, 1),
+        "lines": [],
+    }
+
+
 _SETUP_DETECTORS = [
     _setup_cup_and_handle,
+    _setup_double_bottom,
+    _setup_52w_high_breakout,
+    _setup_bull_flag,
     _setup_ascending_triangle,
+    _setup_golden_cross,
     _setup_ascending_trendline_support,
     _setup_descending_trendline_breakout,
     _setup_horizontal_resistance_breakout,
     _setup_horizontal_support_bounce,
     _setup_ma150_support,
+    _setup_rsi_oversold_bounce,
+    _setup_momentum_surge,
 ]
 
 _SETUP_EXPLANATIONS = {
+    "week52_high_breakout": {
+        "he": lambda d: (
+            (f"המניה פרצה את השיא של 52 השבועות האחרונים (${d['key_level']}) — איתות חיובי חזק, "
+             f"כי אין מעליה יותר \"תקרה\" של מוכרים משנה שעברה." if d['stage']=='triggered'
+             else f"המניה מתקרבת לשיא של 52 השבועות האחרונים (${d['key_level']}), כ-{abs(d['distance_pct'])}% מתחתיו.")
+            + " אין כאן יעד מספרי סטנדרטי — פריצת שיא כזו, מעצם הגדרתה, פותחת \"שטח פנוי\" שאין בו התנגדות היסטורית. לא המלצת השקעה."
+        ),
+        "en": lambda d: (
+            (f"The stock broke above its 52-week high (${d['key_level']}) — a strong signal, since there's no "
+             f"leftover selling pressure from the past year sitting above it." if d['stage']=='triggered'
+             else f"The stock is approaching its 52-week high (${d['key_level']}), about {abs(d['distance_pct'])}% below it.")
+            + " There's no standard numeric target here — a breakout like this opens \"clear air\" with no historical resistance above it, by definition. Not investment advice."
+        ),
+    },
+    "bull_flag": {
+        "he": lambda d: (
+            f"נראה דגל שורי: תורן עלייה חד ואז התכנסות צרה (\"הדגל\"). "
+            + (f"המניה כבר פרצה את גבול הדגל ב-${d['key_level']}." if d['stage']=='triggered'
+               else f"קו פריצת הדגל נמצא ב-${d['key_level']}, כ-{abs(d['distance_pct'])}% מעל המחיר הנוכחי.")
+            + (f" יעד מדידת-גובה קלאסי (אורך התורן שוב, מעל הפריצה) הוא סביב ${d['target_price']} (כ-{d['target_pct']}%). ניתוח טכני היסטורי בלבד, לא המלצה." if d.get('target_price') else "")
+        ),
+        "en": lambda d: (
+            f"This looks like a bull flag: a sharp rally (the pole), then a tight consolidation (the flag). "
+            + (f"Price has already broken above the flag's boundary at ${d['key_level']}." if d['stage']=='triggered'
+               else f"The flag's breakout level is ${d['key_level']}, about {abs(d['distance_pct'])}% above the current price.")
+            + (f" A classic measured-move target (the pole's length again, above the breakout) sits around ${d['target_price']} (about {d['target_pct']}%). Historical technical analysis only, not a recommendation." if d.get('target_price') else "")
+        ),
+    },
+    "golden_cross": {
+        "he": lambda d: (
+            (f"התרחש \"צלב זהב\" — הממוצע הנע ל-50 יום חצה מעל הממוצע ל-200 יום, איתות קלאסי לשינוי מגמה ארוך-טווח לחיובי."
+             if d['stage']=='triggered'
+             else f"הממוצע ל-50 יום מתקרב לחצות מעל הממוצע ל-200 יום (${d['key_level']}) — הפער מצטמצם.")
+            + " זו קריאת מגמה ארוכת-טווח, לא איתות לפעולה מיידית."
+        ),
+        "en": lambda d: (
+            (f"A \"golden cross\" just occurred — the 50-day moving average crossed above the 200-day, a classic long-term trend-change signal."
+             if d['stage']=='triggered'
+             else f"The 50-day moving average is approaching a cross above the 200-day (${d['key_level']}) — the gap is closing.")
+            + " This is a long-term trend read, not an immediate action signal."
+        ),
+    },
+    "double_bottom": {
+        "he": lambda d: (
+            f"נראית תבנית תחתית כפולה (\"W\") — שני שפלים דומים בגובהם עם פסגה (\"קו הצוואר\") ביניהם ב-${d['key_level']}. "
+            + (f"המניה כבר פרצה מעל קו הצוואר." if d['stage']=='triggered' else f"המחיר כ-{abs(d['distance_pct'])}% מתחת לקו הצוואר.")
+            + (f" יעד מדידת-גובה קלאסי (עומק התבנית מעל הפריצה) הוא סביב ${d['target_price']} (כ-{d['target_pct']}%). ניתוח טכני היסטורי בלבד, לא המלצה." if d.get('target_price') else "")
+        ),
+        "en": lambda d: (
+            f"This looks like a double bottom (\"W\") pattern — two similarly-deep lows with a peak (the \"neckline\") between them at ${d['key_level']}. "
+            + (f"Price has already broken above the neckline." if d['stage']=='triggered' else f"Price is about {abs(d['distance_pct'])}% below the neckline.")
+            + (f" A classic measured-move target (the pattern's depth above the breakout) sits around ${d['target_price']} (about {d['target_pct']}%). Historical technical analysis only, not a recommendation." if d.get('target_price') else "")
+        ),
+    },
+    "rsi_oversold_bounce": {
+        "he": lambda d: (
+            f"ה-RSI(14) ירד מתחת ל-30 (איזור \"קניית יתר שלילית\") בימים האחרונים — כרגע {d['rsi']}. "
+            + ("המניה כבר חצתה בחזרה מעל 30 עם עלייה במחיר — סימן מוקדם אפשרי להיפוך." if d['stage']=='triggered'
+               else "עדיין מתחת ל-30 — לא חזרה עדיין.")
+            + " זהו אינדיקטור מומנטום, אין כאן רמת מחיר או יעד — לא איתות לפעולה בפני עצמו."
+        ),
+        "en": lambda d: (
+            f"RSI(14) dipped below 30 (\"oversold\") in the last few days — currently {d['rsi']}. "
+            + ("It has already crossed back above 30 with price ticking up — a possible early reversal signal." if d['stage']=='triggered'
+               else "Still below 30 — hasn't reclaimed it yet.")
+            + " This is a momentum indicator — there's no price level or target here, and it's not a standalone action signal."
+        ),
+    },
+    "momentum_surge": {
+        "he": lambda d: (
+            f"עלייה חדה של {d['pct_change_5d']}% ב-5 ימי המסחר האחרונים, יחד עם עלייה של {d['vol_surge_pct']}% בווליום ביחס לממוצע — "
+            f"שילוב שמעיד על עניין ותנופה אמיתיים, לא רק תנודה. אין כאן רמת מחיר או יעד — זו קריאת מומנטום, לא תבנית גרפית."
+        ),
+        "en": lambda d: (
+            f"A sharp {d['pct_change_5d']}% move over the last 5 trading days, alongside a {d['vol_surge_pct']}% jump in volume vs. average — "
+            f"a combination that suggests real interest and momentum, not just noise. There's no price level or target here — this is a momentum read, not a chart pattern."
+        ),
+    },
     "cup_and_handle": {
         "he": lambda d: (
             f"המניה בונה תבנית \"כוס\" — ירידה של כ-{d['cup_depth_pct']}% ואז התאוששות חזרה לאזור השיא הקודם. "
@@ -1585,25 +1944,47 @@ _SETUP_EXPLANATIONS = {
 _SCANNER_PATTERN_TO_SETUP_ID = {
     "cup_handle": "cup_and_handle",
     "cup_no_handle": "cup_and_handle",
+    "double_bottom": "double_bottom",
+    "52w_high": "week52_high_breakout",
     "horizontal_resistance_breakout": "horizontal_resistance_breakout",
-    "horizontal_level_bounce": "horizontal_support_bounce",
+    "golden_cross": "golden_cross",
+    "ma150_breakout": "ma150_support",
+    "bull_flag": "bull_flag",
     "ascending_triangle": "ascending_triangle",
     "ascending_trendline": "ascending_trendline_support",
     "ma150_support_bounce": "ma150_support",
+    "horizontal_level_bounce": "horizontal_support_bounce",
+    "momentum_surge": "momentum_surge",
+    "rsi_bounce": "rsi_oversold_bounce",
     "descending_trendline_breakout": "descending_trendline_breakout",
+    # "macd_cross" deliberately has no equivalent here — MACD crossovers
+    # were explicitly excluded from this endpoint at the user's request.
 }
 
 
-@app.get("/api/technical-setup/{ticker}")
-def get_technical_setup(ticker: str):
-    ticker = ticker.upper().strip()
-    try:
-        hist = yf.Ticker(ticker).history(period="1y", interval="1d")
-    except Exception:
-        raise HTTPException(status_code=502, detail="שגיאה בשליפת נתוני המניה")
-    if hist.empty or len(hist) < 65:
-        raise HTTPException(status_code=404, detail=f"אין מספיק היסטוריה עבור {ticker}")
+_SETUP_PRIORITY = {
+    "cup_and_handle": 1,
+    "double_bottom": 2,
+    "week52_high_breakout": 3,
+    "horizontal_resistance_breakout": 4,
+    "golden_cross": 5,
+    "ma150_support": 6,
+    "bull_flag": 7,
+    "ascending_triangle": 8,
+    "ascending_trendline_support": 9,
+    "horizontal_support_bounce": 10,
+    "momentum_surge": 11,
+    "rsi_oversold_bounce": 12,
+    "descending_trendline_breakout": 13,
+}
 
+
+def _compute_setup_candidates(hist: pd.DataFrame, ticker: str) -> list:
+    """Shared by /api/technical-setup/{ticker} and the watchlist-wide scan
+    below: runs every detector, attaches bilingual explanations, and sorts
+    by the SAME priority the scanner's own elif-chain uses (see the note
+    on _SETUP_PRIORITY's use further down) so both endpoints always agree
+    on which pattern is "the" one worth mentioning for a given stock."""
     candidates = []
     for fn in _SETUP_DETECTORS:
         try:
@@ -1617,8 +1998,24 @@ def get_technical_setup(ticker: str):
             result["explanation_en"] = explain["en"](result)
             candidates.append(result)
 
-    if not candidates:
-        return {"ticker": ticker, "has_setup": False, "candidates": []}
+    def sort_key(c):
+        already = 0 if c["stage"] in ("triggered", "holding") else 1
+        if already == 0:
+            return (0, _SETUP_PRIORITY.get(c["pattern"], 99))
+        return (1, round(abs(c["distance_pct"]), 1), _SETUP_PRIORITY.get(c["pattern"], 99))
+    candidates.sort(key=sort_key)
+    return candidates
+
+
+@app.get("/api/technical-setup/{ticker}")
+def get_technical_setup(ticker: str):
+    ticker = ticker.upper().strip()
+    try:
+        hist = yf.Ticker(ticker).history(period="1y", interval="1d")
+    except Exception:
+        raise HTTPException(status_code=502, detail="שגיאה בשליפת נתוני המניה")
+    if hist.empty or len(hist) < 65:
+        raise HTTPException(status_code=404, detail=f"אין מספיק היסטוריה עבור {ticker}")
 
     # Priority: an already-triggered/holding setup first, then whichever
     # approaching candidate is closest to its trigger. Ties (or the
@@ -1630,21 +2027,9 @@ def get_technical_setup(ticker: str):
     # too, or this endpoint's "top pick" can silently disagree with what
     # the scanner already showed for the same stock even before the
     # scan-match check below runs.
-    _PRIORITY = {
-        "cup_and_handle": 1,
-        "horizontal_resistance_breakout": 2,
-        "ascending_triangle": 3,
-        "horizontal_support_bounce": 4,
-        "ascending_trendline_support": 5,
-        "ma150_support": 6,
-        "descending_trendline_breakout": 7,
-    }
-    def sort_key(c):
-        already = 0 if c["stage"] in ("triggered", "holding") else 1
-        if already == 0:
-            return (0, _PRIORITY.get(c["pattern"], 99))
-        return (1, round(abs(c["distance_pct"]), 1), _PRIORITY.get(c["pattern"], 99))
-    candidates.sort(key=sort_key)
+    candidates = _compute_setup_candidates(hist, ticker)
+    if not candidates:
+        return {"ticker": ticker, "has_setup": False, "candidates": []}
 
     # If the daily scanner (pipeline_a_scanner.py) already flagged THIS
     # ticker with a pattern today (or very recently), that's the reason
@@ -1705,6 +2090,80 @@ def get_technical_setup(ticker: str):
         "candidates": candidates,
         "price_series": price_series,
     }
+
+
+# ------------------------------------------------------------------
+# Watchlist-wide "what's approaching" scan — the same detectors as
+# /api/technical-setup above, run across every ticker on the watchlist
+# at once, so the person doesn't have to open each stock's deep-dive one
+# by one just to see which of theirs is actually near something right
+# now. Deliberately lighter than the single-ticker endpoint: no OHLC
+# schematic data (a list view, not a chart) and no scanner-match
+# re-prioritization (that's for the deep-dive's single "this is the one
+# you're looking at" framing; a list just needs each stock's honest top
+# candidate). Only returns tickers that actually have a candidate — a
+# stock with nothing going on simply doesn't show up in the list.
+# ------------------------------------------------------------------
+
+def _fetch_one_watchlist_setup(ticker: str) -> Optional[dict]:
+    try:
+        hist = yf.Ticker(ticker).history(period="1y", interval="1d")
+    except Exception as e:
+        print(f"[warn] watchlist-setups: history fetch failed for {ticker}: {e}")
+        return None
+    if hist is None or hist.empty or len(hist) < 65:
+        return None
+    candidates = _compute_setup_candidates(hist, ticker)
+    if not candidates:
+        return None
+    top = candidates[0]
+    return {
+        "ticker": ticker,
+        "current_price": round(float(hist["Close"].iloc[-1]), 2),
+        "pattern": top["pattern"],
+        "stage": top["stage"],
+        "key_level": top["key_level"],
+        "distance_pct": top["distance_pct"],
+        "target_price": top.get("target_price"),
+        "target_pct": top.get("target_pct"),
+        "explanation_he": top["explanation_he"],
+        "explanation_en": top["explanation_en"],
+    }
+
+
+@app.get("/api/watchlist-setups")
+def get_watchlist_setups():
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT ticker FROM watchlist ORDER BY added_at DESC")
+    tickers = [r["ticker"] for r in cur.fetchall()]
+    cur.close()
+    conn.close()
+
+    if not tickers:
+        return {"results": []}
+
+    results = []
+    # Each ticker needs its own yfinance history call — run them in
+    # parallel (bounded) rather than one at a time, since a watchlist of
+    # even 15-20 names run sequentially would make this endpoint feel
+    # broken on Render's free tier.
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {executor.submit(_fetch_one_watchlist_setup, t): t for t in tickers}
+        for future in futures:
+            try:
+                r = future.result(timeout=25)
+                if r:
+                    results.append(r)
+            except Exception as e:
+                print(f"[warn] watchlist-setups: {futures[future]} failed or timed out: {e}")
+
+    def sort_key(r):
+        already = 0 if r["stage"] in ("triggered", "holding") else 1
+        return (already, round(abs(r["distance_pct"]), 1), _SETUP_PRIORITY.get(r["pattern"], 99))
+    results.sort(key=sort_key)
+
+    return {"results": results}
 
 
 @app.get("/api/lookup/{ticker}")

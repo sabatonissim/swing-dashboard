@@ -27,6 +27,7 @@ Requirements (pip install --break-system-packages):
 
 import os
 import re
+import html
 import psycopg2
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -251,6 +252,29 @@ def _clean_google_news_title(title: str) -> str:
     rates - Reuters'). Strip that suffix so matching/translation work on the
     actual headline, not the source tag."""
     return re.sub(r'\s+-\s+[^-]{2,40}$', '', title).strip()
+
+
+def _clean_rss_body(raw_summary: str, title: str) -> str:
+    """The RSS <description>/<summary> field, cleaned into plain readable
+    text — this is publisher-provided teaser text, meant to be excerpted
+    (that's what RSS summaries are FOR), not full-article scraping. Strips
+    HTML tags/entities (Google News wraps its summary in an <a> tag plus a
+    trailing <font> with the source name). Returns "" when there's nothing
+    beyond the headline itself worth showing — several of our feeds are
+    Google News search queries whose "summary" is just the title re-wrapped
+    in a link, so showing it as a separate "body" would just repeat the
+    headline back with no added value."""
+    if not raw_summary:
+        return ""
+    text = re.sub(r'<[^>]+>', ' ', raw_summary)   # strip tags
+    text = html.unescape(text)                     # &amp; -> &, etc.
+    text = re.sub(r'\s+', ' ', text).strip()
+    if not text or len(text) < 15:
+        return ""
+    cleaned_title = re.sub(r'\s+', ' ', title).strip()
+    if cleaned_title and len(text.replace(cleaned_title, '').strip()) < 20:
+        return ""
+    return text
 
 
 def fetch_raw_headlines() -> List[dict]:
@@ -513,6 +537,8 @@ def init_db():
     # before this column existed (CREATE TABLE IF NOT EXISTS above is a
     # no-op once the table exists, so this is needed for already-deployed DBs).
     cur.execute("ALTER TABLE macro_news ADD COLUMN IF NOT EXISTS hook_he TEXT;")
+    cur.execute("ALTER TABLE macro_news ADD COLUMN IF NOT EXISTS body_en TEXT;")
+    cur.execute("ALTER TABLE macro_news ADD COLUMN IF NOT EXISTS body_he TEXT;")
     conn.commit()
 
     # --- one-time cleanup, required before the UNIQUE constraint below can
@@ -564,7 +590,7 @@ def init_db():
 
 def upsert_macro_news(category_tag: str, summary_he: str,
                       summary_en: str, impact_level: str, source_url: str,
-                      hook_he: str = "") -> bool:
+                      hook_he: str = "", body_en: str = "", body_he: str = "") -> bool:
     """Returns True if a new row was inserted, False if this source_url was
     already saved (duplicate story — skipped instead of piling up).
 
@@ -578,12 +604,12 @@ def upsert_macro_news(category_tag: str, summary_he: str,
     try:
         cur.execute(
             """
-            INSERT INTO macro_news (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, timestamp)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO macro_news (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, body_en, body_he, timestamp)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (source_url) DO NOTHING
             RETURNING id
             """,
-            (category_tag, summary_he, summary_en, impact_level, source_url, hook_he,
+            (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, body_en, body_he,
              datetime.now(timezone.utc).isoformat()),
         )
         inserted = cur.fetchone() is not None
@@ -597,10 +623,10 @@ def upsert_macro_news(category_tag: str, summary_he: str,
         else:
             cur.execute(
                 """
-                INSERT INTO macro_news (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, timestamp)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO macro_news (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, body_en, body_he, timestamp)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (category_tag, summary_he, summary_en, impact_level, source_url, hook_he,
+                (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, body_en, body_he,
                  datetime.now(timezone.utc).isoformat()),
             )
             inserted = True
@@ -674,7 +700,10 @@ def run_pipeline_b():
         hook_he = get_category_hook(tag)
         summary_en = title  # keep original English as-is
 
-        was_new = upsert_macro_news(tag, headline_he, summary_en, impact, item["link"], hook_he)
+        body_en = _clean_rss_body(item.get("summary", ""), title)
+        body_he = translate_to_hebrew(body_en) if body_en else ""
+
+        was_new = upsert_macro_news(tag, headline_he, summary_en, impact, item["link"], hook_he, body_en, body_he)
         if was_new:
             saved += 1
         else:
