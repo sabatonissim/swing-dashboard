@@ -996,6 +996,21 @@ const PATTERN_LABELS = {
   momentum_surge: { he: 'זינוק מומנטום', en: 'Momentum Surge' },
   rsi_bounce: { he: 'התאוששות RSI', en: 'RSI Oversold Bounce' },
 };
+// ---- Ticker helpers ----
+// Class-share tickers (BRK.B, BF.B): Yahoo/our API use a DASH (BRK-B),
+// TradingView needs a DOT (BRK.B) — with a dash it silently opens an
+// unrelated listing (that's how BRK-B once showed a Toronto chart).
+function canonTicker(raw){
+  const t = String(raw||'').trim().toUpperCase();
+  const m = t.match(/^([A-Z]{1,5})\.([A-Z])$/);
+  return m ? `${m[1]}-${m[2]}` : t;
+}
+function tvSymbol(tk){
+  const t = String(tk||'').trim().toUpperCase();
+  const m = t.match(/^([A-Z]{1,5})-([A-Z])$/);
+  return m ? `${m[1]}.${m[2]}` : t;
+}
+
 function patternLabel(p){
   const entry = PATTERN_LABELS[p];
   if(!entry) return p;
@@ -1306,7 +1321,7 @@ let deepDiveTvChart = null;
 
 async function loadDeepDive(){
   const input = document.getElementById('dd-ticker-input');
-  const ticker = (input.value || '').trim().toUpperCase();
+  const ticker = canonTicker(input.value);
   const el = document.getElementById('deepdive-content');
   const t = lang === 'en';
 
@@ -1319,7 +1334,7 @@ async function loadDeepDive(){
 
   try {
     const [lookupRes, sectorRes, signalsRes, newsRes, fundRes, setupRes] = await Promise.allSettled([
-      fetch(`${API_BASE}/api/lookup/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
+      fetch(`${API_BASE}/api/lookup/${ticker}`).then(r => r.ok ? r.json() : Promise.reject(r.status)),
       fetchWithTimeout(`${API_BASE}/api/sector-comparison/${ticker}?period=${ddSectorPeriod}`, 30000).then(r => r.ok ? r.json() : Promise.reject()),
       fetch(`${API_BASE}/api/signal-history/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
       fetch(`${API_BASE}/api/stock-news/${ticker}?lang=${lang}`).then(r => r.ok ? r.json() : Promise.reject()),
@@ -1328,7 +1343,11 @@ async function loadDeepDive(){
     ]);
 
     if(lookupRes.status !== 'fulfilled'){
-      el.innerHTML = `<div class="bt-empty">${t?`Couldn't find ticker "${ticker}".`:`הטיקר "${ticker}" לא נמצא.`}</div>`;
+      const notFound = lookupRes.reason === 404;
+      el.innerHTML = `<div class="bt-empty">${notFound
+        ? (t?`Couldn't find ticker "${ticker}".`:`הטיקר "${ticker}" לא נמצא.`)
+        : (t?`Couldn't load "${ticker}" right now (data source or server hiccup) — please try again in a few seconds.`
+            :`לא הצלחתי לטעון את "${ticker}" כרגע (תקלה זמנית במקור הנתונים או בשרת) — נסה שוב בעוד כמה שניות.`)}</div>`;
       return;
     }
 
@@ -1473,7 +1492,7 @@ function renderDeepDive(quote, sector, signals, news){
 
   if(typeof TradingView !== 'undefined'){
     new TradingView.widget({
-      autosize: true, symbol: quote.ticker, interval: 'D',
+      autosize: true, symbol: tvSymbol(quote.ticker), interval: 'D',
       timezone: 'Asia/Jerusalem', theme: 'dark', style: '1',
       locale: lang==='en' ? 'en' : 'he_IL',
       toolbar_bg: '#161a20', hide_top_toolbar: false, hide_legend: false,
@@ -2522,7 +2541,7 @@ async function promptAddToWatchlist(){
   const t = lang==='en';
   const raw = prompt(t?'Ticker to add to your watchlist:':'טיקר להוספה לרשימת המעקב:');
   if(!raw) return;
-  const ticker = raw.trim().toUpperCase();
+  const ticker = canonTicker(raw);
   if(!ticker) return;
   try {
     const res = await fetch(`${API_BASE}/api/watchlist`, {
@@ -2708,7 +2727,7 @@ function renderTradingViewChart(ticker){
   if(!container||typeof TradingView==="undefined") return;
   container.innerHTML="";
   new TradingView.widget({
-    autosize:true, symbol:ticker, interval:"D",
+    autosize:true, symbol:tvSymbol(ticker), interval:"D",
     timezone:"Asia/Jerusalem", theme:"dark", style:"1", locale: lang==='en' ? 'en' : 'he_IL',
     toolbar_bg:"#161a20", hide_top_toolbar:false, hide_legend:false,
     save_image:false, container_id:"tv-chart",
@@ -3026,6 +3045,23 @@ function buildTechnicalSetupSvg(priceSeries, lines){
   </svg>`;
 }
 
+function scanSignalBannerHtml(sig){
+  if(!sig || sig.reproduced) return '';
+  const t = lang==='en';
+  const label = patternLabel(sig.pattern_type);
+  const age = sig.age_days || 0;
+  const when = t
+    ? (age===0 ? 'today' : age===1 ? 'yesterday' : `${age} days ago`)
+    : (age===0 ? 'היום' : age===1 ? 'אתמול' : `לפני ${age} ימים`);
+  const isMacd = sig.pattern_type === 'macd_cross';
+  const msg = t
+    ? (isMacd ? `The scanner flagged "${label}" ${when}. Deep Dive doesn't analyze MACD patterns, so what's shown below is a different price structure.`
+              : `The scanner flagged "${label}" ${when}, but in a live re-check that pattern no longer holds (price has moved since), so the structure below is what is currently there.`)
+    : (isMacd ? `הסורק סימן "${label}" ${when}. ב-Deep Dive לא בודקים תבניות MACD, לכן המבנה שמוצג למטה הוא מבנה מחיר אחר.`
+              : `הסורק סימן "${label}" ${when}, אך בבדיקה חיה עכשיו התבנית הזו כבר לא מתקיימת (המחיר זז מאז), ולכן המבנה שמוצג למטה הוא מה שקיים כרגע.`);
+  return `<div style="font-size:12px;line-height:1.5;color:var(--amber);border:1px solid var(--amber);border-radius:8px;padding:8px 10px;margin-bottom:10px;">⚠ ${msg}</div>`;
+}
+
 function renderTechnicalSetup(data, elId){
   const el = document.getElementById(elId);
   if(!el) return;
@@ -3033,6 +3069,7 @@ function renderTechnicalSetup(data, elId){
   if(!data || !data.has_setup || !data.candidates || !data.candidates.length){
     el.innerHTML = `
       <div class="dd-section-title">${t?'Current Technical Setup':'מבנה טכני נוכחי'}</div>
+      ${scanSignalBannerHtml(data && data.scan_signal)}
       <div class="bt-empty" style="padding:10px 0;">${t
         ? 'No clear pattern forming right now — looks like plain consolidation or trend, nothing specific to flag.'
         : 'אין כרגע תבנית ברורה שנבנית — נראה כמו התכנסות או מגמה רגילה, אין משהו ספציפי לסמן.'}</div>
@@ -3100,6 +3137,7 @@ function renderTechnicalSetup(data, elId){
 
   el.innerHTML = `
     <div class="dd-section-title">${t?'Current Technical Setup':'מבנה טכני נוכחי'}</div>
+    ${scanSignalBannerHtml(data.scan_signal)}
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap;">
       <span style="font-weight:700;font-size:14px;">${name}</span>
       <span style="font-size:11px;color:${stageColor};border:1px solid ${stageColor};border-radius:6px;padding:2px 8px;">${stageLabel}</span>
@@ -3465,7 +3503,13 @@ async function showTickerDrawer(ticker){
   renderTradingViewChart(ticker);
   try {
     const res = await fetch(`${API_BASE}/api/lookup/${ticker}`);
-    if(!res.ok){ document.getElementById("loading-box").textContent=lang==='en'?"No further info found, showing chart only.":"לא נמצא מידע נוסף, מציג גרף בלבד."; return; }
+    if(!res.ok){
+      const temp = res.status !== 404;
+      document.getElementById("loading-box").textContent = temp
+        ? (lang==='en'?"Data source hiccup — showing chart only. Try again in a few seconds.":"תקלה זמנית במקור הנתונים — מציג גרף בלבד. נסה שוב בעוד כמה שניות.")
+        : (lang==='en'?"No further info found, showing chart only.":"לא נמצא מידע נוסף, מציג גרף בלבד.");
+      return;
+    }
     const d = await res.json();
     const changeColor = d.change_pct>=0?'var(--green)':'var(--red)';
     document.getElementById("loading-box").remove();
@@ -3501,7 +3545,7 @@ async function showTickerDrawer(ticker){
 async function handleSearch(){
   const raw = document.getElementById("search-input").value.trim();
   if(!raw) return;
-  showTickerDrawer(raw.toUpperCase());
+  showTickerDrawer(canonTicker(raw));
 }
 document.getElementById("search-input").addEventListener("keydown", e=>{ if(e.key==="Enter") handleSearch(); });
 
@@ -3538,7 +3582,7 @@ function trendStr(arr, formatter){
 let compareTickerList = [];
 
 function openCompare(baseTicker){
-  compareTickerList = [baseTicker.toUpperCase()];
+  compareTickerList = [canonTicker(baseTicker)];
   const t = lang==='en';
   const modal = document.getElementById('compare-search-modal');
   modal.innerHTML = `
@@ -3623,13 +3667,13 @@ function renderCompareSearchList(baseTicker, query){
 
 function handleCompareSearchKey(event, baseTicker){
   if(event.key !== 'Enter') return;
-  const raw = (document.getElementById('cs-input').value || '').trim().toUpperCase();
+  const raw = canonTicker(document.getElementById('cs-input').value);
   if(!raw) return;
   selectCompareTicker(baseTicker, raw);
 }
 
 function selectCompareTicker(baseTicker, tickerN){
-  tickerN = tickerN.trim().toUpperCase();
+  tickerN = canonTicker(tickerN);
   if(!tickerN || compareTickerList.map(x=>x.toUpperCase()).includes(tickerN)) return;
   closeCompareSearch();
   compareTickerList.push(tickerN);

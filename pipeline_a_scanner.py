@@ -31,10 +31,9 @@ Flow:
   5. Volume filter      -> breakout candle volume >= 20% above 20-day average volume
   6. Support/resistance -> real swing-high/swing-low levels (see
                           compute_support_resistance), not an arbitrary % of price
-  7. Social fusion       -> pull recent posts (X / Reddit / Stocktwits), measure mention spike
-  8. AI summary          -> OpenAI call with a STRICTLY factual/analytical prompt
-                          (no buy/sell recommendations - see LEGAL NOTE below)
-  9. DB upsert           -> scanned_stocks table
+  7. DB upsert           -> scanned_stocks table
+  (Social-media fusion and an OpenAI summary step used to be stubbed here;
+  both were removed — the project deliberately runs with no AI/paid APIs.)
 
 LEGAL NOTE
 ----------
@@ -45,7 +44,7 @@ and descriptive (e.g. "the asset is drawing renewed interest" instead of
 to display on the site.
 
 Requirements (pip install --break-system-packages):
-    yfinance pandas numpy openai praw requests python-dotenv
+    yfinance pandas numpy psycopg2-binary requests
 """
 
 import json
@@ -527,12 +526,19 @@ def detect_horizontal_level_bounce(hist: pd.DataFrame, lookback: int = 150) -> O
     # If several validated levels qualify, the one closest to today's low
     # is the one actually in play right now.
     best = None
+    best_dist = None
     for level, touches in validated_levels:
         if level <= 0:
             continue
         dist_pct = abs(today_low - level) / level
         if dist_pct <= BOUNCE_TOLERANCE_PCT and today_close > level:
-            if best is None or dist_pct < best["distance_pct"]:
+            # BUGFIX: this used to compare the fraction (0.012) against the
+            # already-rounded PERCENT stored in best["distance_pct"] (1.2),
+            # so the comparison was almost always True and the LAST
+            # qualifying level won instead of the closest one. Track the
+            # raw fraction separately so "closest to today's low" is real.
+            if best is None or dist_pct < best_dist:
+                best_dist = dist_pct
                 best = {"level": round(level, 2), "touches": touches, "distance_pct": round(dist_pct * 100, 2)}
     return best
 
@@ -1022,120 +1028,6 @@ def detect_rsi_oversold_bounce(hist: pd.DataFrame) -> Optional[dict]:
     if today_close > yesterday_close:
         return {"rsi": round(float(rsi.iloc[-1]), 1)}
     return None
-
-
-# ------------------------------------------------------------------
-# Step 4: Social & sentiment data collection (stubs w/ clear TODOs)
-# ------------------------------------------------------------------
-
-def fetch_social_posts(ticker: str, limit: int = 50) -> List[str]:
-    """
-    Pulls the latest posts mentioning `ticker` from X, Reddit, Stocktwits.
-
-    TODO before going live, fill in real credentials:
-      - X (Twitter) API v2: requires a developer account + bearer token.
-        https://developer.x.com/en/docs/x-api
-      - Reddit: use PRAW with a registered app (client_id/secret).
-        https://praw.readthedocs.io/
-      - Stocktwits: public REST endpoint, lightly rate-limited:
-        https://api.stocktwits.com/api/2/streams/symbol/{ticker}.json
-
-    Returns a flat list of post text bodies (max `limit`).
-    """
-    posts: List[str] = []
-
-    # --- Stocktwits (simplest - no auth needed for the public endpoint) ---
-    try:
-        import requests
-        resp = requests.get(
-            f"https://api.stocktwits.com/api/2/streams/symbol/{ticker}.json",
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            for msg in data.get("messages", [])[:limit]:
-                posts.append(msg.get("body", ""))
-    except Exception as e:
-        print(f"[warn] Stocktwits fetch failed for {ticker}: {e}")
-
-    # --- Reddit (requires praw + credentials) ---
-    # import praw
-    # reddit = praw.Reddit(
-    #     client_id=os.environ["REDDIT_CLIENT_ID"],
-    #     client_secret=os.environ["REDDIT_CLIENT_SECRET"],
-    #     user_agent="swing-dashboard/0.1",
-    # )
-    # for submission in reddit.subreddit("stocks+investing").search(ticker, limit=limit):
-    #     posts.append(submission.title + " " + (submission.selftext or ""))
-
-    # --- X / Twitter (requires a developer bearer token) ---
-    # headers = {"Authorization": f"Bearer {os.environ['X_BEARER_TOKEN']}"}
-    # resp = requests.get(
-    #     "https://api.x.com/2/tweets/search/recent",
-    #     params={"query": f"${ticker}", "max_results": min(limit, 100)},
-    #     headers=headers,
-    # )
-    # posts += [t["text"] for t in resp.json().get("data", [])]
-
-    return posts[:limit]
-
-
-def compute_social_volume_spike(ticker: str, current_24h_count: int, baseline_30d_avg: float) -> float:
-    """% jump in mentions vs the 30-day daily average baseline."""
-    if baseline_30d_avg <= 0:
-        return 0.0
-    return round(((current_24h_count - baseline_30d_avg) / baseline_30d_avg) * 100, 1)
-
-
-# ------------------------------------------------------------------
-# Step 5: AI summary generation (OpenAI) - legally-safe prompt
-# ------------------------------------------------------------------
-
-SENTIMENT_SYSTEM_PROMPT = """You are a financial content assistant for a swing-trading dashboard.
-You must NEVER issue a buy/sell recommendation, price target, or any instruction to trade.
-Only describe what is observably happening (price action, volume, community attention) using
-neutral, factual, analytical language. Acceptable phrasing style: "the asset is drawing renewed
-attention", "a positive trend was observed", "community discussion has increased". Do NOT use
-phrasing like "buy", "sell", "you should", "recommended", or give price targets framed as advice.
-"""
-
-def build_social_sentiment_prompt(ticker: str, posts: List[str], target_language: str) -> str:
-    joined_posts = "\n".join(f"- {p}" for p in posts if p.strip())[:6000]
-    return f"""Analyze the sentiment of these traders regarding ticker {ticker}.
-Provide a score from 1-100 (100 = extreme bullishness) based purely on the tone of the posts.
-Write a condensed, FACTUAL and ANALYTICAL summary of up to 40 words in {target_language}
-explaining what the community narrative is and why attention has increased. Do not include
-fluff, and do not phrase anything as a recommendation to buy or sell. Return strict JSON:
-{{"score": <int>, "summary": "<string>"}}
-
-Posts:
-{joined_posts}
-"""
-
-
-def call_openai_sentiment(ticker: str, posts: List[str], target_language: str) -> dict:
-    """
-    Calls OpenAI's API to score + summarize sentiment.
-    Requires OPENAI_API_KEY in the environment.
-    """
-    from openai import OpenAI
-    client = OpenAI()  # reads OPENAI_API_KEY from env
-
-    user_prompt = build_social_sentiment_prompt(ticker, posts, target_language)
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": SENTIMENT_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.3,
-    )
-    content = response.choices[0].message.content
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        return {"score": 50, "summary": ""}
 
 
 # ------------------------------------------------------------------

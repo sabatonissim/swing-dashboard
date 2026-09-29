@@ -59,7 +59,8 @@ GitHub Actions מגביל ריפו **פרטי** ל-2,000 דקות ריצה/חו�
 | `pipeline_a_scanner.py` | GitHub Actions (`stock-scanner.yml`) | סורק טכני — מזהה תבניות, יומן דוחות, כותב ל-Postgres |
 | `pipeline_b_news_aggregator.py` | GitHub Actions (`news-aggregator.yml`) | שולף חדשות RSS, מסווג, מתרגם, כותב ל-Postgres |
 | `cleanup_stale_signals.py` | GitHub Actions (ידני בלבד) | סקריפט תחזוקה חד-פעמי |
-| `requirements.txt` | Render + GitHub Actions | תלויות Python (`numpy` כבר כלול; `openai` רשום אך **לא בשימוש**) |
+| `requirements.txt` | Render + GitHub Actions | תלויות Python. (`openai` **הוסר** — לא היה בשימוש; קוד ה-OpenAI/סושיאל המת נמחק מ-`pipeline_a_scanner.py`) |
+| `drift_test.py` (אופציונלי, מקומי) | המחשב / sandbox של Claude | בדיקת התאמה סינתטית סורק↔Deep Dive (ראה 7.1). לא רץ בשום שירות חי |
 | `.github/workflows/*.yml` | GitHub Actions | תזמון |
 
 ---
@@ -85,7 +86,7 @@ GitHub Actions מגביל ריפו **פרטי** ל-2,000 דקות ריצה/חו�
 - **תרגום חינמי** (Google gtx + MyMemory) — עם retry ותיקון-עצמי
 
 ### מה לא בשימוש (ולמה)
-- ❌ **OpenAI/Anthropic API** — לא בשימוש בשום pipeline. חיבור AI (לסיווג חדשות ולסיכום יומי אמיתי) **נדחה במפורש** — המשתמש אמר "כרגע עדיין לא לשלם, ננסה עם מה שיש ובעתיד נכניס AI". מנוי Claude הוא חיוב **נפרד לגמרי** מ-Claude API.
+- ❌ **OpenAI/Anthropic API** — לא בשימוש בשום pipeline (גם הקוד המת והתלות `openai` הוסרו). חיבור AI (לסיווג חדשות ולסיכום יומי אמיתי) **נדחה במפורש** — המשתמש אמר "כרגע עדיין לא לשלם, ננסה עם מה שיש ובעתיד נכניס AI". מנוי Claude הוא חיוב **נפרד לגמרי** מ-Claude API.
 - ⚠️ **VIX** — הוסר מהחישוב/מהמדד (Fear & Greed משמש תחליף), **אבל חזר כמספר אינפורמטיבי בלבד** בשורת המדדים העליונה (לא משפיע על שום ציון)
 - ❌ **טוויטר/X** — נדחה (עלות API)
 - ❌ **cron-job.org / UptimeRobot** — נדחה
@@ -112,6 +113,10 @@ GitHub Actions מגביל ריפו **פרטי** ל-2,000 דקות ריצה/חו�
 - ל-`api_server.py` יש `CREATE TABLE IF NOT EXISTS macro_news` משלו **בלי** עמודות ה-body (בלתי מזיק כי כל ה-endpoints משתמשים ב-`SELECT *`; אם תהיה בעיית סכמה — להוסיף שם גם את ה-ALTER).
 - פידי Google News בדרך כלל לא נותנים body אמיתי (ה-summary שם הוא רק הכותרת עטופה בקישור) — `_clean_rss_body` מחזיר ריק ואז לא מוצג "עוד מהמקור".
 
+### `analytics_events`, `ui_strings`
+- `analytics_events` (`event_type`, `entity_id`, `session_id`) — נכתב ע"י `POST /api/track` (הפרונט קורא לו דרך `track()`: חיפושי מניות, הוספה לרשימת מעקב וכו'). נקרא ע"י `/api/analytics/*`.
+- `ui_strings` — טקסטי ממשק שמוגשים ע"י `/api/ui-strings`.
+
 ### `universe_movers`, `earnings_calendar`, `sec_cik_cache`, `watchlist`
 - `universe_movers`: heatmap + fallback "הכי זזות".
 - `earnings_calendar`: `ticker`, `report_date`, `session`, `market_cap`, `eps_estimate/actual`, `surprise_pct`, `revenue_estimate/actual`, `revenue_surprise_pct`. `PRIMARY KEY (ticker, report_date)`. `revenue_estimate` נשמר עם COALESCE שמעדיף את הערך **הישן** (ה-"0q" של yfinance מתגלגל קדימה אחרי הדיווח); `eps_actual`/`revenue_actual` מעדיפים את החדש.
@@ -136,7 +141,12 @@ GitHub Actions מגביל ריפו **פרטי** ל-2,000 דקות ריצה/חו�
 | **`/api/watchlist-setups`** | **חדש.** אותה בדיקה על כל טיקרי ה-`watchlist` במקביל (`ThreadPoolExecutor(6)`), מחזיר רק את מי שיש לו מועמד; לכל טיקר המועמד העליון בלבד; פעילים קודם, אחר כך לפי מרחק |
 | `/api/earnings-calendar` | יומן דוחות. חלון **-6/+7 ימים** (היה -2/+7), 40 הגדולים לפי שווי שוק **+ טיקרים שכבר דיווחו (יש `eps_actual`) מוגנים מדחיקה** |
 | `/api/fundamentals/{ticker}` | SEC EDGAR. **עודכן:** (א) התאמת טיקר מנרמלת מקף/נקודה (`BRK-B`→`BRKB`); (ב) fallback ל-**IFRS** (`ifrs-full` ממוזג עם `us-gaap` + שמות שדות מקבילים) לחברות זרות שמגישות 20-F |
-| `/api/lookup/{ticker}`, `/api/sector-comparison/{ticker}`, `/api/stock-news/{ticker}`, `/api/backtest*`, `/api/pattern-stats`, `/api/price-compare`, `/api/signal-history/{ticker}`, `/api/heatmap`, `/api/market-movers`, `/api/sector-performance`, `/api/fear-greed`, `/api/watchlist` | ללא שינוי מהותי |
+| **`/api/price-compare?tickers=A,B,C&period=1M\|3M\|6M\|YTD\|1Y`** | **שוחזר (חסר בשרת עד v5 — הפרונט קרא לו וקיבל 404).** עד 3 טיקרים, מחזיר `dates[]` + `series[{ticker, values[]}]` באחוזי שינוי מתחילת התקופה. קאש 5 דק' |
+| `/api/track` (POST), `/api/analytics/top-interest`, `/api/analytics/summary`, `/api/ui-strings` | אנליטיקה פנימית וטקסטי ממשק (היו קיימים ולא מתועדים) |
+| `/api/lookup/{ticker}`, `/api/sector-comparison/{ticker}`, `/api/stock-news/{ticker}`, `/api/backtest*`, `/api/pattern-stats`, `/api/signal-history/{ticker}`, `/api/heatmap`, `/api/market-movers`, `/api/sector-performance`, `/api/fear-greed`, `/api/watchlist` | ללא שינוי מהותי. **כולם מנרמלים טיקר דרך `_canon_ticker`** (ראה למטה). `/api/lookup` מנסה פעמיים: 404 רק אם Yahoo החזיר ריק פעמיים בלי שגיאה; חריגה = 502 ("תקלה זמנית") |
+
+### נרמול טיקרים (class shares) ⚠️
+מניות כמו BRK.B / BF.B: **Yahoo, ה-DB וה-SEC משתמשים במקף (`BRK-B`), TradingView משתמש בנקודה (`BRK.B`)**. הפרונט: `canonTicker()` (קלט → מקף, לכל קריאת API) ו-`tvSymbol()` (מקף → נקודה, **רק** לווידג'טים של TradingView). השרת: `_canon_ticker()` בכל endpoint. לקח: `BRK-B` ב-TradingView פתח בשקט רישום אחר (`BRK-B-or1-TSX`, טורונטו) עם מחיר וגרף לא קשורים. הרגקס מתאים רק לצורה `^[A-Z]{1,5}\.[A-Z]$` כך שסיומות בורסה (`RY.TO`) לא נפגעות.
 
 ---
 
@@ -148,7 +158,7 @@ GitHub Actions מגביל ריפו **פרטי** ל-2,000 דקות ריצה/חו�
 ### Universe
 S&P 500 + Nasdaq 100 + תוספות. פילטרים: מחיר > $10, נפח 20 יום > 1.5M, שווי שוק > $1.5B, NYSE/NASDAQ. `build_scan_universe()` מסובב סדר לפי יום בשנה.
 
-### תבניות — 15 גלאים
+### תבניות — 15 גלאים (16 ערכי `pattern_type`, כי כוס עם/בלי ידית הם גלאי אחד)
 רמה 1 (מבניות, ציון גבוה): Cup & Handle, Double Bottom, 52w high, פריצת התנגדות אופקית, Golden Cross, פריצת ממוצע 150, Bull Flag, משולש עולה, קו מגמה עולה, קפיצה על ממוצע 150, קפיצה על תמיכה אופקית. רמה 2 (גנריים, ציון נמוך): MACD, Momentum Surge, RSI Bounce. + שבירת קו מגמה יורד.
 **סדר העדיפויות כשכמה תבניות מתאימות למניה אחת** (שרשרת `elif` בסורק): cup_handle > double_bottom > 52w_high > cup_no_handle > horizontal_resistance_breakout > golden_cross > ma150_breakout > bull_flag > ascending_triangle > ascending_trendline > ma150_support_bounce > horizontal_level_bounce > macd_cross > momentum_surge > rsi_bounce > descending_trendline_breakout (קטגוריית "else" — הכי נמוך).
 **Freshness check** לכל תבניות הפריצה (אתמול לא חצה, היום חוצה) — מונע ריבוי סימון.
@@ -158,7 +168,15 @@ S&P 500 + Nasdaq 100 + תוספות. פילטרים: מחיר > $10, נפח 20 �
 40 הגדולים (לפי שווי שוק) בחלון **-6/+7 ימים** + טיקרים מוגנים שכבר דיווחו. **לקח:** `revenue_actual` מגיע מ-`quarterly_income_stmt` של yfinance באיחור של כמה ימים אחרי ה-EPS, ולכן חלון אחורי של יומיים מחק שורות לפני שההכנסות הגיעו. **לקח שני:** הרחבת החלון מגדילה את מאגר המועמדים שמתחרים על 40 המקומות, ודחקה החוצה דיווח ישן יותר — לכן ההגנה על `eps_actual IS NOT NULL`. בכל ריצה נכתב לוג כמה שורות "דיווחו" עדיין בלי `revenue_actual`.
 
 ### 7.1 מבנה טכני נוכחי (Deep Dive) — עותק "מועמד" של הגלאים
-**איפה:** `api_server.py` (פונקציות `_setup_*`, `_compute_setup_candidates`, `_SETUP_EXPLANATIONS`, `_SETUP_PRIORITY`, `_SCANNER_PATTERN_TO_SETUP_ID`). **לא מייבא** את `pipeline_a_scanner.py` (שני שירותים נפרדים) — הלוגיקה **משוכפלת בכוונה**. ⚠️ **סיכון drift:** שינוי גלאי בסורק דורש שינוי מקביל כאן, אחרת ההתאמה בין הסריקה ל-Deep Dive תישבר (זה בדיוק מה שקרה עם IFF, ראה למטה).
+**איפה:** `api_server.py` (פונקציות `_setup_*`, `_compute_setup_candidates`, `_SETUP_EXPLANATIONS`, `_SETUP_PRIORITY`, `_SCANNER_PATTERN_TO_SETUP_ID`). **לא מייבא** את `pipeline_a_scanner.py` (שני שירותים נפרדים) — הלוגיקה **משוכפלת בכוונה**. ⚠️ **סיכון drift:** שינוי גלאי בסורק דורש שינוי מקביל כאן, אחרת ההתאמה בין הסריקה ל-Deep Dive תישבר (זה קרה עם IFF, ואחר כך עם KDP — ראה "התאמה מלאה לסורק" למטה).
+
+**התאמה מלאה לסורק (v6) — `SCANNER PARITY` ב-`api_server.py`:** מדידה סינתטית (כמה אלפי סדרות מחיר) הראתה ש-4 גלאים סטו לגמרי: קו מגמה עולה (סורק: רגרסיה על 60 ימים; Deep Dive: קו בין שני שפלים על 150 יום — **94% מהסימונים של הסורק לא נמצאו**), משולש עולה (100%), שבירת קו מגמה יורד (95%) ופריצת ממוצע 150 (47%). תיקון: לכל אחד מהם יש עכשיו פונקציית `_scanner_rule_*` שהיא **העתק שורה-בשורה של חוק הסורק**, וה-`_setup_*` המתאים קורא לה **קודם**; אם הסורק היה מסמן — Deep Dive מציג את אותה תבנית באותה רמה. כך גם נסגרו פערים קטנים ב-52w high (הסורק מסמן כל סגירה מעל השיא, לא רק עד 3%), קפיצה מממוצע 150, קפיצה מרמה אופקית וצלב זהב (חלון של 3 ברים). Deep Dive מושך עכשיו `2y` (כמו הסורק) ולא `1y`. אחרי התיקון: 0 פספוסים ב-8,000 סדרות, ורמות המפתח זהות לרמות הסורק.
+
+**`scan_signal` ב-`/api/technical-setup`:** אם הסורק סימן את המניה ב-5 הימים האחרונים אבל התבנית לא מתקיימת בבדיקה החיה (המחיר זז), או שזה `macd_cross` (לא נבדק ב-Deep Dive) — השרת מחזיר `scan_signal.reproduced=false` והפרונט מציג הודעה כתומה מעל התוצאה, **במקום להציג בשקט תבנית אחרת** (זה מה שקרה ב-KDP: סורק = קו מגמה, Deep Dive = תחתית כפולה).
+
+**באג שנמצא ותוקן בסורק:** ב-`detect_horizontal_level_bounce` הושוותה שבר (0.012) לאחוז מעוגל (1.2), ולכן נבחרה הרמה **האחרונה** שעונה על התנאי ולא **הקרובה ביותר** לשפל היום. תוקן; סימונים חדשים יציגו את הרמה הקרובה. סימונים ישנים ב-DB לא משתנים.
+
+**כלל לעתיד:** שינוי גלאי בסורק → לשנות את ה-`_scanner_rule_*` התאום ולהריץ `drift_test.py` (ראה 3).
 
 **ההבדל מהסורק:** הסורק מסמן רק **ביום הפריצה עצמה** (בינארי). כאן כל גלאי מחזיר גם **תבנית שעדיין נבנית**: `stage` = `approaching` / `triggered` / `holding`, `key_level`, `distance_pct`, `lines[]` (קואורדינטות לשרטוט), ולפעמים `target_price`/`target_pct` (מדידת גובה קלאסית: כוס, משולש עולה, דגל שורי, תחתית כפולה).
 
@@ -263,7 +281,7 @@ S&P 500 + Nasdaq 100 + תוספות. פילטרים: מחיר > $10, נפח 20 �
 | **`body_he`/`body_en`** | רק לכתבות שנקלטו אחרי ה-deploy; פידי Google News לרוב ריקים; איכות/אורך תלויים במו"ל |
 | **פונדמנטלס** | ETF/מדד אמיתי עדיין יקבל "אין נתונים" (נכון). חברות עם תגי XBRL חריגים (לא מהרשימות שלנו) עדיין עלולות להחסיר שדות |
 | **Deep Dive: כוס בלי זיהוי ידית** | רק צורת הכוס |
-| **drift אפשרי** בין גלאי הסורק לעותק ב-`api_server.py` | ראה 7.1 |
+| **drift אפשרי** בין גלאי הסורק לעותק ב-`api_server.py` | טופל ב-v6 ל-14 הגלאים שנמדדו (7.1), אבל זה עדיין שני עותקים — כל שינוי בסורק דורש עדכון תאום + `drift_test.py`. **הקו בגרף הוא התאמה לינארית (לא בהכרח נוגע בפתילים)** לקו מגמה עולה/יורד, כי זה חוק הסורק |
 | תרגום חינמי, CNN Fear & Greed | לא-רשמיים, יכולים להישבר |
 | סיווג חדשות לפי מילות מפתח | דיוק מוגבל; החלטה מודעת |
 
@@ -301,9 +319,12 @@ S&P 500 + Nasdaq 100 + תוספות. פילטרים: מחיר > $10, נפח 20 �
 
 **חשוב:** כל הפיתוח בסבב הזה נעשה ב-sandbox **בלי גישה לשירותים חיים** (yfinance, SEC, Neon, Render חסומים). הקוד נבדק רק ע"י: קומפילציה (`py_compile`, `node --check`) + בדיקות ריצה על **נתוני מחיר סינתטיים** (בלי קריסות, פלט הגיוני). **לא** נבדק מול נתונים אמיתיים.
 
-**אומת ע"י המשתמש באתר החי ✅:** שורת המדדים (אחרי 3 סבבי תיקון), חדשות שוברות, מד פחד/תאווה + החלפת שפה, גודל וסדר הסיכום היומי.
+**אומת ע"י המשתמש באתר החי ✅:** שורת המדדים, חדשות שוברות, מד פחד/תאווה + החלפת שפה, גודל וסדר הסיכום היומי, **וה-deploy האחרון ב-Render עלה תקין (v5).**
 
-**עדיין לא אומת ⏳ (לבדוק אחרי ה-push):**
+**נמצא ע"י המשתמש בבדיקה של v5 (וטופל ב-v6, ממתין לאימות חי):** (1) `BRK.B` לא נמצא ב-Deep Dive; `BRK-B` הציג גרף לא קשור (סמל TradingView שגוי) ומחיר/ממוצע לא תואמים; (2) מניית ADR החזירה "הטיקר לא נמצא"; (3) KDP: סריקה = התאוששות מקו מגמה עולה, Deep Dive = תחתית כפולה.
+
+**עדיין לא אומת ⏳ (לבדוק אחרי ה-push של v6):**
+0. **[v6]** `BRK.B` ו-`BRK-B` (גם בחיפוש העליון וגם ב-Deep Dive): אותו גרף NYSE נכון, מחיר וממוצע הגיוניים. פונדמנטלס של BRK-B — לא נבדק מול SEC אמיתי. ADR: לבדוק שוב ולציין איזה טיקר (הסיבה המדויקת לא אובחנה; נוסף retry והודעת שגיאה מדויקת). KDP: אותה תבנית ואותה רמה כמו בכרטיס הסריקה. גרף ההשוואה בין מניות (`/api/price-compare` שוחזר). **הבדיקות ב-v6 היו על נתונים סינתטיים ועל Yahoo מדומה — לא מול שירותים חיים.**
 1. **IFF ועוד מניות:** האם המבנה הטכני ב-Deep Dive תואם עכשיו את כרטיס הסריקה (אותה תבנית, אותה רמה — למשל $82.97)?
 2. **7 התבניות החדשות** (52w high, דגל שורי, צלב זהב, תחתית כפולה, RSI, momentum + ההרחבות) — האם מופיעות ומשורטטות סבירות על מניות אמיתיות?
 3. **תאריכי העוגן והציר** בתרשים הסכמטי.
@@ -314,4 +335,4 @@ S&P 500 + Nasdaq 100 + תוספות. פילטרים: מחיר > $10, נפח 20 �
 
 ---
 
-*עדכון אחרון: 28 בספטמבר 2026 | גרסה: v5 — שורת מדדים, חדשות שוברות מחמירות, מד פחד מעגלי, סיכום יומי (בלי AI), מבנה טכני נוכחי ב-Deep Dive (13 תבניות) + סריקת רשימת מעקב, גוף כתבה מ-RSS, תיקוני פונדמנטלס (מקף/IFRS), הגנה על יומן דוחות, עדכון מקרא ⓘ*
+*עדכון אחרון: 29 בספטמבר 2026 | גרסה: v6 — נרמול טיקרים (BRK-B/TradingView), התאמה מלאה בין הסורק ל-Deep Dive (`scan_signal` + חוקי `_scanner_rule_*`), שחזור `/api/price-compare`, retry ל-`/api/lookup`, תיקון באג בחירת רמה בסורק, ניקוי קוד OpenAI/סושיאל המת, תיעוד endpoints ו-tables שלא היו מתועדים*

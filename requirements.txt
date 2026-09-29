@@ -3,7 +3,6 @@ uvicorn
 yfinance
 pandas
 numpy
-openai
 feedparser
 requests
 pydantic

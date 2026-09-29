@@ -25,6 +25,7 @@ deploying publicly.
 import json
 import math
 import os
+import re
 import time
 import io
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
@@ -61,6 +62,18 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
+
+
+# BRK.B / BF.B style class-share tickers: Yahoo (and the SEC/DB in this
+# project) use a DASH ("BRK-B"), TradingView uses a DOT ("BRK.B"). Users
+# type either, so every endpoint funnels the raw ticker through here first.
+_CLASS_SHARE_DOT_RE = re.compile(r"^([A-Z]{1,5})\.([A-Z])$")
+
+
+def _canon_ticker(raw: str) -> str:
+    t = (raw or "").upper().strip()
+    m = _CLASS_SHARE_DOT_RE.match(t)
+    return f"{m.group(1)}-{m.group(2)}" if m else t
 
 
 def get_conn():
@@ -631,7 +644,7 @@ def stock_news(ticker: str, limit: int = 6, lang: str = Query(default="en", patt
     run through the same free (no OpenAI cost) translation providers used
     by pipeline_b_news_aggregator.py, with a small in-memory cache since
     the same headline gets requested repeatedly while it's current."""
-    ticker = ticker.upper().strip()
+    ticker = _canon_ticker(ticker)
     try:
         raw_items = yf.Ticker(ticker).news or []
     except Exception:
@@ -775,7 +788,7 @@ def get_sector_comparison(ticker: str, period: str = Query(default="1Y", pattern
     broad SPDR sectors — e.g. 'Semiconductors' rather than just
     'Technology') since there's no free ETF for most sub-industries to
     compare against directly."""
-    ticker = ticker.upper().strip()
+    ticker = _canon_ticker(ticker)
     yf_period = SECTOR_PERIOD_MAP[period]
     try:
         tk = yf.Ticker(ticker)
@@ -902,7 +915,7 @@ def get_signal_history(ticker: str, limit: int = Query(default=20, le=100)):
     """Every past scan signal for one specific ticker — the pattern that
     fired, when, and (once resolved) how it played out. Powers the
     'has this stock done this before?' section of the stock deep-dive page."""
-    ticker = ticker.upper().strip()
+    ticker = _canon_ticker(ticker)
     with db_cursor(dict_cursor=True) as (conn, cur):
         cur.execute(
             """
@@ -1121,6 +1134,9 @@ def _setup_cup_and_handle(hist: pd.DataFrame) -> Optional[dict]:
 
 
 def _setup_ascending_triangle(hist: pd.DataFrame) -> Optional[dict]:
+    scan_rule = _scanner_rule_asc_triangle(hist)  # scanner parity: see SCANNER PARITY note
+    if scan_rule:
+        return scan_rule
     lookback = 100
     if len(hist) < lookback:
         return None
@@ -1189,6 +1205,9 @@ def _setup_ascending_triangle(hist: pd.DataFrame) -> Optional[dict]:
 
 
 def _setup_ascending_trendline_support(hist: pd.DataFrame) -> Optional[dict]:
+    scan_rule = _scanner_rule_asc_trendline(hist)  # scanner parity: see SCANNER PARITY note
+    if scan_rule:
+        return scan_rule
     lookback = 150
     if len(hist) < lookback:
         return None
@@ -1249,6 +1268,9 @@ def _setup_ascending_trendline_support(hist: pd.DataFrame) -> Optional[dict]:
 
 
 def _setup_descending_trendline_breakout(hist: pd.DataFrame) -> Optional[dict]:
+    scan_rule = _scanner_rule_desc_trendline_breakout(hist)  # scanner parity: see SCANNER PARITY note
+    if scan_rule:
+        return scan_rule
     lookback = 150
     if len(hist) < lookback:
         return None
@@ -1381,6 +1403,9 @@ def _setup_horizontal_resistance_breakout(hist: pd.DataFrame) -> Optional[dict]:
 
 
 def _setup_ma150_support(hist: pd.DataFrame) -> Optional[dict]:
+    scan_rule = _scanner_rule_ma150_breakout(hist) or _scanner_rule_ma150_bounce(hist)  # scanner parity
+    if scan_rule:
+        return scan_rule
     if len(hist) < 170:
         return None
     closes = hist["Close"]
@@ -1422,6 +1447,9 @@ def _setup_ma150_support(hist: pd.DataFrame) -> Optional[dict]:
 
 
 def _setup_horizontal_support_bounce(hist: pd.DataFrame) -> Optional[dict]:
+    scan_rule = _scanner_rule_level_bounce(hist)  # scanner parity: see SCANNER PARITY note
+    if scan_rule:
+        return scan_rule
     """Mirror of _setup_horizontal_resistance_breakout: the SAME horizontal
     level tested 2+ times, but from below as support, with price currently
     bouncing off (or just dipping under) it — the "AMZN/AVGO" pattern from
@@ -1489,7 +1517,10 @@ def _setup_52w_high_breakout(hist: pd.DataFrame) -> Optional[dict]:
         return None
     today_close = float(hist["Close"].iloc[-1])
     distance_pct = (week52_high - today_close) / today_close * 100
-    if distance_pct < -3 or distance_pct > 8:
+    # Scanner parity: any close above the prior 52w high is a breakout the
+    # scanner flags, no matter how far above it already is. Only the
+    # "approaching" side is capped (8% below).
+    if today_close <= week52_high and distance_pct > 8:
         return None
     stage = "triggered" if today_close > week52_high else "approaching"
     anchor_pos = int(prior_highs.values.argmax())
@@ -1589,7 +1620,13 @@ def _setup_golden_cross(hist: pd.DataFrame) -> Optional[dict]:
         return None
     gap_pct = diff_today / sma200_today * 100
 
-    if diff_today > 0 and diff_5ago <= 0:
+    # Scanner parity: the scanner counts a cross if the 50/200 diff was <= 0
+    # on ANY of the 3 bars before today (handles MAs that wiggle around
+    # each other), not only 5 bars ago.
+    scan_cross = diff_today > 0 and any(
+        float(sma50.iloc[-2 - k] - sma200.iloc[-2 - k]) <= 0 for k in range(3)
+    )
+    if diff_today > 0 and (diff_5ago <= 0 or scan_cross):
         stage = "triggered"
     elif diff_today <= 0 and (diff_today - diff_5ago) > 0 and gap_pct > -3:
         stage = "approaching"  # 50-day still below, but the gap is closing
@@ -1750,6 +1787,280 @@ def _setup_momentum_surge(hist: pd.DataFrame) -> Optional[dict]:
         "pct_change_5d": round(pct_change, 1),
         "vol_surge_pct": round(vol_surge, 1),
         "lines": [],
+    }
+
+
+# ------------------------------------------------------------------
+# SCANNER PARITY  (why this block exists)
+# ------------------------------------------------------------------
+# The daily scanner (pipeline_a_scanner.py) and this file keep separate
+# copies of the pattern detectors. For four patterns the copies had
+# drifted apart (a 60-day regression trendline in the scanner vs a 150-day
+# two-point line here, etc.), so a stock the scanner flagged could show a
+# DIFFERENT pattern in Deep Dive (KDP: scan = rising trendline bounce,
+# Deep Dive = double bottom).
+#
+# Each _scanner_rule_* below is a line-for-line copy of the scanner's own
+# trigger rule. The matching _setup_* function calls it FIRST, so whenever
+# the scanner would fire on today's data, Deep Dive shows that same
+# pattern at the same level. If you change one of these detectors in
+# pipeline_a_scanner.py, change its twin here too.
+# ------------------------------------------------------------------
+
+_SCANNER_TRENDLINE_LOOKBACK = 60   # == TRENDLINE_LOOKBACK_DAYS in pipeline_a_scanner.py
+
+
+def _scanner_rule_asc_trendline(hist: pd.DataFrame) -> Optional[dict]:
+    window = hist.tail(_SCANNER_TRENDLINE_LOOKBACK)
+    dates = window.index
+    swing_lows = _find_swing_points(window["Low"].values, mode="low")
+    if len(swing_lows) < 3:
+        return None
+    idx = [i for i, _ in swing_lows]
+    val = [v for _, v in swing_lows]
+    slope, intercept = np.polyfit(idx, val, 1)
+    if slope <= 0:
+        return None
+    today_idx = len(window) - 1
+    tl_today = float(slope * today_idx + intercept)
+    close = float(window["Close"].iloc[-1])
+    if tl_today <= 0:
+        return None
+    distance_pct = (close - tl_today) / tl_today * 100
+    if not (0 <= distance_pct <= 3.0):
+        return None
+    first_idx = idx[0]
+    return {
+        "pattern": "ascending_trendline_support",
+        "stage": "holding",
+        "key_level": round(tl_today, 2),
+        "distance_pct": round(distance_pct, 2),
+        "target_price": None,
+        "target_pct": None,
+        "lines": [
+            {"type": "trend", "label_he": "קו תמיכה עולה (התאמה לשפלים)", "label_en": "Rising support line (fit through lows)",
+             "points": [
+                 [_fmt_date(dates[first_idx]), round(float(slope * first_idx + intercept), 2)],
+                 [_fmt_date(dates[-1]), round(tl_today, 2)],
+             ]},
+        ],
+    }
+
+
+def _scanner_rule_asc_triangle(hist: pd.DataFrame) -> Optional[dict]:
+    if len(hist) < 45:
+        return None
+    window = hist.tail(45)
+    dates = window.index
+    highs = window["High"].values
+    lows = window["Low"].values
+    closes = window["Close"].values
+    swing_highs = _find_swing_points(highs, mode="high")
+    if len(swing_highs) < 3:
+        return None
+    top3 = sorted(swing_highs, key=lambda x: x[1])[-3:]
+    top3_vals = [v for _, v in top3]
+    resistance = float(np.mean(top3_vals))
+    if (max(top3_vals) - min(top3_vals)) / resistance > 0.02:
+        return None
+    swing_lows = _find_swing_points(lows, mode="low")
+    if len(swing_lows) < 2 or swing_lows[-1][1] <= swing_lows[-2][1]:
+        return None
+    close = float(closes[-1])
+    if not close > resistance:
+        return None
+    if len(closes) >= 2 and float(closes[-2]) > resistance:
+        return None  # stale breakout from an earlier day
+    (i1, v1), (i2, v2) = swing_lows[-2], swing_lows[-1]
+    today_idx = len(window) - 1
+    slope = (v2 - v1) / (i2 - i1) if i2 != i1 else 0.0
+    support_today = v2 + slope * (today_idx - i2)
+    height = resistance - swing_lows[0][1]
+    target = resistance + height if height > 0 else None
+    return {
+        "pattern": "ascending_triangle",
+        "stage": "triggered",
+        "key_level": round(resistance, 2),
+        "distance_pct": round((resistance - close) / close * 100, 2),
+        "target_price": round(target, 2) if target else None,
+        "target_pct": round((target - resistance) / resistance * 100, 1) if target else None,
+        "lines": [
+            {"type": "horizontal", "label_he": "התנגדות אופקית", "label_en": "Flat resistance",
+             "price": round(resistance, 2),
+             "from": _fmt_date(dates[min(i for i, _ in top3)]), "to": _fmt_date(dates[-1])},
+            {"type": "trend", "label_he": "תמיכה עולה", "label_en": "Rising support",
+             "points": [
+                 [_fmt_date(dates[i1]), round(float(v1), 2)],
+                 [_fmt_date(dates[-1]), round(float(support_today), 2)],
+             ]},
+        ],
+    }
+
+
+def _scanner_rule_desc_trendline_breakout(hist: pd.DataFrame) -> Optional[dict]:
+    window = hist.tail(_SCANNER_TRENDLINE_LOOKBACK)
+    dates = window.index
+    swing_highs = _find_swing_points(window["High"].values, mode="high")
+    if len(swing_highs) < 2:
+        return None
+    idx = [i for i, _ in swing_highs]
+    val = [v for _, v in swing_highs]
+    slope, intercept = np.polyfit(idx, val, 1)
+    if slope >= 0:
+        return None
+    today_idx = len(window) - 1
+    tl_today = float(slope * today_idx + intercept)
+    close = float(window["Close"].iloc[-1])
+    if tl_today <= 0 or not close > tl_today:
+        return None
+    if len(window) >= 2:
+        tl_yesterday = slope * (today_idx - 1) + intercept
+        if float(window["Close"].iloc[-2]) > tl_yesterday:
+            return None  # stale breakout
+    first_idx = idx[0]
+    return {
+        "pattern": "descending_trendline_breakout",
+        "stage": "triggered",
+        "key_level": round(tl_today, 2),
+        "distance_pct": round((tl_today - close) / close * 100, 2),
+        "target_price": None,
+        "target_pct": None,
+        "lines": [
+            {"type": "trend", "label_he": "קו התנגדות יורד (התאמה לשיאים)", "label_en": "Descending resistance (fit through highs)",
+             "points": [
+                 [_fmt_date(dates[first_idx]), round(float(slope * first_idx + intercept), 2)],
+                 [_fmt_date(dates[-1]), round(tl_today, 2)],
+             ]},
+        ],
+    }
+
+
+def _scanner_rule_ma150_breakout(hist: pd.DataFrame) -> Optional[dict]:
+    if len(hist) < 160:
+        return None
+    closes = hist["Close"]
+    sma150 = closes.rolling(150).mean()
+    if sma150.isna().iloc[-2:].any():
+        return None
+    ma_today = float(sma150.iloc[-1])
+    ma_yesterday = float(sma150.iloc[-2])
+    close = float(closes.iloc[-1])
+    prev_close = float(closes.iloc[-2])
+    if ma_today <= 0 or ma_yesterday <= 0:
+        return None
+    if not (prev_close <= ma_yesterday and close > ma_today):
+        return None
+    tail = hist.tail(60)
+    ma_tail = sma150.tail(60)
+    return {
+        "pattern": "ma150_support",
+        "stage": "triggered",
+        "breakout": True,
+        "key_level": round(ma_today, 2),
+        "distance_pct": round((close - ma_today) / ma_today * 100, 2),
+        "target_price": None,
+        "target_pct": None,
+        "lines": [
+            {"type": "trend", "label_he": "ממוצע נע 150 יום", "label_en": "150-day moving average",
+             "points": [
+                 [_fmt_date(tail.index[0]), round(float(ma_tail.iloc[0]), 2)],
+                 [_fmt_date(tail.index[-1]), round(ma_today, 2)],
+             ]},
+        ],
+    }
+
+
+def _scanner_rule_ma150_bounce(hist: pd.DataFrame) -> Optional[dict]:
+    """Twin of detect_ma150_support_bounce: today's LOW within 3% of a rising
+    150 MA, close back above it, and >=70% of the prior 10 closes above it."""
+    if len(hist) < 170:
+        return None
+    closes = hist["Close"]
+    sma150 = closes.rolling(150).mean()
+    if sma150.isna().iloc[-21:].any():
+        return None
+    if float(sma150.iloc[-1] - sma150.iloc[-20]) <= 0:
+        return None
+    ma_today = float(sma150.iloc[-1])
+    if ma_today <= 0:
+        return None
+    today_low = float(hist["Low"].iloc[-1])
+    close = float(closes.iloc[-1])
+    if abs(today_low - ma_today) / ma_today > 0.03:
+        return None
+    if close <= ma_today:
+        return None
+    prior_above = (closes.iloc[-11:-1] > sma150.iloc[-11:-1]).mean()
+    if prior_above < 0.7:
+        return None
+    tail = hist.tail(60)
+    ma_tail = sma150.tail(60)
+    return {
+        "pattern": "ma150_support",
+        "stage": "holding",
+        "key_level": round(ma_today, 2),
+        "distance_pct": round((close - ma_today) / ma_today * 100, 2),
+        "target_price": None,
+        "target_pct": None,
+        "lines": [
+            {"type": "trend", "label_he": "ממוצע נע 150 יום", "label_en": "150-day moving average",
+             "points": [
+                 [_fmt_date(tail.index[0]), round(float(ma_tail.iloc[0]), 2)],
+                 [_fmt_date(tail.index[-1]), round(ma_today, 2)],
+             ]},
+        ],
+    }
+
+
+def _scanner_rule_level_bounce(hist: pd.DataFrame) -> Optional[dict]:
+    """Twin of detect_horizontal_level_bounce: a level touched 2+ times
+    (swing lows within 2%), today's LOW within 1.5% of it, close back above."""
+    window = hist.tail(150)
+    if len(window) < 30:
+        return None
+    dates = window.index
+    swing_lows = _find_swing_points(window["Low"].values, mode="low")
+    if len(swing_lows) < 2:
+        return None
+    vals = sorted(v for _, v in swing_lows)
+    clusters, current = [], [vals[0]]
+    for v in vals[1:]:
+        avg = sum(current) / len(current)
+        if abs(v - avg) / avg <= 0.02:
+            current.append(v)
+        else:
+            clusters.append(current)
+            current = [v]
+    clusters.append(current)
+    levels = [(sum(c) / len(c), len(c)) for c in clusters if len(c) >= 2]
+    if not levels:
+        return None
+    today_low = float(window["Low"].iloc[-1])
+    close = float(window["Close"].iloc[-1])
+    best = None
+    for level, touches in levels:
+        if level <= 0:
+            continue
+        dist = abs(today_low - level) / level
+        if dist <= 0.015 and close > level and (best is None or dist < best[2]):
+            best = (level, touches, dist)
+    if not best:
+        return None
+    level, touches, _ = best
+    anchor_idx = next(i for i, v in swing_lows if abs(v - level) / level <= 0.02)
+    return {
+        "pattern": "horizontal_support_bounce",
+        "stage": "holding",
+        "key_level": round(level, 2),
+        "distance_pct": round((close - level) / level * 100, 2),
+        "target_price": None,
+        "target_pct": None,
+        "touches": touches,
+        "lines": [
+            {"type": "horizontal", "label_he": "תמיכה אופקית", "label_en": "Horizontal support",
+             "price": round(level, 2),
+             "from": _fmt_date(dates[anchor_idx]), "to": _fmt_date(dates[-1])},
+        ],
     }
 
 
@@ -1928,13 +2239,17 @@ _SETUP_EXPLANATIONS = {
     },
     "ma150_support": {
         "he": lambda d: (
-            f"הממוצע הנע ל-150 יום (עולה, כלומר מגמה כללית חיובית) נמצא סביב ${d['key_level']}, והמחיר בודק אותו כרגע. "
-            + (f"המחיר סוגר מעל הממוצע — התנהגות של ריבאונד." if d['stage']=='holding' else "המחיר כרגע מתחת לממוצע — שווה לעקוב אם הוא יחזיר את זה.")
+            (f"המחיר חצה היום מעל הממוצע הנע ל-150 יום (סביב ${d['key_level']}) אחרי שהיה מתחתיו — סימן אפשרי להתאוששות."
+             if d.get('breakout') else
+             f"הממוצע הנע ל-150 יום (עולה, כלומר מגמה כללית חיובית) נמצא סביב ${d['key_level']}, והמחיר בודק אותו כרגע. "
+             + ("המחיר סוגר מעל הממוצע — התנהגות של ריבאונד." if d['stage']=='holding' else "המחיר כרגע מתחת לממוצע — שווה לעקוב אם הוא יחזיר את זה."))
             + " רמה טכנית נפוצה, לא איתות לפעולה."
         ),
         "en": lambda d: (
-            f"The 150-day moving average (rising, so the broader trend is up) sits around ${d['key_level']}, and price is testing it right now. "
-            + (f"Price is closing above the average — a normal bounce-type behavior." if d['stage']=='holding' else "Price is currently below the average — worth watching whether it reclaims it.")
+            (f"Price crossed back above the 150-day moving average (around ${d['key_level']}) today after trading below it — a possible early recovery signal."
+             if d.get('breakout') else
+             f"The 150-day moving average (rising, so the broader trend is up) sits around ${d['key_level']}, and price is testing it right now. "
+             + ("Price is closing above the average — a normal bounce-type behavior." if d['stage']=='holding' else "Price is currently below the average — worth watching whether it reclaims it."))
             + " A widely-watched technical level, not a trade signal."
         ),
     },
@@ -2007,75 +2322,66 @@ def _compute_setup_candidates(hist: pd.DataFrame, ticker: str) -> list:
     return candidates
 
 
-@app.get("/api/technical-setup/{ticker}")
-def get_technical_setup(ticker: str):
-    ticker = ticker.upper().strip()
-    try:
-        hist = yf.Ticker(ticker).history(period="1y", interval="1d")
-    except Exception:
-        raise HTTPException(status_code=502, detail="שגיאה בשליפת נתוני המניה")
-    if hist.empty or len(hist) < 65:
-        raise HTTPException(status_code=404, detail=f"אין מספיק היסטוריה עבור {ticker}")
-
-    # Priority: an already-triggered/holding setup first, then whichever
-    # approaching candidate is closest to its trigger. Ties (or the
-    # "which already-active pattern matters most" question) are broken
-    # using the SAME relative ordering the scanner itself uses when a
-    # stock matches several patterns at once (see the elif-chain in
-    # pipeline_a_scanner.py) — a validated horizontal level always
-    # outranks a generic trendline there, for example, so it should here
-    # too, or this endpoint's "top pick" can silently disagree with what
-    # the scanner already showed for the same stock even before the
-    # scan-match check below runs.
-    candidates = _compute_setup_candidates(hist, ticker)
-    if not candidates:
-        return {"ticker": ticker, "has_setup": False, "candidates": []}
-
-    # If the daily scanner (pipeline_a_scanner.py) already flagged THIS
-    # ticker with a pattern today (or very recently), that's the reason
-    # it's on the person's radar in the first place — it should be the
-    # headline setup here too, not whichever candidate this endpoint's
-    # own from-scratch priority happens to rank first. Re-running the
-    # SAME detector live can legitimately disagree slightly with the
-    # scanner's own run from earlier that day (price moved since, or a
-    # marginal threshold), so this only re-prioritizes among candidates
-    # this endpoint already found — it never invents one.
-    scanner_pattern_type = None
+def _latest_scan_signal(ticker: str) -> Optional[dict]:
+    """The most recent scanner row for this ticker, if it is <= 5 days old."""
     try:
         conn = get_conn()
         cur = conn.cursor()
         cur.execute(
-            "SELECT pattern_type, timestamp FROM scanned_stocks WHERE ticker=%s ORDER BY timestamp DESC LIMIT 1",
+            "SELECT pattern_type, timestamp, trigger_text_he, trigger_text_en "
+            "FROM scanned_stocks WHERE ticker=%s ORDER BY timestamp DESC LIMIT 1",
             (ticker,),
         )
         row = cur.fetchone()
         cur.close()
         conn.close()
-        if row and row[0]:
-            scan_age_days = (dt.now(timezone.utc) - row[1].replace(tzinfo=timezone.utc)).days if row[1] else 999
-            if scan_age_days <= 5:
-                scanner_pattern_type = row[0]
     except Exception as e:
-        print(f"[warn] technical-setup: couldn't check today's scanner signal for {ticker}: {e}")
+        print(f"[warn] technical-setup: couldn't read scanner signal for {ticker}: {e}")
+        return None
+    if not row or not row[0] or not row[1]:
+        return None
+    age_days = (dt.now(timezone.utc) - row[1].replace(tzinfo=timezone.utc)).days
+    if age_days > 5:
+        return None
+    return {"pattern_type": row[0], "age_days": age_days, "trigger_text_he": row[2], "trigger_text_en": row[3]}
 
-    matched_setup_id = _SCANNER_PATTERN_TO_SETUP_ID.get(scanner_pattern_type)
+
+@app.get("/api/technical-setup/{ticker}")
+def get_technical_setup(ticker: str):
+    ticker = _canon_ticker(ticker)
+    # 2y, same as the scanner's own fetch, so both run the detectors on
+    # identical history (1y used to be one more source of disagreement).
+    try:
+        hist = yf.Ticker(ticker).history(period="2y", interval="1d")
+    except Exception:
+        raise HTTPException(status_code=502, detail="שגיאה בשליפת נתוני המניה")
+    if hist.empty or len(hist) < 65:
+        raise HTTPException(status_code=404, detail=f"אין מספיק היסטוריה עבור {ticker}")
+
+    candidates = _compute_setup_candidates(hist, ticker)
+    scan_signal = _latest_scan_signal(ticker)
+
+    # If the scanner flagged this ticker recently, that pattern is the
+    # headline here. The four drifting detectors now share the scanner's
+    # exact rule (see SCANNER PARITY), so it is normally found; when it is
+    # NOT (price moved since the scan, or MACD which Deep Dive skips) we
+    # say so explicitly instead of silently showing a different pattern.
     scan_match = False
-    if matched_setup_id:
-        for i, c in enumerate(candidates):
-            if c["pattern"] == matched_setup_id:
-                c["matches_scan"] = True
-                if i != 0:
-                    candidates.insert(0, candidates.pop(i))
-                scan_match = True
-                break
+    if scan_signal:
+        matched_setup_id = _SCANNER_PATTERN_TO_SETUP_ID.get(scan_signal["pattern_type"])
+        if matched_setup_id:
+            for i, c in enumerate(candidates):
+                if c["pattern"] == matched_setup_id:
+                    c["matches_scan"] = True
+                    if i != 0:
+                        candidates.insert(0, candidates.pop(i))
+                    scan_match = True
+                    break
+        scan_signal["reproduced"] = scan_match
 
-    # A lightweight recent OHLC series so the frontend can draw an
-    # accurate candlestick schematic — the detected lines' dates all
-    # fall inside this window (the longest lookback among the
-    # detectors above is 150 bars, so 160 gives a little headroom),
-    # and using real highs/lows (not just closes) means a swing-low
-    # trendline actually touches the candle wicks it was fit to,
-    # instead of floating through a smoothed close-only line.
+    if not candidates:
+        return {"ticker": ticker, "has_setup": False, "candidates": [], "scan_signal": scan_signal}
+
     tail_hist = hist.tail(160)
     price_series = [
         [_fmt_date(idx), round(float(o), 2), round(float(h), 2), round(float(l), 2), round(float(c), 2)]
@@ -2086,6 +2392,7 @@ def get_technical_setup(ticker: str):
         "ticker": ticker,
         "has_setup": True,
         "scan_match": scan_match,
+        "scan_signal": scan_signal,
         "current_price": round(float(hist["Close"].iloc[-1]), 2),
         "candidates": candidates,
         "price_series": price_series,
@@ -2107,7 +2414,7 @@ def get_technical_setup(ticker: str):
 
 def _fetch_one_watchlist_setup(ticker: str) -> Optional[dict]:
     try:
-        hist = yf.Ticker(ticker).history(period="1y", interval="1d")
+        hist = yf.Ticker(ticker).history(period="2y", interval="1d")
     except Exception as e:
         print(f"[warn] watchlist-setups: history fetch failed for {ticker}: {e}")
         return None
@@ -2168,7 +2475,7 @@ def get_watchlist_setups():
 
 @app.get("/api/lookup/{ticker}")
 def lookup_stock(ticker: str):
-    ticker = ticker.upper().strip()
+    ticker = _canon_ticker(ticker)
 
     # .history() is the reliable call from this deployment — Yahoo Finance
     # appears to rate-limit or block .info more aggressively from cloud
@@ -2178,13 +2485,27 @@ def lookup_stock(ticker: str):
     # .history() first since that's dependable, and treat .info as optional
     # enrichment — if it fails, the endpoint still returns real price data
     # instead of a blanket 404/502 for every ticker.
-    try:
-        tk = yf.Ticker(ticker)
-        hist = tk.history(period="6mo", interval="1d")
-    except Exception:
-        raise HTTPException(status_code=502, detail="שגיאה בשליפת הנתונים, נסה שוב")
+    # Two attempts: Yahoo sometimes answers a perfectly valid ticker (ADRs
+    # especially) with an EMPTY frame when it is throttling us, which used
+    # to be reported as "ticker not found". Only a repeated empty answer
+    # with no error counts as a real 404; an exception is a 502 ("try again").
+    tk = yf.Ticker(ticker)
+    hist = None
+    last_err = None
+    for attempt in range(2):
+        try:
+            hist = tk.history(period="6mo", interval="1d")
+            if hist is not None and not hist.empty:
+                break
+        except Exception as e:
+            last_err = e
+        if attempt == 0:
+            time.sleep(0.8)
 
-    if hist.empty:
+    if hist is None or hist.empty:
+        if last_err is not None:
+            print(f"[warn] lookup {ticker}: history failed twice: {last_err}")
+            raise HTTPException(status_code=502, detail="שגיאה בשליפת הנתונים, נסה שוב")
         raise HTTPException(status_code=404, detail=f"הטיקר {ticker} לא נמצא")
 
     price = float(hist["Close"].iloc[-1])
@@ -2239,6 +2560,77 @@ def lookup_stock(ticker: str):
         "pe_ratio": pe_ratio,
         "business_summary": info.get("longBusinessSummary"),  # best-effort; blank when .info is blocked
     }
+
+
+# ------------------------------------------------------------------
+# Price comparison chart (2-3 tickers, % change since the start of the
+# chosen period). Used by the "compare with another stock" panel.
+# ------------------------------------------------------------------
+_price_compare_cache: dict = {}
+PRICE_COMPARE_CACHE_TTL_SEC = 300
+_PRICE_COMPARE_DAYS = {"1M": 31, "3M": 92, "6M": 183, "1Y": 366}
+
+
+def _fetch_close_series(ticker: str) -> Optional[pd.Series]:
+    try:
+        hist = yf.Ticker(ticker).history(period="2y", interval="1d")
+    except Exception as e:
+        print(f"[warn] price-compare: history failed for {ticker}: {e}")
+        return None
+    if hist is None or hist.empty:
+        return None
+    closes = hist["Close"].copy()
+    closes.index = pd.to_datetime(closes.index).tz_localize(None).normalize()
+    return closes[~closes.index.duplicated(keep="last")]
+
+
+@app.get("/api/price-compare")
+def price_compare(
+    tickers: str = Query(..., min_length=1),
+    period: str = Query(default="6M", pattern="^(1M|3M|6M|YTD|1Y)$"),
+):
+    tks: List[str] = []
+    for raw in tickers.split(","):
+        t = _canon_ticker(raw)
+        if t and t not in tks:
+            tks.append(t)
+    tks = tks[:3]
+    if not tks:
+        raise HTTPException(status_code=400, detail="לא התקבלו טיקרים")
+
+    cache_key = (tuple(tks), period)
+    cached = _price_compare_cache.get(cache_key)
+    if cached and (time.time() - cached[0]) < PRICE_COMPARE_CACHE_TTL_SEC:
+        return cached[1]
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        results = list(ex.map(_fetch_close_series, tks))
+    frames = {t: r for t, r in zip(tks, results) if r is not None and len(r) > 1}
+    if not frames:
+        raise HTTPException(status_code=404, detail="לא נמצאו נתוני מחיר")
+
+    df = pd.concat(frames, axis=1).sort_index().ffill()
+    today = pd.Timestamp.now().normalize()
+    cutoff = pd.Timestamp(year=today.year, month=1, day=1) if period == "YTD" \
+        else today - pd.Timedelta(days=_PRICE_COMPARE_DAYS[period])
+    df = df[df.index >= cutoff].dropna(how="all")
+    if len(df) < 2:
+        raise HTTPException(status_code=404, detail="אין מספיק נתונים לתקופה שנבחרה")
+
+    series = []
+    for t in df.columns:
+        col = df[t]
+        first = col.dropna()
+        if first.empty or float(first.iloc[0]) == 0:
+            continue
+        base = float(first.iloc[0])
+        series.append({
+            "ticker": t,
+            "values": [None if pd.isna(v) else round((float(v) / base - 1) * 100, 2) for v in col.values],
+        })
+    payload = {"period": period, "dates": [d.strftime("%Y-%m-%d") for d in df.index], "series": series}
+    _price_compare_cache[cache_key] = (time.time(), payload)
+    return payload
 
 
 # ------------------------------------------------------------------
@@ -2320,7 +2712,7 @@ class WatchlistTicker(BaseModel):
 
 @app.post("/api/watchlist")
 def add_to_watchlist(body: WatchlistTicker):
-    ticker = body.ticker.upper().strip()
+    ticker = _canon_ticker(body.ticker)
     if not ticker:
         raise HTTPException(status_code=400, detail="ticker is required")
     conn = get_conn()
@@ -2337,7 +2729,7 @@ def add_to_watchlist(body: WatchlistTicker):
 
 @app.delete("/api/watchlist/{ticker}")
 def remove_from_watchlist(ticker: str):
-    ticker = ticker.upper().strip()
+    ticker = _canon_ticker(ticker)
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("DELETE FROM watchlist WHERE ticker = %s", (ticker,))
@@ -3183,7 +3575,7 @@ def _json_safe(obj):
 
 
 def _build_fundamentals(ticker: str) -> dict:
-    ticker = ticker.upper()
+    ticker = _canon_ticker(ticker)
 
     try:
         cik_map = _get_cik_map()
@@ -3487,7 +3879,7 @@ def _get_fundamentals_cached(ticker: str) -> dict:
     trailing P/E, etc.) — factored out of the /api/fundamentals endpoint so
     sector-comparison peer valuations can use the same reliable numbers
     instead of falling back to yfinance's often-blocked .info."""
-    ticker = ticker.upper().strip()
+    ticker = _canon_ticker(ticker)
     cached = _fundamentals_cache.get(ticker)
     if cached:
         cached_ts, cached_data = cached
@@ -3501,7 +3893,7 @@ def _get_fundamentals_cached(ticker: str) -> dict:
 
 @app.get("/api/fundamentals/{ticker}")
 def get_fundamentals(ticker: str):
-    ticker = ticker.upper().strip()
+    ticker = _canon_ticker(ticker)
     executor = ThreadPoolExecutor(max_workers=1)
     try:
         future = executor.submit(_get_fundamentals_cached, ticker)
