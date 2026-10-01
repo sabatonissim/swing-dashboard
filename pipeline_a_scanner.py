@@ -48,6 +48,7 @@ Requirements (pip install --break-system-packages):
 """
 
 import json
+import math
 import os
 import time
 import traceback
@@ -375,42 +376,104 @@ def compute_support_resistance(hist: pd.DataFrame, lookback: int = 120) -> dict:
     return {"support_level": round(support, 2), "resistance_targets": [round(r, 2) for r in resistance_targets]}
 
 
+# ------------------------------------------------------------------
+# Trendlines — how a line is chosen (v7)
+# ------------------------------------------------------------------
+# A trendline is drawn the way a trader draws it by hand: through two real
+# swing points (wick lows for a support line, wick highs for a resistance
+# line), and it is only VALID if no candle pierces it. The old version fit
+# a least-squares line through all swing lows, which runs through the
+# MIDDLE of the lows — price kept dipping below it, so the drawn line hung
+# in the middle of the candles instead of under them.
+#
+# Among all valid lines we prefer the one with the most touches, then the
+# longest span, then the most recent last touch. api_server.py has a twin
+# copy of this function (_fit_trendline) — change both together.
+TRENDLINE_SEARCH_DAYS = 150        # how far back the two anchor points may be
+TRENDLINE_TOLERANCE = 0.015        # a wick may pierce the line by at most 1.5%
+TRENDLINE_TOUCH_TOL = 0.01         # a swing point within 1% of the line counts as a touch
+TRENDLINE_MIN_SPAN_BARS = 15       # anchors must be at least this many bars apart
+TRENDLINE_MIN_TOUCHES = 3          # 2 anchors + at least 1 more real touch = a confirmed line
+
+
+def fit_trendline(window: pd.DataFrame, kind: str, accept=None) -> Optional[dict]:
+    """kind='support': rising line under swing lows. kind='resistance':
+    falling line over swing highs. `accept(fit)` lets the caller keep only
+    lines that are relevant today (e.g. price is right at the line)."""
+    support = (kind == "support")
+    vals = window["Low"].values if support else window["High"].values
+    n = len(vals)
+    if n < 40:
+        return None
+    pts = find_swing_points(vals, mode="low" if support else "high")
+    if len(pts) < 2:
+        return None
+    close = float(window["Close"].iloc[-1])
+    prev_close = float(window["Close"].iloc[-2])
+    best = None
+    for a in range(len(pts) - 1):
+        i1, v1 = pts[a]
+        for b in range(a + 1, len(pts)):
+            i2, v2 = pts[b]
+            if i2 - i1 < TRENDLINE_MIN_SPAN_BARS:
+                continue
+            slope = (v2 - v1) / (i2 - i1)
+            if (support and slope <= 0) or (not support and slope >= 0):
+                continue
+            x = np.arange(i1, n)
+            line = v1 + slope * (x - i1)
+            if (line <= 0).any():
+                continue
+            seg = vals[i1:]
+            if support:
+                viol = float(((line - seg) / line).max())              # wicks below the line
+            else:
+                viol = float(((seg[:-1] - line[:-1]) / line[:-1]).max())  # highs above it (today may break out)
+            if viol > TRENDLINE_TOLERANCE:
+                continue
+            touches = [(i, v) for (i, v) in pts if i >= i1
+                       and abs(v - (v1 + slope * (i - i1))) / (v1 + slope * (i - i1)) <= TRENDLINE_TOUCH_TOL]
+            if len(touches) < TRENDLINE_MIN_TOUCHES:
+                continue
+            value_today = float(v1 + slope * (n - 1 - i1))
+            prev_value = float(v1 + slope * (n - 2 - i1))
+            fit = {
+                "first_idx": i1, "first_val": float(v1), "slope": float(slope),
+                "touches": touches, "value_today": value_today, "prev_value": prev_value,
+                "close": close, "prev_close": prev_close,
+                "dist_pct": (close - value_today) / value_today * 100,
+                "recent_low": float(window["Low"].iloc[-3:].min()),
+            }
+            if accept is not None and not accept(fit):
+                continue
+            score = (len(touches), i2 - i1, i2)
+            if best is None or score > best["score"]:
+                fit["score"] = score
+                best = fit
+    return best
+
+
 def detect_ascending_trendline_support(hist: pd.DataFrame) -> Optional[dict]:
-    """The pattern from the Google chart example in the request: price
-    riding/bouncing off a RISING trendline drawn through a series of higher
-    swing lows, rather than breaking out of a range. This is a continuation
-    signal (good entry timing within an existing uptrend), distinct from
-    the breakout-style patterns below.
-
-    Method: fit a line through recent swing lows; require a rising slope
-    (confirming it's genuinely an ascending trendline); flag it when
-    today's close is within 3% above the trendline's current value (i.e.
-    price is bouncing off it right now, not far above or already broken
-    below it).
-    """
-    window = hist.tail(TRENDLINE_LOOKBACK_DAYS).reset_index(drop=True)
-    lows = window["Low"].values
-
-    swing_lows = find_swing_points(lows, mode="low")
-    if len(swing_lows) < 3:
+    """Price bouncing off a RISING support line that really runs under the
+    swing lows (see fit_trendline). Flagged when today's close is 0-3%
+    above the line AND a candle in the last 3 sessions touched it — a
+    real bounce, not just proximity. A continuation signal inside an
+    existing uptrend."""
+    window = hist.tail(TRENDLINE_SEARCH_DAYS).reset_index(drop=True)
+    # "Bounce" = holding 0-3% above the line AND a candle in the last 3 sessions
+    # actually came down to it (within 1.5%) — not just sitting near a line
+    # it never tested.
+    fit = fit_trendline(
+        window, "support",
+        lambda f: 0 <= f["dist_pct"] <= 3.0 and f["recent_low"] <= f["value_today"] * 1.015,
+    )
+    if not fit:
         return None
-
-    idx = [i for i, _ in swing_lows]
-    val = [v for _, v in swing_lows]
-    slope, intercept = np.polyfit(idx, val, 1)
-    if slope <= 0:
-        return None  # lows aren't actually rising -> not this pattern
-
-    today_idx = len(window) - 1
-    trendline_value_today = slope * today_idx + intercept
-    today_close = float(window["Close"].iloc[-1])
-
-    if trendline_value_today <= 0:
-        return None
-    distance_pct = (today_close - trendline_value_today) / trendline_value_today * 100
-    if 0 <= distance_pct <= 3.0:
-        return {"trendline_value": round(float(trendline_value_today), 2), "distance_pct": round(distance_pct, 1)}
-    return None
+    return {
+        "trendline_value": round(fit["value_today"], 2),
+        "distance_pct": round(fit["dist_pct"], 1),
+        "touches": len(fit["touches"]),
+    }
 
 
 def detect_ma150_support_bounce(hist: pd.DataFrame) -> Optional[dict]:
@@ -545,58 +608,21 @@ def detect_horizontal_level_bounce(hist: pd.DataFrame, lookback: int = 150) -> O
 
 
 def detect_descending_trendline_breakout(hist: pd.DataFrame) -> Optional[dict]:
-    """
-    Heuristic descending-trendline breakout detector.
-
-    Method:
-      1. Take the last TRENDLINE_LOOKBACK_DAYS daily highs.
-      2. Find local swing highs (a bar higher than its 2 neighbors on each side).
-      3. Fit a line through the swing highs -> this is the "lower highs" trendline.
-      4. If today's close is above the trendline's extrapolated value AND the
-         trendline slope is negative (confirming it was actually descending),
-         flag a breakout.
-
-    This is intentionally simple for an MVP. For production, consider a
-    dedicated TA library (e.g. `scipy.signal.argrelextrema` for swing
-    detection, or a pattern-recognition library) for more robust detection.
-    """
-    window = hist.tail(TRENDLINE_LOOKBACK_DAYS).reset_index(drop=True)
-    highs = window["High"].values
-
-    swing_idx, swing_val = [], []
-    for i in range(2, len(highs) - 2):
-        if highs[i] > highs[i - 1] and highs[i] > highs[i - 2] and \
-           highs[i] > highs[i + 1] and highs[i] > highs[i + 2]:
-            swing_idx.append(i)
-            swing_val.append(highs[i])
-
-    if len(swing_idx) < 2:
-        return None  # not enough structure to define a trendline
-
-    slope, intercept = np.polyfit(swing_idx, swing_val, 1)
-    if slope >= 0:
-        return None  # highs are rising, not descending -> not this pattern
-
-    today_idx = len(window) - 1
-    trendline_value_today = slope * today_idx + intercept
-    today_close = window["Close"].iloc[-1]
-
-    if today_close > trendline_value_today:
-        # Freshness check (see detect_horizontal_resistance_breakout for
-        # why): only flag this as a breakout if yesterday's close was
-        # still at/below the trendline. Otherwise a stock that broke the
-        # descending trendline a while ago and kept climbing away from it
-        # would re-flag every single day.
-        if len(window) >= 2:
-            trendline_value_yesterday = slope * (today_idx - 1) + intercept
-            prev_close = window["Close"].iloc[-2]
-            if prev_close > trendline_value_yesterday:
-                return None
-        return {
-            "trendline_value": float(trendline_value_today),
-            "breakout_price": float(today_close),
-        }
-    return None
+    """Breakout above a FALLING resistance line that really runs over the
+    swing highs (see fit_trendline). Freshness rule: yesterday's close was
+    still at/below the line and today's close is above it — otherwise a
+    stock that broke out weeks ago would re-flag every day."""
+    window = hist.tail(TRENDLINE_SEARCH_DAYS).reset_index(drop=True)
+    fit = fit_trendline(
+        window, "resistance",
+        lambda f: f["close"] > f["value_today"] and f["prev_close"] <= f["prev_value"],
+    )
+    if not fit:
+        return None
+    return {
+        "trendline_value": float(fit["value_today"]),
+        "breakout_price": float(fit["close"]),
+    }
 
 
 def detect_horizontal_resistance_breakout(hist: pd.DataFrame, lookback: int = 150) -> Optional[dict]:
@@ -1148,7 +1174,11 @@ def _native(v):
     before the values hit the database, not just fixed at the one
     known source."""
     if isinstance(v, np.generic):
-        return v.item()
+        v = v.item()
+    # NaN/Infinity must never reach a REAL column: Postgres stores it happily,
+    # but the API then cannot serialize it to JSON (heatmap/backtest 500).
+    if isinstance(v, float) and not math.isfinite(v):
+        return None
     return v
 
 

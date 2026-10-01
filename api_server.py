@@ -38,6 +38,7 @@ import numpy as np
 import requests
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import yfinance as yf
 import psycopg2
@@ -45,7 +46,30 @@ import psycopg2.extras
 
 DB_URL = os.environ.get("SWING_DB_PATH") or os.environ.get("DATABASE_URL")
 
-app = FastAPI(title="Swing Desk API")
+def _nan_to_none(o):
+    """Postgres REAL columns can hold NaN (a missing market cap or return
+    that slipped in as NaN instead of NULL). Python's JSON encoder refuses to
+    serialize NaN/Infinity, so ONE bad row used to turn a whole endpoint into
+    a 500 ("could not load heatmap" / "could not load backtest data") while
+    every other endpoint kept working. Converting them to null here makes
+    every endpoint NaN-proof."""
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    if isinstance(o, dict):
+        return {k: _nan_to_none(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_nan_to_none(v) for v in o]
+    return o
+
+
+class SafeJSONResponse(JSONResponse):
+    def render(self, content) -> bytes:
+        return json.dumps(
+            _nan_to_none(content), ensure_ascii=False, allow_nan=False, separators=(",", ":"),
+        ).encode("utf-8")
+
+
+app = FastAPI(title="Swing Desk API", default_response_class=SafeJSONResponse)
 
 # Allowed frontend origins for CORS. Set via the ALLOWED_ORIGINS env var
 # (comma-separated) on whatever host runs this — e.g.
@@ -283,7 +307,7 @@ def get_backtest(
                 f"""
                 SELECT ticker, timestamp, pattern_type, rs_rating, entry_price, {return_col} AS fwd_return
                 FROM scanned_stocks
-                WHERE pattern_type = %s AND {return_col} IS NOT NULL
+                WHERE pattern_type = %s AND {return_col} IS NOT NULL AND {return_col} <> 'NaN'
                 ORDER BY timestamp ASC
                 """,
                 (pattern,),
@@ -293,7 +317,7 @@ def get_backtest(
                 f"""
                 SELECT ticker, timestamp, pattern_type, rs_rating, entry_price, {return_col} AS fwd_return
                 FROM scanned_stocks
-                WHERE pattern_type IS NOT NULL AND {return_col} IS NOT NULL
+                WHERE pattern_type IS NOT NULL AND {return_col} IS NOT NULL AND {return_col} <> 'NaN'
                 ORDER BY timestamp ASC
                 """
             )
@@ -1208,62 +1232,22 @@ def _setup_ascending_trendline_support(hist: pd.DataFrame) -> Optional[dict]:
     scan_rule = _scanner_rule_asc_trendline(hist)  # scanner parity: see SCANNER PARITY note
     if scan_rule:
         return scan_rule
-    lookback = 150
-    if len(hist) < lookback:
+    # Not a scanner-grade bounce right now: still show a VALID rising support
+    # line if price is within 3% below it or up to 10% above it.
+    window = hist.tail(_TL_SEARCH_DAYS)
+    fit = _fit_trendline(window, "support", lambda f: -3.0 <= f["dist_pct"] <= 10.0)
+    if not fit:
         return None
-    window = hist.tail(lookback)
-    dates = window.index
-    lows = window["Low"].values
-
-    swing_lows = _find_swing_points(lows, mode="low")
-    if len(swing_lows) < 3:
-        return None
-
-    # Connect the FIRST and LAST real swing low (two actual touched
-    # points) instead of a least-squares fit through every low — a
-    # regression line can drift between the touches and not visually
-    # track any of them, which reads as an arbitrary line on the chart.
-    # This is also literally how a trader draws a trendline by hand.
-    first_idx, first_val = swing_lows[0]
-    last_idx, last_val = swing_lows[-1]
-    if last_idx == first_idx or last_val <= first_val:
-        return None
-    slope = (last_val - first_val) / (last_idx - first_idx)
-    intercept = first_val - slope * first_idx
-
-    # The line must actually act as a floor: no OTHER swing low should
-    # sit meaningfully (2%+) below it, or it's not a real support line —
-    # just two connected points with a violation in between.
-    for i, v in swing_lows[1:-1]:
-        line_val = slope * i + intercept
-        if line_val > 0 and (line_val - v) / line_val > 0.02:
-            return None
-
-    today_idx = len(window) - 1
-    trendline_today = slope * today_idx + intercept
-    today_close = float(window["Close"].iloc[-1])
-    if trendline_today <= 0:
-        return None
-
-    distance_pct = (today_close - trendline_today) / trendline_today * 100
-    if distance_pct < -3 or distance_pct > 10:
-        return None  # already broke below it, or too far above to be "testing" it
-
-    stage = "holding" if distance_pct >= 0 else "approaching"  # negative = just dipped under it
+    d = fit["dist_pct"]
     return {
         "pattern": "ascending_trendline_support",
-        "stage": stage,
-        "key_level": round(trendline_today, 2),
-        "distance_pct": round(distance_pct, 2),
+        "stage": "holding" if d >= 0 else "approaching",
+        "key_level": round(fit["value_today"], 2),
+        "distance_pct": round(d, 2),
         "target_price": None,
         "target_pct": None,
-        "lines": [
-            {"type": "trend", "label_he": "קו תמיכה עולה", "label_en": "Rising support line",
-             "points": [
-                 [_fmt_date(dates[first_idx]), round(float(first_val), 2)],
-                 [_fmt_date(dates[-1]), round(trendline_today, 2)],
-             ]},
-        ],
+        "touches": len(fit["touches"]),
+        "lines": [_trendline_line_dict(fit, window, "קו תמיכה עולה", "Rising support line")],
     }
 
 
@@ -1271,60 +1255,25 @@ def _setup_descending_trendline_breakout(hist: pd.DataFrame) -> Optional[dict]:
     scan_rule = _scanner_rule_desc_trendline_breakout(hist)  # scanner parity: see SCANNER PARITY note
     if scan_rule:
         return scan_rule
-    lookback = 150
-    if len(hist) < lookback:
+    # Not a fresh breakout today: show a VALID falling resistance line if
+    # price is up to 12% below it (approaching) or up to 5% above it.
+    window = hist.tail(_TL_SEARCH_DAYS)
+    fit = _fit_trendline(
+        window, "resistance",
+        lambda f: -5.0 <= (f["value_today"] - f["close"]) / f["close"] * 100 <= 12.0,
+    )
+    if not fit:
         return None
-    window = hist.tail(lookback)
-    dates = window.index
-    highs = window["High"].values
-
-    swing_idx_val = []
-    for i in range(2, len(highs) - 2):
-        if highs[i] > highs[i-1] and highs[i] > highs[i-2] and highs[i] > highs[i+1] and highs[i] > highs[i+2]:
-            swing_idx_val.append((i, float(highs[i])))
-    if len(swing_idx_val) < 2:
-        return None
-
-    # Same "connect the two real touch points" approach as the ascending
-    # support line above, instead of a regression that can drift away
-    # from the actual swing highs.
-    first_idx, first_val = swing_idx_val[0]
-    last_idx, last_val = swing_idx_val[-1]
-    if last_idx == first_idx or last_val >= first_val:
-        return None
-    slope = (last_val - first_val) / (last_idx - first_idx)
-    intercept = first_val - slope * first_idx
-
-    for i, v in swing_idx_val[1:-1]:
-        line_val = slope * i + intercept
-        if line_val > 0 and (v - line_val) / line_val > 0.02:
-            return None  # a high poked meaningfully above the line -> not a clean ceiling
-
-    today_idx = len(window) - 1
-    trendline_today = slope * today_idx + intercept
-    today_close = float(window["Close"].iloc[-1])
-    if trendline_today <= 0:
-        return None
-
-    distance_pct = (trendline_today - today_close) / today_close * 100  # positive = still below the line
-    if distance_pct < -5 or distance_pct > 12:
-        return None
-
-    stage = "triggered" if today_close > trendline_today else "approaching"
+    d = (fit["value_today"] - fit["close"]) / fit["close"] * 100
     return {
         "pattern": "descending_trendline_breakout",
-        "stage": stage,
-        "key_level": round(trendline_today, 2),
-        "distance_pct": round(distance_pct, 2),
+        "stage": "triggered" if fit["close"] > fit["value_today"] else "approaching",
+        "key_level": round(fit["value_today"], 2),
+        "distance_pct": round(d, 2),
         "target_price": None,
         "target_pct": None,
-        "lines": [
-            {"type": "trend", "label_he": "קו התנגדות יורד", "label_en": "Descending resistance line",
-             "points": [
-                 [_fmt_date(dates[first_idx]), round(first_val, 2)],
-                 [_fmt_date(dates[-1]), round(trendline_today, 2)],
-             ]},
-        ],
+        "touches": len(fit["touches"]),
+        "lines": [_trendline_line_dict(fit, window, "קו התנגדות יורד", "Descending resistance line")],
     }
 
 
@@ -1807,43 +1756,99 @@ def _setup_momentum_surge(hist: pd.DataFrame) -> Optional[dict]:
 # pipeline_a_scanner.py, change its twin here too.
 # ------------------------------------------------------------------
 
-_SCANNER_TRENDLINE_LOOKBACK = 60   # == TRENDLINE_LOOKBACK_DAYS in pipeline_a_scanner.py
+# Twin of fit_trendline() and its constants in pipeline_a_scanner.py — see the
+# "Trendlines — how a line is chosen" note there. Change both together.
+_TL_SEARCH_DAYS = 150
+_TL_TOLERANCE = 0.015
+_TL_TOUCH_TOL = 0.01
+_TL_MIN_SPAN_BARS = 15
+_TL_MIN_TOUCHES = 3
+
+
+def _fit_trendline(window: pd.DataFrame, kind: str, accept=None) -> Optional[dict]:
+    support = (kind == "support")
+    vals = window["Low"].values if support else window["High"].values
+    n = len(vals)
+    if n < 40:
+        return None
+    pts = _find_swing_points(vals, mode="low" if support else "high")
+    if len(pts) < 2:
+        return None
+    close = float(window["Close"].iloc[-1])
+    prev_close = float(window["Close"].iloc[-2])
+    best = None
+    for a in range(len(pts) - 1):
+        i1, v1 = pts[a]
+        for b in range(a + 1, len(pts)):
+            i2, v2 = pts[b]
+            if i2 - i1 < _TL_MIN_SPAN_BARS:
+                continue
+            slope = (v2 - v1) / (i2 - i1)
+            if (support and slope <= 0) or (not support and slope >= 0):
+                continue
+            x = np.arange(i1, n)
+            line = v1 + slope * (x - i1)
+            if (line <= 0).any():
+                continue
+            seg = vals[i1:]
+            if support:
+                viol = float(((line - seg) / line).max())
+            else:
+                viol = float(((seg[:-1] - line[:-1]) / line[:-1]).max())
+            if viol > _TL_TOLERANCE:
+                continue
+            touches = [(i, v) for (i, v) in pts if i >= i1
+                       and abs(v - (v1 + slope * (i - i1))) / (v1 + slope * (i - i1)) <= _TL_TOUCH_TOL]
+            if len(touches) < _TL_MIN_TOUCHES:
+                continue
+            value_today = float(v1 + slope * (n - 1 - i1))
+            prev_value = float(v1 + slope * (n - 2 - i1))
+            fit = {
+                "first_idx": i1, "first_val": float(v1), "slope": float(slope),
+                "touches": touches, "value_today": value_today, "prev_value": prev_value,
+                "close": close, "prev_close": prev_close,
+                "dist_pct": (close - value_today) / value_today * 100,
+                "recent_low": float(window["Low"].iloc[-3:].min()),
+            }
+            if accept is not None and not accept(fit):
+                continue
+            score = (len(touches), i2 - i1, i2)
+            if best is None or score > best["score"]:
+                fit["score"] = score
+                best = fit
+    return best
+
+
+def _trendline_line_dict(fit: dict, window: pd.DataFrame, label_he: str, label_en: str) -> dict:
+    dates = window.index
+    return {
+        "type": "trend", "label_he": label_he, "label_en": label_en,
+        "points": [
+            [_fmt_date(dates[fit["first_idx"]]), round(fit["first_val"], 2)],
+            [_fmt_date(dates[-1]), round(fit["value_today"], 2)],
+        ],
+        # the real wick lows/highs the line touches — the chart marks them with dots
+        "touches": [[_fmt_date(dates[i]), round(float(v), 2)] for i, v in fit["touches"]],
+    }
 
 
 def _scanner_rule_asc_trendline(hist: pd.DataFrame) -> Optional[dict]:
-    window = hist.tail(_SCANNER_TRENDLINE_LOOKBACK)
-    dates = window.index
-    swing_lows = _find_swing_points(window["Low"].values, mode="low")
-    if len(swing_lows) < 3:
+    window = hist.tail(_TL_SEARCH_DAYS)
+    fit = _fit_trendline(
+        window, "support",
+        lambda f: 0 <= f["dist_pct"] <= 3.0 and f["recent_low"] <= f["value_today"] * 1.015,
+    )
+    if not fit:
         return None
-    idx = [i for i, _ in swing_lows]
-    val = [v for _, v in swing_lows]
-    slope, intercept = np.polyfit(idx, val, 1)
-    if slope <= 0:
-        return None
-    today_idx = len(window) - 1
-    tl_today = float(slope * today_idx + intercept)
-    close = float(window["Close"].iloc[-1])
-    if tl_today <= 0:
-        return None
-    distance_pct = (close - tl_today) / tl_today * 100
-    if not (0 <= distance_pct <= 3.0):
-        return None
-    first_idx = idx[0]
     return {
         "pattern": "ascending_trendline_support",
         "stage": "holding",
-        "key_level": round(tl_today, 2),
-        "distance_pct": round(distance_pct, 2),
+        "key_level": round(fit["value_today"], 2),
+        "distance_pct": round(fit["dist_pct"], 2),
         "target_price": None,
         "target_pct": None,
-        "lines": [
-            {"type": "trend", "label_he": "קו תמיכה עולה (התאמה לשפלים)", "label_en": "Rising support line (fit through lows)",
-             "points": [
-                 [_fmt_date(dates[first_idx]), round(float(slope * first_idx + intercept), 2)],
-                 [_fmt_date(dates[-1]), round(tl_today, 2)],
-             ]},
-        ],
+        "touches": len(fit["touches"]),
+        "lines": [_trendline_line_dict(fit, window, "קו תמיכה עולה", "Rising support line")],
     }
 
 
@@ -1898,40 +1903,22 @@ def _scanner_rule_asc_triangle(hist: pd.DataFrame) -> Optional[dict]:
 
 
 def _scanner_rule_desc_trendline_breakout(hist: pd.DataFrame) -> Optional[dict]:
-    window = hist.tail(_SCANNER_TRENDLINE_LOOKBACK)
-    dates = window.index
-    swing_highs = _find_swing_points(window["High"].values, mode="high")
-    if len(swing_highs) < 2:
+    window = hist.tail(_TL_SEARCH_DAYS)
+    fit = _fit_trendline(
+        window, "resistance",
+        lambda f: f["close"] > f["value_today"] and f["prev_close"] <= f["prev_value"],
+    )
+    if not fit:
         return None
-    idx = [i for i, _ in swing_highs]
-    val = [v for _, v in swing_highs]
-    slope, intercept = np.polyfit(idx, val, 1)
-    if slope >= 0:
-        return None
-    today_idx = len(window) - 1
-    tl_today = float(slope * today_idx + intercept)
-    close = float(window["Close"].iloc[-1])
-    if tl_today <= 0 or not close > tl_today:
-        return None
-    if len(window) >= 2:
-        tl_yesterday = slope * (today_idx - 1) + intercept
-        if float(window["Close"].iloc[-2]) > tl_yesterday:
-            return None  # stale breakout
-    first_idx = idx[0]
     return {
         "pattern": "descending_trendline_breakout",
         "stage": "triggered",
-        "key_level": round(tl_today, 2),
-        "distance_pct": round((tl_today - close) / close * 100, 2),
+        "key_level": round(fit["value_today"], 2),
+        "distance_pct": round((fit["value_today"] - fit["close"]) / fit["close"] * 100, 2),
         "target_price": None,
         "target_pct": None,
-        "lines": [
-            {"type": "trend", "label_he": "קו התנגדות יורד (התאמה לשיאים)", "label_en": "Descending resistance (fit through highs)",
-             "points": [
-                 [_fmt_date(dates[first_idx]), round(float(slope * first_idx + intercept), 2)],
-                 [_fmt_date(dates[-1]), round(tl_today, 2)],
-             ]},
-        ],
+        "touches": len(fit["touches"]),
+        "lines": [_trendline_line_dict(fit, window, "קו התנגדות יורד", "Descending resistance line")],
     }
 
 
@@ -2984,7 +2971,7 @@ def get_heatmap(index: str = Query(default="sp500", pattern="^(sp500|nasdaq100)$
             f"""
             SELECT ticker, change_pct, close_price, market_cap, timestamp
             FROM universe_movers
-            WHERE {column} = TRUE AND change_pct IS NOT NULL
+            WHERE {column} = TRUE AND change_pct IS NOT NULL AND change_pct <> 'NaN'
             ORDER BY change_pct DESC
             """
         )
