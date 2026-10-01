@@ -3561,6 +3561,233 @@ def _json_safe(obj):
     return obj
 
 
+# ------------------------------------------------------------------
+# Fundamentals fallback for foreign filers (ADRs such as TSM, NVO, ASML)
+# ------------------------------------------------------------------
+# SEC's companyfacts only gives us quarterly numbers for companies that file
+# 10-Q/10-K. Foreign private issuers file an annual 20-F (or 40-F) plus
+# unstructured 6-K press releases — no quarterly XBRL, and often in a local
+# currency (TSMC reports in NT$). So for them the SEC path came back empty and
+# the page showed "no fundamentals", only the chart.
+# Fallback: Yahoo's quarterly statements via yfinance, converted to USD at the
+# exchange rate of each quarter-end so the existing charts (all labelled $)
+# stay truthful. NOT shown for these companies, on purpose:
+#  * the EPS history and the P/E band — an ADR is a fixed ratio of ordinary
+#    shares (TSM: 1 ADR = 5 shares) and we don't know the ratio, so any
+#    per-share number computed from the local-currency statements would be
+#    wrong by that factor;
+#  * share count (same reason).
+# Trailing P/E is computed as market cap ÷ LTM net income, which is
+# independent of the ADR ratio.
+
+def _yf_row(df, names: List[str]) -> dict:
+    """{date: float} for the first row name that exists with data."""
+    if df is None or getattr(df, "empty", True):
+        return {}
+    for name in names:
+        if name in df.index:
+            out = {}
+            for col, v in df.loc[name].items():
+                try:
+                    d = pd.Timestamp(col).strftime("%Y-%m-%d")
+                    if pd.notna(v):
+                        out[d] = float(v)
+                except Exception:
+                    continue
+            if out:
+                return out
+    return {}
+
+
+def _sec_reporting_currency(combined: dict) -> Optional[str]:
+    """The currency SEC's own XBRL units use for this company's revenue/profit
+    (e.g. 'TWD' for TSMC) — the most reliable source, since Yahoo's .info is
+    often blocked from this server."""
+    for tag in ("Revenues", "Revenue", "RevenueFromContractWithCustomerExcludingAssessedTax",
+                "ProfitLoss", "NetIncomeLoss", "ProfitLossAttributableToOwnersOfParent"):
+        node = (combined or {}).get(tag)
+        if not node:
+            continue
+        for unit in node.get("units", {}):
+            if re.fullmatch(r"[A-Z]{3}", unit):
+                return unit
+    return None
+
+
+def _fx_to_usd_series(cur: str) -> Optional[pd.Series]:
+    """Daily 'USD per 1 unit of cur'. None if it can't be obtained — callers
+    must then return NO data rather than wrongly-scaled numbers."""
+    for sym, invert in ((f"{cur}USD=X", False), (f"USD{cur}=X", True)):
+        try:
+            h = yf.Ticker(sym).history(period="5y", interval="1d")
+            if h is None or h.empty:
+                continue
+            ser = h["Close"].astype(float)
+            ser.index = pd.to_datetime(ser.index).tz_localize(None).normalize()
+            ser = ser[~ser.index.duplicated(keep="last")].sort_index()
+            ser = ser[ser > 0]
+            if ser.empty:
+                continue
+            return (1.0 / ser) if invert else ser
+        except Exception as e:
+            print(f"[info] fx {sym} failed: {e}")
+    return None
+
+
+def _build_fundamentals_yf(ticker: str, cik10: Optional[str], sec_currency: Optional[str]) -> Optional[dict]:
+    tk = yf.Ticker(ticker)
+
+    def grab(*attrs):
+        for a in attrs:
+            try:
+                df = getattr(tk, a)
+                if df is not None and not df.empty:
+                    return df
+            except Exception as e:
+                print(f"[info] fundamentals({ticker}): yfinance {a} failed: {e}")
+        return None
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        f_inc = ex.submit(grab, "quarterly_income_stmt", "quarterly_financials")
+        f_cf = ex.submit(grab, "quarterly_cashflow", "quarterly_cash_flow")
+        f_bs = ex.submit(grab, "quarterly_balance_sheet")
+        f_info = ex.submit(lambda: (tk.info or {}))
+        inc, cf, bs = f_inc.result(), f_cf.result(), f_bs.result()
+        try:
+            info = f_info.result()
+        except Exception as e:
+            print(f"[info] fundamentals({ticker}): yfinance info unavailable (non-fatal): {e}")
+            info = {}
+    if inc is None:
+        return None
+
+    revenue_s = _yf_row(inc, ["Total Revenue", "Operating Revenue", "Revenue"])
+    ni_s = _yf_row(inc, ["Net Income", "Net Income Common Stockholders",
+                         "Net Income From Continuing Operation Net Minority Interest"])
+    gross_s = _yf_row(inc, ["Gross Profit"])
+    if not revenue_s and not ni_s:
+        return None
+    ocf_s = _yf_row(cf, ["Operating Cash Flow", "Cash Flow From Continuing Operating Activities"])
+    fcf_s = _yf_row(cf, ["Free Cash Flow"])
+    if not fcf_s and ocf_s:
+        capex_s = _yf_row(cf, ["Capital Expenditure", "Purchase Of PPE"])
+        fcf_s = {d: v + capex_s[d] for d, v in ocf_s.items() if d in capex_s}  # capex is reported negative
+    cash_s = _yf_row(bs, ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"])
+    debt_s = _yf_row(bs, ["Long Term Debt", "Total Debt", "Long Term Debt And Capital Lease Obligation"])
+
+    cur = (sec_currency or info.get("financialCurrency") or "").upper() or None
+    if not cur:
+        print(f"[info] fundamentals({ticker}): reporting currency unknown — refusing to show possibly mis-scaled numbers")
+        return None
+    fx = None
+    if cur != "USD":
+        fx = _fx_to_usd_series(cur)
+        if fx is None:
+            print(f"[info] fundamentals({ticker}): no {cur}->USD rate — refusing to show unconverted numbers")
+            return None
+
+    def usd(series: dict) -> dict:
+        if fx is None:
+            return dict(series)
+        out = {}
+        for d, v in series.items():
+            try:
+                rate = fx.asof(pd.Timestamp(d))
+                if pd.isna(rate):
+                    rate = fx.iloc[0]
+                out[d] = v * float(rate)
+            except Exception:
+                continue
+        return out
+
+    revenue_s, ni_s, gross_s, fcf_s, cash_s, debt_s = (usd(x) for x in (revenue_s, ni_s, gross_s, fcf_s, cash_s, debt_s))
+
+    income_dates = sorted(set(revenue_s) | set(ni_s) | set(fcf_s))[-32:]
+    fmt = lambda d: dt.strptime(d, "%Y-%m-%d").strftime("%b %Y")
+    income_labels = [fmt(d) for d in income_dates]
+    rnd = lambda x: round(float(x), 2) if x is not None else None
+    revenue = [rnd(revenue_s.get(d)) for d in income_dates]
+    net_income = [rnd(ni_s.get(d)) for d in income_dates]
+    fcf = [rnd(fcf_s.get(d)) for d in income_dates]
+
+    margin_dates = sorted(d for d in gross_s if revenue_s.get(d))[-32:]
+    margin_labels = [fmt(d) for d in margin_dates]
+    gross_margin_pct = [round(gross_s[d] / revenue_s[d] * 100, 4) for d in margin_dates]
+
+    if debt_s:
+        nd = {d: debt_s[d] - cash_s[d] for d in debt_s if d in cash_s}
+    else:
+        nd = {d: -v for d, v in cash_s.items()}
+    nd_dates = sorted(nd)[-32:]
+    debt_labels = [fmt(d) for d in nd_dates]
+    net_debt = [round(float(nd[d]), 4) for d in nd_dates]
+
+    # analyst EPS vs estimate: already on the ADR/USD basis Yahoo reports it in
+    eps_labels, eps_actual, eps_estimate, eps_surprise_pct = [], [], [], []
+    try:
+        ed = tk.get_earnings_dates(limit=12)
+        if ed is not None and not ed.empty:
+            ed = ed.dropna(subset=["Reported EPS"]).sort_index()
+            for idx, row in ed.iterrows():
+                eps_labels.append(idx.strftime("%b %Y"))
+                eps_actual.append(round(float(row.get("Reported EPS")), 2) if pd.notna(row.get("Reported EPS")) else None)
+                eps_estimate.append(round(float(row.get("EPS Estimate")), 2) if pd.notna(row.get("EPS Estimate")) else None)
+                sp = row.get("Surprise(%)")
+                eps_surprise_pct.append(round(float(sp) * 100, 1) if pd.notna(sp) else None)
+    except Exception as e:
+        print(f"[info] fundamentals({ticker}): yfinance analyst EPS estimates unavailable (non-fatal): {e}")
+
+    market_cap = info.get("marketCap")
+    if not market_cap:
+        try:
+            market_cap = tk.fast_info.get("market_cap") or tk.fast_info["marketCap"]
+        except Exception:
+            market_cap = None
+
+    ltm = lambda vals: round(sum(vals[-4:]), 2) if len(vals) >= 4 and all(v is not None for v in vals[-4:]) else None
+    revenue_ltm, net_income_ltm, fcf_ltm = ltm(revenue), ltm(net_income), ltm(fcf)
+
+    trailing_pe = info.get("trailingPE")
+    if trailing_pe is None and market_cap and net_income_ltm and net_income_ltm > 0:
+        trailing_pe = round(float(market_cap) / net_income_ltm, 1)  # ADR-ratio independent
+    forward_pe = info.get("forwardPE")
+
+    return _json_safe({
+        "ticker": ticker,
+        "has_fundamentals": True,
+        "data_source": "yfinance",
+        "reporting_currency": cur,
+        "fx_converted": cur != "USD",
+        "cik": cik10,
+        "income_labels": income_labels,
+        "revenue": revenue, "net_income": net_income, "fcf": fcf,
+        "revenue_ltm": revenue_ltm, "net_income_ltm": net_income_ltm, "fcf_ltm": fcf_ltm,
+        "margin_labels": margin_labels, "gross_margin_pct": gross_margin_pct,
+        "debt_labels": debt_labels, "net_debt": net_debt,
+        "latest_shares_outstanding": None,
+        "market_cap": market_cap,
+        "diluted_eps_labels": [], "diluted_eps": [],
+        "eps_labels": eps_labels, "eps_actual": eps_actual,
+        "eps_estimate": eps_estimate, "eps_surprise_pct": eps_surprise_pct,
+        "pe_band": None,
+        "trailing_pe": trailing_pe, "forward_pe": forward_pe,
+    })
+
+
+def _fundamentals_fallback(ticker: str, cik10: Optional[str], combined: Optional[dict]) -> dict:
+    """Used wherever the SEC path has nothing: try Yahoo's statements; if that
+    also yields nothing it is the same 'no fundamentals' answer as before."""
+    try:
+        res = _build_fundamentals_yf(ticker, cik10, _sec_reporting_currency(combined or {}))
+    except Exception as e:
+        print(f"[warn] fundamentals({ticker}): yfinance fallback failed: {type(e).__name__}: {e}")
+        res = None
+    if res:
+        print(f"[info] fundamentals({ticker}): served from yfinance fallback ({res.get('reporting_currency')})")
+        return res
+    return {"ticker": ticker, "has_fundamentals": False}
+
+
 def _build_fundamentals(ticker: str) -> dict:
     ticker = _canon_ticker(ticker)
 
@@ -3581,7 +3808,7 @@ def _build_fundamentals(ticker: str) -> dict:
 
     if not cik10:
         print(f"[info] fundamentals({ticker}): no SEC CIK match")
-        return {"ticker": ticker, "has_fundamentals": False}
+        return _fundamentals_fallback(ticker, None, None)
 
     try:
         facts = _sec_company_facts(cik10)
@@ -3603,7 +3830,7 @@ def _build_fundamentals(ticker: str) -> dict:
     combined = {**ifrsfacts, **usgaap}
     if not combined:
         print(f"[warn] fundamentals({ticker}): SEC companyfacts had no us-gaap or ifrs-full data")
-        return {"ticker": ticker, "has_fundamentals": False}
+        return _fundamentals_fallback(ticker, cik10, None)
 
     revenue_s = _sec_quarterly_series(combined, ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet", "Revenue"], instant=False)
     ni_s      = _sec_quarterly_series(combined, ["NetIncomeLoss", "ProfitLoss"], instant=False)
@@ -3636,8 +3863,9 @@ def _build_fundamentals(ticker: str) -> dict:
         shares_s.setdefault(d, v)
 
     if not revenue_s and not ni_s:
-        print(f"[info] fundamentals({ticker}): SEC facts had no usable revenue/net-income tags for this company")
-        return {"ticker": ticker, "has_fundamentals": False}
+        print(f"[info] fundamentals({ticker}): SEC facts had no usable quarterly (10-Q/10-K) revenue/net-income — "
+              f"typical for foreign filers (20-F/6-K); trying yfinance statements")
+        return _fundamentals_fallback(ticker, cik10, combined)
 
     def _nearest(series: dict, target: str, tolerance_days: int = 6):
         """Finds the value in `series` whose date is within `tolerance_days`

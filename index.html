@@ -3453,7 +3453,16 @@ function renderFundamentals(data, containerId){
     <div class="fund-stat"><div class="k">${t?'Forward P/E (NTM)':'מכפיל P/E צפוי (NTM)'}</div><div class="v">${data.forward_pe?data.forward_pe.toFixed(1):'—'}</div></div>
   </div>`;
 
-  const secLink = data.cik ? `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${data.cik}&type=10-Q&dateb=&owner=include&count=40` : null;
+  const secLink = data.cik ? `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${data.cik}&type=${data.data_source==='yfinance'?'':'10-Q'}&dateb=&owner=include&count=40` : null;
+  const yfNote = data.data_source === 'yfinance';
+  const fxNote = data.fx_converted ? (t ? ` Reported in ${data.reporting_currency}, converted to USD at each quarter-end exchange rate (approximate).`
+                                        : ` הדוחות במטבע ${data.reporting_currency}, והומרו לדולר לפי שער החליפין בסוף כל רבעון (קירוב).`) : '';
+  if(yfNote){
+    html += `<div class="fund-source-note">${t
+      ? `This is a foreign company (it files annual 20-F reports and press releases instead of quarterly 10-Q/10-K), so SEC has no quarterly data for it. Quarterly figures come from <b>Yahoo Finance</b>.${fxNote} EPS history, the P/E band and share count are not shown because they depend on the ADR-to-share ratio. Trailing P/E is market cap ÷ trailing-12-month net income.${secLink?` <a href="${secLink}" target="_blank" rel="noopener">Company filings on SEC.gov →</a>`:''}`
+      : `זו חברה זרה (היא מגישה דוח שנתי 20-F והודעות לעיתונות במקום 10-Q/10-K רבעוני), ולכן ל-SEC אין עבורה נתונים רבעוניים. הנתונים הרבעוניים מגיעים מ-<b>Yahoo Finance</b>.${fxNote} היסטוריית EPS, רצועת ה-P/E ומספר המניות לא מוצגים כי הם תלויים ביחס בין ה-ADR למניה הרגילה. מכפיל ה-P/E הנוכחי הוא שווי שוק ÷ רווח נקי של 12 החודשים האחרונים.${secLink?` <a href="${secLink}" target="_blank" rel="noopener">דוחות החברה ב-SEC.gov ←</a>`:''}`
+    }</div>`;
+  } else
   html += `<div class="fund-source-note">${t
     ? `All figures come straight from the company's official <b>SEC filings</b> (10-Q/10-K) via SEC EDGAR — the same numbers reported to regulators, not analyst-adjusted. Trailing/Forward P/E and analyst EPS estimates come from Yahoo Finance as a supplementary source.${secLink?` <a href="${secLink}" target="_blank" rel="noopener">View the raw filings on SEC.gov →</a>`:''}`
     : `כל הנתונים מגיעים ישירות מ<b>הדוחות הרשמיים לרשות ניירות ערך האמריקאית (SEC)</b> — 10-Q/10-K — דרך SEC EDGAR, אותם מספרים בדיוק שהחברה מדווחת לרגולטור, לא מספרים מעובדים ע"י אנליסטים. מכפילי P/E ותחזיות אנליסטים מגיעים כמקור משלים מ-Yahoo Finance.${secLink?` <a href="${secLink}" target="_blank" rel="noopener">לצפייה בדוחות הגולמיים ב-SEC.gov ←</a>`:''}`
