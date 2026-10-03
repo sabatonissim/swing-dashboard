@@ -736,58 +736,125 @@ def check_breakout_volume(hist: pd.DataFrame) -> float:
     return float(round(max(0.0, pct_above), 1))
 
 
-def detect_cup_and_handle(hist: pd.DataFrame) -> Optional[dict]:
-    """
-    Cup & Handle heuristic:
-    - Left rim: local high in the first third of the window
-    - Cup bottom: price drops at least 15% from left rim, then recovers
-    - Right rim: price recovers to within 5% of left rim high
-    - Handle (optional): last 5-15 bars consolidate tightly (range < 8% of
-      cup depth), breakout above the right rim. When present this is a
-      stronger, more classic setup.
-    - Cup-only breakout (no handle): per the FTI-style request — a cup
-      that breaks out directly, without ever forming a tight handle
-      first, still counts. Distinguished from the full pattern via the
-      "handle" flag in the result so the trigger text/score can reflect
-      the difference honestly rather than claiming a handle that wasn't
-      there.
-    Uses a 60-bar window (approx 3 months daily).
-    """
-    if len(hist) < 65:
-        return None
-    window = hist.tail(65).reset_index(drop=True)
-    closes = window["Close"].values
+
+# ------------------------------------------------------------------
+# Cup & Handle — how the cup is found (v10)
+# ------------------------------------------------------------------
+# The old version took the "left rim" as the highest close of the first third
+# of a 65-bar window and the "right rim" as the highest close of the later
+# part, requiring only right >= 0.95 * left — with NO upper bound. In a strong
+# rally that made the right rim simply today's high, so a tiny old dip became
+# "the cup" and a stock that had already doubled was reported as breaking out
+# at its latest high (and the target was an old small depth added to it).
+#
+# Now a cup has to look like one: rim -> decline of 12-35% -> recovery back to
+# within 5% of the SAME rim, the bottom roughly mid-way (not a V at either
+# edge), 20-110 bars long. The breakout line is the LEFT rim (the real
+# resistance the cup is trying to clear). The scanner only flags a FRESH
+# breakout: first close above the rim within the last CUP_FRESH_BARS bars and
+# not more than CUP_MAX_EXTENSION above it.
+# api_server.py keeps a twin (_find_cup) — change both together.
+CUP_SEARCH_BARS = 130
+CUP_MIN_BARS = 20
+CUP_MAX_BARS = 110
+CUP_MIN_DEPTH = 0.12
+CUP_MAX_DEPTH = 0.35
+CUP_RIM_TOL = 0.05
+CUP_FRESH_BARS = 5
+CUP_MAX_EXTENSION = 0.08
+
+
+def find_cup(closes) -> Optional[dict]:
+    """Best cup ending at the last bar, or None. `closes` = 1-D numpy array."""
     n = len(closes)
-
-    # left rim = highest close in first third
-    left_rim = closes[:n//3].max()
-    left_rim_idx = int(np.argmax(closes[:n//3]))
-
-    # cup bottom = lowest close after left rim
-    cup_section = closes[left_rim_idx:]
-    if len(cup_section) < 20:
+    if n < CUP_MIN_BARS + 10:
         return None
-    cup_bottom = cup_section.min()
-    cup_depth = left_rim - cup_bottom
-    if cup_depth / left_rim < 0.15:  # must drop at least 15%
+    best = None
+    for iL in range(4, n - CUP_MIN_BARS):
+        pL = float(closes[iL])
+        # left rim must be a real local high (highest close within +-4 bars)
+        if pL < closes[max(0, iL - 4):iL + 5].max():
+            continue
+        # walk right: drop >= MIN_DEPTH, then recover to within RIM_TOL of pL
+        low, iB, dropped, iR = pL, iL, False, None
+        for k in range(iL + 1, min(n, iL + CUP_MAX_BARS + 1)):
+            c = float(closes[k])
+            if c > pL * 1.02 and not dropped:
+                break                        # a higher high came first: pL is not the rim
+            if c < low:
+                low, iB = c, k
+            if (pL - low) / pL >= CUP_MIN_DEPTH:
+                dropped = True
+            if dropped and c >= pL * (1 - CUP_RIM_TOL):
+                iR = k
+                break
+        if iR is None:
+            continue
+        depth = (pL - low) / pL
+        span = iR - iL
+        if depth > CUP_MAX_DEPTH or span < CUP_MIN_BARS:
+            continue
+        if not (0.2 * span <= iB - iL <= 0.8 * span):
+            continue                         # bottom jammed against one edge = V / ramp, not a cup
+        # rounded bottom: a V spends ~20% of its bars in the lowest fifth of the depth,
+        # a real U/saucer spends well over a quarter of them there
+        cup_seg = closes[iL:iR + 1]
+        if float((cup_seg <= low + (pL - low) * 0.2).mean()) < 0.28:
+            continue
+        # first close ABOVE the rim after the recovery = the breakout
+        iX = None
+        for k in range(iR, n):
+            if closes[k] > pL:
+                iX = k
+                break
+        today = float(closes[-1])
+        if iX is None:
+            # not broken out yet: only interesting while still within the rim tolerance
+            if today < pL * (1 - CUP_RIM_TOL):
+                continue
+        else:
+            if today <= pL:
+                continue                      # broke out then fell back under the rim
+        cand = {"iL": iL, "pL": pL, "iB": iB, "pB": float(low), "iR": iR, "iX": iX,
+                "depth": depth, "today": today,
+                "days_since_breakout": None if iX is None else n - 1 - iX,
+                "extension": today / pL - 1}
+        # prefer the cup whose recovery is most recent; tie -> longer cup
+        if best is None or (iR, span) > (best["iR"], best["iR"] - best["iL"]):
+            best = cand
+    if best is None:
         return None
+    # handle: after the right-side recovery, a short shallow pullback before the breakout
+    iR, iX = best["iR"], best["iX"]
+    end = iX if iX is not None else n - 1
+    handle = False
+    if end - iR >= 5:
+        seg = closes[iR:end + 1]
+        peak = float(seg.max())
+        pullback = (peak - float(seg.min())) / peak
+        handle = (end - iR) <= 25 and 0.02 <= pullback <= best["depth"] * 0.5
+    best["handle"] = bool(handle)
+    return best
 
-    # right rim = recovery to within 5% of left rim
-    right_section = closes[left_rim_idx + int(len(cup_section) * 0.4):]
-    if len(right_section) < 5:
+
+def detect_cup_and_handle(hist: pd.DataFrame) -> Optional[dict]:
+    """Fresh cup breakout (see find_cup). Returns None unless the first close
+    above the cup's rim happened within CUP_FRESH_BARS bars and price is not
+    more than CUP_MAX_EXTENSION above the rim."""
+    window = hist.tail(CUP_SEARCH_BARS)
+    if len(window) < 65:
         return None
-    right_rim = right_section.max()
-    if right_rim < left_rim * 0.95:  # must recover to within 5% of left rim
+    cup = find_cup(window["Close"].values)
+    if not cup or cup["iX"] is None:
         return None
-
-    handle = closes[-12:]
-    handle_range = (handle.max() - handle.min()) / right_rim
-    has_tight_handle = handle_range <= 0.08
-
-    today_close = closes[-1]
-    if today_close >= right_rim:
-        return {"left_rim": round(float(left_rim), 2), "cup_bottom": round(float(cup_bottom), 2), "handle": has_tight_handle}
-    return None
+    if cup["days_since_breakout"] > CUP_FRESH_BARS or cup["extension"] > CUP_MAX_EXTENSION:
+        return None
+    return {
+        "left_rim": round(cup["pL"], 2),
+        "cup_bottom": round(cup["pB"], 2),
+        "handle": cup["handle"],
+        "depth_pct": round(cup["depth"] * 100, 1),
+    }
 
 
 def detect_bull_flag(hist: pd.DataFrame) -> Optional[dict]:

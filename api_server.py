@@ -1121,61 +1121,176 @@ def _fmt_date(ts) -> str:
 # needed to actually draw the level/trendline/pattern on a chart.
 # ------------------------------------------------------------------
 
-def _setup_cup_and_handle(hist: pd.DataFrame) -> Optional[dict]:
-    if len(hist) < 65:
+
+# ------------------------------------------------------------------
+# Cup & Handle — how the cup is found (v10)
+# ------------------------------------------------------------------
+# The old version took the "left rim" as the highest close of the first third
+# of a 65-bar window and the "right rim" as the highest close of the later
+# part, requiring only right >= 0.95 * left — with NO upper bound. In a strong
+# rally that made the right rim simply today's high, so a tiny old dip became
+# "the cup" and a stock that had already doubled was reported as breaking out
+# at its latest high (and the target was an old small depth added to it).
+#
+# Now a cup has to look like one: rim -> decline of 12-35% -> recovery back to
+# within 5% of the SAME rim, the bottom roughly mid-way (not a V at either
+# edge), 20-110 bars long. The breakout line is the LEFT rim (the real
+# resistance the cup is trying to clear). The scanner only flags a FRESH
+# breakout: first close above the rim within the last _CUP_FRESH_BARS bars and
+# not more than _CUP_MAX_EXTENSION above it.
+# Twin of find_cup() in pipeline_a_scanner.py — change both together.
+_CUP_SEARCH_BARS = 130
+_CUP_MIN_BARS = 20
+_CUP_MAX_BARS = 110
+_CUP_MIN_DEPTH = 0.12
+_CUP_MAX_DEPTH = 0.35
+_CUP_RIM_TOL = 0.05
+_CUP_FRESH_BARS = 5
+_CUP_MAX_EXTENSION = 0.08
+
+
+def _find_cup(closes) -> Optional[dict]:
+    """Best cup ending at the last bar, or None. `closes` = 1-D numpy array."""
+    n = len(closes)
+    if n < _CUP_MIN_BARS + 10:
         return None
-    window = hist.tail(65)
+    best = None
+    for iL in range(4, n - _CUP_MIN_BARS):
+        pL = float(closes[iL])
+        # left rim must be a real local high (highest close within +-4 bars)
+        if pL < closes[max(0, iL - 4):iL + 5].max():
+            continue
+        # walk right: drop >= MIN_DEPTH, then recover to within RIM_TOL of pL
+        low, iB, dropped, iR = pL, iL, False, None
+        for k in range(iL + 1, min(n, iL + _CUP_MAX_BARS + 1)):
+            c = float(closes[k])
+            if c > pL * 1.02 and not dropped:
+                break                        # a higher high came first: pL is not the rim
+            if c < low:
+                low, iB = c, k
+            if (pL - low) / pL >= _CUP_MIN_DEPTH:
+                dropped = True
+            if dropped and c >= pL * (1 - _CUP_RIM_TOL):
+                iR = k
+                break
+        if iR is None:
+            continue
+        depth = (pL - low) / pL
+        span = iR - iL
+        if depth > _CUP_MAX_DEPTH or span < _CUP_MIN_BARS:
+            continue
+        if not (0.2 * span <= iB - iL <= 0.8 * span):
+            continue                         # bottom jammed against one edge = V / ramp, not a cup
+        # rounded bottom: a V spends ~20% of its bars in the lowest fifth of the depth,
+        # a real U/saucer spends well over a quarter of them there
+        cup_seg = closes[iL:iR + 1]
+        if float((cup_seg <= low + (pL - low) * 0.2).mean()) < 0.28:
+            continue
+        # first close ABOVE the rim after the recovery = the breakout
+        iX = None
+        for k in range(iR, n):
+            if closes[k] > pL:
+                iX = k
+                break
+        today = float(closes[-1])
+        if iX is None:
+            # not broken out yet: only interesting while still within the rim tolerance
+            if today < pL * (1 - _CUP_RIM_TOL):
+                continue
+        else:
+            if today <= pL:
+                continue                      # broke out then fell back under the rim
+        cand = {"iL": iL, "pL": pL, "iB": iB, "pB": float(low), "iR": iR, "iX": iX,
+                "depth": depth, "today": today,
+                "days_since_breakout": None if iX is None else n - 1 - iX,
+                "extension": today / pL - 1}
+        # prefer the cup whose recovery is most recent; tie -> longer cup
+        if best is None or (iR, span) > (best["iR"], best["iR"] - best["iL"]):
+            best = cand
+    if best is None:
+        return None
+    # handle: after the right-side recovery, a short shallow pullback before the breakout
+    iR, iX = best["iR"], best["iX"]
+    end = iX if iX is not None else n - 1
+    handle = False
+    if end - iR >= 5:
+        seg = closes[iR:end + 1]
+        peak = float(seg.max())
+        pullback = (peak - float(seg.min())) / peak
+        handle = (end - iR) <= 25 and 0.02 <= pullback <= best["depth"] * 0.5
+    best["handle"] = bool(handle)
+    return best
+
+
+def _cup_lines(window: pd.DataFrame, cup: dict) -> list:
+    """Cup outline = the smoothed real closes from the left rim to the right-side
+    recovery (so it hugs the price instead of a 3-point V), plus the rim line."""
     dates = window.index
     closes = window["Close"].values
-    n = len(closes)
+    iL, iR = cup["iL"], cup["iR"]
+    sm = pd.Series(closes).rolling(5, center=True, min_periods=1).mean().values
+    step = max(1, (iR - iL) // 22)
+    idxs = list(range(iL, iR + 1, step))
+    if idxs[-1] != iR:
+        idxs.append(iR)
+    pts = [[_fmt_date(dates[i]), round(float(sm[i]), 2)] for i in idxs]
+    pts[0][1] = round(cup["pL"], 2)
+    return [
+        {"type": "curve", "label_he": "כוס", "label_en": "Cup", "points": pts},
+        {"type": "horizontal", "label_he": "שפת הכוס (קו פריצה)", "label_en": "Cup rim (breakout line)",
+         "price": round(cup["pL"], 2), "from": _fmt_date(dates[iL]), "to": _fmt_date(dates[-1])},
+    ]
 
-    left_rim_idx = int(np.argmax(closes[:n // 3]))
-    left_rim = float(closes[left_rim_idx])
 
-    cup_section = closes[left_rim_idx:]
-    if len(cup_section) < 20:
-        return None
-    cup_bottom_offset = int(np.argmin(cup_section))
-    cup_bottom_idx = left_rim_idx + cup_bottom_offset
-    cup_bottom = float(cup_section[cup_bottom_offset])
-    cup_depth = left_rim - cup_bottom
-    if cup_depth <= 0 or cup_depth / left_rim < 0.15:
-        return None  # not a deep enough dip to read as a cup
-
-    right_section = closes[left_rim_idx + int(len(cup_section) * 0.4):]
-    if len(right_section) < 5:
-        return None
-    right_rim = float(right_section.max())
-    if right_rim < left_rim * 0.95:
-        return None  # hasn't recovered enough to be forming a right rim yet
-
-    today_close = float(closes[-1])
-    breakout_level = right_rim
-    distance_pct = (breakout_level - today_close) / today_close * 100
-    if distance_pct > 20:
-        return None  # too far below the rim for this to be "approaching" anything
-    target_price = breakout_level + cup_depth
-    stage = "triggered" if today_close >= breakout_level else "approaching"
-
+def _cup_result(window: pd.DataFrame, cup: dict, stage: str) -> dict:
+    rim, today = cup["pL"], cup["today"]
+    depth_abs = rim - cup["pB"]
+    target = rim + depth_abs
+    ref = max(today, rim)                         # upside is measured from where price is NOW
     return {
         "pattern": "cup_and_handle",
         "stage": stage,
-        "key_level": round(breakout_level, 2),
-        "distance_pct": round(distance_pct, 2),
-        "target_price": round(target_price, 2),
-        "target_pct": round((target_price - breakout_level) / breakout_level * 100, 1),
-        "cup_depth_pct": round(cup_depth / left_rim * 100, 1),
-        "lines": [
-            {"type": "curve", "label_he": "כוס", "label_en": "Cup", "points": [
-                [_fmt_date(dates[left_rim_idx]), round(left_rim, 2)],
-                [_fmt_date(dates[cup_bottom_idx]), round(cup_bottom, 2)],
-                [_fmt_date(dates[-1]), round(right_rim, 2)],
-            ]},
-            {"type": "horizontal", "label_he": "קו פריצה", "label_en": "Breakout level",
-             "price": round(breakout_level, 2),
-             "from": _fmt_date(dates[cup_bottom_idx]), "to": _fmt_date(dates[-1])},
-        ],
+        "key_level": round(rim, 2),
+        "distance_pct": round((rim - today) / today * 100, 2),
+        "target_price": round(target, 2),
+        "target_pct": round((target - ref) / ref * 100, 1),
+        "cup_depth_pct": round(cup["depth"] * 100, 1),
+        "handle": cup["handle"],
+        "days_since_breakout": cup["days_since_breakout"],
+        "extension_pct": round(cup["extension"] * 100, 1),
+        "lines": _cup_lines(window, cup),
     }
+
+
+def _scanner_rule_cup(hist: pd.DataFrame) -> Optional[dict]:
+    window = hist.tail(_CUP_SEARCH_BARS)
+    if len(window) < 65:
+        return None
+    cup = _find_cup(window["Close"].values)
+    if not cup or cup["iX"] is None:
+        return None
+    if cup["days_since_breakout"] > _CUP_FRESH_BARS or cup["extension"] > _CUP_MAX_EXTENSION:
+        return None
+    return _cup_result(window, cup, "triggered")
+
+
+def _setup_cup_and_handle(hist: pd.DataFrame) -> Optional[dict]:
+    scan_rule = _scanner_rule_cup(hist)  # scanner parity: see SCANNER PARITY note
+    if scan_rule:
+        return scan_rule
+    window = hist.tail(_CUP_SEARCH_BARS)
+    if len(window) < 65:
+        return None
+    cup = _find_cup(window["Close"].values)
+    if not cup:
+        return None
+    if cup["iX"] is None:
+        return _cup_result(window, cup, "approaching")   # recovered to within 5% of the rim, not through it yet
+    # Broke out EARLIER (not a fresh scanner-grade breakout): still worth showing, honestly
+    # labelled, while it is recent and the measured-move target has not been reached yet.
+    if cup["days_since_breakout"] <= 40 and cup["today"] < cup["pL"] + (cup["pL"] - cup["pB"]):
+        return _cup_result(window, cup, "triggered")
+    return None
 
 
 def _setup_ascending_triangle(hist: pd.DataFrame) -> Optional[dict]:
@@ -2169,18 +2284,24 @@ _SETUP_EXPLANATIONS = {
     },
     "cup_and_handle": {
         "he": lambda d: (
-            f"המניה בונה תבנית \"כוס\" — ירידה של כ-{d['cup_depth_pct']}% ואז התאוששות חזרה לאזור השיא הקודם. "
-            + (f"קו הפריצה נמצא ב-${d['key_level']}, והמניה כבר פרצה אותו." if d['stage']=='triggered'
-               else f"קו הפריצה נמצא ב-${d['key_level']}, כ-{abs(d['distance_pct'])}% מעל המחיר הנוכחי.")
-            + (f" יעד קלאסי (מדידת גובה הכוס) הוא סביב ${d['target_price']} — כ-{d['target_pct']}% מעל נקודת הפריצה, "
-               f"אם וכאשר התבנית באמת משלימה את עצמה. זה ניתוח טכני היסטורי בלבד, לא המלצת השקעה וללא הבטחה שהתבנית תתממש." if d.get('target_price') else "")
+            f"המניה בנתה תבנית \"כוס\" — ירידה של כ-{d['cup_depth_pct']}% מהשיא, ואז התאוששות חזרה אל אותו שיא (\"שפת הכוס\" ב-${d['key_level']}). "
+            + ((f"המחיר פרץ את השפה לפני {d['days_since_breakout']} ימי מסחר, והוא כעת {d['extension_pct']}% מעליה"
+                + (" — כלומר זו כבר לא פריצה טרייה, והמחיר התרחק מנקודת הפריצה. " if d['days_since_breakout'] > 5 or d['extension_pct'] > 8 else ". "))
+               if d['stage']=='triggered' and d.get('days_since_breakout') is not None
+               else f"המחיר עדיין מתחת לשפה ב-{abs(d['distance_pct'])}% בערך — הפריצה עוד לא קרתה. ")
+            + ("נראה גם איחוד קצר (ידית) לפני הפריצה. " if d.get('handle') else "")
+            + (f"יעד קלאסי (מדידת גובה הכוס מעל השפה) הוא סביב ${d['target_price']} — עוד כ-{d['target_pct']}% מהמחיר הנוכחי, "
+               f"אם וכאשר התבנית מתממשת. זה ניתוח טכני היסטורי בלבד, לא המלצת השקעה וללא הבטחה." if d.get('target_price') else "")
         ),
         "en": lambda d: (
-            f"The stock is forming a \"cup\" — roughly a {d['cup_depth_pct']}% drop, then a recovery back toward the prior high. "
-            + (f"The breakout level is ${d['key_level']}, and price has already cleared it." if d['stage']=='triggered'
-               else f"The breakout level is ${d['key_level']}, about {abs(d['distance_pct'])}% above the current price.")
-            + (f" A classic measured-move target (the cup's own depth projected above the breakout) sits around ${d['target_price']} — "
-               f"roughly {d['target_pct']}% above the breakout point, if and when the pattern actually completes. This is historical technical analysis only, not investment advice or a guarantee." if d.get('target_price') else "")
+            f"The stock built a \"cup\" — a roughly {d['cup_depth_pct']}% drop from a high, then a recovery back to that same high (the \"rim\" at ${d['key_level']}). "
+            + ((f"Price cleared the rim {d['days_since_breakout']} trading days ago and is now {d['extension_pct']}% above it"
+                + (" — so this is no longer a fresh breakout; price has moved away from the breakout point. " if d['days_since_breakout'] > 5 or d['extension_pct'] > 8 else ". "))
+               if d['stage']=='triggered' and d.get('days_since_breakout') is not None
+               else f"Price is still about {abs(d['distance_pct'])}% below the rim — the breakout hasn't happened yet. ")
+            + ("A short tight consolidation (the handle) formed before the breakout. " if d.get('handle') else "")
+            + (f"A classic measured-move target (the cup's depth projected above the rim) sits around ${d['target_price']} — about {d['target_pct']}% above the current price, "
+               f"if and when the pattern plays out. This is historical technical analysis only, not investment advice or a guarantee." if d.get('target_price') else "")
         ),
     },
     "ascending_triangle": {
@@ -2324,7 +2445,10 @@ def _compute_setup_candidates(hist: pd.DataFrame, ticker: str) -> list:
     def sort_key(c):
         already = 0 if c["stage"] in ("triggered", "holding") else 1
         if already == 0:
-            return (0, _SETUP_PRIORITY.get(c["pattern"], 99))
+            # a cup that broke out weeks ago is shown for context but must not outrank fresh signals
+            stale = c.get("days_since_breakout") is not None and (
+                c["days_since_breakout"] > _CUP_FRESH_BARS or c.get("extension_pct", 0) > _CUP_MAX_EXTENSION * 100)
+            return (0, _SETUP_PRIORITY.get(c["pattern"], 99) + (50 if stale else 0))
         return (1, round(abs(c["distance_pct"]), 1), _SETUP_PRIORITY.get(c["pattern"], 99))
     candidates.sort(key=sort_key)
     return candidates

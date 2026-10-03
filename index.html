@@ -351,6 +351,13 @@
   .fund-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:12px;align-items:start;margin-bottom:12px;}
   .fund-grid > .fund-card{margin-bottom:0;min-width:0;}
   .fund-grid > .fund-card.fund-wide{grid-column:1 / -1;}
+  /* legend under the technical-setup chart: one entry per drawn line, numbered like its marker */
+  .ts-legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12px;margin:2px 0 12px;color:var(--text);line-height:1.4;}
+  .ts-legend-item{display:inline-flex;align-items:center;gap:6px;}
+  .ts-badge{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:50%;border:1.6px solid;font-size:10px;font-weight:700;flex:none;}
+  .ts-lg-val{font-family:'JetBrains Mono',monospace;font-weight:600;}
+  .ts-lg-note{color:var(--text-dim);font-size:11px;}
+  .ts-dot{display:inline-block;width:8px;height:8px;border-radius:50%;border:1.6px solid var(--teal);flex:none;margin:0 4px;}
   .fund-card-title{font-size:12px;color:var(--text-dim);margin-bottom:8px;}
   .fund-scroll{overflow-x:auto;direction:ltr;}
   .fund-scroll::-webkit-scrollbar{height:5px;}
@@ -373,8 +380,8 @@
   .fund-source-note a:hover{text-decoration:underline;}
 
   /* ---- Compare two stocks ---- */
-  .compare-btn{display:block;width:100%;text-align:center;padding:11px;border-radius:9px;background:transparent;border:1px solid var(--teal);color:var(--teal);font-weight:700;cursor:pointer;font-size:13px;margin-bottom:16px;font-family:'Heebo',sans-serif;}
-  .compare-btn:hover{background:var(--teal);color:#0a1a18;}
+  .compare-btn{--c:var(--teal);display:block;width:100%;text-align:center;padding:11px;border-radius:9px;background:transparent;border:1px solid var(--c);color:var(--c);font-weight:700;cursor:pointer;font-size:13px;margin-bottom:16px;font-family:'Heebo',sans-serif;}
+  .compare-btn:hover{background:var(--c);color:#0a1a18;}
   .cmp-head{display:grid;gap:6px;margin-bottom:4px;align-items:center;}
   .cmp-ticker{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:13.5px;text-align:center;color:var(--amber);position:relative;}
   .cmp-row{display:grid;gap:6px;padding:8px 0;border-bottom:1px solid var(--line);align-items:center;}
@@ -2719,8 +2726,8 @@ function openDrawer(i){
       </div>
     </div>
     <button class="compare-btn" onclick="openCompare('${s.ticker}')">⇄ ${lang==='en'?'Compare with another stock':'השווה מול מניה אחרת'}</button>
-    <button class="compare-btn" style="border-color:var(--amber);color:var(--amber);" onclick='openRiskCalc(${JSON.stringify({entry:s.entry, stop:s.support, target:(Array.isArray(s.resistance)&&s.resistance.length?s.resistance[0]:null)})})'>🧮 ${lang==='en'?'Position Size Calculator':'מחשבון גודל פוזיציה'}</button>
-    <button class="compare-btn" style="border-color:var(--teal);color:var(--teal);" onclick="closeDrawer(); setPage('deepdive'); document.getElementById('dd-ticker-input').value='${s.ticker}'; loadDeepDive();">🔎 ${lang==='en'?'Full Stock Analysis':'ניתוח מלא למניה'}</button>
+    <button class="compare-btn" style="--c:var(--amber);" onclick='openRiskCalc(${JSON.stringify({entry:s.entry, stop:s.support, target:(Array.isArray(s.resistance)&&s.resistance.length?s.resistance[0]:null)})})'>🧮 ${lang==='en'?'Position Size Calculator':'מחשבון גודל פוזיציה'}</button>
+    <button class="compare-btn" onclick="closeDrawer(); setPage('deepdive'); document.getElementById('dd-ticker-input').value='${s.ticker}'; loadDeepDive();">🔎 ${lang==='en'?'Full Stock Analysis':'ניתוח מלא למניה'}</button>
     <div id="compare-section"></div>
   `;
   document.getElementById("overlay").classList.add("open");
@@ -3021,13 +3028,16 @@ function buildTechnicalSetupSvg(priceSeries, lines){
   if(!priceSeries || priceSeries.length < 2) return '';
   const t = lang==='en';
   const loc = t ? 'en-US' : 'he-IL';
-  // Layout: candles on the left, a PRICE axis on the right (PADR), a DATE axis at the bottom.
-  const W = 680, H = 262, PADL = 8, PADR = 50, PADY_TOP = 14, PADY_BOTTOM = 34;
+  // Layout, left to right: candles | marker gutter | price axis. Every drawn line gets a
+  // NUMBERED marker in the gutter (never on top of candles or other text) and is described
+  // in an HTML legend under the chart — so no number of lines can make labels overlap.
+  const W = 680, H = 262, PADL = 8, GUT = 24, AXISW = 50, PADY_TOP = 14, PADY_BOTTOM = 34;
   const n = priceSeries.length;
+  const plotR = W - GUT - AXISW;           // right edge of the candle area
+  const axisX = plotR + GUT;               // price axis line
   const dateIndex = {};
   priceSeries.forEach((p,i) => { if(!(p[0] in dateIndex)) dateIndex[p[0]] = i; });
 
-  // Price range: candles + anything a line reaches, with a little headroom.
   let minP = Math.min(...priceSeries.map(p => p[3]));
   let maxP = Math.max(...priceSeries.map(p => p[2]));
   (lines||[]).forEach(ln => {
@@ -3039,13 +3049,13 @@ function buildTechnicalSetupSvg(priceSeries, lines){
   const span = maxP - minP;
 
   const chartH = H - PADY_TOP - PADY_BOTTOM;
-  const plotR = W - PADR;
-  const xOf = (i) => PADL + (i/(n-1)) * (plotR - PADL);
+  const xOf = (i) => PADL + 4 + (i/(n-1)) * (plotR - PADL - 8);
   const yOf = (price) => PADY_TOP + (1 - (price-minP)/span) * chartH;
   const barW = Math.max(1, (plotR - PADL) / n * 0.6);
   const axisY = H - PADY_BOTTOM;
+  const fmtP = (v) => v >= 100 ? v.toFixed(2).replace(/\.00$/,'') : v.toFixed(2);
 
-  // ---- price axis (right) with faint gridlines ----
+  // ---- price axis ----
   const niceStep = (() => {
     const raw = span / 5, mag = Math.pow(10, Math.floor(Math.log10(raw))), norm = raw / mag;
     return (norm < 1.5 ? 1 : norm < 3.5 ? 2 : norm < 7.5 ? 5 : 10) * mag;
@@ -3054,14 +3064,14 @@ function buildTechnicalSetupSvg(priceSeries, lines){
   let grid = '', priceLabels = '';
   for(let v = Math.ceil(minP/niceStep)*niceStep; v <= maxP; v += niceStep){
     const y = yOf(v);
-    grid += `<line x1="${PADL}" y1="${y.toFixed(1)}" x2="${plotR}" y2="${y.toFixed(1)}" stroke="var(--line)" stroke-opacity="0.45" stroke-width="1"/>`;
-    priceLabels += `<text x="${plotR+6}" y="${(y+3.5).toFixed(1)}" font-size="10" fill="var(--text-dim)" text-anchor="start">${v.toFixed(decimals)}</text>`;
+    grid += `<line x1="${PADL}" y1="${y.toFixed(1)}" x2="${axisX}" y2="${y.toFixed(1)}" stroke="var(--line)" stroke-opacity="0.45" stroke-width="1"/>`;
+    priceLabels += `<text x="${axisX+6}" y="${(y+3.5).toFixed(1)}" font-size="10" fill="var(--text-dim)" text-anchor="start">${v.toFixed(decimals)}</text>`;
   }
 
-  // ---- date axis: first date, month starts, and the latest date ----
+  // ---- date axis ----
   const dObj = (i) => new Date(priceSeries[i][0] + 'T00:00:00');
   const dayMonth = (i) => dObj(i).toLocaleDateString(loc, {day:'numeric', month:'short'});
-  const minGap = 46; // px in viewBox units — keeps labels from touching
+  const minGap = 46;
   const ticks = [{i:0, label: dayMonth(0), anchor:'start'}];
   let lastM = dObj(0).getFullYear()*12 + dObj(0).getMonth();
   for(let i=1;i<n-1;i++){
@@ -3077,15 +3087,15 @@ function buildTechnicalSetupSvg(priceSeries, lines){
   }
   ticks.push({i:n-1, label: dayMonth(n-1), anchor:'end'});
   if(ticks.length > 2 && xOf(ticks[ticks.length-1].i) - xOf(ticks[ticks.length-2].i) < minGap){
-    ticks.splice(ticks.length-2, 1); // last month tick would collide with the latest-date label
+    ticks.splice(ticks.length-2, 1);
   }
   const dateAxis = ticks.map(tk => {
     const x = xOf(tk.i);
     return `<line x1="${x.toFixed(1)}" y1="${axisY}" x2="${x.toFixed(1)}" y2="${axisY+4}" stroke="var(--text-dim)" stroke-width="1"/>
             <text x="${x.toFixed(1)}" y="${axisY+16}" font-size="10" fill="var(--text-dim)" text-anchor="${tk.anchor}">${tk.label}</text>`;
   }).join('');
-  const axisLines = `<line x1="${PADL}" y1="${axisY}" x2="${plotR}" y2="${axisY}" stroke="var(--line)" stroke-width="1"/>
-                     <line x1="${plotR}" y1="${PADY_TOP}" x2="${plotR}" y2="${axisY}" stroke="var(--line)" stroke-width="1"/>`;
+  const axisLines = `<line x1="${PADL}" y1="${axisY}" x2="${axisX}" y2="${axisY}" stroke="var(--line)" stroke-width="1"/>
+                     <line x1="${axisX}" y1="${PADY_TOP}" x2="${axisX}" y2="${axisY}" stroke="var(--line)" stroke-width="1"/>`;
 
   // ---- candles ----
   const bars = priceSeries.map((p, i) => {
@@ -3096,70 +3106,84 @@ function buildTechnicalSetupSvg(priceSeries, lines){
             <rect x="${(x-barW/2).toFixed(1)}" y="${Math.min(yOf(o),yOf(c)).toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1, Math.abs(yOf(o)-yOf(c))).toFixed(1)}" fill="${color}"/>`;
   }).join('');
 
-  // ---- detected lines (+ dots on the real swing points a trend line touches) ----
+  // ---- lines: drawn without text; each one yields a legend entry + a gutter marker ----
+  const entries = [];     // {num, color, kind, name, value, note, anchorX, anchorY, dim}
+  let anyTouches = false;
   const lineSvgs = (lines||[]).map((ln, idx) => {
-    const label = t ? ln.label_en : ln.label_he;
-    const dim = idx > 0 ? 0.65 : 1; // later lines drawn a touch fainter so overlapping structures stay legible
+    const name = t ? ln.label_en : ln.label_he;
+    const dim = idx > 0 ? 0.7 : 1;
     if(ln.type === 'horizontal'){
       const i1 = dateIndex[ln.from], i2 = dateIndex[ln.to];
       if(i1===undefined || i2===undefined) return '';
       const y = yOf(ln.price);
-      return `<line x1="${xOf(i1).toFixed(1)}" y1="${y.toFixed(1)}" x2="${xOf(i2).toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--amber)" stroke-opacity="${dim}" stroke-width="2" stroke-dasharray="5 3"/>
-              <text x="${xOf(i2).toFixed(1)}" y="${(y-5).toFixed(1)}" font-size="10" fill="var(--amber)" fill-opacity="${dim}" text-anchor="end">${label} $${ln.price}</text>
-              <text x="${xOf(i1).toFixed(1)}" y="${(y+11).toFixed(1)}" font-size="8.5" fill="var(--amber)" fill-opacity="${dim*0.85}" text-anchor="start">${_fmtShortDate(ln.from)}</text>`;
+      entries.push({color:'var(--amber)', kind:'horizontal', name, value:'$'+fmtP(ln.price), note:'', anchorX: xOf(i2), anchorY: y, dim});
+      return `<line x1="${xOf(i1).toFixed(1)}" y1="${y.toFixed(1)}" x2="${xOf(i2).toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--amber)" stroke-opacity="${dim}" stroke-width="2" stroke-dasharray="5 3"/>`;
     }
+    const pts = (ln.points||[]).map(([d,p]) => {
+      const i2 = dateIndex[d];
+      return i2===undefined ? null : {x: xOf(i2), y: yOf(p), date: d, price: p};
+    }).filter(Boolean);
+    if(pts.length < 2) return '';
+    const first = pts[0], last = pts[pts.length-1];
     if(ln.type === 'trend'){
-      const pts = (ln.points||[]).map(([d,p]) => {
-        const idx2 = dateIndex[d];
-        return idx2===undefined ? null : {x: xOf(idx2), y: yOf(p), date: d};
-      }).filter(Boolean);
-      if(pts.length < 2) return '';
-      const pointsStr = pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
-      const last = pts[pts.length-1], first = pts[0];
       const dots = (ln.touches||[]).map(([d,p]) => {
         const i2 = dateIndex[d];
-        return i2===undefined ? '' :
-          `<circle cx="${xOf(i2).toFixed(1)}" cy="${yOf(p).toFixed(1)}" r="3.2" fill="var(--bg, #0b0e13)" stroke="var(--teal)" stroke-opacity="${dim}" stroke-width="1.6"/>`;
+        if(i2===undefined) return '';
+        anyTouches = true;
+        return `<circle cx="${xOf(i2).toFixed(1)}" cy="${yOf(p).toFixed(1)}" r="3.2" fill="var(--bg, #0f1216)" stroke="var(--teal)" stroke-opacity="${dim}" stroke-width="1.6"/>`;
       }).join('');
-      return `<polyline points="${pointsStr}" fill="none" stroke="var(--teal)" stroke-opacity="${dim}" stroke-width="2"/>
-              ${dots}
-              <text x="${last.x.toFixed(1)}" y="${(last.y-8).toFixed(1)}" font-size="10" fill="var(--teal)" fill-opacity="${dim}" text-anchor="end">${label}</text>
-              <text x="${first.x.toFixed(1)}" y="${(first.y+15).toFixed(1)}" font-size="8.5" fill="var(--teal)" fill-opacity="${dim*0.85}" text-anchor="start">${_fmtShortDate(first.date)}</text>`;
+      entries.push({color:'var(--teal)', kind:'trend', name, value:'$'+fmtP(last.price),
+                    note:(t?'from ':'מ-')+_fmtShortDate(first.date), anchorX: last.x, anchorY: last.y, dim});
+      return `<polyline points="${pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}" fill="none" stroke="var(--teal)" stroke-opacity="${dim}" stroke-width="2"/>${dots}`;
     }
     if(ln.type === 'curve'){
-      const pts = (ln.points||[]).map(([d,p]) => {
-        const idx2 = dateIndex[d];
-        return idx2===undefined ? null : {x: xOf(idx2), y: yOf(p), date: d};
-      }).filter(Boolean);
-      if(pts.length < 2) return '';
-      let d = `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
-      for(let i=1;i<pts.length;i++) d += ` L ${pts[i].x.toFixed(1)} ${pts[i].y.toFixed(1)}`;
-      const first = pts[0];
-      return `<path d="${d}" fill="none" stroke="var(--teal)" stroke-opacity="${dim}" stroke-width="2" stroke-dasharray="3 3"/>
-              <text x="${first.x.toFixed(1)}" y="${(first.y+13).toFixed(1)}" font-size="8.5" fill="var(--teal)" fill-opacity="${dim*0.85}" text-anchor="start">${_fmtShortDate(first.date)}</text>`;
+      entries.push({color:'var(--teal)', kind:'curve', name, value:'',
+                    note:_fmtShortDate(first.date)+' – '+_fmtShortDate(last.date), anchorX: last.x, anchorY: last.y, dim});
+      return `<polyline points="${pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}" fill="none" stroke="var(--teal)" stroke-opacity="${dim}" stroke-width="2" stroke-dasharray="3 3"/>`;
     }
     return '';
   }).join('');
+  entries.forEach((e, k) => { e.num = k + 1; });
+
+  // ---- gutter markers, pushed apart so they never overlap ----
+  const R = 8, MIN_GAP = 18, top = PADY_TOP + R, bottom = axisY - R;
+  const placed = entries.map(e => ({e, y: Math.min(Math.max(e.anchorY, top), bottom)})).sort((a,b) => a.y - b.y);
+  for(let i=1;i<placed.length;i++) if(placed[i].y - placed[i-1].y < MIN_GAP) placed[i].y = placed[i-1].y + MIN_GAP;
+  if(placed.length && placed[placed.length-1].y > bottom){
+    placed[placed.length-1].y = bottom;
+    for(let i=placed.length-2;i>=0;i--) if(placed[i+1].y - placed[i].y < MIN_GAP) placed[i].y = placed[i+1].y - MIN_GAP;
+  }
+  const mx = plotR + GUT/2;
+  const markers = placed.map(({e, y}) => `
+    <path d="M ${e.anchorX.toFixed(1)} ${e.anchorY.toFixed(1)} L ${plotR} ${e.anchorY.toFixed(1)} L ${mx-R} ${y.toFixed(1)}" fill="none" stroke="${e.color}" stroke-opacity="${(e.dim*0.55).toFixed(2)}" stroke-width="1" stroke-dasharray="2 2"/>
+    <circle cx="${mx}" cy="${y.toFixed(1)}" r="${R}" fill="var(--bg, #0f1216)" stroke="${e.color}" stroke-width="1.6"/>
+    <text x="${mx}" y="${(y+3.6).toFixed(1)}" font-size="10" font-weight="700" fill="${e.color}" text-anchor="middle">${e.num}</text>`).join('');
 
   // ---- latest close tag on the price axis ----
   const lastC = priceSeries[n-1][4], lastUp = lastC >= priceSeries[n-1][1];
   const tagY = yOf(lastC);
-  const tag = `<line x1="${PADL}" y1="${tagY.toFixed(1)}" x2="${plotR}" y2="${tagY.toFixed(1)}" stroke="${lastUp?'var(--green)':'var(--red)'}" stroke-opacity="0.45" stroke-width="1" stroke-dasharray="2 3"/>
-    <rect x="${plotR+1}" y="${(tagY-8).toFixed(1)}" width="${PADR-2}" height="16" rx="3" fill="${lastUp?'var(--green)':'var(--red)'}"/>
-    <text x="${plotR+PADR/2}" y="${(tagY+3.8).toFixed(1)}" font-size="10" font-weight="700" fill="#0b0e13" text-anchor="middle">${lastC.toFixed(decimals>0?decimals:1)}</text>`;
+  const tag = `<line x1="${PADL}" y1="${tagY.toFixed(1)}" x2="${axisX}" y2="${tagY.toFixed(1)}" stroke="${lastUp?'var(--green)':'var(--red)'}" stroke-opacity="0.45" stroke-width="1" stroke-dasharray="2 3"/>
+    <rect x="${axisX+1}" y="${(tagY-8).toFixed(1)}" width="${AXISW-2}" height="16" rx="3" fill="${lastUp?'var(--green)':'var(--red)'}"/>
+    <text x="${axisX+AXISW/2}" y="${(tagY+3.8).toFixed(1)}" font-size="10" font-weight="700" fill="#0b0e13" text-anchor="middle">${lastC.toFixed(decimals>0?decimals:1)}</text>`;
 
-  // direction:ltr is essential — the page is RTL, and inside an RTL page an SVG
-  // text-anchor of start/end flips sides, which is what used to clip the dates
-  // at both edges of the axis.
-  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;margin:10px 0;direction:ltr;">
+  // direction:ltr — inside an RTL page an SVG's text-anchor start/end flips sides.
+  const svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;margin:10px 0 4px;direction:ltr;">
     ${grid}
     ${bars}
     ${lineSvgs}
-    ${tag}
+    ${markers}
     ${axisLines}
     ${priceLabels}
+    ${tag}
     ${dateAxis}
   </svg>`;
+
+  const legend = entries.length ? `<div class="ts-legend">${entries.map(e => `
+    <span class="ts-legend-item" style="opacity:${e.dim === 1 ? 1 : 0.9}">
+      <span class="ts-badge" style="border-color:${e.color};color:${e.color};">${e.num}</span>
+      <span class="ts-lg-name">${e.name}</span>${e.value ? `<b class="ts-lg-val">${e.value}</b>` : ''}${e.note ? `<span class="ts-lg-note">(${e.note})</span>` : ''}
+    </span>`).join('')}${anyTouches ? `<span class="ts-legend-item"><span class="ts-dot"></span><span class="ts-lg-name">${t?'touches of the line':'נגיעות בקו'}</span></span>` : ''}</div>` : '';
+  return svg + legend;
 }
 
 function scanSignalBannerHtml(sig){
@@ -3664,7 +3688,7 @@ async function showTickerDrawer(ticker){
         <div id="stock-news-list">${lang==='en'?'Loading news...':'טוען חדשות...'}</div>
       </div>
       <button class="compare-btn" onclick="openCompare('${ticker}')">⇄ ${lang==='en'?'Compare with another stock':'השווה מול מניה אחרת'}</button>
-      <button class="compare-btn" style="border-color:var(--amber);color:var(--amber);" onclick='openRiskCalc(${JSON.stringify({entry:d.price, stop:d.week52_low, target:d.week52_high})})'>🧮 ${lang==='en'?'Position Size Calculator':'מחשבון גודל פוזיציה'}</button>
+      <button class="compare-btn" style="--c:var(--amber);" onclick='openRiskCalc(${JSON.stringify({entry:d.price, stop:d.week52_low, target:d.week52_high})})'>🧮 ${lang==='en'?'Position Size Calculator':'מחשבון גודל פוזיציה'}</button>
       <div id="compare-section"></div>
     `);
     loadStockNews(ticker);
