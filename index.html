@@ -344,6 +344,13 @@
   /* ---- Fundamentals (drawer) ---- */
   .fund-section-title{font-size:11px;letter-spacing:1.5px;color:var(--amber);text-transform:uppercase;margin:18px 0 10px;}
   .fund-card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 12px 8px;margin-bottom:12px;}
+  /* Cards with FEW data points (e.g. a foreign company with ~4-5 quarters) would
+     otherwise each take a full row and leave it mostly empty. They sit in a grid
+     that puts as many side by side as fit (min 300px each). Cards with lots of
+     data get .fund-wide = a full row, exactly as before. */
+  .fund-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:12px;align-items:start;margin-bottom:12px;}
+  .fund-grid > .fund-card{margin-bottom:0;min-width:0;}
+  .fund-grid > .fund-card.fund-wide{grid-column:1 / -1;}
   .fund-card-title{font-size:12px;color:var(--text-dim);margin-bottom:8px;}
   .fund-scroll{overflow-x:auto;direction:ltr;}
   .fund-scroll::-webkit-scrollbar{height:5px;}
@@ -2803,6 +2810,19 @@ function destroyFundCharts(){
   activeFundCharts = [];
 }
 
+// A chart needs ~46px per data point. Up to 6 points fit in a ~300px card, so
+// those cards may share a row; anything longer gets the full row width.
+const FUND_COMPACT_MAX_POINTS = 6;
+function fundCardClass(points){
+  return 'fund-card' + (points > FUND_COMPACT_MAX_POINTS ? ' fund-wide' : '');
+}
+// Canvas width: 46px per point, but never narrower than the card it sits in,
+// so a card with few bars fills its box instead of leaving a gap beside it.
+function fundCanvasWidth(canvas, points, perPoint){
+  const avail = (canvas && canvas.parentElement && canvas.parentElement.clientWidth) || 0;
+  return Math.max(points * (perPoint || 46), 280, avail);
+}
+
 function fundChartCanvas(id){
   return `<div class="fund-scroll"><canvas id="${id}" style="display:block;"></canvas></div>`;
 }
@@ -3429,7 +3449,9 @@ function renderFundamentals(data, containerId){
   const n = data.income_labels.length;
   let html = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div>`;
 
-  html += `<div class="fund-card"><div class="fund-card-title">${t?'Revenue / Net Income / FCF':'הכנסות / רווח נקי / FCF'}${fundInfoIcon('rev_ni_fcf')}</div>${fundLegendHtml([
+  const marginN = (data.margin_labels||[]).length, debtN = (data.debt_labels||[]).length;
+  html += `<div class="fund-grid">`;
+  html += `<div class="${fundCardClass(n)}"><div class="fund-card-title">${t?'Revenue / Net Income / FCF':'הכנסות / רווח נקי / FCF'}${fundInfoIcon('rev_ni_fcf')}</div>${fundLegendHtml([
     {color:'#5b8def', label:t?'Revenue':'הכנסות'},
     {color:'#3ecf7e', label:t?'Net Income':'רווח נקי'},
     {color:'#e8a33d', label:'FCF'},
@@ -3443,8 +3465,9 @@ function renderFundamentals(data, containerId){
     <div style="font-size:10px;color:var(--text-dim);margin-bottom:10px;">${t?'Bars below are per-quarter — LTM above is the trailing 4-quarter sum, comparable to how most terminals (e.g. Koyfin) report it.':'העמודות למטה הן לפי רבעון — ה-LTM למעלה הוא סכום 4 הרבעונים האחרונים, בדיוק כמו שרוב הטרמינלים (כמו Koyfin) מציגים.'}</div>
   ` : ''}
   ${fundChartCanvas('chart-rev-ni-fcf')}</div>`;
-  html += `<div class="fund-card"><div class="fund-card-title">${t?'Gross Margin %':'שולי רווח גולמי %'}${fundInfoIcon('gross_margin')}</div>${fundChartCanvas('chart-margin')}</div>`;
-  html += `<div class="fund-card"><div class="fund-card-title">${t?'Net Debt':'חוב נטו'}${fundInfoIcon('net_debt')}</div>${fundChartCanvas('chart-netdebt')}</div>`;
+  html += `<div class="${fundCardClass(marginN)}"><div class="fund-card-title">${t?'Gross Margin %':'שולי רווח גולמי %'}${fundInfoIcon('gross_margin')}</div>${fundChartCanvas('chart-margin')}</div>`;
+  html += `<div class="${fundCardClass(debtN)}"><div class="fund-card-title">${t?'Net Debt':'חוב נטו'}${fundInfoIcon('net_debt')}</div>${fundChartCanvas('chart-netdebt')}</div>`;
+  html += `</div>`;
 
   const latestShares = data.latest_shares_outstanding;
   html += `<div class="fund-stat-row">
@@ -3468,24 +3491,26 @@ function renderFundamentals(data, containerId){
     : `כל הנתונים מגיעים ישירות מ<b>הדוחות הרשמיים לרשות ניירות ערך האמריקאית (SEC)</b> — 10-Q/10-K — דרך SEC EDGAR, אותם מספרים בדיוק שהחברה מדווחת לרגולטור, לא מספרים מעובדים ע"י אנליסטים. מכפילי P/E ותחזיות אנליסטים מגיעים כמקור משלים מ-Yahoo Finance.${secLink?` <a href="${secLink}" target="_blank" rel="noopener">לצפייה בדוחות הגולמיים ב-SEC.gov ←</a>`:''}`
   }</div>`;
 
+  html += `<div class="fund-grid">`;
   if(data.eps_labels && data.eps_labels.length){
-    html += `<div class="fund-card"><div class="fund-card-title">${t?'EPS Actual vs Estimate':'EPS בפועל מול תחזית'}${fundInfoIcon('eps_est')}</div>${fundLegendHtml([
+    html += `<div class="${fundCardClass(data.eps_labels.length)}"><div class="fund-card-title">${t?'EPS Actual vs Estimate':'EPS בפועל מול תחזית'}${fundInfoIcon('eps_est')}</div>${fundLegendHtml([
       {color:'rgba(138,147,163,.8)', label:t?'Estimate':'תחזית'},
       {color:'#3ecf7e', label:t?'Actual':'בפועל'},
     ])}${fundChartCanvas('chart-eps')}</div>`;
   } else if(data.diluted_eps && data.diluted_eps.some(v=>v!=null)){
     // Analyst estimates weren't available this time — still show the real
     // reported diluted EPS trend (from SEC filings) rather than nothing.
-    html += `<div class="fund-card"><div class="fund-card-title">${t?'Diluted EPS (reported)':'EPS מדולל (מדווח)'}${fundInfoIcon('eps_actual')}</div>${fundChartCanvas('chart-eps-actual-only')}</div>`;
+    html += `<div class="${fundCardClass(data.diluted_eps_labels.length)}"><div class="fund-card-title">${t?'Diluted EPS (reported)':'EPS מדולל (מדווח)'}${fundInfoIcon('eps_actual')}</div>${fundChartCanvas('chart-eps-actual-only')}</div>`;
   }
   if(data.pe_band){
-    html += `<div class="fund-card"><div class="fund-card-title">${t?'P/E History (vs mean ±1 std)':'מכפיל P/E היסטורי (מול ממוצע ±סטיית תקן)'}${fundInfoIcon('pe_band')}</div>${fundLegendHtml([
+    html += `<div class="fund-card fund-wide"><div class="fund-card-title">${t?'P/E History (vs mean ±1 std)':'מכפיל P/E היסטורי (מול ממוצע ±סטיית תקן)'}${fundInfoIcon('pe_band')}</div>${fundLegendHtml([
       {color:'#e8a33d', label:'P/E'},
       {color:'#8a93a3', label:t?'Mean':'ממוצע'},
       {color:'rgba(239,91,91,.8)', label:'+1σ'},
       {color:'rgba(62,207,126,.8)', label:'-1σ'},
     ])}${fundChartCanvas('chart-pe')}</div>`;
   }
+  html += `</div>`;
 
   el.innerHTML = html;
 
@@ -3513,7 +3538,7 @@ function renderFundamentals(data, containerId){
 
   const revCtx = document.getElementById('chart-rev-ni-fcf');
   if(revCtx){
-    revCtx.width = Math.max(n * 46, 280); revCtx.height = 150;
+    revCtx.width = fundCanvasWidth(revCtx, n); revCtx.height = 150;
     safeChart(revCtx, {
       type:'bar',
       data:{ labels:data.income_labels, datasets:[
@@ -3528,7 +3553,7 @@ function renderFundamentals(data, containerId){
 
   const marginCtx = document.getElementById('chart-margin');
   if(marginCtx && data.margin_labels && data.margin_labels.length){
-    marginCtx.width = Math.max(data.margin_labels.length * 46, 280); marginCtx.height = 150;
+    marginCtx.width = fundCanvasWidth(marginCtx, data.margin_labels.length); marginCtx.height = 150;
     safeChart(marginCtx, {
       type:'line',
       data:{ labels:data.margin_labels, datasets:[
@@ -3541,7 +3566,7 @@ function renderFundamentals(data, containerId){
 
   const debtCtx = document.getElementById('chart-netdebt');
   if(debtCtx && data.debt_labels && data.debt_labels.length){
-    debtCtx.width = Math.max(data.debt_labels.length * 46, 280); debtCtx.height = 150;
+    debtCtx.width = fundCanvasWidth(debtCtx, data.debt_labels.length); debtCtx.height = 150;
     safeChart(debtCtx, {
       type:'bar',
       data:{ labels:data.debt_labels, datasets:[
@@ -3554,7 +3579,7 @@ function renderFundamentals(data, containerId){
 
   const epsCtx = document.getElementById('chart-eps');
   if(epsCtx && data.eps_labels && data.eps_labels.length){
-    epsCtx.width = Math.max(data.eps_labels.length * 46, 280); epsCtx.height = 150;
+    epsCtx.width = fundCanvasWidth(epsCtx, data.eps_labels.length); epsCtx.height = 150;
     safeChart(epsCtx, {
       type:'bar',
       data:{ labels:data.eps_labels, datasets:[
@@ -3568,7 +3593,7 @@ function renderFundamentals(data, containerId){
 
   const epsActualOnlyCtx = document.getElementById('chart-eps-actual-only');
   if(epsActualOnlyCtx && data.diluted_eps_labels && data.diluted_eps_labels.length){
-    epsActualOnlyCtx.width = Math.max(data.diluted_eps_labels.length * 46, 280); epsActualOnlyCtx.height = 150;
+    epsActualOnlyCtx.width = fundCanvasWidth(epsActualOnlyCtx, data.diluted_eps_labels.length); epsActualOnlyCtx.height = 150;
     safeChart(epsActualOnlyCtx, {
       type:'bar',
       data:{ labels:data.diluted_eps_labels, datasets:[

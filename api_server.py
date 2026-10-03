@@ -133,10 +133,31 @@ def db_cursor(dict_cursor: bool = False):
             pass
 
 
+def _sanitize_legacy_earnings(cur):
+    """The scanner owns earnings_calendar, but it only runs on a schedule. Doing
+    the same one-time cleanup here removes the wrong (unverifiable, previous-
+    quarter) revenue/EPS values the moment the API is redeployed. Idempotent."""
+    cur.execute("SELECT to_regclass('earnings_calendar')")
+    if cur.fetchone()[0] is None:
+        return
+    cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS revenue_period_end DATE;")
+    cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS eps_source_date DATE;")
+    cur.execute("""UPDATE earnings_calendar SET revenue_actual = NULL, revenue_surprise_pct = NULL
+                   WHERE revenue_actual IS NOT NULL AND revenue_period_end IS NULL;""")
+    cur.execute("""UPDATE earnings_calendar SET eps_actual = NULL, eps_estimate = NULL, surprise_pct = NULL
+                   WHERE (eps_actual IS NOT NULL OR eps_estimate IS NOT NULL) AND eps_source_date IS NULL;""")
+
+
 def init_db():
     """Create tables if they don't exist yet."""
     conn = get_conn()
     cur = conn.cursor()
+    try:
+        _sanitize_legacy_earnings(cur)
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"[warn] init_db: legacy earnings cleanup skipped: {e}")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS scanned_stocks (
             id SERIAL PRIMARY KEY,
@@ -3733,7 +3754,7 @@ def _build_fundamentals_yf(ticker: str, cik10: Optional[str], sec_currency: Opti
                 eps_actual.append(round(float(row.get("Reported EPS")), 2) if pd.notna(row.get("Reported EPS")) else None)
                 eps_estimate.append(round(float(row.get("EPS Estimate")), 2) if pd.notna(row.get("EPS Estimate")) else None)
                 sp = row.get("Surprise(%)")
-                eps_surprise_pct.append(round(float(sp) * 100, 1) if pd.notna(sp) else None)
+                eps_surprise_pct.append(round(float(sp), 1) if pd.notna(sp) else None)
     except Exception as e:
         print(f"[info] fundamentals({ticker}): yfinance analyst EPS estimates unavailable (non-fatal): {e}")
 
@@ -3979,7 +4000,7 @@ def _build_fundamentals(ticker: str) -> dict:
                 eps_actual.append(round(float(row.get("Reported EPS")), 2) if pd.notna(row.get("Reported EPS")) else None)
                 eps_estimate.append(round(float(row.get("EPS Estimate")), 2) if pd.notna(row.get("EPS Estimate")) else None)
                 surprise = row.get("Surprise(%)")
-                eps_surprise_pct.append(round(float(surprise) * 100, 1) if pd.notna(surprise) else None)
+                eps_surprise_pct.append(round(float(surprise), 1) if pd.notna(surprise) else None)
     except Exception as e:
         print(f"[info] fundamentals({ticker}): yfinance analyst EPS estimates unavailable (non-fatal): {e}")
 
