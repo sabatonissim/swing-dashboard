@@ -17,6 +17,7 @@ Endpoints:
     GET /api/daily-digest        -> non-AI daily news digest (critical items + one highlight per category)
     GET /api/technical-setup/{ticker} -> deep-dive: is a chart pattern currently forming/approaching for this ticker
     GET /api/watchlist-setups    -> same pattern scan as above, run across the whole watchlist at once
+    GET /api/econ-calendar       -> upcoming US economic events (CPI/NFP/FOMC/...) with forecast/previous/actual (econ_calendar.py)
 
 CORS is open for local development. Lock this down (allow_origins) before
 deploying publicly.
@@ -43,6 +44,8 @@ from pydantic import BaseModel
 import yfinance as yf
 import psycopg2
 import psycopg2.extras
+
+import econ_calendar  # US economic calendar: providers -> processing -> uniform events (see econ_calendar.py)
 
 DB_URL = os.environ.get("SWING_DB_PATH") or os.environ.get("DATABASE_URL")
 
@@ -3160,6 +3163,32 @@ def get_earnings_calendar():
         d["reported"] = d["eps_actual"] is not None
         items.append(d)
     return {"count": len(items), "items": items}
+
+
+# ------------------------------------------------------------------
+# Economic calendar ("Upcoming Market Events"). All provider logic lives in
+# econ_calendar.py — this endpoint only exposes its uniform event structure,
+# so swapping a data provider never touches the API contract or the UI.
+# ------------------------------------------------------------------
+
+@app.get("/api/econ-calendar")
+def get_econ_calendar(days: int = Query(21, ge=1, le=60), limit: int = Query(14, ge=1, le=40)):
+    """Upcoming (and just-released) US macro events: date/time (ET + UTC),
+    impact, forecast / previous / actual, surprise vs forecast, short
+    explanation and 'what it affects'. Never 500s: a provider failure just
+    leaves fields empty and is reported in meta.providers."""
+    try:
+        return econ_calendar.build_calendar(get_conn, days=days, limit=limit)
+    except Exception as e:
+        print(f"[error] econ-calendar failed: {e}")
+        return {"events": [], "meta": {"error": str(e)[:200]}}
+
+
+@app.get("/api/econ-calendar/debug")
+def get_econ_calendar_debug():
+    """Provider health + forecast-provider titles we could not map to a supported event
+    (add an alias in econ_calendar.CATALOG[...]['ff'] if one is a missing event)."""
+    return econ_calendar.debug_info()
 
 
 # ------------------------------------------------------------------

@@ -397,6 +397,54 @@
   .cmp-add-btn:hover{border-color:var(--amber);color:var(--amber);}
   .close-compare-btn{display:block;width:100%;text-align:center;padding:10px;border-radius:9px;background:transparent;border:1px solid var(--line);color:var(--text-dim);cursor:pointer;font-size:12.5px;margin-top:12px;font-family:'Heebo',sans-serif;}
   .close-compare-btn:hover{color:var(--text);border-color:var(--text-dim);}
+
+  /* ---- Market Pulse sub-views ---- */
+  .pulse-view-switch{display:flex;gap:8px;margin-bottom:16px;}
+  .pulse-view-btn{background:var(--panel);border:1px solid var(--line);color:var(--text-dim);font-family:inherit;font-size:13.5px;font-weight:500;padding:8px 16px;border-radius:999px;cursor:pointer;}
+  .pulse-view-btn:hover{border-color:#39414f;color:var(--text);}
+  .pulse-view-btn.active{background:rgba(232,163,61,.14);border-color:var(--amber);color:var(--amber);}
+  /* ---- Upcoming Market Events (economic calendar) ---- */
+  .econ-box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;}
+  .econ-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;}
+  .econ-title{font-family:'Frank Ruhl Libre',serif;font-weight:700;font-size:17px;}
+  .econ-sub{color:var(--text-dim);font-size:11.5px;}
+  .econ-day-label{font-size:11px;letter-spacing:1px;color:var(--text-dim);text-transform:uppercase;margin:12px 0 7px;padding-bottom:5px;border-bottom:1px solid var(--line);}
+  .econ-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px;}
+  .econ-card{background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:11px 12px;cursor:pointer;}
+  .econ-card:hover{border-color:#39414f;}
+  .econ-card.next{border-color:var(--amber);box-shadow:0 0 0 1px var(--amber-dim);}
+  .econ-card.done{opacity:.92;}
+  .econ-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;}
+  .econ-name{font-weight:700;font-size:14px;line-height:1.3;}
+  .econ-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-inline-end:6px;}
+  .econ-dot.high{background:var(--red);box-shadow:0 0 6px var(--red);}
+  .econ-dot.medium{background:var(--amber);}
+  .econ-when{color:var(--text-dim);font-size:12px;margin-top:3px;}
+  .econ-badge{font-size:10.5px;padding:2px 7px;border-radius:999px;white-space:nowrap;flex-shrink:0;}
+  .econ-badge.next{background:rgba(232,163,61,.15);color:var(--amber);}
+  .econ-badge.pending{background:rgba(53,179,163,.15);color:var(--teal);}
+  .econ-badge.est{background:var(--panel);color:var(--text-dim);border:1px dashed var(--line);}
+  .econ-nums{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:9px;}
+  .econ-num{background:var(--panel);border-radius:7px;padding:6px 8px;}
+  .econ-nums.two{grid-template-columns:repeat(2,1fr);}
+  .econ-num .k{font-size:10px;color:var(--text-dim);letter-spacing:.5px;text-transform:uppercase;}
+  .econ-num .v{font-family:'JetBrains Mono',monospace;font-size:13.5px;margin-top:2px;white-space:nowrap;}
+  .econ-num.actual .v.above{color:var(--teal);}
+  .econ-num.actual .v.below{color:var(--amber);}
+  .econ-surprise{font-size:11.5px;margin-top:6px;}
+  .econ-surprise.above{color:var(--teal);}
+  .econ-surprise.below{color:var(--amber);}
+  .econ-surprise.inline{color:var(--text-dim);}
+  .econ-affects{margin-top:8px;display:flex;flex-wrap:wrap;gap:5px;align-items:center;}
+  .econ-affects-k{font-size:10.5px;color:var(--text-dim);}
+  .econ-chip{font-size:10.5px;padding:2px 7px;border-radius:999px;background:var(--panel);border:1px solid var(--line);color:var(--text);}
+  .econ-more{margin-top:8px;font-size:11.5px;color:var(--teal);}
+  .econ-explain{margin-top:8px;padding-top:8px;border-top:1px dashed var(--line);font-size:12.5px;line-height:1.55;color:var(--text);}
+  .econ-foot{color:var(--text-dim);font-size:10.5px;margin-top:12px;line-height:1.5;}
+  @media(max-width:480px){
+    .econ-grid{grid-template-columns:1fr;}
+    .pulse-view-btn{flex:1;padding:8px 10px;}
+  }
 </style>
 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 <script>
@@ -530,6 +578,27 @@
 
 <div id="page-pulse" style="display:none;">
   <div class="pulse-page-wrap">
+    <div class="pulse-view-switch">
+      <button class="pulse-view-btn active" id="pulse-view-btn-overview" onclick="setPulseView('overview')">📊 מצב השוק</button>
+      <button class="pulse-view-btn" id="pulse-view-btn-events" onclick="setPulseView('events')">📅 אירועי שוק</button>
+    </div>
+
+    <!-- View 1: Upcoming Market Events (economic calendar) -->
+    <div id="pulse-view-events" style="display:none;">
+      <div class="econ-box">
+        <div class="econ-head">
+          <div>
+            <div class="econ-title" id="econ-title">📅 אירועי שוק קרובים</div>
+            <div class="econ-sub" id="econ-sub"></div>
+          </div>
+        </div>
+        <div id="econ-wrap"><div class="movers-empty">טוען...</div></div>
+        <div class="econ-foot" id="econ-foot"></div>
+      </div>
+    </div>
+
+    <!-- View 2: market overview (what the Market Pulse page showed before) -->
+    <div id="pulse-view-overview">
     <div class="pulse-section-head">
       <div class="pulse-section-title" id="heatmap-title">מפת חום</div>
       <div class="movers-toggle">
@@ -548,6 +617,7 @@
       <div class="pulse-section-title" id="earnings-cal-title">יומן דוחות השבוע</div>
     </div>
     <div id="earnings-cal-wrap"></div>
+    </div><!-- /pulse-view-overview -->
   </div>
 </div>
 
@@ -1621,17 +1691,38 @@ function setPage(page){
   document.getElementById('page-pulse').style.display = page==='pulse' ? '' : 'none';
   document.getElementById('page-backtest').style.display = page==='backtest' ? '' : 'none';
   document.getElementById('page-deepdive').style.display = page==='deepdive' ? '' : 'none';
-  if(page === 'pulse' && !pulseLoaded){
-    pulseLoaded = true;
-    loadHeatmap(heatmapIndex);
-    loadFearGreed();
-    loadEarningsCalendar();
-  }
+  if(page === 'pulse') ensurePulseViewLoaded();
   if(page === 'backtest' && !backtestLoaded){
     backtestLoaded = true;
     loadBacktestPatterns();
     loadBacktestPatternSummary();
     loadBacktestData();
+  }
+}
+
+// ---- Market Pulse: two views (market events | market overview) ----
+let pulseView = 'overview';
+let econLoaded = false;
+
+function setPulseView(v){
+  pulseView = v;
+  document.getElementById('pulse-view-events').style.display = v==='events' ? '' : 'none';
+  document.getElementById('pulse-view-overview').style.display = v==='overview' ? '' : 'none';
+  document.getElementById('pulse-view-btn-events').classList.toggle('active', v==='events');
+  document.getElementById('pulse-view-btn-overview').classList.toggle('active', v==='overview');
+  ensurePulseViewLoaded();
+}
+
+function ensurePulseViewLoaded(){   // each view loads its data only the first time it is shown
+  if(pulseView === 'events' && !econLoaded){
+    econLoaded = true;
+    loadEconCalendar();
+  }
+  if(pulseView === 'overview' && !pulseLoaded){
+    pulseLoaded = true;
+    loadHeatmap(heatmapIndex);
+    loadFearGreed();
+    loadEarningsCalendar();
   }
 }
 
@@ -2157,6 +2248,140 @@ function renderDailyDigest(data){
   `;
 }
 
+
+// ---- Upcoming Market Events (economic calendar) ----
+// The UI depends ONLY on the uniform event structure from /api/econ-calendar
+// (see econ_calendar.py) — never on a specific data provider.
+let lastEconData = null;
+let econHasForecast = false;   // false while no licensed forecast provider is configured (official-only mode)
+const econOpen = {};   // event id -> explanation expanded?
+
+async function loadEconCalendar(){
+  try {
+    const res = await fetch(`${API_BASE}/api/econ-calendar`);
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    lastEconData = data;
+    renderEconCalendar();
+  } catch(e) {
+    console.error('[econ-calendar] load failed', e);
+    const el = document.getElementById('econ-wrap');
+    if(el && !lastEconData) el.innerHTML = `<div class="movers-empty">${lang==='en'?'Could not load market events right now.':'לא ניתן לטעון את אירועי השוק כרגע.'}</div>`;
+  }
+}
+
+function econEtDateStr(d){  // 'YYYY-MM-DD' of a Date in New York
+  return new Intl.DateTimeFormat('en-CA', {timeZone:'America/New_York', year:'numeric', month:'2-digit', day:'2-digit'}).format(d);
+}
+function econDayDiff(dateEt){  // days between today (ET) and an ET date string
+  const a = Date.parse(econEtDateStr(new Date()) + 'T00:00:00Z');
+  const b = Date.parse(dateEt + 'T00:00:00Z');
+  return Math.round((b - a) / 86400000);
+}
+function econCountdown(iso){
+  const ms = Date.parse(iso) - Date.now();
+  if(ms <= 0) return '';
+  const mins = Math.floor(ms / 60000), d = Math.floor(mins / 1440), h = Math.floor((mins % 1440) / 60), m = mins % 60;
+  const en = lang==='en';
+  if(d > 0) return en ? `in ${d}d ${h}h` : `בעוד ${d} ימים ו-${h} שעות`;
+  if(h > 0) return en ? `in ${h}h ${m}m` : `בעוד ${h} שעות ו-${m} דק׳`;
+  return en ? `in ${m} min` : `בעוד ${m} דק׳`;
+}
+function econGroupOf(e){
+  const diff = econDayDiff(e.date_et);
+  if(diff < 0) return 'recent';
+  if(diff === 0) return 'today';
+  if(diff === 1) return 'tomorrow';
+  const dow = new Date(Date.parse(econEtDateStr(new Date()) + 'T00:00:00Z')).getUTCDay(); // 0=Sun
+  const daysLeftInWeek = dow === 0 ? 0 : 7 - dow;   // through Sunday
+  return diff <= daysLeftInWeek ? 'week' : 'later';
+}
+
+function renderEconCalendar(){
+  const el = document.getElementById('econ-wrap');
+  if(!el || !lastEconData) return;
+  const en = lang==='en';
+  document.getElementById('econ-title').textContent = en ? '📅 Upcoming Market Events' : '📅 אירועי שוק קרובים';
+  document.getElementById('econ-sub').textContent = en
+    ? 'US economic events that can move the market — time, expectation, and what it affects'
+    : 'אירועים כלכליים בארה״ב שיכולים להזיז את השוק — מתי, מה הצפי, ומה מושפע';
+  const events = lastEconData.events || [];
+  econHasForecast = !!(lastEconData.meta && lastEconData.meta.forecast_provider && lastEconData.meta.forecast_provider !== 'none');
+  if(!events.length){
+    el.innerHTML = `<div class="movers-empty">${en?'No upcoming events to show right now.':'אין אירועים קרובים להצגה כרגע.'}</div>`;
+  } else {
+    const nextId = (events.find(e => (e.status==='upcoming' || e.status==='pending') && e.impact==='high') || {}).id;
+    const order = [['recent', en?'Just released':'פורסמו זה עתה'], ['today', en?'Today':'היום'], ['tomorrow', en?'Tomorrow':'מחר'],
+                   ['week', en?'This week':'השבוע'], ['later', en?'Later':'בהמשך']];
+    const groups = {};
+    for(const e of events){ (groups[econGroupOf(e)] = groups[econGroupOf(e)] || []).push(e); }
+    el.innerHTML = order.filter(([k]) => groups[k]).map(([k, label]) =>
+      `<div class="econ-day-label">${label}</div><div class="econ-grid">${groups[k].map(e => econCardHtml(e, e.id===nextId)).join('')}</div>`
+    ).join('');
+  }
+  const prov = (lastEconData.meta && lastEconData.meta.providers) || {};
+  const notes = [];
+  if(econHasForecast && prov.forecast && prov.forecast.ok === false) notes.push(en ? 'Forecasts are temporarily unavailable.' : 'הצפי אינו זמין זמנית.');
+  if(Object.keys(prov).some(k => k.startsWith('schedule') && prov[k].ok === false)) notes.push(en ? 'The official release calendar is partly unavailable — some dates are estimates.' : 'לוח הפרסומים הרשמי זמין חלקית — חלק מהמועדים הם הערכה.');
+  document.getElementById('econ-foot').innerHTML =
+    (notes.length ? notes.join(' ') + '<br>' : '') +
+    (en ? `Release dates: BLS, BEA, Census, Federal Reserve. Actuals: FRED.${econHasForecast ? ' Forecasts: third-party market consensus (may differ from other sources).' : ''} Informational only — not investment advice.`
+        : `מועדי פרסום: BLS, BEA, Census והפד. נתוני בפועל: FRED.${econHasForecast ? ' הצפי: קונצנזוס שוק ממקור חיצוני (עשוי להיות שונה ממקורות אחרים).' : ''} למידע בלבד — לא ייעוץ השקעות.`);
+}
+
+function econCardHtml(e, isNext){
+  const en = lang==='en';
+  const name = en ? e.name_en : e.name_he;
+  const dt = new Date(e.datetime_utc);
+  const dateTxt = new Intl.DateTimeFormat(en?'en-US':'he-IL', {timeZone:'America/New_York', month:'short', day:'numeric'}).format(new Date(e.date_et + 'T12:00:00Z'));
+  const localTime = new Intl.DateTimeFormat(en?'en-US':'he-IL', {hour:'2-digit', minute:'2-digit', hour12:false}).format(dt);
+  const done = e.status === 'released' || e.status === 'released_no_data';
+  const dash = '—';
+  const dir = e.surprise ? e.surprise.direction : '';
+  let actualTxt = e.actual || dash;
+  let actualCls = e.actual && dir ? dir : '';
+  let surpriseHtml = '';
+  if(e.surprise){
+    const arrow = dir==='above' ? '▲' : dir==='below' ? '▼' : '＝';
+    const word = dir==='above' ? (en?'above forecast':'מעל הצפי') : dir==='below' ? (en?'below forecast':'מתחת לצפי') : (en?'in line with forecast':'בהתאם לצפי');
+    surpriseHtml = `<div class="econ-surprise ${dir}">${arrow} ${word}${e.surprise.diff ? ` (${e.surprise.diff})` : ''}</div>`;
+  } else if(e.status === 'pending'){
+    surpriseHtml = `<div class="econ-surprise inline">${en?'Released — waiting for the official number to arrive…':'פורסם — ממתין לעדכון הנתון הרשמי…'}</div>`;
+  } else if(e.status === 'released_no_data' || (done && !e.actual)){
+    surpriseHtml = `<div class="econ-surprise inline">${e.has_actual_source===false ? (en?'Actual not available from our free sources.':'הנתון בפועל אינו זמין במקורות החינמיים שלנו.') : (en?'Actual not available.':'הנתון בפועל אינו זמין.')}</div>`;
+  }
+  const badge = isNext ? `<span class="econ-badge next">${en?'NEXT':'הבא'}</span>`
+              : e.status==='pending' ? `<span class="econ-badge pending">${en?'awaiting data':'ממתין לנתון'}</span>`
+              : e.estimated ? `<span class="econ-badge est" title="${en?'Date is an estimate':'מועד משוער'}">${en?'est. date':'מועד משוער'}</span>` : '';
+  const cd = (isNext && e.status==='upcoming') ? ` · <b style="color:var(--amber)">${econCountdown(e.datetime_utc)}</b>` : '';
+  const chips = (e.affects || []).map(a => `<span class="econ-chip">${en ? a.label_en : a.label_he}</span>`).join('');
+  const open = !!econOpen[e.id];
+  const explain = open ? `<div class="econ-explain"><b>${en?'What is it?':'מה זה?'}</b> ${en ? e.what_en : e.what_he}</div>` : '';
+  return `<div class="econ-card ${isNext?'next':''} ${done?'done':''}" onclick="toggleEconCard('${e.id}')">
+    <div class="econ-card-top">
+      <div>
+        <div class="econ-name"><span class="econ-dot ${e.impact}" title="${e.impact==='high'?(en?'High impact':'השפעה גבוהה'):(en?'Medium impact':'השפעה בינונית')}"></span>${name}</div>
+        <div class="econ-when" dir="ltr" style="text-align:start;">${dateTxt} · ${e.time_et} ET <span style="opacity:.7">(${localTime} ${en?'local':'מקומי'})</span>${cd}</div>
+      </div>
+      ${badge}
+    </div>
+    <div class="econ-nums ${econHasForecast ? '' : 'two'}">
+      ${econHasForecast ? `<div class="econ-num"><div class="k">${en?'Forecast':'צפי'}</div><div class="v">${e.forecast || dash}</div></div>` : ''}
+      <div class="econ-num"><div class="k">${en?'Previous':'קודם'}</div><div class="v">${e.previous || dash}</div></div>
+      <div class="econ-num actual"><div class="k">${en?'Actual':'בפועל'}</div><div class="v ${actualCls}">${actualTxt}</div></div>
+    </div>
+    ${surpriseHtml}
+    <div class="econ-affects"><span class="econ-affects-k">${en?'Affects:':'משפיע על:'}</span>${chips}</div>
+    <div class="econ-more">${open ? (en?'▲ hide':'▲ הסתר') : (en?`▾ What is ${name.split(' (')[0]}?`:'▾ מה זה?')}</div>
+    ${explain}
+  </div>`;
+}
+
+function toggleEconCard(id){
+  econOpen[id] = !econOpen[id];
+  renderEconCalendar();
+}
+
 // ---- Weekly earnings calendar (notable/large-cap names only) ----
 let lastEarningsCalItems = null;
 
@@ -2489,6 +2714,10 @@ function renderInfoModal(){
     ? `Deliberately rule-based, not AI-generated: the day's Critical-impact items are shown in full, and the rest are ranked purely by how many separate articles covered the same topic in the last 24 hours (a volume proxy for "what's being talked about"), not by any language model summarizing or judging them.`
     : `בכוונה מבוסס-כללים ולא AI: כל הכתבות שסווגו כ"קריטי" מוצגות במלואן, והשאר מדורגים אך ורק לפי כמה כתבות נפרדות סיקרו את אותו נושא ב-24 השעות האחרונות (מדד נפח כתחליף ל"על מה מדברים") — לא על ידי מודל שפה שמסכם או שופט אותן.`;
 
+  const econBody = t
+    ? `Release dates come from the official public calendars of the Bureau of Labor Statistics, the Bureau of Economic Analysis, the Census Bureau and the Federal Reserve; "actual" numbers come from FRED (St. Louis Fed) — no third-party scraping and nothing here needs a subscription. Market-consensus "Forecast" is proprietary data with no free licensed source, so it appears only when a licensed provider is connected. ISM, Conference Board and UMich have no free official source: their dates are estimates and their actuals are not shown.`
+    : `מועדי הפרסום מגיעים מלוחות הזמנים הציבוריים הרשמיים של לשכת סטטיסטיקת העבודה (BLS), הלשכה לניתוח כלכלי (BEA), לשכת המפקד (Census) והפד; נתוני "בפועל" מגיעים מ-FRED (הפד בסנט לואיס) — בלי גרידה ממקורות צד שלישי ובלי שום מנוי. "צפי" השוק (קונצנזוס) הוא מידע בבעלות פרטית שאין לו מקור חינמי ומורשה, ולכן הוא מוצג רק כשמחובר ספק מורשה. ל-ISM, Conference Board ומישיגן אין מקור חינמי רשמי: המועדים שלהם הם הערכה והנתון בפועל לא מוצג.`;
+
   const disclaimerBody = t
     ? `All content on this site is for informational purposes only and does not constitute investment advice or a recommendation to execute any transaction. Past performance (including any pattern win-rate statistics shown) does not guarantee future results.`
     : `כל התוכן באתר זה להמחשה בלבד ואינו מהווה ייעוץ השקעות או המלצה לביצוע עסקה. ביצועים בעבר (כולל כל סטטיסטיקת הצלחה לתבניות המוצגת) אינם מבטיחים תוצאות דומות בעתיד.`;
@@ -2501,6 +2730,7 @@ function renderInfoModal(){
     ${infoAccordionSection('scans', 'הסריקה הטכנית, הציונים ומבנה נוכחי', 'Technical Scanning, Scores & Current Setup', scansBody)}
     ${infoAccordionSection('feargreed', 'מדד פחד ותאווה', 'Fear & Greed Index', fearGreedBody)}
     ${infoAccordionSection('earnings', 'יומן דוחות רבעוניים', 'Earnings Calendar', earningsBody)}
+    ${infoAccordionSection('econ', 'אירועי שוק קרובים (לוח כלכלי)', 'Upcoming Market Events (Economic Calendar)', econBody)}
     ${infoAccordionSection('disclaimer', 'הבהרה', 'Disclaimer', disclaimerBody)}
     <button class="risk-calc-close" onclick="closeInfoModal()">${t?'Close':'סגור'}</button>
   `;
@@ -4418,6 +4648,9 @@ function applyLang(){
   if(backtestLastData && document.getElementById('backtest-content')) renderBacktestContent(backtestLastData);
   renderMarketTicker();
   if(lastEarningsCalItems) renderEarningsCalendar(lastEarningsCalItems);
+  document.getElementById('pulse-view-btn-events').textContent = lang==='en' ? '📅 Market Events' : '📅 אירועי שוק';
+  document.getElementById('pulse-view-btn-overview').textContent = lang==='en' ? '📊 Market Overview' : '📊 מצב השוק';
+  if(lastEconData) renderEconCalendar();
   if(backtestPatternsCache) renderBacktestPatternFilter();
   if(backtestPatternStatsCache) renderBacktestPatternSummary();
   document.getElementById('backtest-title').textContent = t.backtest_title;
@@ -4465,6 +4698,9 @@ loadMarketMovers();
 setInterval(loadMarketMovers, 60000);
 loadMarketTicker();
 setInterval(loadMarketTicker, 90000);
+const econViewActive = () => currentPage==='pulse' && pulseView==='events';
+setInterval(()=>{ if(econLoaded && econViewActive()) loadEconCalendar(); }, 300000);
+setInterval(()=>{ if(lastEconData && econViewActive()) renderEconCalendar(); }, 60000);
 refreshWatchlistData();
 loadPatternStats();
 
