@@ -592,7 +592,7 @@
             <div class="econ-sub" id="econ-sub"></div>
           </div>
         </div>
-        <div id="econ-wrap"><div class="movers-empty">טוען...</div></div>
+        <div id="econ-wrap"><div class="movers-empty" id="econ-loading">טוען אירועים… בטעינה הראשונה (כשהשרת "התעורר") זה יכול לקחת עד חצי דקה</div></div>
         <div class="econ-foot" id="econ-foot"></div>
       </div>
     </div>
@@ -2442,6 +2442,25 @@ function renderEarningsCalendar(items){
         epsHtml = `<div class="earnings-cal-eps" style="color:${color}">EPS $${it.eps_actual.toFixed(2)}${estPart}${surprisePart}</div>`;
       }
       let revHtml = '';
+      const dim = 'var(--text-dim)';
+      const en = lang==='en';
+      const fmtUsd = v => `$${formatMarketCap(v)}`;
+      if(!it.reported){
+        // before the report: show what the market expects (EPS + revenue), if we have it
+        const parts = [];
+        if(it.eps_estimate != null) parts.push(`${en?'EPS est':'צפי EPS'} $${it.eps_estimate.toFixed(2)}`);
+        if(it.revenue_estimate != null) parts.push(`${en?'Rev est':'צפי הכנסות'} ${fmtUsd(it.revenue_estimate)}`);
+        if(parts.length){
+          epsHtml = `<div class="earnings-cal-eps" style="color:${dim}">${parts.join(' · ')}</div>`;
+        } else if(dateStr < todayStr){
+          epsHtml = `<div class="earnings-cal-eps" style="color:${dim}">${en?'awaiting results':'ממתין לתוצאות'}</div>`;
+        }
+      }
+      if(it.reported && it.revenue_actual == null){
+        // EPS is out but the revenue figure is not verified yet (statement lag) — say so instead of leaving a gap
+        const estTxt = it.revenue_estimate != null ? ` (${en?'est':'צפי'} ${fmtUsd(it.revenue_estimate)})` : '';
+        revHtml = `<div class="earnings-cal-eps" style="color:${dim}">${en?'Rev':'הכנסות'}${estTxt} — ${en?'actual pending':'בפועל בעדכון'}</div>`;
+      }
       if(it.reported && it.revenue_actual != null){
         const revBeat = it.revenue_surprise_pct != null && it.revenue_surprise_pct >= 0;
         const revColor = it.revenue_surprise_pct == null ? 'var(--text-dim)' : (revBeat ? 'var(--green)' : 'var(--red)');

@@ -721,16 +721,25 @@ def _merge(start, end, now_utc):
         return cur
 
     # 1) schedule providers — each guarded independently
-    for name, fn, covers in SCHEDULE_PROVIDERS:
+    def _run(item):
+        name, fn, covers = item
         try:
-            for sc in fn(start, end):
-                o = put(sc["type"], sc["date"], when=sc["when"], period=sc.get("period"),
-                        estimated=bool(sc["estimated"]))
-                o["sources"]["schedule"] = sc["source"]
-            _set_status(name, True)
+            return name, covers, fn(start, end), None
         except Exception as e:  # noqa: BLE001
-            _set_status(name, False, e)
+            return name, covers, None, e
+
+    with ThreadPoolExecutor(len(SCHEDULE_PROVIDERS)) as ex:      # network fetches in parallel
+        results = list(ex.map(_run, SCHEDULE_PROVIDERS))
+    for name, covers, items, err in results:
+        if err is not None:
+            _set_status(name, False, err)
             failed_types.update(covers)
+            continue
+        for sc in items:
+            o = put(sc["type"], sc["date"], when=sc["when"], period=sc.get("period"),
+                    estimated=bool(sc["estimated"]))
+            o["sources"]["schedule"] = sc["source"]
+        _set_status(name, True)
 
     # 2) forecast provider (optional) — exact times, forecast, previous; confirms/creates dates
     for f in get_forecasts():
@@ -748,17 +757,57 @@ def _merge(start, end, now_utc):
     return occ, failed_types
 
 
+STALE_MAX = 30 * 60      # a cached result older than RESULT_TTL but younger than this is served instantly
+_refreshing = set()      # while a background refresh runs
+
+
+def _refresh_async(key, get_conn, days, limit):
+    with _lock:
+        if key in _refreshing:
+            return
+        _refreshing.add(key)
+
+    def work():
+        try:
+            res = _build(get_conn, days, limit)
+            with _lock:
+                _cset(key, res)
+        except Exception as e:  # noqa: BLE001
+            _set_status("build", False, e)
+        finally:
+            with _lock:
+                _refreshing.discard(key)
+
+    threading.Thread(target=work, daemon=True).start()
+
+
 def build_calendar(get_conn=None, days=21, limit=14):
     """Public entry point. Returns {"events": [...], "meta": {...}} — the ONLY
-    structure the frontend depends on."""
-    cached = _cget(("result", days, limit), RESULT_TTL)
-    if cached is not None:
-        return cached
+    structure the frontend depends on. Stale-while-revalidate: a result younger than
+    RESULT_TTL is returned as is; one younger than STALE_MAX is returned immediately
+    while a background thread rebuilds it; only a cold start builds synchronously."""
+    key = ("result", days, limit)
+    hit = _cache.get(key)
+    if hit:
+        age = time.time() - hit[0]
+        if age < RESULT_TTL:
+            return hit[1]
+        if age < STALE_MAX:
+            _refresh_async(key, get_conn, days, limit)
+            return hit[1]
     with _lock:
-        cached = _cget(("result", days, limit), RESULT_TTL)
-        if cached is not None:
-            return cached
-        return _cset(("result", days, limit), _build(get_conn, days, limit))
+        hit = _cache.get(key)
+        if hit and time.time() - hit[0] < RESULT_TTL:
+            return hit[1]
+    res = _build(get_conn, days, limit)
+    with _lock:
+        return _cset(key, res)
+
+
+def warm_up(get_conn=None):
+    """Call once at server start: builds the calendar in a background thread so the
+    first visitor does not wait for the government calendars + FRED downloads."""
+    threading.Thread(target=lambda: build_calendar(get_conn), daemon=True).start()
 
 
 def _build(get_conn, days, limit):
@@ -815,7 +864,7 @@ def _build(get_conn, days, limit):
         except Exception as e:  # noqa: BLE001
             _set_status("actual", False, e)
 
-    with ThreadPoolExecutor(4) as ex:
+    with ThreadPoolExecutor(8) as ex:
         list(ex.map(enrich, list(occ.values())))
 
     try:

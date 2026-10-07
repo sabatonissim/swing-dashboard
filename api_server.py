@@ -246,6 +246,13 @@ try:
 except Exception as e:
     print(f"DB init warning: {e}")
 
+# Pre-build the economic calendar in the background so the first visitor
+# does not wait for the government calendars + FRED downloads.
+try:
+    econ_calendar.warm_up(get_conn)
+except Exception as e:
+    print(f"Econ calendar warm-up skipped: {e}")
+
 
 @app.get("/api/stocks")
 def get_stocks(limit: int = Query(default=25, le=100)):
