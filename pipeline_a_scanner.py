@@ -50,6 +50,7 @@ Requirements (pip install --break-system-packages):
 import json
 import math
 import os
+import re
 import time
 import traceback
 import psycopg2
@@ -1195,6 +1196,14 @@ def init_db():
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS forward_return_10d REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS forward_return_20d REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS days_to_earnings INTEGER;")
+    # Demo-portfolio simulation (stop / target / time exit) — see simulate_trade()
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sim_stop REAL;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sim_target REAL;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sim_exit_reason TEXT;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sim_exit_price REAL;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sim_exit_days INTEGER;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sim_exit_date DATE;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sim_exit_return REAL;")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS universe_movers (
             ticker TEXT PRIMARY KEY,
@@ -1882,6 +1891,129 @@ def _pick_statement_revenue(inc, report_date) -> tuple:
     return (None, None)
 
 
+# ------------------------------------------------------------------
+# Revenue "actual" fallback: the earnings press release itself (SEC 8-K).
+#
+# yfinance's quarterly_income_stmt is built from the 10-Q/10-K, which is filed
+# days to WEEKS after the earnings release — so right after a report the
+# statement still holds the previous quarter and (correctly, see v9) we leave
+# revenue empty. By the time Yahoo catches up the row has usually left the
+# calendar window, so revenue almost never showed. The press release is filed
+# on EDGAR (Item 2.02, Exhibit 99.1) the same day: official, keyless, free.
+#
+# Guard rails (a wrong number is worse than a blank — see the v8 incident):
+#   * only an 8-K with Item 2.02 filed from 1 day before to 3 days after the report
+#   * the figure must be within 0.5x–2x of a reference (the stored estimate or
+#     the last statement revenue); with no reference it must sit in the first
+#     2,500 characters (the headline paragraph)
+#   * any failure returns None -> revenue stays empty and a later scan retries
+# ------------------------------------------------------------------
+SEC_HEADERS = {"User-Agent": "SwingDesk-Dashboard admin@swingdesk.app", "Accept-Encoding": "gzip, deflate"}
+_sec_ticker_cik = None
+
+_REV_NUM = r"\$\s?([\d,]+(?:\.\d+)?)\s*(billion|million|bn|mm|b|m)\b"
+_REV_PATTERNS = [
+    re.compile(r"(?:total\s+|net\s+)?(?:revenues?|net\s+sales|sales)\s+(?:were|was|of|totaled|reached|came\s+in\s+at|:)?\s*(?:approximately\s+)?" + _REV_NUM, re.I),
+    re.compile(r"(?:revenues?|net\s+sales)\s+(?:increased|decreased|rose|fell|grew|declined|climbed|jumped)[^$]{0,80}?(?:to|at)\s+(?:approximately\s+)?" + _REV_NUM, re.I),
+    re.compile(r"\$\s?([\d,]+(?:\.\d+)?)\s*(billion|million)\s+(?:in|of)\s+(?:total\s+|net\s+)?(?:revenues?|net\s+sales)", re.I),
+]
+
+
+def _sec_get(url, as_json=True, timeout=12):
+    import requests
+    r = requests.get(url, headers=SEC_HEADERS, timeout=timeout)
+    r.raise_for_status()
+    time.sleep(0.15)   # SEC fair-use limit is 10 requests/second
+    return r.json() if as_json else r.text
+
+
+def _sec_cik_for(ticker):
+    global _sec_ticker_cik
+    if _sec_ticker_cik is None:
+        data = _sec_get("https://www.sec.gov/files/company_tickers.json")
+        _sec_ticker_cik = {v["ticker"].upper(): int(v["cik_str"]) for v in data.values()}
+    t = ticker.upper()
+    return _sec_ticker_cik.get(t) or _sec_ticker_cik.get(t.replace("-", ".")) or _sec_ticker_cik.get(t.replace(".", "-"))
+
+
+def _sec_find_release_accession(cik, report_date):
+    sub = _sec_get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json")
+    recent = (sub.get("filings") or {}).get("recent") or {}
+    forms, dates = recent.get("form", []), recent.get("filingDate", [])
+    accs, items = recent.get("accessionNumber", []), recent.get("items", [])
+    for i, form in enumerate(forms):
+        if form != "8-K" or "2.02" not in (items[i] if i < len(items) else ""):
+            continue
+        diff = (datetime.strptime(dates[i], "%Y-%m-%d").date() - report_date).days
+        if -1 <= diff <= 3:
+            return accs[i]
+    return None
+
+
+def _sec_release_text(cik, accession):
+    """Plain text of the Exhibit 99.x document of an 8-K filing."""
+    base = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession.replace('-', '')}"
+    listing = _sec_get(base + "/index.json")
+    names = [it.get("name", "") for it in (listing.get("directory") or {}).get("item", [])]
+    cands = [n for n in names if re.search(r"(ex|exhibit)[-_]?99", n, re.I) and n.lower().endswith((".htm", ".html", ".txt"))]
+    cands.sort(key=lambda n: 0 if re.search(r"99[-_.]?0?1", n) else 1)
+    if not cands:
+        return None
+    raw = _sec_get(f"{base}/{cands[0]}", as_json=False)
+    import html as _html
+    text = re.sub(r"(?is)<(script|style).*?</\1>", " ", raw)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", _html.unescape(text)).strip()
+
+
+def _parse_press_release_revenue(text, reference=None):
+    """Revenue in dollars from press-release text, or None. See guard rails above."""
+    if not text:
+        return None
+    head = text[:15000]
+    best = None   # (position, value)
+    for rx in _REV_PATTERNS:
+        for m in rx.finditer(head):
+            unit = m.group(2).lower()
+            val = float(m.group(1).replace(",", "")) * (1e9 if unit in ("billion", "bn", "b") else 1e6)
+            if reference:
+                if not (0.5 <= val / reference <= 2.0):
+                    continue
+            elif m.start() > 2500 or val < 1e7:
+                continue
+            if best is None or m.start() < best[0]:
+                best = (m.start(), val)
+            break
+    return best[1] if best else None
+
+
+def _revenue_from_press_release(ticker, report_date, reference=None):
+    try:
+        cik = _sec_cik_for(ticker)
+        if not cik:
+            return None
+        acc = _sec_find_release_accession(cik, report_date)
+        if not acc:
+            return None
+        return _parse_press_release_revenue(_sec_release_text(cik, acc), reference)
+    except Exception as e:
+        print(f"[warn] press-release revenue fetch failed for {ticker}: {type(e).__name__}: {e}")
+        return None
+
+
+def _latest_statement_revenue(inc):
+    """Newest 'Total Revenue' in a quarterly statement, whatever quarter it is —
+    used only as an order-of-magnitude reference, never shown."""
+    try:
+        if inc is None or inc.empty or "Total Revenue" not in inc.index:
+            return None
+        cols = sorted(inc.columns, key=lambda c: pd.Timestamp(c))
+        val = inc.loc["Total Revenue", cols[-1]]
+        return float(val) if pd.notna(val) and val > 0 else None
+    except Exception:
+        return None
+
+
 def _fetch_revenue_result(ticker: str, report_dt) -> tuple:
     """Returns (revenue_estimate, revenue_actual, revenue_period_end).
 
@@ -1905,13 +2037,22 @@ def _fetch_revenue_result(ticker: str, report_dt) -> tuple:
 
     revenue_actual, period_end = None, None
     if datetime.now(timezone.utc) >= report_dt:
+        inc = None
         try:
-            revenue_actual, period_end = _pick_statement_revenue(t.quarterly_income_stmt, report_dt.date())
+            inc = t.quarterly_income_stmt
+            revenue_actual, period_end = _pick_statement_revenue(inc, report_dt.date())
         except Exception as e:
             print(f"[warn] revenue actual fetch failed for {ticker}: {type(e).__name__}: {e}")
         if revenue_actual is None:
+            # Yahoo's statement still holds the previous quarter -> take the figure from the
+            # company's own earnings press release (SEC 8-K), validated against the last known revenue.
+            rev_pr = _revenue_from_press_release(ticker, report_dt.date(), _latest_statement_revenue(inc))
+            if rev_pr is not None:
+                revenue_actual, period_end = rev_pr, report_dt.date()   # period_end = report date marker (non-NULL keeps the sanitizer happy)
+                print(f"[info] earnings {ticker}: revenue ${rev_pr/1e9:.2f}B taken from the SEC press release (8-K).")
+        if revenue_actual is None:
             print(f"[info] earnings {ticker}: statement not yet updated for the report of {report_dt.date()} "
-                  f"— revenue left empty (will fill on a later scan).")
+                  f"and no usable press release — revenue left empty (will fill on a later scan).")
     return (revenue_estimate, revenue_actual, period_end)
 
 
@@ -2068,6 +2209,14 @@ def backfill_forward_returns():
     # it) sat empty for 2+ extra weeks per signal for no reason.
     horizon_min_age_days = {"forward_return_10d": 14, "forward_return_20d": 28}
 
+    # NaN forward returns (a NaN Yahoo close) used to be stored as-is. In
+    # Postgres NaN sorts ABOVE every number, so "NaN > 0" counted as a WIN and
+    # AVG() turned into NaN ("null%" in the dashboard). Reset any that already
+    # exist so they get recomputed properly below.
+    for col in horizon_min_age_days:
+        cur.execute(f"UPDATE scanned_stocks SET {col} = NULL WHERE {col} = 'NaN'")
+    conn.commit()
+
     filled = 0
     for col, min_age in horizon_min_age_days.items():
         cur.execute(
@@ -2096,6 +2245,9 @@ def backfill_forward_returns():
                 if len(closes) <= horizon:
                     continue
                 fwd_close = float(closes.iloc[horizon])
+                if not (math.isfinite(fwd_close) and math.isfinite(float(entry_price)) and float(entry_price) > 0):
+                    print(f"[warn] {col} backfill skipped for {ticker} (id={row['id']}): non-finite price")
+                    continue
                 value = round((fwd_close / float(entry_price) - 1) * 100, 2)
                 upd_cur = conn.cursor()
                 upd_cur.execute(
@@ -2114,6 +2266,142 @@ def backfill_forward_returns():
     print(f"Forward-return backfill: updated {filled} column-values.")
 
 
+# ------------------------------------------------------------------
+# Demo-portfolio simulation (stop / target / time exit).
+#
+# The dashboard's "historical test" is a demo portfolio: it buys the
+# high-score signals with a fixed amount and exits at the stop, at the
+# target, or after SIM_MAX_HOLD_DAYS trading days — whichever comes first.
+# The path-dependent outcome of every signal is computed HERE (we have the
+# daily bars) and stored, so the API only has to replay the portfolio.
+#
+# Rules (kept deliberately simple and explicit):
+#   entry  : the scan price (entry_price); bars from the NEXT trading day on
+#   stop   : the signal's support level if it is 0–12% below entry,
+#            else entry - 1.5*ATR, else entry - 7%
+#   target : the first resistance target that pays at least 1R,
+#            else entry + 2R   (R = entry - stop)
+#   a bar that opens beyond a level exits at the OPEN (gap), otherwise at the
+#   level; if one bar touches both stop and target the STOP wins (pessimistic)
+#   time   : close of the SIM_MAX_HOLD_DAYS-th bar
+#   No fees or slippage.
+# ------------------------------------------------------------------
+SIM_MAX_HOLD_DAYS = 20
+SIM_MIN_SCORE = 60            # only signals that could ever be "high score" are simulated
+SIM_MAX_TICKERS_PER_RUN = 400
+
+
+def sim_levels(entry, support, resistances, atr):
+    """(stop, target) for a signal, or None if no sane levels exist."""
+    entry = float(entry)
+    stop = None
+    if support and 0 < (entry - float(support)) / entry <= 0.12:
+        stop = float(support)
+    elif atr and float(atr) > 0 and 1.5 * float(atr) < entry * 0.25:
+        stop = entry - 1.5 * float(atr)
+    else:
+        stop = entry * 0.93
+    risk = entry - stop
+    if risk <= 0:
+        return None
+    target = None
+    for r in (resistances or []):
+        r = float(r)
+        if r - entry >= risk:
+            target = r
+            break
+    if target is None:
+        target = entry + 2 * risk
+    return round(stop, 4), round(target, 4)
+
+
+def simulate_trade(entry, stop, target, bars, max_days=SIM_MAX_HOLD_DAYS):
+    """bars: [(date, open, high, low, close), ...] AFTER the signal date.
+    Returns {reason, exit_price, exit_days, exit_date, return_pct} or None while
+    the trade is still open (no level hit and fewer than max_days bars)."""
+    for i, (d, o, h, l, c) in enumerate(bars[:max_days], start=1):
+        if not all(math.isfinite(x) for x in (o, h, l, c)):
+            continue
+        if o <= stop:
+            reason, px = "stop", o
+        elif l <= stop:
+            reason, px = "stop", stop
+        elif o >= target:
+            reason, px = "target", o
+        elif h >= target:
+            reason, px = "target", target
+        elif i == max_days:
+            reason, px = "time", c
+        else:
+            continue
+        return {"reason": reason, "exit_price": round(px, 4), "exit_days": i, "exit_date": d,
+                "return_pct": round((px / entry - 1) * 100, 2)}
+    return None
+
+
+def backfill_sim_outcomes():
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """
+        SELECT id, ticker, entry_price, support_level, resistance_targets, atr_value, timestamp
+        FROM scanned_stocks
+        WHERE pattern_type IS NOT NULL AND swing_score >= %s
+          AND entry_price > 0 AND sim_exit_reason IS NULL
+          AND timestamp <= NOW() - INTERVAL '2 days'
+        ORDER BY timestamp ASC
+        LIMIT 6000
+        """,
+        (SIM_MIN_SCORE,),
+    )
+    rows = cur.fetchall()
+    by_ticker = {}
+    for r in rows:
+        by_ticker.setdefault(r["ticker"], []).append(r)
+
+    resolved = evaluated = 0
+    for ticker in list(by_ticker)[:SIM_MAX_TICKERS_PER_RUN]:
+        group = by_ticker[ticker]
+        first, last = group[0]["timestamp"].date(), group[-1]["timestamp"].date()
+        try:
+            hist = yf.Ticker(ticker).history(start=first, end=last + timedelta(days=45), interval="1d")
+            bars_all = [(idx.date(), float(r_["Open"]), float(r_["High"]), float(r_["Low"]), float(r_["Close"]))
+                        for idx, r_ in hist.iterrows()]
+        except Exception as e:
+            print(f"[warn] sim history failed for {ticker}: {e}")
+            time.sleep(INTER_TICKER_DELAY_SEC)
+            continue
+        for r in group:
+            try:
+                res_list = json.loads(r["resistance_targets"]) if r["resistance_targets"] else []
+            except Exception:
+                res_list = []
+            levels = sim_levels(r["entry_price"], r["support_level"], res_list, r["atr_value"])
+            if levels is None:
+                continue
+            stop, target = levels
+            bars = [b for b in bars_all if b[0] > r["timestamp"].date()]
+            out = simulate_trade(float(r["entry_price"]), stop, target, bars)
+            upd = conn.cursor()
+            if out:
+                upd.execute(
+                    """UPDATE scanned_stocks SET sim_stop=%s, sim_target=%s, sim_exit_reason=%s, sim_exit_price=%s,
+                       sim_exit_days=%s, sim_exit_date=%s, sim_exit_return=%s WHERE id=%s""",
+                    (stop, target, out["reason"], out["exit_price"], out["exit_days"], out["exit_date"], out["return_pct"], r["id"]),
+                )
+                resolved += 1
+            else:   # still open: remember the levels so the API knows it was evaluated
+                upd.execute("UPDATE scanned_stocks SET sim_stop=%s, sim_target=%s WHERE id=%s", (stop, target, r["id"]))
+            conn.commit()
+            upd.close()
+            evaluated += 1
+        time.sleep(INTER_TICKER_DELAY_SEC)
+
+    cur.close()
+    conn.close()
+    print(f"Demo-portfolio simulation: evaluated {evaluated} signals, {resolved} closed (stop/target/time).")
+
+
 def main():
     init_db()
 
@@ -2125,6 +2413,10 @@ def main():
         guard_conn.close()
 
     backfill_forward_returns()
+    try:
+        backfill_sim_outcomes()
+    except Exception as e:   # the simulation must never block the scan itself
+        print(f"[warn] demo-portfolio simulation failed: {type(e).__name__}: {e}")
     # scan_universe() takes several minutes (network calls to Yahoo Finance
     # for every ticker) and doesn't touch the database at all during that
     # time. Neon's free tier auto-suspends its compute after ~5 minutes of

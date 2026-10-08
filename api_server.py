@@ -17,6 +17,7 @@ Endpoints:
     GET /api/daily-digest        -> non-AI daily news digest (critical items + one highlight per category)
     GET /api/technical-setup/{ticker} -> deep-dive: is a chart pattern currently forming/approaching for this ticker
     GET /api/watchlist-setups    -> same pattern scan as above, run across the whole watchlist at once
+    GET /api/article-preview     -> short attributed excerpt of a news article (drawer detail)
     GET /api/econ-calendar       -> upcoming US economic events (CPI/NFP/FOMC/...) with forecast/previous/actual (econ_calendar.py)
 
 CORS is open for local development. Lock this down (allow_origins) before
@@ -31,7 +32,7 @@ import time
 import io
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
-from datetime import date, datetime as dt, timezone
+from datetime import date, datetime as dt, timedelta, timezone
 from typing import List, Optional
 
 import pandas as pd
@@ -314,204 +315,397 @@ def get_backtest_patterns():
     return [r["pattern_type"] for r in rows]
 
 
+# ------------------------------------------------------------------
+# Backtest helpers (v12).
+#
+# Why the old backtest looked absurd (11,662 "signals", max drawdown -100%,
+# a win rate of 32.8% next to a positive average, "null%" cells):
+#   1. The scanner stores EVERY match of EVERY run (twice a day, whole
+#      universe) — the same ticker/pattern is re-inserted on each run, and
+#      thousands of signals share the same couple of dates. Counting them all
+#      treats one market day as thousands of independent observations.
+#   2. The equity curve multiplied 10% of capital through EVERY signal one
+#      after another: ~11.6k overlapping trades = ~1,100x the account at
+#      risk, so ordinary losing days compounded straight to zero.
+#   3. A NaN forward return (Postgres sorts NaN ABOVE every number, so
+#      "NaN > 0" is TRUE) counted as a win in /api/pattern-stats and turned
+#      AVG() into NaN, which JSON renders as null -> "null%".
+# Fixes: only INDEPENDENT signals are counted (same ticker+pattern is counted
+# once per holding period), the curve is built from equal-weight DAILY COHORTS
+# (each day deploys 1/horizon of capital, like a real overlapping portfolio),
+# NaN is excluded everywhere, and the response reports how thin the sample
+# really is.
+# ------------------------------------------------------------------
+BACKTEST_COOLDOWN_DAYS = {10: 14, 20: 28}   # calendar days ~ 10 / 20 trading days
+
+
+def _finite_float(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _independent_signals(rows, horizon):
+    """rows: oldest first, each with ticker/pattern_type/timestamp/fwd_return.
+    Keeps a signal only if the same ticker+pattern was not already counted
+    within the holding period. Drops NaN/non-numeric returns."""
+    cooldown = timedelta(days=BACKTEST_COOLDOWN_DAYS[horizon])
+    last_kept = {}
+    out = []
+    for r in rows:
+        ret = _finite_float(r["fwd_return"])
+        if ret is None:
+            continue
+        key = (r["ticker"], r["pattern_type"])
+        prev = last_kept.get(key)
+        if prev is not None and r["timestamp"] - prev < cooldown:
+            continue
+        last_kept[key] = r["timestamp"]
+        item = dict(r)
+        item["fwd_return"] = ret
+        out.append(item)
+    return out
+
+
+def _median(vals):
+    v = sorted(vals)
+    n = len(v)
+    if n == 0:
+        return None
+    return v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2
+
+
 @app.get("/api/backtest")
 def get_backtest(
     pattern: str = Query(default="all"),
     horizon: int = Query(default=10),
 ):
-    """Backtest view over our own scan history: an equity curve (what a
-    $1 stake compounded through every signal, in chronological order, would
-    have grown to), max drawdown, a breakdown by RS Rating bucket, and the
-    full list of resolved signals behind the numbers — so a win-rate % isn't
-    just a number to trust blindly, it's traceable back to real signals.
+    """Backtest over our own scan history, built ONLY from independent signals
+    (see the note above): win rate, average/median return, and a cohort-based
+    equity curve + drawdown, an RS-rating breakdown, period breakdowns, and the
+    list of signals behind the numbers. `sample` says how much history there
+    really is — a handful of scan days is a snapshot of one market regime, not
+    statistical evidence.
 
-    horizon must be 10 or 20 (trading days). Query param arrives as a
-    plain int; FastAPI's pattern= on an int doesn't apply, so validate
-    manually and fail clearly rather than silently coercing."""
+    horizon must be 10 or 20 (trading days)."""
     if horizon not in (10, 20):
         raise HTTPException(status_code=400, detail="horizon must be 10 or 20")
     return_col = f"forward_return_{horizon}d"
 
     with db_cursor(dict_cursor=True) as (conn, cur):
+        base = f"""
+            SELECT ticker, timestamp, pattern_type, rs_rating, entry_price, {return_col} AS fwd_return
+            FROM scanned_stocks
+            WHERE pattern_type IS NOT NULL AND {return_col} IS NOT NULL AND {return_col} <> 'NaN'
+        """
         if pattern and pattern != "all":
-            cur.execute(
-                f"""
-                SELECT ticker, timestamp, pattern_type, rs_rating, entry_price, {return_col} AS fwd_return
-                FROM scanned_stocks
-                WHERE pattern_type = %s AND {return_col} IS NOT NULL AND {return_col} <> 'NaN'
-                ORDER BY timestamp ASC
-                """,
-                (pattern,),
-            )
+            cur.execute(base + " AND pattern_type = %s ORDER BY timestamp ASC", (pattern,))
         else:
-            cur.execute(
-                f"""
-                SELECT ticker, timestamp, pattern_type, rs_rating, entry_price, {return_col} AS fwd_return
-                FROM scanned_stocks
-                WHERE pattern_type IS NOT NULL AND {return_col} IS NOT NULL AND {return_col} <> 'NaN'
-                ORDER BY timestamp ASC
-                """
-            )
-        rows = cur.fetchall()
+            cur.execute(base + " ORDER BY timestamp ASC")
+        raw_rows = cur.fetchall()
 
+    rows = _independent_signals(raw_rows, horizon)
+    empty = {
+        "pattern": pattern, "horizon": horizon, "n": 0, "n_raw": len(raw_rows),
+        "win_rate": None, "avg_return": None, "median_return": None, "max_drawdown": None,
+        "equity_curve": [], "rs_breakdown": [], "signals": [],
+        "sample": {"signals_raw": len(raw_rows), "signals_independent": 0, "distinct_days": 0,
+                   "distinct_tickers": 0, "first_date": None, "last_date": None, "thin": True},
+    }
     if not rows:
-        return {
-            "pattern": pattern, "horizon": horizon, "n": 0,
-            "win_rate": None, "avg_return": None, "max_drawdown": None,
-            "equity_curve": [], "rs_breakdown": [], "signals": [],
-        }
+        return empty
 
-    # Equity curve: each signal risks a fixed, modest slice of capital
-    # (POSITION_SIZE_PCT) rather than a full 100%-of-equity bet, taken in
-    # chronological order.
-    #
-    # Why this matters: "all patterns" alone can have 1000+ resolved
-    # signals across many different tickers, often overlapping in real
-    # calendar time — nobody actually trades that as one all-in bet after
-    # another. Multiplying the WHOLE stake by every single trade's return
-    # in sequence means even a modest string of double-digit losing days
-    # compounds violently (0.7^30 ≈ 0.0002 — a wipeout look on the chart
-    # from ordinary variance, not from the pattern actually being bad).
-    # Sizing each trade at a realistic fraction of capital, like a real
-    # swing trader risking part of their account per position, keeps one
-    # rough stretch from reading as "lost everything" when the underlying
-    # win rate/avg return are perfectly reasonable.
-    POSITION_SIZE_PCT = 0.10  # 10% of equity per signal — a common, conservative swing-sizing assumption
-    equity = 1.0
-    peak = 1.0
-    max_dd = 0.0
-    equity_curve = []
-    wins = 0
-    total_return = 0.0
-
-    for r in rows:
-        pct = float(r["fwd_return"])
-        equity *= (1 + (pct / 100) * POSITION_SIZE_PCT)
-        peak = max(peak, equity)
-        drawdown = (equity - peak) / peak * 100
-        max_dd = min(max_dd, drawdown)
-        equity_curve.append({
-            "date": r["timestamp"].strftime("%Y-%m-%d"),
-            "ticker": r["ticker"],
-            "equity": round(equity, 4),
-        })
-        if pct > 0:
-            wins += 1
-        total_return += pct
-
+    returns = [r["fwd_return"] for r in rows]
     n = len(rows)
-    win_rate = round(100 * wins / n, 1)
-    avg_return = round(total_return / n, 2)
+    wins = [x for x in returns if x > 0]
+    losses = [x for x in returns if x <= 0]
+    win_rate = round(100 * len(wins) / n, 1)
+    avg_return = round(sum(returns) / n, 2)
+    median_return = round(_median(returns), 2)
+    avg_win = round(sum(wins) / len(wins), 2) if wins else None
+    avg_loss = round(sum(losses) / len(losses), 2) if losses else None
+    gross_loss = abs(sum(losses))
+    profit_factor = round(sum(wins) / gross_loss, 2) if gross_loss > 0 else None
+    extreme = sum(1 for x in returns if abs(x) >= 50)   # likely splits / data errors / one-off events
 
-    # RS Rating breakdown — does this pattern work better on stronger stocks?
+    # Equity curve from equal-weight DAILY COHORTS: every scan day is one
+    # basket (the average of that day's independent signals) that gets
+    # 1/horizon of the account, so at most `horizon` baskets overlap — a
+    # portfolio that could actually be run, unlike one "trade" per signal.
+    by_day = {}
+    for r in rows:
+        by_day.setdefault(r["timestamp"].strftime("%Y-%m-%d"), []).append(r["fwd_return"])
+    equity, peak, max_dd = 1.0, 1.0, 0.0
+    equity_curve = []
+    for day in sorted(by_day):
+        vals = by_day[day]
+        equity *= 1 + (sum(vals) / len(vals) / 100) / horizon
+        peak = max(peak, equity)
+        max_dd = min(max_dd, (equity - peak) / peak * 100)
+        equity_curve.append({"date": day, "equity": round(equity, 4), "n": len(vals)})
+
     bucket_rows = {"80+": [], "50-79": [], "under_50": []}
     for r in rows:
         rs = r["rs_rating"]
-        pct = float(r["fwd_return"])
         if rs is None:
             continue
-        if rs >= 80:
-            bucket_rows["80+"].append(pct)
-        elif rs >= 50:
-            bucket_rows["50-79"].append(pct)
-        else:
-            bucket_rows["under_50"].append(pct)
-
+        (bucket_rows["80+"] if rs >= 80 else bucket_rows["50-79"] if rs >= 50 else bucket_rows["under_50"]).append(r["fwd_return"])
     rs_breakdown = []
-    for label, returns in bucket_rows.items():
-        if not returns:
-            continue
-        wins_b = sum(1 for p in returns if p > 0)
-        rs_breakdown.append({
-            "rs_bucket": label,
-            "n": len(returns),
-            "win_rate": round(100 * wins_b / len(returns), 1),
-            "avg_return": round(sum(returns) / len(returns), 2),
-        })
+    for label, rets in bucket_rows.items():
+        if rets:
+            rs_breakdown.append({
+                "rs_bucket": label, "n": len(rets),
+                "win_rate": round(100 * sum(1 for p in rets if p > 0) / len(rets), 1),
+                "avg_return": round(sum(rets) / len(rets), 2),
+            })
 
-    # Monthly + quarterly breakdown — the overall win rate can hide a lot:
-    # a pattern that only works in trending/bullish stretches and loses
-    # money in choppy ones still averages out to "profitable overall".
-    # Grouping by the signal's own timestamp (not the resolution date)
-    # shows whether performance is consistent period to period or
-    # concentrated in a few strong months.
-    def _period_breakdown(rows, period_key_fn):
+    def _period_breakdown(period_key_fn):
         buckets = {}
         for r in rows:
-            key = period_key_fn(r["timestamp"])
-            buckets.setdefault(key, []).append(float(r["fwd_return"]))
-        out = []
-        for key in sorted(buckets.keys()):
-            returns = buckets[key]
-            wins_b = sum(1 for p in returns if p > 0)
-            out.append({
-                "period": key,
-                "n": len(returns),
-                "win_rate": round(100 * wins_b / len(returns), 1),
-                "avg_return": round(sum(returns) / len(returns), 2),
-            })
-        return out
+            buckets.setdefault(period_key_fn(r["timestamp"]), []).append(r["fwd_return"])
+        return [{
+            "period": key, "n": len(v),
+            "win_rate": round(100 * sum(1 for p in v if p > 0) / len(v), 1),
+            "avg_return": round(sum(v) / len(v), 2),
+        } for key, v in sorted(buckets.items())]
 
-    monthly_breakdown = _period_breakdown(rows, lambda ts: ts.strftime("%Y-%m"))
-    quarterly_breakdown = _period_breakdown(rows, lambda ts: f"{ts.year}-Q{(ts.month-1)//3+1}")
+    signals = [{
+        "ticker": r["ticker"], "date": r["timestamp"].strftime("%Y-%m-%d"),
+        "pattern_type": r["pattern_type"], "rs_rating": r["rs_rating"],
+        "entry_price": r["entry_price"], "return": round(r["fwd_return"], 2),
+    } for r in rows]
+    signals.reverse()   # newest first for the table (the curve above is chronological)
 
-    signals = [
-        {
-            "ticker": r["ticker"],
-            "date": r["timestamp"].strftime("%Y-%m-%d"),
-            "pattern_type": r["pattern_type"],
-            "rs_rating": r["rs_rating"],
-            "entry_price": r["entry_price"],
-            "return": round(float(r["fwd_return"]), 2),
-        }
-        for r in rows
-    ]
-    # Most recent first for the signal table — chronological order matters
-    # for the equity curve above, but a human scanning the list wants newest first.
-    signals.reverse()
-
+    distinct_days = len(by_day)
     return {
-        "pattern": pattern,
-        "horizon": horizon,
-        "n": n,
-        "win_rate": win_rate,
-        "avg_return": avg_return,
+        "pattern": pattern, "horizon": horizon,
+        "n": n, "n_raw": len(raw_rows),
+        "win_rate": win_rate, "avg_return": avg_return, "median_return": median_return,
+        "avg_win": avg_win, "avg_loss": avg_loss, "profit_factor": profit_factor,
+        "extreme_returns": extreme,
         "max_drawdown": round(max_dd, 2),
         "equity_curve": equity_curve,
+        "equity_method": "daily_cohorts",
         "rs_breakdown": rs_breakdown,
-        "monthly_breakdown": monthly_breakdown,
-        "quarterly_breakdown": quarterly_breakdown,
+        "monthly_breakdown": _period_breakdown(lambda ts: ts.strftime("%Y-%m")),
+        "quarterly_breakdown": _period_breakdown(lambda ts: f"{ts.year}-Q{(ts.month-1)//3+1}"),
         "signals": signals,
+        "sample": {
+            "signals_raw": len(raw_rows), "signals_independent": n,
+            "distinct_days": distinct_days,
+            "distinct_tickers": len({r["ticker"] for r in rows}),
+            "first_date": min(by_day), "last_date": max(by_day),
+            "thin": distinct_days < 20 or n < 100,
+        },
     }
 
 
 @app.get("/api/pattern-stats")
 def get_pattern_stats():
-    """Win-rate and average forward return per pattern type, computed from
-    our own scan history — only counts signals old enough to have a known
-    10-day outcome (see backfill_forward_returns in pipeline_a_scanner.py).
-    Patterns with fewer than 5 resolved signals are excluded — too small a
-    sample to mean anything yet, and will fill in naturally as more days
-    of scan history accumulate."""
+    """Win rate and average forward return per pattern type, from independent
+    signals only (same ticker+pattern counted once per holding period) and with
+    NaN returns excluded — see the backtest note above for why both matter.
+    Patterns with fewer than 5 independent 10d signals are left out."""
     with db_cursor(dict_cursor=True) as (conn, cur):
         cur.execute(
             """
-            SELECT
-                pattern_type,
-                COUNT(*) AS n,
-                ROUND(100.0 * COUNT(*) FILTER (WHERE forward_return_10d > 0) / COUNT(*), 1) AS win_rate_10d,
-                ROUND(AVG(forward_return_10d)::numeric, 2) AS avg_return_10d,
-                ROUND(100.0 * COUNT(*) FILTER (WHERE forward_return_20d > 0) / NULLIF(COUNT(*) FILTER (WHERE forward_return_20d IS NOT NULL), 0), 1) AS win_rate_20d,
-                ROUND(AVG(forward_return_20d)::numeric, 2) AS avg_return_20d
+            SELECT ticker, timestamp, pattern_type, forward_return_10d, forward_return_20d
             FROM scanned_stocks
-            WHERE pattern_type IS NOT NULL AND forward_return_10d IS NOT NULL
-            GROUP BY pattern_type
-            HAVING COUNT(*) >= 5
-            ORDER BY win_rate_10d DESC NULLS LAST
+            WHERE pattern_type IS NOT NULL
+              AND (forward_return_10d IS NOT NULL OR forward_return_20d IS NOT NULL)
+            ORDER BY timestamp ASC
             """
         )
-        rows = cur.fetchall()
-    return [dict(r) for r in rows]
+        raw = cur.fetchall()
+
+    stats = {}
+    for horizon, col in ((10, "forward_return_10d"), (20, "forward_return_20d")):
+        rows = [{"ticker": r["ticker"], "pattern_type": r["pattern_type"], "timestamp": r["timestamp"], "fwd_return": r[col]}
+                for r in raw if r[col] is not None]
+        per = {}
+        for r in _independent_signals(rows, horizon):
+            per.setdefault(r["pattern_type"], []).append(r["fwd_return"])
+        for ptype, rets in per.items():
+            stats.setdefault(ptype, {"pattern_type": ptype})[horizon] = rets
+
+    out = []
+    for ptype, d in stats.items():
+        r10, r20 = d.get(10, []), d.get(20, [])
+        if len(r10) < 5:
+            continue
+        out.append({
+            "pattern_type": ptype,
+            "n": len(r10), "n_20d": len(r20),
+            "win_rate_10d": round(100 * sum(1 for x in r10 if x > 0) / len(r10), 1),
+            "avg_return_10d": round(sum(r10) / len(r10), 2),
+            "win_rate_20d": round(100 * sum(1 for x in r20 if x > 0) / len(r20), 1) if r20 else None,
+            "avg_return_20d": round(sum(r20) / len(r20), 2) if r20 else None,
+        })
+    out.sort(key=lambda x: x["win_rate_10d"], reverse=True)
+    return out
+
+
+# ------------------------------------------------------------------
+# Article preview (v12): what the news drawer shows beyond the headline.
+#
+# Many of our feeds (the Google News search feeds especially) deliver only a
+# headline, so the drawer used to repeat it. This endpoint fetches the article
+# page on demand and returns a SHORT excerpt — the publisher's own meta
+# description plus the first lines of the text — with the source and a link,
+# like a link preview. It is not full-article scraping: the excerpt is capped,
+# attributed, and the drawer always links to the original.
+#
+# Safety: only http(s); every hop (including redirects) must resolve to a
+# PUBLIC address (no localhost / private ranges / cloud metadata — SSRF);
+# 6s timeout, 600 KB cap, HTML only. Google News redirect links need
+# JavaScript to resolve, so they are reported as unavailable instead of fetched.
+# ------------------------------------------------------------------
+import ipaddress
+import socket
+from html.parser import HTMLParser
+from urllib.parse import urlparse, urljoin
+
+_preview_cache: dict = {}
+_PREVIEW_TTL_SEC = 6 * 3600
+_PREVIEW_CACHE_MAX = 300
+_PREVIEW_MAX_BYTES = 600_000
+_PREVIEW_UA = "Mozilla/5.0 (compatible; SwingDeskLinkPreview/1.0)"
+
+
+def _host_is_public(host: str) -> bool:
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except Exception:
+        return False
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+            return False
+    return bool(infos)
+
+
+class _ArticleExtractor(HTMLParser):
+    _SKIP = {"script", "style", "nav", "footer", "aside", "header", "form", "noscript", "svg", "figure"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.meta = {}
+        self.title = ""
+        self.paragraphs = []
+        self._skip_depth = 0
+        self._in_p = False
+        self._buf = []
+        self._in_title = False
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "meta":
+            key = (a.get("property") or a.get("name") or "").lower()
+            if key and a.get("content"):
+                self.meta.setdefault(key, a["content"].strip())
+        elif tag == "title":
+            self._in_title = True
+        elif tag in self._SKIP:
+            self._skip_depth += 1
+        elif tag == "p" and self._skip_depth == 0:
+            self._in_p, self._buf = True, []
+
+    def handle_endtag(self, tag):
+        if tag == "title":
+            self._in_title = False
+        elif tag in self._SKIP and self._skip_depth > 0:
+            self._skip_depth -= 1
+        elif tag == "p" and self._in_p:
+            text = re.sub(r"\s+", " ", "".join(self._buf)).strip()
+            self._in_p = False
+            if len(text) >= 80 and len(self.paragraphs) < 6:
+                self.paragraphs.append(text)
+
+    def handle_data(self, data):
+        if self._in_title:
+            self.title += data
+        elif self._in_p and self._skip_depth == 0:
+            self._buf.append(data)
+
+
+def _fetch_article_html(url: str):
+    """Manual redirect loop so each hop can be checked against the SSRF rules."""
+    for _ in range(4):
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or not _host_is_public(parsed.hostname):
+            raise ValueError("blocked url")
+        r = requests.get(url, headers={"User-Agent": _PREVIEW_UA, "Accept": "text/html,application/xhtml+xml"},
+                         timeout=(4, 6), stream=True, allow_redirects=False)
+        if r.is_redirect or r.status_code in (301, 302, 303, 307, 308):
+            url = urljoin(url, r.headers.get("Location", ""))
+            r.close()
+            continue
+        r.raise_for_status()
+        if "html" not in (r.headers.get("Content-Type", "").lower()):
+            r.close()
+            raise ValueError("not html")
+        chunks, size = [], 0
+        for chunk in r.iter_content(65536):
+            chunks.append(chunk)
+            size += len(chunk)
+            if size >= _PREVIEW_MAX_BYTES:
+                break
+        r.close()
+        enc = r.encoding or "utf-8"
+        return url, b"".join(chunks).decode(enc, errors="replace")
+    raise ValueError("too many redirects")
+
+
+def _clip(text: str, n: int) -> str:
+    text = (text or "").strip()
+    return text if len(text) <= n else text[:n].rsplit(" ", 1)[0] + "…"
+
+
+@app.get("/api/article-preview")
+def article_preview(url: str = Query(..., max_length=2000), lang: str = Query(default="en", pattern="^(en|he)$")):
+    """Short, attributed excerpt of a news article for the drawer. Never raises:
+    returns {"available": false, "reason": ...} when the page cannot be previewed."""
+    host = (urlparse(url).hostname or "").lower()
+    if host.endswith("news.google.com"):
+        return {"available": False, "reason": "aggregator"}   # JS-only redirect link — open the original instead
+    key = (url, lang)
+    hit = _preview_cache.get(key)
+    if hit and time.time() - hit[0] < _PREVIEW_TTL_SEC:
+        return hit[1]
+    try:
+        final_url, html_text = _fetch_article_html(url)
+        ex = _ArticleExtractor()
+        ex.feed(html_text)
+        desc = ex.meta.get("og:description") or ex.meta.get("twitter:description") or ex.meta.get("description") or ""
+        title = ex.meta.get("og:title") or ex.title.strip()
+        paras = [p for p in ex.paragraphs if p[:60] not in desc]
+        body = _clip(" ".join(paras[:3]), 700)
+        desc = _clip(desc, 400)
+        if not desc and not body:
+            result = {"available": False, "reason": "no_text"}
+        else:
+            if lang == "he":
+                desc_t = _translate_headline_free(desc) if desc else ""
+                body_t = _translate_headline_free(body[:450]) if body else ""
+            else:
+                desc_t, body_t = desc, body
+            result = {
+                "available": True,
+                "title": _clip(title, 200),
+                "site": ex.meta.get("og:site_name") or (urlparse(final_url).hostname or "").replace("www.", ""),
+                "published": ex.meta.get("article:published_time") or ex.meta.get("og:updated_time") or "",
+                "description": desc_t, "body": body_t,
+                "translated": lang == "he", "url": final_url,
+            }
+    except Exception as e:
+        print(f"[info] article preview failed for {host}: {type(e).__name__}: {e}")
+        result = {"available": False, "reason": "fetch_failed"}
+    if len(_preview_cache) >= _PREVIEW_CACHE_MAX:
+        _preview_cache.clear()
+    _preview_cache[key] = (time.time(), result)
+    return result
 
 
 @app.get("/api/macro-news")
