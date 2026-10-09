@@ -17,6 +17,7 @@ Endpoints:
     GET /api/daily-digest        -> non-AI daily news digest (critical items + one highlight per category)
     GET /api/technical-setup/{ticker} -> deep-dive: is a chart pattern currently forming/approaching for this ticker
     GET /api/watchlist-setups    -> same pattern scan as above, run across the whole watchlist at once
+    GET /api/demo-portfolio      -> the historical test as a paper-trading account (score / fixed amount / stop-target exit)
     GET /api/article-preview     -> short attributed excerpt of a news article (drawer detail)
     GET /api/econ-calendar       -> upcoming US economic events (CPI/NFP/FOMC/...) with forecast/previous/actual (econ_calendar.py)
 
@@ -233,6 +234,11 @@ def init_db():
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS atr_pct REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS rs_rating INTEGER;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS pattern_type TEXT;")
+    # Demo-portfolio simulation outcomes (computed by the scanner: pipeline_a_scanner.backfill_sim_outcomes)
+    for _col, _typ in (("sim_stop", "REAL"), ("sim_target", "REAL"), ("sim_exit_reason", "TEXT"),
+                       ("sim_exit_price", "REAL"), ("sim_exit_days", "INTEGER"), ("sim_exit_date", "DATE"),
+                       ("sim_exit_return", "REAL")):
+        cur.execute(f"ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS {_col} {_typ};")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS forward_return_10d REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS forward_return_20d REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS days_to_earnings INTEGER;")
@@ -499,6 +505,192 @@ def get_backtest(
             "first_date": min(by_day), "last_date": max(by_day),
             "thin": distinct_days < 20 or n < 100,
         },
+    }
+
+
+# ------------------------------------------------------------------
+# Demo portfolio (v12): the "historical test" as a paper-trading account.
+#
+# Rules (the stop / target / time outcome of every signal is computed by the
+# scanner, which has the daily bars — see pipeline_a_scanner.simulate_trade):
+#   * every scan day, buy up to `top_per_day` signals with swing_score >= min_score
+#     (best score first), a FIXED dollar amount each, no double position in one ticker
+#   * a position is only opened if there is enough cash (that is what makes the
+#     account size matter)
+#   * exit at the stop (support), at the target (resistance), or after 20 trading days
+#   * results count only CLOSED trades; trades still running are listed as open
+# No fees or slippage. Equity = starting capital + realized P&L.
+# ------------------------------------------------------------------
+DEMO_SCORE_STEPS = (60, 70, 80, 90)
+DEMO_DAY_BUCKETS = ((1, 3), (4, 7), (8, 14), (15, 20))
+
+
+def _run_demo_portfolio(rows, min_score, top_per_day, amount, capital):
+    """rows: evaluated signals, oldest first. Returns trades + summary stats."""
+    by_day = {}
+    for r in rows:
+        if (r["swing_score"] or 0) >= min_score:
+            by_day.setdefault(r["timestamp"].date(), []).append(r)
+
+    cash = float(capital)
+    open_pos = []          # positions still holding cash
+    trades = []
+
+    def release(upto):
+        nonlocal cash, open_pos
+        still = []
+        for p in open_pos:
+            if p["exit_date"] is not None and p["exit_date"] <= upto:
+                cash += amount * (1 + p["return_pct"] / 100)
+            else:
+                still.append(p)
+        open_pos = still
+
+    for day in sorted(by_day):
+        release(day)
+        picked = 0
+        held = {p["ticker"] for p in open_pos}
+        for r in sorted(by_day[day], key=lambda x: (-(x["swing_score"] or 0), x["ticker"])):
+            if picked >= top_per_day:
+                break
+            if r["ticker"] in held or cash < amount:
+                continue
+            exit_ret = _finite_float(r["sim_exit_return"]) if r["sim_exit_reason"] else None
+            pos = {
+                "ticker": r["ticker"], "pattern_type": r["pattern_type"], "score": r["swing_score"],
+                "entry_date": day, "entry_price": r["entry_price"],
+                "stop": r["sim_stop"], "target": r["sim_target"],
+                "reason": r["sim_exit_reason"] if exit_ret is not None else None,
+                "exit_date": r["sim_exit_date"] if exit_ret is not None else None,
+                "exit_price": r["sim_exit_price"] if exit_ret is not None else None,
+                "days": r["sim_exit_days"] if exit_ret is not None else None,
+                "return_pct": exit_ret,
+            }
+            cash -= amount
+            held.add(r["ticker"])
+            open_pos.append(pos)
+            trades.append(pos)
+            picked += 1
+
+    closed = [t for t in trades if t["return_pct"] is not None]
+    opened = [t for t in trades if t["return_pct"] is None]
+    for t in closed:
+        t["pnl"] = round(amount * t["return_pct"] / 100, 2)
+
+    wins = [t for t in closed if t["pnl"] > 0]
+    losses = [t for t in closed if t["pnl"] <= 0]
+    total_pnl = round(sum(t["pnl"] for t in closed), 2)
+    gross_loss = abs(sum(t["pnl"] for t in losses))
+    summary = {
+        "trades_total": len(trades), "trades_closed": len(closed), "trades_open": len(opened),
+        "win_rate": round(100 * len(wins) / len(closed), 1) if closed else None,
+        "total_pnl": total_pnl,
+        "total_return_pct": round(total_pnl / capital * 100, 2),
+        "avg_return_pct": round(sum(t["return_pct"] for t in closed) / len(closed), 2) if closed else None,
+        "avg_win": round(sum(t["pnl"] for t in wins) / len(wins), 2) if wins else None,
+        "avg_loss": round(sum(t["pnl"] for t in losses) / len(losses), 2) if losses else None,
+        "profit_factor": round(sum(t["pnl"] for t in wins) / gross_loss, 2) if gross_loss > 0 else None,
+        "avg_days": round(sum(t["days"] for t in closed) / len(closed), 1) if closed else None,
+        "cash_invested_open": round(len(opened) * amount, 2),
+    }
+
+    # realized equity curve, one point per exit date
+    by_exit = {}
+    for t in closed:
+        by_exit.setdefault(t["exit_date"], 0.0)
+        by_exit[t["exit_date"]] += t["pnl"]
+    equity, peak, max_dd = float(capital), float(capital), 0.0
+    curve = []
+    if trades:
+        curve.append({"date": min(t["entry_date"] for t in trades).isoformat(), "equity": round(equity, 2)})
+    for d in sorted(by_exit):
+        equity += by_exit[d]
+        peak = max(peak, equity)
+        max_dd = min(max_dd, (equity - peak) / peak * 100)
+        curve.append({"date": d.isoformat(), "equity": round(equity, 2)})
+    summary["max_drawdown"] = round(max_dd, 2)
+    summary["final_equity"] = round(equity, 2)
+
+    # how it looks after N days held, and how trades ended
+    after_days = []
+    for lo, hi in DEMO_DAY_BUCKETS:
+        b = [t for t in closed if lo <= t["days"] <= hi]
+        if b:
+            after_days.append({
+                "range": f"{lo}-{hi}", "n": len(b),
+                "win_rate": round(100 * sum(1 for t in b if t["pnl"] > 0) / len(b), 1),
+                "avg_return_pct": round(sum(t["return_pct"] for t in b) / len(b), 2),
+                "pnl": round(sum(t["pnl"] for t in b), 2),
+            })
+    exits = []
+    for reason in ("target", "stop", "time"):
+        b = [t for t in closed if t["reason"] == reason]
+        if b:
+            exits.append({"reason": reason, "n": len(b),
+                          "avg_return_pct": round(sum(t["return_pct"] for t in b) / len(b), 2),
+                          "pnl": round(sum(t["pnl"] for t in b), 2)})
+
+    return {"trades": trades, "summary": summary, "equity_curve": curve, "after_days": after_days, "exits": exits}
+
+
+@app.get("/api/demo-portfolio")
+def get_demo_portfolio(
+    min_score: int = Query(default=80, ge=50, le=100),
+    top_per_day: int = Query(default=3, ge=1, le=10),
+    amount: int = Query(default=1000, ge=100, le=100000),
+    capital: int = Query(default=10000, ge=1000, le=10000000),
+):
+    """Replays the demo portfolio over our scan history (see the note above)."""
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute(
+            """
+            SELECT ticker, timestamp, swing_score, pattern_type, entry_price, sim_stop, sim_target,
+                   sim_exit_reason, sim_exit_price, sim_exit_days, sim_exit_date, sim_exit_return
+            FROM scanned_stocks
+            WHERE pattern_type IS NOT NULL AND swing_score >= %s AND sim_stop IS NOT NULL
+              AND (sim_exit_return IS NULL OR sim_exit_return <> 'NaN')
+            ORDER BY timestamp ASC
+            """,
+            (min(DEMO_SCORE_STEPS),),
+        )
+        rows = cur.fetchall()
+        cur.execute(
+            """SELECT COUNT(*) AS pending FROM scanned_stocks
+               WHERE pattern_type IS NOT NULL AND swing_score >= %s AND sim_stop IS NULL""",
+            (min(DEMO_SCORE_STEPS),),
+        )
+        pending = cur.fetchone()["pending"]
+
+    main = _run_demo_portfolio(rows, min_score, top_per_day, amount, capital)
+
+    by_min_score = []
+    for step in DEMO_SCORE_STEPS:
+        sm = _run_demo_portfolio(rows, step, top_per_day, amount, capital)["summary"]
+        by_min_score.append({"min_score": step, "trades_closed": sm["trades_closed"], "win_rate": sm["win_rate"],
+                             "total_pnl": sm["total_pnl"], "avg_return_pct": sm["avg_return_pct"]})
+
+    trades = []
+    for t in reversed(main["trades"][-60:]):   # newest first
+        trades.append({
+            "ticker": t["ticker"], "pattern_type": t["pattern_type"], "score": t["score"],
+            "entry_date": t["entry_date"].isoformat(), "entry_price": t["entry_price"],
+            "stop": t["stop"], "target": t["target"], "reason": t["reason"],
+            "exit_date": t["exit_date"].isoformat() if t["exit_date"] else None,
+            "exit_price": t["exit_price"], "days": t["days"], "return_pct": t["return_pct"], "pnl": t.get("pnl"),
+        })
+
+    days = sorted({r["timestamp"].date() for r in rows})
+    closed_n = main["summary"]["trades_closed"]
+    return {
+        "params": {"min_score": min_score, "top_per_day": top_per_day, "amount": amount, "capital": capital,
+                   "max_hold_days": 20},
+        "summary": main["summary"], "equity_curve": main["equity_curve"],
+        "after_days": main["after_days"], "exits": main["exits"], "by_min_score": by_min_score,
+        "trades": trades,
+        "sample": {"signals_evaluated": len(rows), "signals_pending_simulation": pending,
+                   "scan_days": len(days), "first_date": days[0].isoformat() if days else None,
+                   "last_date": days[-1].isoformat() if days else None,
+                   "thin": len(days) < 20 or closed_n < 30},
     }
 
 
@@ -3373,12 +3565,15 @@ def get_earnings_calendar():
 # ------------------------------------------------------------------
 
 @app.get("/api/econ-calendar")
-def get_econ_calendar(days: int = Query(21, ge=1, le=60), limit: int = Query(14, ge=1, le=40)):
+def get_econ_calendar(days: int = Query(21, ge=1, le=60), limit: int = Query(14, ge=1, le=40),
+                      month: Optional[str] = Query(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$")):
     """Upcoming (and just-released) US macro events: date/time (ET + UTC),
     impact, forecast / previous / actual, surprise vs forecast, short
     explanation and 'what it affects'. Never 500s: a provider failure just
     leaves fields empty and is reported in meta.providers."""
     try:
+        if month:   # monthly calendar view: every event of that month
+            return econ_calendar.build_month(get_conn, int(month[:4]), int(month[5:7]))
         return econ_calendar.build_calendar(get_conn, days=days, limit=limit)
     except Exception as e:
         print(f"[error] econ-calendar failed: {e}")

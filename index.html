@@ -129,6 +129,18 @@
   .bt-stat-card .k{font-size:10.5px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;}
   .bt-stat-card .v{font-family:'JetBrains Mono',monospace;font-size:19px;font-weight:700;}
   .bt-stat-card .sub{font-size:10.5px;color:var(--text-dim);margin-top:2px;}
+  .demo-controls{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:14px;}
+  .demo-ctl-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:8px;}
+  .demo-ctl-label{font-size:12px;color:var(--text-dim);min-width:130px;}
+  .demo-chip{background:var(--panel-2);border:1px solid var(--line);color:var(--text-dim);font-family:inherit;font-size:12px;padding:4px 11px;border-radius:999px;cursor:pointer;}
+  .demo-chip.active{background:rgba(232,163,61,.14);border-color:var(--amber);color:var(--amber);}
+  .demo-rules{font-size:12px;color:var(--text-dim);line-height:1.6;margin-top:4px;}
+  .demo-h{font-size:13px;font-weight:700;margin:18px 0 8px;}
+  .demo-badge{font-size:11px;padding:1px 8px;border-radius:999px;white-space:nowrap;}
+  .demo-badge.target{background:rgba(62,207,126,.14);color:var(--green);}
+  .demo-badge.stop{background:rgba(239,91,91,.14);color:var(--red);}
+  .demo-badge.time{background:var(--panel-2);color:var(--text-dim);}
+  .demo-badge.open{background:rgba(53,179,163,.14);color:var(--teal);}
   .bt-warn{background:rgba(232,163,61,.1);border:1px solid var(--amber);border-radius:8px;padding:9px 12px;margin-bottom:12px;font-size:12.5px;line-height:1.55;color:var(--text);}
   .bt-chart-wrap{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;height:260px;margin-bottom:16px;}
   .bt-rs-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px;}
@@ -445,6 +457,41 @@
   .econ-chip{font-size:10.5px;padding:2px 7px;border-radius:999px;background:var(--panel);border:1px solid var(--line);color:var(--text);}
   .econ-more{margin-top:8px;font-size:11.5px;color:var(--teal);}
   .econ-explain{margin-top:8px;padding-top:8px;border-top:1px dashed var(--line);font-size:12.5px;line-height:1.55;color:var(--text);}
+  /* monthly calendar */
+  .cal-nav{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;}
+  .cal-nav-title{font-family:'Frank Ruhl Libre',serif;font-weight:700;font-size:18px;}
+  .cal-nav-btn{background:var(--panel-2);border:1px solid var(--line);color:var(--text);font-family:inherit;font-size:13px;padding:5px 12px;border-radius:8px;cursor:pointer;}
+  .cal-nav-btn:hover{border-color:#39414f;}
+  .cal-summary{font-size:12.5px;color:var(--text-dim);margin-bottom:10px;line-height:1.6;}
+  .cal-summary b{color:var(--text);}
+  .cal-wd{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:4px;}
+  .cal-wd div{text-align:center;font-size:11px;color:var(--text-dim);}
+  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;}
+  .cal-cell{min-height:92px;background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:5px 6px;cursor:pointer;overflow:hidden;}
+  .cal-cell:hover{border-color:#39414f;}
+  .cal-cell.empty{background:transparent;border:none;cursor:default;}
+  .cal-cell.past{opacity:.72;}
+  .cal-cell.today{border-color:var(--amber);}
+  .cal-cell.sel{box-shadow:0 0 0 2px var(--teal);}
+  .cal-num{font-size:11.5px;color:var(--text-dim);margin-bottom:2px;}
+  .cal-cell.today .cal-num{color:var(--amber);font-weight:700;}
+  .cal-pill{display:block;font-size:10.5px;line-height:1.35;border-radius:4px;padding:1px 5px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .cal-pill.high{background:rgba(239,91,91,.16);color:#f08a8a;}
+  .cal-pill.medium{background:rgba(232,163,61,.14);color:var(--amber);}
+  .cal-pill.est{border:1px dashed currentColor;}
+  .cal-more{font-size:10px;color:var(--text-dim);margin-top:2px;}
+  .cal-dots{display:none;flex-wrap:wrap;gap:3px;margin-top:4px;}
+  .cal-dot{width:7px;height:7px;border-radius:50%;}
+  .cal-dot.high{background:var(--red);}
+  .cal-dot.medium{background:var(--amber);}
+  .cal-legend{display:flex;flex-wrap:wrap;gap:12px;font-size:11px;color:var(--text-dim);margin:10px 0 4px;}
+  .cal-day-title{font-size:14px;font-weight:700;margin:16px 0 8px;}
+  @media(max-width:480px){
+    .cal-cell{min-height:50px;padding:4px;}
+    .cal-pill,.cal-more{display:none;}
+    .cal-dots{display:flex;}
+    .cal-nav-title{font-size:16px;}
+  }
   .econ-foot{color:var(--text-dim);font-size:10.5px;margin-top:12px;line-height:1.5;}
   @media(max-width:480px){
     .econ-grid{grid-template-columns:1fr;}
@@ -593,11 +640,16 @@
       <div class="econ-box">
         <div class="econ-head">
           <div>
-            <div class="econ-title" id="econ-title">📅 אירועי שוק קרובים</div>
+            <div class="econ-title" id="econ-title">📅 לוח אירועי שוק</div>
             <div class="econ-sub" id="econ-sub"></div>
           </div>
+          <div class="movers-toggle">
+            <button class="movers-toggle-btn active" id="econ-view-btn-month" onclick="setEconView('month')">🗓 חודשי</button>
+            <button class="movers-toggle-btn" id="econ-view-btn-list" onclick="setEconView('list')">📋 רשימה</button>
+          </div>
         </div>
-        <div id="econ-wrap"><div class="movers-empty" id="econ-loading">טוען אירועים… בטעינה הראשונה (כשהשרת "התעורר") זה יכול לקחת עד חצי דקה</div></div>
+        <div id="econ-month-wrap"><div class="movers-empty">טוען לוח חודשי…</div></div>
+        <div id="econ-wrap" style="display:none;"><div class="movers-empty" id="econ-loading">טוען אירועים… בטעינה הראשונה (כשהשרת "התעורר") זה יכול לקחת עד חצי דקה</div></div>
         <div class="econ-foot" id="econ-foot"></div>
       </div>
     </div>
@@ -628,6 +680,19 @@
 
 <div id="page-backtest" style="display:none;">
   <div class="pulse-page-wrap">
+    <div class="pulse-view-switch">
+      <button class="pulse-view-btn active" id="bt-view-btn-demo" onclick="setBtView('demo')">💼 תיק דמו</button>
+      <button class="pulse-view-btn" id="bt-view-btn-stats" onclick="setBtView('stats')">📊 סטטיסטיקת איתותים</button>
+    </div>
+
+    <!-- View 1: demo portfolio (the historical test as a paper-trading account) -->
+    <div id="bt-view-demo">
+      <div id="demo-controls"></div>
+      <div id="demo-content"><div class="movers-empty">טוען...</div></div>
+    </div>
+
+    <!-- View 2: signal statistics (previous backtest view) -->
+    <div id="bt-view-stats" style="display:none;">
     <div class="pulse-section-head">
       <div class="pulse-section-title" id="backtest-title">בדיקה היסטורית</div>
       <div class="movers-toggle" id="backtest-horizon-toggle">
@@ -641,6 +706,7 @@
     <div id="backtest-pattern-summary"></div>
 
     <div id="backtest-content"></div>
+    </div><!-- /bt-view-stats -->
   </div>
 </div>
 
@@ -1718,12 +1784,162 @@ function setPage(page){
   document.getElementById('page-backtest').style.display = page==='backtest' ? '' : 'none';
   document.getElementById('page-deepdive').style.display = page==='deepdive' ? '' : 'none';
   if(page === 'pulse') ensurePulseViewLoaded();
-  if(page === 'backtest' && !backtestLoaded){
+  if(page === 'backtest') ensureBtViewLoaded();
+}
+
+// ---- Backtest page: demo portfolio | signal statistics ----
+let btView = 'demo';
+let demoLoaded = false;
+function setBtView(v){
+  btView = v;
+  document.getElementById('bt-view-demo').style.display = v==='demo' ? '' : 'none';
+  document.getElementById('bt-view-stats').style.display = v==='stats' ? '' : 'none';
+  document.getElementById('bt-view-btn-demo').classList.toggle('active', v==='demo');
+  document.getElementById('bt-view-btn-stats').classList.toggle('active', v==='stats');
+  ensureBtViewLoaded();
+}
+function ensureBtViewLoaded(){
+  if(btView === 'demo' && !demoLoaded){ demoLoaded = true; loadDemoPortfolio(); }
+  if(btView === 'stats' && !backtestLoaded){
     backtestLoaded = true;
     loadBacktestPatterns();
     loadBacktestPatternSummary();
     loadBacktestData();
   }
+}
+
+
+// ---- Demo portfolio (the historical test as a paper-trading account) ----
+let demoParams = { min_score: 80, top_per_day: 3, amount: 1000, capital: 10000 };
+let demoData = null;
+let demoChartInstance = null;
+
+async function loadDemoPortfolio(){
+  const el = document.getElementById('demo-content');
+  renderDemoControls();
+  if(!demoData) el.innerHTML = `<div class="movers-empty">${lang==='en'?'Running the demo portfolio…':'מריץ את תיק הדמו…'}</div>`;
+  const q = new URLSearchParams(demoParams).toString();
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/api/demo-portfolio?${q}`, 30000);
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    demoData = await res.json();
+    renderDemoPortfolio();
+  } catch(e) {
+    console.error('[demo-portfolio] load failed', e);
+    el.innerHTML = `<div class="movers-empty">${lang==='en'?'Could not load the demo portfolio right now.':'לא ניתן לטעון את תיק הדמו כרגע.'}</div>`;
+  }
+}
+
+function setDemoParam(key, val){
+  demoParams[key] = val;
+  loadDemoPortfolio();
+}
+
+function renderDemoControls(){
+  const en = lang==='en';
+  const chips = (key, opts, fmt) => opts.map(o => `<button class="demo-chip ${demoParams[key]===o?'active':''}" onclick="setDemoParam('${key}', ${o})">${fmt(o)}</button>`).join('');
+  document.getElementById('demo-controls').innerHTML = `
+    <div class="demo-controls">
+      <div class="demo-ctl-row"><span class="demo-ctl-label">${en?'Minimum score to buy':'ציון מינימלי לקנייה'}</span>${chips('min_score',[70,75,80,85,90],o=>'≥ '+o)}</div>
+      <div class="demo-ctl-row"><span class="demo-ctl-label">${en?'Fixed amount per trade':'סכום קבוע לעסקה'}</span>${chips('amount',[500,1000,2000,5000],o=>'$'+o.toLocaleString())}</div>
+      <div class="demo-ctl-row"><span class="demo-ctl-label">${en?'Max buys per day':'מקסימום קניות ביום'}</span>${chips('top_per_day',[1,3,5],o=>String(o))}</div>
+      <div class="demo-ctl-row"><span class="demo-ctl-label">${en?'Account size':'גודל התיק'}</span>${chips('capital',[10000,25000,100000],o=>'$'+o.toLocaleString())}</div>
+      <div class="demo-rules">${en
+        ? 'Rules: each scan day the portfolio buys the best-scoring signals (up to the daily limit) with a fixed amount, only if it has the cash and does not already hold the stock. It exits at the <b>stop</b> (support), at the <b>target</b> (resistance), or after <b>20 trading days</b> — whichever comes first. If one day touches both, the stop is assumed first. No fees or slippage.'
+        : 'הכללים: בכל יום סריקה התיק קונה את האיתותים עם הציון הגבוה ביותר (עד המגבלה היומית) בסכום קבוע — רק אם יש בו מזומן והוא עוד לא מחזיק את המניה. יציאה ב<b>סטופ</b> (תמיכה), ב<b>יעד</b> (התנגדות) או אחרי <b>20 ימי מסחר</b> — מה שקורה ראשון. אם ביום אחד נגעו בשניהם, מניחים שהסטופ קרה קודם. בלי עמלות והחלקה.'}</div>
+    </div>`;
+}
+
+function renderDemoPortfolio(){
+  const el = document.getElementById('demo-content');
+  const d = demoData;
+  if(!el || !d) return;
+  const en = lang==='en';
+  const s = d.summary, sm = d.sample, p = d.params;
+  const usd = v => v==null ? '—' : `${v<0?'-':''}$${Math.abs(v).toLocaleString(undefined,{maximumFractionDigits:0})}`;
+  const usdS = v => v==null ? '—' : `${v>=0?'+':'-'}$${Math.abs(v).toLocaleString(undefined,{maximumFractionDigits:0})}`;
+  const pct = v => v==null ? '—' : `${v>=0?'+':''}${v}%`;
+  const col = v => v==null ? 'var(--text)' : (v>=0 ? 'var(--green)' : 'var(--red)');
+  const reasonLbl = r => r==='target' ? (en?'🎯 Target':'🎯 יעד') : r==='stop' ? (en?'🛑 Stop':'🛑 סטופ') : r==='time' ? (en?'⏱ 20 days':'⏱ 20 ימים') : (en?'● Open':'● פתוחה');
+
+  if(!s.trades_total){
+    el.innerHTML = `<div class="bt-warn">${en
+      ? `No trades yet for these settings. ${sm.signals_pending_simulation ? `${sm.signals_pending_simulation} signals are still waiting for the scanner to simulate them — run the scanner and check again.` : 'Try a lower minimum score.'}`
+      : `אין עדיין עסקאות בהגדרות האלה. ${sm.signals_pending_simulation ? `${sm.signals_pending_simulation} איתותים עדיין ממתינים לסימולציה של הסורק — הרץ את הסורק ובדוק שוב.` : 'נסה ציון מינימלי נמוך יותר.'}`}</div>`;
+    return;
+  }
+
+  const thin = sm.thin ? `<div class="bt-warn">⚠️ ${en
+    ? `Early results: ${s.trades_closed} closed trades from ${sm.scan_days} scan day${sm.scan_days===1?'':'s'} (${sm.first_date} → ${sm.last_date}). Too little to tell skill from luck — the numbers get meaningful as the history builds up.`
+    : `תוצאות ראשוניות: ${s.trades_closed} עסקאות סגורות מ-${sm.scan_days} ימי סריקה (${sm.first_date} ← ${sm.last_date}). מעט מדי כדי להבדיל בין כישרון למזל — המספרים הופכים למשמעותיים ככל שההיסטוריה מצטברת.`}</div>` : '';
+  const pending = sm.signals_pending_simulation ? `<div style="font-size:11px;color:var(--text-dim);margin:-6px 2px 10px;">${en
+    ? `${sm.signals_pending_simulation} older signals are still waiting to be simulated by the scanner.`
+    : `${sm.signals_pending_simulation} איתותים ישנים עדיין ממתינים לסימולציה של הסורק.`}</div>` : '';
+
+  const cards = `
+    <div class="bt-stats-row">
+      <div class="bt-stat-card"><div class="k">${en?'Account now':'שווי התיק (מומש)'}</div><div class="v" style="color:${col(s.total_pnl)}">${usd(s.final_equity)}</div><div class="sub">${en?'started with':'התחלה:'} ${usd(p.capital)}</div></div>
+      <div class="bt-stat-card"><div class="k">${en?'Profit / loss':'רווח / הפסד'}</div><div class="v" style="color:${col(s.total_pnl)}">${usdS(s.total_pnl)}</div><div class="sub">${pct(s.total_return_pct)} ${en?'of the account':'מהתיק'}</div></div>
+      <div class="bt-stat-card"><div class="k">${en?'Win rate':'אחוז הצלחה'}</div><div class="v">${s.win_rate==null?'—':s.win_rate+'%'}</div><div class="sub">${s.trades_closed} ${en?'closed trades':'עסקאות סגורות'}</div></div>
+      <div class="bt-stat-card"><div class="k">${en?'Avg win / avg loss':'רווח ממוצע / הפסד ממוצע'}</div><div class="v" style="font-size:14px;"><span style="color:var(--green)">${usdS(s.avg_win)}</span> / <span style="color:var(--red)">${usdS(s.avg_loss)}</span></div></div>
+      <div class="bt-stat-card"><div class="k">${en?'Profit factor':'פרופיט פקטור'}</div><div class="v">${s.profit_factor==null?'—':s.profit_factor}</div></div>
+      <div class="bt-stat-card"><div class="k">${en?'Max drawdown':'ירידה מקסימלית'}</div><div class="v" style="color:var(--red)">${s.max_drawdown}%</div></div>
+      <div class="bt-stat-card"><div class="k">${en?'Avg days in a trade':'ימים ממוצעים בעסקה'}</div><div class="v">${s.avg_days==null?'—':s.avg_days}</div></div>
+      <div class="bt-stat-card"><div class="k">${en?'Still open':'פוזיציות פתוחות'}</div><div class="v">${s.trades_open}</div><div class="sub">${usd(s.cash_invested_open)} ${en?'invested':'מושקעים'}</div></div>
+    </div>`;
+
+  const afterDays = d.after_days.length ? `
+    <div class="demo-h">${en?'How the trades did, by days held':'איך העסקאות הסתדרו לפי ימי החזקה'}</div>
+    <div style="overflow-x:auto;"><table class="bt-signals-table"><thead><tr>
+      <th>${en?'Days held':'ימי החזקה'}</th><th>${en?'Trades':'עסקאות'}</th><th>${en?'Win rate':'הצלחה'}</th><th>${en?'Avg return':'תשואה ממוצעת'}</th><th>${en?'Profit / loss':'רווח / הפסד'}</th></tr></thead><tbody>
+      ${d.after_days.map(r => `<tr><td>${r.range}</td><td>${r.n}</td><td>${r.win_rate}%</td><td style="color:${col(r.avg_return_pct)}">${pct(r.avg_return_pct)}</td><td style="color:${col(r.pnl)}">${usdS(r.pnl)}</td></tr>`).join('')}
+    </tbody></table></div>` : '';
+
+  const exits = d.exits.length ? `
+    <div class="demo-h">${en?'How the trades ended':'איך העסקאות הסתיימו'}</div>
+    <div style="overflow-x:auto;"><table class="bt-signals-table"><thead><tr>
+      <th>${en?'Exit':'יציאה'}</th><th>${en?'Trades':'עסקאות'}</th><th>${en?'Avg return':'תשואה ממוצעת'}</th><th>${en?'Profit / loss':'רווח / הפסד'}</th></tr></thead><tbody>
+      ${d.exits.map(r => `<tr><td>${reasonLbl(r.reason)}</td><td>${r.n}</td><td style="color:${col(r.avg_return_pct)}">${pct(r.avg_return_pct)}</td><td style="color:${col(r.pnl)}">${usdS(r.pnl)}</td></tr>`).join('')}
+    </tbody></table></div>` : '';
+
+  const byScore = `
+    <div class="demo-h">${en?'Does a higher score help? (same rules, different minimum score)':'האם ציון גבוה יותר עוזר? (אותם כללים, ציון מינימלי שונה)'}</div>
+    <div style="overflow-x:auto;"><table class="bt-signals-table"><thead><tr>
+      <th>${en?'Min score':'ציון מינימלי'}</th><th>${en?'Closed trades':'עסקאות סגורות'}</th><th>${en?'Win rate':'הצלחה'}</th><th>${en?'Avg return':'תשואה ממוצעת'}</th><th>${en?'Profit / loss':'רווח / הפסד'}</th></tr></thead><tbody>
+      ${d.by_min_score.map(r => `<tr><td>≥ ${r.min_score}</td><td>${r.trades_closed}</td><td>${r.win_rate==null?'—':r.win_rate+'%'}</td><td style="color:${col(r.avg_return_pct)}">${pct(r.avg_return_pct)}</td><td style="color:${col(r.total_pnl)}">${usdS(r.total_pnl)}</td></tr>`).join('')}
+    </tbody></table></div>`;
+
+  const trades = `
+    <div class="demo-h">${en?'Latest trades':'העסקאות האחרונות'}</div>
+    <div style="overflow-x:auto;"><table class="bt-signals-table"><thead><tr>
+      <th>${en?'Stock':'מניה'}</th><th>${en?'Score':'ציון'}</th><th>${en?'Bought':'קנייה'}</th><th>${en?'Entry':'כניסה'}</th><th>${en?'Stop / target':'סטופ / יעד'}</th><th>${en?'Exit':'יציאה'}</th><th>${en?'Days':'ימים'}</th><th>%</th><th>$</th></tr></thead><tbody>
+      ${d.trades.map(t => `<tr>
+        <td><b>${t.ticker}</b></td><td>${t.score ?? '—'}</td><td>${t.entry_date}</td><td>${t.entry_price!=null?'$'+t.entry_price.toFixed(2):'—'}</td>
+        <td style="color:var(--text-dim)">${t.stop!=null?t.stop.toFixed(2):'—'} / ${t.target!=null?t.target.toFixed(2):'—'}</td>
+        <td><span class="demo-badge ${t.reason||'open'}">${reasonLbl(t.reason)}</span></td><td>${t.days ?? '—'}</td>
+        <td style="color:${col(t.return_pct)}">${pct(t.return_pct)}</td><td style="color:${col(t.pnl)}">${usdS(t.pnl)}</td></tr>`).join('')}
+    </tbody></table></div>`;
+
+  el.innerHTML = `${thin}${pending}${cards}
+    <div class="bt-chart-wrap"><canvas id="demo-equity-canvas"></canvas></div>
+    <div style="font-size:11px;color:var(--text-dim);margin:-6px 2px 4px;">${en?'Account value over time — realized results only (a trade counts when it closes).':'שווי התיק לאורך זמן — רווחים ממומשים בלבד (עסקה נספרת כשהיא נסגרת).'}</div>
+    ${afterDays}${exits}${byScore}${trades}`;
+
+  if(typeof Chart === 'undefined' || !d.equity_curve.length) return;
+  if(demoChartInstance) demoChartInstance.destroy();
+  const up = d.equity_curve[d.equity_curve.length-1].equity >= p.capital;
+  const c = up ? '#3ecf7e' : '#ef5b5b';
+  demoChartInstance = new Chart(document.getElementById('demo-equity-canvas').getContext('2d'), {
+    type: 'line',
+    data: { labels: d.equity_curve.map(x => x.date), datasets: [
+      { data: d.equity_curve.map(x => x.equity), borderColor: c, backgroundColor: c + '1a', borderWidth: 1.8, pointRadius: d.equity_curve.length < 6 ? 4 : 0, fill: true, tension: 0.1 },
+      { data: d.equity_curve.map(() => p.capital), borderColor: 'rgba(138,147,163,.5)', borderWidth: 1, borderDash: [4,4], pointRadius: 0, fill: false },
+    ]},
+    options: { responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: (x) => `$${Math.round(x.parsed.y).toLocaleString()}` } } },
+      scales: { x: { ticks: { color: '#8a93a3', font: { size: 10 }, maxTicksLimit: 6 }, grid: { display: false } },
+                y: { position: 'right', grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8a93a3', font: { size: 10 }, callback: v => '$' + Number(v).toLocaleString() } } } }
+  });
 }
 
 // ---- Market Pulse: two views (market events | market overview) ----
@@ -1742,7 +1958,7 @@ function setPulseView(v){
 function ensurePulseViewLoaded(){   // each view loads its data only the first time it is shown
   if(pulseView === 'events' && !econLoaded){
     econLoaded = true;
-    loadEconCalendar();
+    initEconView();
   }
   if(pulseView === 'overview' && !pulseLoaded){
     pulseLoaded = true;
@@ -2337,10 +2553,7 @@ function renderEconCalendar(){
   const el = document.getElementById('econ-wrap');
   if(!el || !lastEconData) return;
   const en = lang==='en';
-  document.getElementById('econ-title').textContent = en ? '📅 Upcoming Market Events' : '📅 אירועי שוק קרובים';
-  document.getElementById('econ-sub').textContent = en
-    ? 'US economic events that can move the market — time, expectation, and what it affects'
-    : 'אירועים כלכליים בארה״ב שיכולים להזיז את השוק — מתי, מה הצפי, ומה מושפע';
+  econSetHeader();
   const events = lastEconData.events || [];
   econHasForecast = !!(lastEconData.meta && lastEconData.meta.forecast_provider && lastEconData.meta.forecast_provider !== 'none');
   if(!events.length){
@@ -2355,7 +2568,12 @@ function renderEconCalendar(){
       `<div class="econ-day-label">${label}</div><div class="econ-grid">${groups[k].map(e => econCardHtml(e, e.id===nextId)).join('')}</div>`
     ).join('');
   }
-  const prov = (lastEconData.meta && lastEconData.meta.providers) || {};
+  renderEconFoot(lastEconData.meta);
+}
+
+function renderEconFoot(meta){
+  const en = lang==='en';
+  const prov = (meta && meta.providers) || {};
   const notes = [];
   if(econHasForecast && prov.forecast && prov.forecast.ok === false) notes.push(en ? 'Forecasts are temporarily unavailable.' : 'הצפי אינו זמין זמנית.');
   if(Object.keys(prov).some(k => k.startsWith('schedule') && prov[k].ok === false)) notes.push(en ? 'The official release calendar is partly unavailable — some dates are estimates.' : 'לוח הפרסומים הרשמי זמין חלקית — חלק מהמועדים הם הערכה.');
@@ -2391,7 +2609,7 @@ function econCardHtml(e, isNext){
               : e.estimated ? `<span class="econ-badge est" title="${en?'Date is an estimate':'מועד משוער'}">${en?'est. date':'מועד משוער'}</span>` : '';
   const cd = (isNext && e.status==='upcoming') ? ` · <b style="color:var(--amber)">${econCountdown(e.datetime_utc)}</b>` : '';
   const chips = (e.affects || []).map(a => `<span class="econ-chip">${en ? a.label_en : a.label_he}</span>`).join('');
-  const open = !!econOpen[e.id];
+  const open = econOpen[e.id] !== undefined ? econOpen[e.id] : (econView === 'month');
   const explain = open ? `<div class="econ-explain"><b>${en?'What is it?':'מה זה?'}</b> ${en ? e.what_en : e.what_he}</div>` : '';
   return `<div class="econ-card ${isNext?'next':''} ${done?'done':''}" onclick="toggleEconCard('${e.id}')">
     <div class="econ-card-top">
@@ -2414,9 +2632,158 @@ function econCardHtml(e, isNext){
 }
 
 function toggleEconCard(id){
-  econOpen[id] = !econOpen[id];
-  renderEconCalendar();
+  const cur = econOpen[id] !== undefined ? econOpen[id] : (econView === 'month');
+  econOpen[id] = !cur;
+  renderEconActive();
 }
+
+// ---- Economic calendar: monthly view (default) | upcoming list ----
+let econView = 'month';
+let econMonth = null;               // 'YYYY-MM' (New York)
+let econSelDay = null;              // 'YYYY-MM-DD'
+const econMonthCache = {};          // 'YYYY-MM' -> /api/econ-calendar?month= response
+
+const ECON_SHORT = {
+  fomc:['FOMC','החלטת ריבית'], cpi:['CPI','CPI'], core_cpi:['Core CPI','CPI ליבה'], pce:['PCE','PCE'], core_pce:['Core PCE','PCE ליבה'],
+  nfp:['NFP','תעסוקה NFP'], unemployment:['Unemployment','אבטלה'], gdp:['GDP','תוצר GDP'], retail:['Retail Sales','מכירות קמעונאיות'],
+  ppi:['PPI','PPI'], ism_mfg:['ISM Mfg','ISM תעשייה'], ism_services:['ISM Svc','ISM שירותים'], jolts:['JOLTS','JOLTS'],
+  claims:['Jobless Claims','דרישות אבטלה'], consumer_conf:['Consumer Conf.','אמון צרכנים'], umich:['UMich','מישיגן'],
+};
+const econShort = e => (ECON_SHORT[e.type] || [e.name_en, e.name_he])[lang==='en' ? 0 : 1];
+
+function econSetHeader(){
+  const en = lang==='en';
+  document.getElementById('econ-title').textContent = en ? '📅 Market Events Calendar' : '📅 לוח אירועי שוק';
+  document.getElementById('econ-sub').textContent = en
+    ? 'US economic events that can move the market — when, what was expected, and what it affects'
+    : 'אירועים כלכליים בארה״ב שיכולים להזיז את השוק — מתי, מה קרה, ומה מושפע';
+  document.getElementById('econ-view-btn-month').textContent = en ? '🗓 Monthly' : '🗓 חודשי';
+  document.getElementById('econ-view-btn-list').textContent = en ? '📋 List' : '📋 רשימה';
+}
+
+function initEconView(){
+  const today = econEtDateStr(new Date());
+  econMonth = today.slice(0, 7);
+  econSelDay = today;
+  loadEconActive();
+}
+function setEconView(v){
+  econView = v;
+  document.getElementById('econ-month-wrap').style.display = v==='month' ? '' : 'none';
+  document.getElementById('econ-wrap').style.display = v==='list' ? '' : 'none';
+  document.getElementById('econ-view-btn-month').classList.toggle('active', v==='month');
+  document.getElementById('econ-view-btn-list').classList.toggle('active', v==='list');
+  loadEconActive();
+}
+function loadEconActive(){ if(econView === 'month') loadEconMonth(econMonth); else loadEconCalendar(); }
+function renderEconActive(){
+  if(econView === 'month') renderEconMonth();
+  else if(lastEconData) renderEconCalendar();
+}
+
+async function loadEconMonth(month){
+  econSetHeader();
+  if(!econMonthCache[month]) renderEconMonth();   // shows the loading state
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/api/econ-calendar?month=${month}`, 30000);
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    econMonthCache[month] = await res.json();
+    if(month === econMonth) renderEconMonth();
+  } catch(e) {
+    console.error('[econ-calendar] month load failed', e);
+    if(!econMonthCache[month]){
+      const el = document.getElementById('econ-month-wrap');
+      if(el) el.innerHTML = `<div class="movers-empty">${lang==='en'?'Could not load this month right now.':'לא ניתן לטעון את החודש הזה כרגע.'}</div>`;
+    }
+  }
+}
+
+function shiftEconMonth(delta){
+  const [y, m] = econMonth.split('-').map(Number);
+  const d = new Date(Date.UTC(y, m - 1 + delta, 1));
+  econMonth = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  econSelDay = null;
+  loadEconMonth(econMonth);
+}
+function econGoToday(){
+  const today = econEtDateStr(new Date());
+  econMonth = today.slice(0, 7);
+  econSelDay = today;
+  loadEconMonth(econMonth);
+}
+function selectEconDay(ds){ econSelDay = ds; renderEconMonth(); }
+
+function renderEconMonth(){
+  const wrap = document.getElementById('econ-month-wrap');
+  if(!wrap || !econMonth) return;
+  const en = lang==='en';
+  const data = econMonthCache[econMonth];
+  const [y, m] = econMonth.split('-').map(Number);
+  const first = new Date(Date.UTC(y, m - 1, 1));
+  const lead = first.getUTCDay();                                  // 0 = Sunday
+  const dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const loc = en ? 'en-US' : 'he-IL';
+  const monthName = new Intl.DateTimeFormat(loc, {month:'long', year:'numeric', timeZone:'UTC'}).format(first);
+  const todayStr = econEtDateStr(new Date());
+
+  const nav = `<div class="cal-nav">
+      <button class="cal-nav-btn" onclick="shiftEconMonth(-1)">${en?'‹':'›'}</button>
+      <div style="text-align:center;"><div class="cal-nav-title">${monthName}</div>
+        <button class="cal-nav-btn" style="margin-top:4px;font-size:11.5px;padding:2px 10px;" onclick="econGoToday()">${en?'Today':'היום'}</button></div>
+      <button class="cal-nav-btn" onclick="shiftEconMonth(1)">${en?'›':'‹'}</button>
+    </div>`;
+  if(!data){ wrap.innerHTML = nav + `<div class="movers-empty">${en?'Loading the month…':'טוען את החודש…'}</div>`; return; }
+
+  econHasForecast = !!(data.meta && data.meta.forecast_provider && data.meta.forecast_provider !== 'none');
+  const events = data.events || [];
+  const byDay = {};
+  events.forEach(e => (byDay[e.date_et] = byDay[e.date_et] || []).push(e));
+  Object.values(byDay).forEach(list => list.sort((a, b) => (a.impact==='high' ? 0 : 1) - (b.impact==='high' ? 0 : 1) || a.datetime_utc.localeCompare(b.datetime_utc)));
+
+  const highN = events.filter(e => e.impact==='high').length;
+  const nextEv = events.find(e => (e.status==='upcoming' || e.status==='pending') && e.impact==='high');
+  const nextTxt = nextEv ? (en
+      ? `Next big one: <b>${econShort(nextEv)}</b> · ${new Intl.DateTimeFormat(loc,{timeZone:'America/New_York',month:'short',day:'numeric'}).format(new Date(nextEv.date_et+'T12:00:00Z'))} · ${nextEv.time_et} ET`
+      : `האירוע הגדול הבא: <b>${econShort(nextEv)}</b> · ${new Intl.DateTimeFormat(loc,{timeZone:'America/New_York',month:'short',day:'numeric'}).format(new Date(nextEv.date_et+'T12:00:00Z'))} · ${nextEv.time_et} ET`) : '';
+  const summary = `<div class="cal-summary">${en
+      ? `<b>${events.length}</b> market events this month, <b>${highN}</b> of them high-impact. Tap a day for details.`
+      : `<b>${events.length}</b> אירועי שוק החודש, <b>${highN}</b> מהם בהשפעה גבוהה. לחץ על יום לפרטים.`}${nextTxt ? '<br>' + nextTxt : ''}</div>`;
+
+  // weekday header (a known Sunday-first week) and day cells
+  const wd = Array.from({length: 7}, (_, i) => new Intl.DateTimeFormat(loc, {weekday: en ? 'short' : 'narrow', timeZone:'UTC'}).format(new Date(Date.UTC(2026, 0, 4 + i))));
+  let cells = '';
+  for(let i = 0; i < lead; i++) cells += '<div class="cal-cell empty"></div>';
+  for(let d = 1; d <= dim; d++){
+    const ds = `${econMonth}-${String(d).padStart(2, '0')}`;
+    const list = byDay[ds] || [];
+    const pills = list.slice(0, 3).map(e => `<span class="cal-pill ${e.impact} ${e.estimated?'est':''}">${e.actual?'✓ ':''}${econShort(e)}</span>`).join('');
+    const more = list.length > 3 ? `<div class="cal-more">+${list.length - 3}</div>` : '';
+    const dots = list.map(e => `<span class="cal-dot ${e.impact}"></span>`).join('');
+    cells += `<div class="cal-cell ${ds===todayStr?'today':''} ${ds<todayStr?'past':''} ${ds===econSelDay?'sel':''}" onclick="selectEconDay('${ds}')">
+      <div class="cal-num">${d}</div>${pills}${more}<div class="cal-dots">${dots}</div></div>`;
+  }
+
+  const legend = `<div class="cal-legend">
+      <span><span class="cal-dot high" style="display:inline-block"></span> ${en?'High impact':'השפעה גבוהה'}</span>
+      <span><span class="cal-dot medium" style="display:inline-block"></span> ${en?'Medium impact':'השפעה בינונית'}</span>
+      <span>✓ ${en?'released':'פורסם'}</span>
+      <span><span class="cal-pill medium est" style="display:inline-block;margin:0">${en?'dashed':'מקווקו'}</span> ${en?'estimated date':'מועד משוער'}</span>
+      <span>${en?'Times are New York (ET)':'השעות לפי ניו יורק (ET)'}</span></div>`;
+
+  // details of the selected day
+  let detail = '';
+  if(econSelDay && econSelDay.startsWith(econMonth)){
+    const list = (byDay[econSelDay] || []).slice().sort((a, b) => a.datetime_utc.localeCompare(b.datetime_utc));
+    const dayName = new Intl.DateTimeFormat(loc, {weekday:'long', day:'numeric', month:'long', timeZone:'UTC'}).format(new Date(econSelDay + 'T12:00:00Z'));
+    detail = `<div class="cal-day-title">${dayName}</div>` + (list.length
+      ? `<div class="econ-grid">${list.map(e => econCardHtml(e, false)).join('')}</div>`
+      : `<div class="movers-empty">${en?'No major market events on this day.':'אין אירועי שוק מרכזיים ביום הזה.'}</div>`);
+  }
+
+  wrap.innerHTML = nav + summary + `<div class="cal-wd">${wd.map(x => `<div>${x}</div>`).join('')}</div><div class="cal-grid">${cells}</div>` + legend + detail;
+  renderEconFoot(data.meta);
+}
+
 
 // ---- Weekly earnings calendar (notable/large-cap names only) ----
 let lastEarningsCalItems = null;
@@ -4744,7 +5111,10 @@ function applyLang(){
   if(lastEarningsCalItems) renderEarningsCalendar(lastEarningsCalItems);
   document.getElementById('pulse-view-btn-events').textContent = lang==='en' ? '📅 Market Events' : '📅 אירועי שוק';
   document.getElementById('pulse-view-btn-overview').textContent = lang==='en' ? '📊 Market Overview' : '📊 מצב השוק';
-  if(lastEconData) renderEconCalendar();
+  if(econLoaded){ econSetHeader(); renderEconActive(); }
+  document.getElementById('bt-view-btn-demo').textContent = lang==='en' ? '💼 Demo Portfolio' : '💼 תיק דמו';
+  document.getElementById('bt-view-btn-stats').textContent = lang==='en' ? '📊 Signal Statistics' : '📊 סטטיסטיקת איתותים';
+  if(demoLoaded){ renderDemoControls(); if(demoData) renderDemoPortfolio(); }
   if(backtestPatternsCache) renderBacktestPatternFilter();
   if(backtestPatternStatsCache) renderBacktestPatternSummary();
   document.getElementById('backtest-title').textContent = t.backtest_title;
@@ -4793,8 +5163,8 @@ setInterval(loadMarketMovers, 60000);
 loadMarketTicker();
 setInterval(loadMarketTicker, 90000);
 const econViewActive = () => currentPage==='pulse' && pulseView==='events';
-setInterval(()=>{ if(econLoaded && econViewActive()) loadEconCalendar(); }, 300000);
-setInterval(()=>{ if(lastEconData && econViewActive()) renderEconCalendar(); }, 60000);
+setInterval(()=>{ if(econLoaded && econViewActive()) loadEconActive(); }, 300000);
+setInterval(()=>{ if(econLoaded && econViewActive()) renderEconActive(); }, 60000);
 refreshWatchlistData();
 loadPatternStats();
 

@@ -811,9 +811,14 @@ def warm_up(get_conn=None):
 
 
 def _build(get_conn, days, limit):
+    """Upcoming list: from 2 days ago to `days` ahead, trimmed to the most relevant `limit`."""
+    today = datetime.now(UTC).astimezone(ET).date()
+    return _build_range(get_conn, today - timedelta(days=2), today + timedelta(days=days), ACTUAL_LOOKBACK_DAYS, limit)
+
+
+def _build_range(get_conn, start, end, lookback_days, limit=None):
     now_utc = datetime.now(UTC)
     today = now_utc.astimezone(ET).date()
-    start, end = today - timedelta(days=2), today + timedelta(days=days)
 
     try:
         ensure_table(get_conn)
@@ -827,7 +832,7 @@ def _build(get_conn, days, limit):
     # 3a) an official schedule source is down -> keep showing what we saved earlier for ITS event types only
     #     (never for types whose source answered: a rescheduled release must not leave a stale duplicate)
     for (t, d), sv in saved.items():
-        if t in failed_types and (t, d) not in occ and d >= today - timedelta(days=2):
+        if t in failed_types and (t, d) not in occ and d >= start:
             occ[(t, d)] = dict(type=t, date=d, estimated=False, when=_et_dt(d, CATALOG[t]["time_et"]),
                                period=sv.get("period"), sources={"schedule": "saved"})
 
@@ -845,7 +850,7 @@ def _build(get_conn, days, limit):
             return
         when = o["when"].astimezone(UTC)
         try:
-            if when <= now_utc <= when + timedelta(days=ACTUAL_LOOKBACK_DAYS) and not o.get("actual"):
+            if when <= now_utc <= when + timedelta(days=lookback_days) and not o.get("actual"):
                 ck = ("actual", o["type"], o["date"])
                 res = _cget(ck, FRED_PENDING_TTL)
                 if res is None:
@@ -874,7 +879,29 @@ def _build(get_conn, days, limit):
 
     events = [_serialize(o, now_utc) for o in occ.values()]
     events.sort(key=lambda e: e["datetime_utc"])
-    return {"events": _select(events, limit, now_utc), "meta": _meta(now_utc)}
+    return {"events": _select(events, limit, now_utc) if limit else events, "meta": _meta(now_utc)}
+
+
+MONTH_LOOKBACK_DAYS = 62      # a month view must show the actual of events released earlier this month
+
+
+def build_month(get_conn=None, year=None, month=None):
+    """Every supported event of one calendar month (past ones with their actual, upcoming
+    ones with date/time) for the monthly calendar view. Same uniform event structure."""
+    today = datetime.now(UTC).astimezone(ET).date()
+    year, month = year or today.year, month or today.month
+    if not (1 <= month <= 12 and 2000 <= year <= 2100):
+        raise ValueError("bad month")
+    key = ("month", year, month)
+    hit = _cache.get(key)
+    if hit and time.time() - hit[0] < RESULT_TTL:
+        return hit[1]
+    start = date(year, month, 1)
+    end = (date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)) - timedelta(days=1)
+    with _lock:
+        res = _build_range(get_conn, start, end, MONTH_LOOKBACK_DAYS)
+        res["month"] = f"{year:04d}-{month:02d}"
+        return _cset(key, res)
 
 
 def _serialize(o, now_utc):
