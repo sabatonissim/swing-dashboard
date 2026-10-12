@@ -272,6 +272,101 @@ def init_db():
     conn.close()
 
 
+# ------------------------------------------------------------------
+# Accounts: "Sign in with Google" -> our own session token.
+# The browser gets a Google credential, we verify it with Google's public
+# keys, find/create the user row, and hand back a signed token (30 days)
+# that the browser sends as "Authorization: Bearer <token>". No cookies,
+# so it works across vercel.app / onrender.com and later a custom domain.
+# Render env vars: JWT_SECRET (required, long random string) and optionally
+# GOOGLE_CLIENT_ID (defaults to the project's public client ID below).
+# ------------------------------------------------------------------
+GOOGLE_CLIENT_ID = os.environ.get(
+    "GOOGLE_CLIENT_ID",
+    "99592999743-akoj9qjfku8l6uio597m4dl08shi0onv.apps.googleusercontent.com",
+)
+JWT_SECRET = os.environ.get("JWT_SECRET", "")
+JWT_TTL_DAYS = 30
+
+
+def _auth_ready() -> bool:
+    return bool(JWT_SECRET) and pyjwt is not None and google_id_token is not None
+
+
+def _issue_token(user_id: int) -> str:
+    now = dt.now(timezone.utc)
+    return pyjwt.encode(
+        {"sub": str(user_id), "iat": int(now.timestamp()),
+         "exp": int((now + timedelta(days=JWT_TTL_DAYS)).timestamp())},
+        JWT_SECRET, algorithm="HS256",
+    )
+
+
+def current_user_id(authorization: Optional[str] = Header(default=None)) -> int:
+    """FastAPI dependency: the signed-in user's id, or 401."""
+    if not _auth_ready():
+        raise HTTPException(status_code=503, detail="auth is not configured on the server")
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="login required")
+    try:
+        payload = pyjwt.decode(authorization[7:].strip(), JWT_SECRET, algorithms=["HS256"])
+        return int(payload["sub"])
+    except Exception:
+        raise HTTPException(status_code=401, detail="invalid or expired token")
+
+
+class GoogleLogin(BaseModel):
+    credential: str
+
+
+@app.post("/api/auth/google")
+def auth_google(body: GoogleLogin):
+    if not _auth_ready():
+        raise HTTPException(status_code=503, detail="auth is not configured on the server")
+    try:
+        info = google_id_token.verify_oauth2_token(
+            body.credential, google_requests.Request(), GOOGLE_CLIENT_ID, clock_skew_in_seconds=10,
+        )
+    except Exception as e:
+        print(f"[warn] google credential rejected: {e}")
+        raise HTTPException(status_code=401, detail="invalid Google credential")
+    if not info.get("email_verified"):
+        raise HTTPException(status_code=401, detail="Google email is not verified")
+
+    sub = info["sub"]
+    email = info.get("email") or ""
+    name = info.get("name") or email
+    picture = info.get("picture")
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute("SELECT COUNT(*) AS n FROM users")
+        is_first_user = cur.fetchone()["n"] == 0
+        cur.execute(
+            """INSERT INTO users (google_sub, email, name, picture) VALUES (%s, %s, %s, %s)
+               ON CONFLICT (google_sub) DO UPDATE
+                 SET email = EXCLUDED.email, name = EXCLUDED.name,
+                     picture = EXCLUDED.picture, last_login = NOW()
+               RETURNING id""",
+            (sub, email, name, picture),
+        )
+        user_id = cur.fetchone()["id"]
+        if is_first_user:
+            # The very first account (the owner) inherits the old shared watchlist.
+            cur.execute("UPDATE watchlist SET user_id = %s WHERE user_id IS NULL", (user_id,))
+        conn.commit()
+    return {"token": _issue_token(user_id),
+            "user": {"id": user_id, "email": email, "name": name, "picture": picture}}
+
+
+@app.get("/api/auth/me")
+def auth_me(user_id: int = Depends(current_user_id)):
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute("SELECT id, email, name, picture FROM users WHERE id = %s", (user_id,))
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=401, detail="user not found")
+    return dict(row)
+
+
 # Initialize DB tables on startup
 try:
     init_db()
@@ -3184,101 +3279,6 @@ def price_compare(
     payload = {"period": period, "dates": [d.strftime("%Y-%m-%d") for d in df.index], "series": series}
     _price_compare_cache[cache_key] = (time.time(), payload)
     return payload
-
-
-# ------------------------------------------------------------------
-# Accounts: "Sign in with Google" -> our own session token.
-# The browser gets a Google credential, we verify it with Google's public
-# keys, find/create the user row, and hand back a signed token (30 days)
-# that the browser sends as "Authorization: Bearer <token>". No cookies,
-# so it works across vercel.app / onrender.com and later a custom domain.
-# Render env vars: JWT_SECRET (required, long random string) and optionally
-# GOOGLE_CLIENT_ID (defaults to the project's public client ID below).
-# ------------------------------------------------------------------
-GOOGLE_CLIENT_ID = os.environ.get(
-    "GOOGLE_CLIENT_ID",
-    "99592999743-akoj9qjfku8l6uio597m4dl08shi0onv.apps.googleusercontent.com",
-)
-JWT_SECRET = os.environ.get("JWT_SECRET", "")
-JWT_TTL_DAYS = 30
-
-
-def _auth_ready() -> bool:
-    return bool(JWT_SECRET) and pyjwt is not None and google_id_token is not None
-
-
-def _issue_token(user_id: int) -> str:
-    now = dt.now(timezone.utc)
-    return pyjwt.encode(
-        {"sub": str(user_id), "iat": int(now.timestamp()),
-         "exp": int((now + timedelta(days=JWT_TTL_DAYS)).timestamp())},
-        JWT_SECRET, algorithm="HS256",
-    )
-
-
-def current_user_id(authorization: Optional[str] = Header(default=None)) -> int:
-    """FastAPI dependency: the signed-in user's id, or 401."""
-    if not _auth_ready():
-        raise HTTPException(status_code=503, detail="auth is not configured on the server")
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="login required")
-    try:
-        payload = pyjwt.decode(authorization[7:].strip(), JWT_SECRET, algorithms=["HS256"])
-        return int(payload["sub"])
-    except Exception:
-        raise HTTPException(status_code=401, detail="invalid or expired token")
-
-
-class GoogleLogin(BaseModel):
-    credential: str
-
-
-@app.post("/api/auth/google")
-def auth_google(body: GoogleLogin):
-    if not _auth_ready():
-        raise HTTPException(status_code=503, detail="auth is not configured on the server")
-    try:
-        info = google_id_token.verify_oauth2_token(
-            body.credential, google_requests.Request(), GOOGLE_CLIENT_ID, clock_skew_in_seconds=10,
-        )
-    except Exception as e:
-        print(f"[warn] google credential rejected: {e}")
-        raise HTTPException(status_code=401, detail="invalid Google credential")
-    if not info.get("email_verified"):
-        raise HTTPException(status_code=401, detail="Google email is not verified")
-
-    sub = info["sub"]
-    email = info.get("email") or ""
-    name = info.get("name") or email
-    picture = info.get("picture")
-    with db_cursor(dict_cursor=True) as (conn, cur):
-        cur.execute("SELECT COUNT(*) AS n FROM users")
-        is_first_user = cur.fetchone()["n"] == 0
-        cur.execute(
-            """INSERT INTO users (google_sub, email, name, picture) VALUES (%s, %s, %s, %s)
-               ON CONFLICT (google_sub) DO UPDATE
-                 SET email = EXCLUDED.email, name = EXCLUDED.name,
-                     picture = EXCLUDED.picture, last_login = NOW()
-               RETURNING id""",
-            (sub, email, name, picture),
-        )
-        user_id = cur.fetchone()["id"]
-        if is_first_user:
-            # The very first account (the owner) inherits the old shared watchlist.
-            cur.execute("UPDATE watchlist SET user_id = %s WHERE user_id IS NULL", (user_id,))
-        conn.commit()
-    return {"token": _issue_token(user_id),
-            "user": {"id": user_id, "email": email, "name": name, "picture": picture}}
-
-
-@app.get("/api/auth/me")
-def auth_me(user_id: int = Depends(current_user_id)):
-    with db_cursor(dict_cursor=True) as (conn, cur):
-        cur.execute("SELECT id, email, name, picture FROM users WHERE id = %s", (user_id,))
-        row = cur.fetchone()
-    if not row:
-        raise HTTPException(status_code=401, detail="user not found")
-    return dict(row)
 
 
 # ------------------------------------------------------------------
