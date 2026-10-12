@@ -5,29 +5,22 @@
 <title>Swing Desk — דשבורד מסחר</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <script>
-// Theme: saved choice is 'dark' | 'light' | 'system' (default: dark, as before).
+// Theme: saved choice is 'dark' | 'light'. Default (and anything else) = dark.
 (function(){
   var KEY = 'swing_theme';
-  function pref(){ try { var v = localStorage.getItem(KEY); return (v==='light'||v==='dark'||v==='system') ? v : 'dark'; } catch(e){ return 'dark'; } }
-  function systemLight(){ return !!(window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches); }
-  function resolved(){ var p = pref(); return p==='system' ? (systemLight() ? 'light' : 'dark') : p; }
+  function resolved(){ try { return localStorage.getItem(KEY) === 'light' ? 'light' : 'dark'; } catch(e){ return 'dark'; } }
   function apply(){ document.documentElement.setAttribute('data-theme', resolved()); }
-  window.themePref = pref;
+  window.themePref = resolved;
   window.themeResolved = resolved;
   window.tvTheme = function(){ return resolved(); };
   window.tvToolbarBg = function(){ return resolved()==='light' ? '#ffffff' : '#161a20'; };
-  window.chartGrid = function(){ return resolved()==='light' ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.05)'; };
+  window.chartGrid = function(){ return resolved()==='light' ? 'rgba(0,0,0,0.10)' : 'rgba(255,255,255,0.05)'; };
   window.setThemePref = function(v){
-    try { localStorage.setItem(KEY, v); } catch(e){}
+    try { localStorage.setItem(KEY, v === 'light' ? 'light' : 'dark'); } catch(e){}
     apply();
     if(typeof onThemeChanged === 'function') onThemeChanged();
   };
   apply();
-  if(window.matchMedia){
-    var mq = matchMedia('(prefers-color-scheme: light)');
-    var h = function(){ if(pref()==='system'){ apply(); if(typeof onThemeChanged === 'function') onThemeChanged(); } };
-    if(mq.addEventListener) mq.addEventListener('change', h);
-  }
 })();
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -54,23 +47,23 @@
     color-scheme: dark;
   }
   :root[data-theme="light"]{
-    --bg: #f3f4f7;
+    --bg: #e6e9ef;
     --panel: #ffffff;
-    --panel-2: #eef0f4;
+    --panel-2: #eef1f6;
     --panel-3: #ffffff;
-    --line: #dde1e8;
-    --line-hover: #b9c0cc;
-    --text: #1a1f29;
-    --text-dim: #5b6575;
-    --amber: #c27a0a;
-    --amber-dim: #f3dfb8;
-    --teal: #16897b;
-    --teal-dim: #c9e9e4;
-    --green: #16a05a;
-    --red: #d63c3c;
+    --line: #c3cad6;
+    --line-hover: #8f9bb0;
+    --text: #0e1522;
+    --text-dim: #424d5e;
+    --amber: #b36500;
+    --amber-dim: #f1d49a;
+    --teal: #0c7a6c;
+    --teal-dim: #b6e2db;
+    --green: #0b8a45;
+    --red: #c62828;
     --header-a: #ffffff;
-    --header-b: #f3f4f7;
-    --shadow: rgba(20,30,50,.18);
+    --header-b: #f4f6fa;
+    --shadow: rgba(15,25,45,.22);
     color-scheme: light;
   }
   *{box-sizing:border-box;}
@@ -4877,7 +4870,7 @@ function renderAuthBox(){
         <div style="padding:12px 0;border-bottom:1px solid var(--line);">
           <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;">${en?'Appearance':'תצוגה'}</div>
           <div style="display:flex;gap:4px;background:var(--panel-2);border:1px solid var(--line);border-radius:9px;padding:3px;">
-            ${opt('dark','כהה','Dark')}${opt('light','בהיר','Light')}${opt('system','מערכת','System')}
+            ${opt('dark','כהה','Dark')}${opt('light','בהיר','Light')}
           </div>
         </div>
         <button onclick="signOut()" style="margin-top:10px;width:100%;text-align:start;background:none;border:none;color:var(--text);font-size:13px;padding:8px 4px;border-radius:7px;cursor:pointer;font-family:inherit;">${en?'Sign out':'התנתק'}</button>
@@ -4955,6 +4948,20 @@ async function onGoogleCredential(resp){
     alert(lang==='en' ? 'Sign-in failed. Please try again.' : 'ההתחברות נכשלה. נסה שוב.');
   }
 }
+
+// Sliding session: every visit swaps the token for a fresh one, so you only
+// get signed out after ~90 days without opening the site.
+async function refreshSession(){
+  if(!authToken) return;
+  try {
+    const res = await authFetch(`${API_BASE}/api/auth/refresh`, { method: 'POST' });
+    if(res.ok){
+      const d = await res.json();
+      if(d && d.token){ authToken = d.token; localStorage.setItem('swing_token', authToken); }
+    }
+  } catch(e){ /* offline / server asleep: keep the current token */ }
+}
+refreshSession();
 
 function signOut(){
   authToken = null; authUser = null;

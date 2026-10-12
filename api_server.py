@@ -275,7 +275,7 @@ def init_db():
 # ------------------------------------------------------------------
 # Accounts: "Sign in with Google" -> our own session token.
 # The browser gets a Google credential, we verify it with Google's public
-# keys, find/create the user row, and hand back a signed token (30 days)
+# keys, find/create the user row, and hand back a signed token (90 days, renewed on each visit)
 # that the browser sends as "Authorization: Bearer <token>". No cookies,
 # so it works across vercel.app / onrender.com and later a custom domain.
 # Render env vars: JWT_SECRET (required, long random string) and optionally
@@ -286,7 +286,7 @@ GOOGLE_CLIENT_ID = os.environ.get(
     "99592999743-akoj9qjfku8l6uio597m4dl08shi0onv.apps.googleusercontent.com",
 )
 JWT_SECRET = os.environ.get("JWT_SECRET", "")
-JWT_TTL_DAYS = 30
+JWT_TTL_DAYS = 90
 
 
 def _auth_ready() -> bool:
@@ -355,6 +355,16 @@ def auth_google(body: GoogleLogin):
         conn.commit()
     return {"token": _issue_token(user_id),
             "user": {"id": user_id, "email": email, "name": name, "picture": picture}}
+
+
+@app.post("/api/auth/refresh")
+def auth_refresh(user_id: int = Depends(current_user_id)):
+    """Swap a still-valid token for a fresh one (called on every page load)."""
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute("SELECT 1 FROM users WHERE id = %s", (user_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=401, detail="user not found")
+    return {"token": _issue_token(user_id)}
 
 
 @app.get("/api/auth/me")
