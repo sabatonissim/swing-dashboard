@@ -8,3 +8,5 @@ requests
 pydantic
 psycopg2-binary
 tzdata
+google-auth
+PyJWT

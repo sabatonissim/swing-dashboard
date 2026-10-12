@@ -19,6 +19,8 @@ Endpoints:
     GET /api/watchlist-setups    -> same pattern scan as above, run across the whole watchlist at once
     GET /api/demo-portfolio      -> the historical test as a paper-trading account (score / fixed amount / stop-target exit)
     GET /api/article-preview     -> short attributed excerpt of a news article (drawer detail)
+    POST /api/auth/google        -> exchange a Google sign-in credential for our session token
+    GET /api/auth/me             -> the signed-in user (requires Authorization: Bearer)
     GET /api/econ-calendar       -> upcoming US economic events (CPI/NFP/FOMC/...) with forecast/previous/actual (econ_calendar.py)
 
 CORS is open for local development. Lock this down (allow_origins) before
@@ -39,13 +41,21 @@ from typing import List, Optional
 import pandas as pd
 import numpy as np
 import requests
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import yfinance as yf
 import psycopg2
 import psycopg2.extras
+
+try:
+    import jwt as pyjwt                                   # PyJWT: our own session token
+    from google.oauth2 import id_token as google_id_token # verifies the Google sign-in credential
+    from google.auth.transport import requests as google_requests
+except Exception as _auth_import_err:  # server still boots; auth endpoints answer 503
+    pyjwt = google_id_token = google_requests = None
+    print(f"[warn] auth libraries missing: {_auth_import_err}")
 
 import econ_calendar  # US economic calendar: providers -> processing -> uniform events (see econ_calendar.py)
 
@@ -214,6 +224,15 @@ def init_db():
             ticker TEXT PRIMARY KEY,
             added_at TIMESTAMPTZ DEFAULT NOW()
         );
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            google_sub TEXT UNIQUE NOT NULL,
+            email TEXT NOT NULL,
+            name TEXT,
+            picture TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            last_login TIMESTAMPTZ DEFAULT NOW()
+        );
         CREATE TABLE IF NOT EXISTS sec_cik_cache (
             ticker TEXT PRIMARY KEY,
             cik10 TEXT NOT NULL,
@@ -222,6 +241,12 @@ def init_db():
     """)
     # Patches an already-deployed table that predates this column
     # (CREATE TABLE IF NOT EXISTS above is a no-op once the table exists).
+    # Watchlist becomes per-user: old rows keep user_id NULL until the first
+    # person signs in and claims them (see auth_google). Primary key moves
+    # from (ticker) to a unique (user_id, ticker).
+    cur.execute("ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS user_id INTEGER;")
+    cur.execute("ALTER TABLE watchlist DROP CONSTRAINT IF EXISTS watchlist_pkey;")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS watchlist_user_ticker_uq ON watchlist (user_id, ticker);")
     cur.execute("ALTER TABLE universe_movers ADD COLUMN IF NOT EXISTS in_sp500 BOOLEAN DEFAULT FALSE;")
     cur.execute("ALTER TABLE universe_movers ADD COLUMN IF NOT EXISTS in_nasdaq100 BOOLEAN DEFAULT FALSE;")
     cur.execute("ALTER TABLE universe_movers ADD COLUMN IF NOT EXISTS market_cap REAL;")
@@ -2967,10 +2992,10 @@ def _fetch_one_watchlist_setup(ticker: str) -> Optional[dict]:
 
 
 @app.get("/api/watchlist-setups")
-def get_watchlist_setups():
+def get_watchlist_setups(user_id: int = Depends(current_user_id)):
     conn = get_conn()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT ticker FROM watchlist ORDER BY added_at DESC")
+    cur.execute("SELECT ticker FROM watchlist WHERE user_id = %s ORDER BY added_at DESC", (user_id,))
     tickers = [r["ticker"] for r in cur.fetchall()]
     cur.close()
     conn.close()
@@ -3162,10 +3187,104 @@ def price_compare(
 
 
 # ------------------------------------------------------------------
-# Personal watchlist — a plain list of tickers the user chose to track,
-# independent of whatever the scanner happens to flag that day. Single
-# shared list (this is a personal dashboard, not multi-user), so no auth
-# needed here — just persisted tickers.
+# Accounts: "Sign in with Google" -> our own session token.
+# The browser gets a Google credential, we verify it with Google's public
+# keys, find/create the user row, and hand back a signed token (30 days)
+# that the browser sends as "Authorization: Bearer <token>". No cookies,
+# so it works across vercel.app / onrender.com and later a custom domain.
+# Render env vars: JWT_SECRET (required, long random string) and optionally
+# GOOGLE_CLIENT_ID (defaults to the project's public client ID below).
+# ------------------------------------------------------------------
+GOOGLE_CLIENT_ID = os.environ.get(
+    "GOOGLE_CLIENT_ID",
+    "99592999743-akoj9qjfku8l6uio597m4dl08shi0onv.apps.googleusercontent.com",
+)
+JWT_SECRET = os.environ.get("JWT_SECRET", "")
+JWT_TTL_DAYS = 30
+
+
+def _auth_ready() -> bool:
+    return bool(JWT_SECRET) and pyjwt is not None and google_id_token is not None
+
+
+def _issue_token(user_id: int) -> str:
+    now = dt.now(timezone.utc)
+    return pyjwt.encode(
+        {"sub": str(user_id), "iat": int(now.timestamp()),
+         "exp": int((now + timedelta(days=JWT_TTL_DAYS)).timestamp())},
+        JWT_SECRET, algorithm="HS256",
+    )
+
+
+def current_user_id(authorization: Optional[str] = Header(default=None)) -> int:
+    """FastAPI dependency: the signed-in user's id, or 401."""
+    if not _auth_ready():
+        raise HTTPException(status_code=503, detail="auth is not configured on the server")
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="login required")
+    try:
+        payload = pyjwt.decode(authorization[7:].strip(), JWT_SECRET, algorithms=["HS256"])
+        return int(payload["sub"])
+    except Exception:
+        raise HTTPException(status_code=401, detail="invalid or expired token")
+
+
+class GoogleLogin(BaseModel):
+    credential: str
+
+
+@app.post("/api/auth/google")
+def auth_google(body: GoogleLogin):
+    if not _auth_ready():
+        raise HTTPException(status_code=503, detail="auth is not configured on the server")
+    try:
+        info = google_id_token.verify_oauth2_token(
+            body.credential, google_requests.Request(), GOOGLE_CLIENT_ID, clock_skew_in_seconds=10,
+        )
+    except Exception as e:
+        print(f"[warn] google credential rejected: {e}")
+        raise HTTPException(status_code=401, detail="invalid Google credential")
+    if not info.get("email_verified"):
+        raise HTTPException(status_code=401, detail="Google email is not verified")
+
+    sub = info["sub"]
+    email = info.get("email") or ""
+    name = info.get("name") or email
+    picture = info.get("picture")
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute("SELECT COUNT(*) AS n FROM users")
+        is_first_user = cur.fetchone()["n"] == 0
+        cur.execute(
+            """INSERT INTO users (google_sub, email, name, picture) VALUES (%s, %s, %s, %s)
+               ON CONFLICT (google_sub) DO UPDATE
+                 SET email = EXCLUDED.email, name = EXCLUDED.name,
+                     picture = EXCLUDED.picture, last_login = NOW()
+               RETURNING id""",
+            (sub, email, name, picture),
+        )
+        user_id = cur.fetchone()["id"]
+        if is_first_user:
+            # The very first account (the owner) inherits the old shared watchlist.
+            cur.execute("UPDATE watchlist SET user_id = %s WHERE user_id IS NULL", (user_id,))
+        conn.commit()
+    return {"token": _issue_token(user_id),
+            "user": {"id": user_id, "email": email, "name": name, "picture": picture}}
+
+
+@app.get("/api/auth/me")
+def auth_me(user_id: int = Depends(current_user_id)):
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute("SELECT id, email, name, picture FROM users WHERE id = %s", (user_id,))
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=401, detail="user not found")
+    return dict(row)
+
+
+# ------------------------------------------------------------------
+# Personal watchlist — a plain list of tickers each signed-in user chose
+# to track, independent of whatever the scanner happens to flag that day.
+# Per-user (watchlist.user_id); every endpoint requires a login.
 # ------------------------------------------------------------------
 
 def _compute_atr_pct(hist: pd.DataFrame, period: int = 14) -> Optional[float]:
@@ -3190,10 +3309,10 @@ def _compute_atr_pct(hist: pd.DataFrame, period: int = 14) -> Optional[float]:
 
 
 @app.get("/api/watchlist")
-def get_watchlist():
+def get_watchlist(user_id: int = Depends(current_user_id)):
     conn = get_conn()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT ticker FROM watchlist ORDER BY added_at DESC")
+    cur.execute("SELECT ticker FROM watchlist WHERE user_id = %s ORDER BY added_at DESC", (user_id,))
     tickers = [r["ticker"] for r in cur.fetchall()]
     cur.close()
     conn.close()
@@ -3239,15 +3358,15 @@ class WatchlistTicker(BaseModel):
 
 
 @app.post("/api/watchlist")
-def add_to_watchlist(body: WatchlistTicker):
+def add_to_watchlist(body: WatchlistTicker, user_id: int = Depends(current_user_id)):
     ticker = _canon_ticker(body.ticker)
     if not ticker:
         raise HTTPException(status_code=400, detail="ticker is required")
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO watchlist (ticker) VALUES (%s) ON CONFLICT (ticker) DO NOTHING",
-        (ticker,),
+        "INSERT INTO watchlist (user_id, ticker) VALUES (%s, %s) ON CONFLICT (user_id, ticker) DO NOTHING",
+        (user_id, ticker),
     )
     conn.commit()
     cur.close()
@@ -3256,11 +3375,11 @@ def add_to_watchlist(body: WatchlistTicker):
 
 
 @app.delete("/api/watchlist/{ticker}")
-def remove_from_watchlist(ticker: str):
+def remove_from_watchlist(ticker: str, user_id: int = Depends(current_user_id)):
     ticker = _canon_ticker(ticker)
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("DELETE FROM watchlist WHERE ticker = %s", (ticker,))
+    cur.execute("DELETE FROM watchlist WHERE ticker = %s AND user_id = %s", (ticker, user_id))
     conn.commit()
     cur.close()
     conn.close()

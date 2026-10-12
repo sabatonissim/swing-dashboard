@@ -499,6 +499,7 @@
   }
 </style>
 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
 (function(){
   var s = document.createElement('script');
@@ -529,6 +530,7 @@
     <button class="search-btn" onclick="handleSearch()" id="search-btn-label">חפש</button>
   </div>
   <div style="display:flex;align-items:center;gap:12px;">
+    <div id="auth-box" style="display:flex;align-items:center;min-height:32px;"></div>
     <button class="info-badge-btn" id="info-badge-btn" onclick="openInfoModal()" title="מקורות המידע">ⓘ</button>
     <button id="lang-toggle" onclick="toggleLang()" style="background:var(--panel);border:1px solid var(--line);color:var(--text-dim);border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;font-family:'JetBrains Mono',monospace;transition:all .15s;" onmouseover="this.style.borderColor='var(--amber)'" onmouseout="this.style.borderColor='var(--line)'">EN</button>
     <div class="clock mono" id="clock"></div>
@@ -2363,6 +2365,7 @@ function renderMarketTicker(){
 // ---- Daily news digest (rule-based, no AI — see /api/daily-digest) ----
 // ---- Watchlist-wide "what's approaching" scan (see /api/watchlist-setups) ----
 async function openWatchlistSetups(){
+  if(!requireLogin()) return;
   const t = lang==='en';
   const modal = document.getElementById("digest-modal");
   modal.innerHTML = `
@@ -2374,7 +2377,7 @@ async function openWatchlistSetups(){
   `;
   document.getElementById("digest-overlay").classList.add("open");
   try {
-    const res = await fetch(`${API_BASE}/api/watchlist-setups`);
+    const res = await authFetch(`${API_BASE}/api/watchlist-setups`);
     if(!res.ok) throw new Error('bad response');
     const data = await res.json();
     renderWatchlistSetups(data.results || []);
@@ -3243,12 +3246,13 @@ function setMoversPanelMode(mode){
 
 async function promptAddToWatchlist(){
   const t = lang==='en';
+  if(!requireLogin()) return;
   const raw = prompt(t?'Ticker to add to your watchlist:':'טיקר להוספה לרשימת המעקב:');
   if(!raw) return;
   const ticker = canonTicker(raw);
   if(!ticker) return;
   try {
-    const res = await fetch(`${API_BASE}/api/watchlist`, {
+    const res = await authFetch(`${API_BASE}/api/watchlist`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ticker }),
@@ -3267,8 +3271,9 @@ async function promptAddToWatchlist(){
 }
 
 async function refreshWatchlistData(){
+  if(!authToken){ latestWatchlistData = []; watchlistTickers = new Set(); return true; }
   try {
-    const res = await fetch(`${API_BASE}/api/watchlist`);
+    const res = await authFetch(`${API_BASE}/api/watchlist`);
     if(!res.ok) throw new Error('bad response');
     const data = await res.json();
     latestWatchlistData = Array.isArray(data) ? data : [];
@@ -3295,6 +3300,10 @@ async function loadWatchlist(){
 function renderWatchlistPanel(){
   const el = document.getElementById('movers-list');
   if(!el) return;
+  if(!authToken){
+    el.innerHTML = `<div class="movers-empty">${lang==='en'?'Sign in with Google (top of the page) to keep your own watchlist.':'התחבר עם Google (בראש העמוד) כדי לשמור רשימת מעקב אישית.'}</div>`;
+    return;
+  }
   if(!latestWatchlistData.length){
     el.innerHTML = `<div class="movers-empty">${lang==='en'?"No tickers yet — tap + above to add one.":'עדיין אין מניות ברשימת המעקב — לחץ על + למעלה כדי להוסיף אחת.'}</div>`;
     return;
@@ -3316,16 +3325,17 @@ function renderWatchlistPanel(){
 }
 
 async function toggleWatchlist(ticker){
+  if(!requireLogin()) return;
   const starEl = document.getElementById(`watchlist-star-${ticker}`);
   const isActive = watchlistTickers.has(ticker);
   try {
     if(isActive){
-      const res = await fetch(`${API_BASE}/api/watchlist/${ticker}`, { method: 'DELETE' });
+      const res = await authFetch(`${API_BASE}/api/watchlist/${ticker}`, { method: 'DELETE' });
       if(!res.ok) throw new Error('delete failed');
       watchlistTickers.delete(ticker);
       latestWatchlistData = latestWatchlistData.filter(r=>r.ticker!==ticker);
     } else {
-      const res = await fetch(`${API_BASE}/api/watchlist`, {
+      const res = await authFetch(`${API_BASE}/api/watchlist`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ticker }),
@@ -4735,6 +4745,104 @@ function track(eventType, entityId){
 }
 track('page_view',null);
 
+// ---- Accounts: Sign in with Google ----
+// The Client ID is public by design (not a secret). The server verifies the
+// Google credential and returns its own 30-day token, kept in localStorage
+// and sent as "Authorization: Bearer ..." on personal endpoints (watchlist).
+const GOOGLE_CLIENT_ID = "99592999743-akoj9qjfku8l6uio597m4dl08shi0onv.apps.googleusercontent.com";
+let authToken = localStorage.getItem('swing_token') || null;
+let authUser = null;
+try { authUser = JSON.parse(localStorage.getItem('swing_user') || 'null'); } catch(e) { authUser = null; }
+if(!authUser) authToken = null;
+
+function _authEsc(v){ return String(v==null?'':v).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function authFetch(url, opts){
+  opts = Object.assign({}, opts || {});
+  const headers = Object.assign({}, opts.headers || {});
+  if(authToken) headers['Authorization'] = 'Bearer ' + authToken;
+  opts.headers = headers;
+  const res = await fetch(url, opts);
+  if(res.status === 401 && authToken) signOut();   // token expired / invalid
+  return res;
+}
+
+function requireLogin(){
+  if(authToken) return true;
+  alert(lang==='en'
+    ? 'Sign in with Google (top of the page) to use your watchlist.'
+    : 'התחבר עם Google (בראש העמוד) כדי להשתמש ברשימת המעקב.');
+  return false;
+}
+
+let _gisInitialized = false;
+let _gisTries = 0;
+function renderGoogleButton(){
+  const el = document.getElementById('g-btn');
+  if(!el) return;
+  if(!(window.google && google.accounts && google.accounts.id)){
+    if(_gisTries++ < 30) setTimeout(renderGoogleButton, 400);   // library still loading
+    return;
+  }
+  if(!_gisInitialized){
+    google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: onGoogleCredential });
+    _gisInitialized = true;
+  }
+  google.accounts.id.renderButton(el, {
+    theme: 'filled_black', size: 'medium', shape: 'pill', text: 'signin_with',
+    locale: lang==='en' ? 'en' : 'he',
+  });
+}
+
+function renderAuthBox(){
+  const box = document.getElementById('auth-box');
+  if(!box) return;
+  const en = lang==='en';
+  if(authToken && authUser){
+    const first = _authEsc((authUser.name || authUser.email || '').split(' ')[0]);
+    const pic = authUser.picture
+      ? `<img src="${_authEsc(authUser.picture)}" alt="" referrerpolicy="no-referrer" style="width:28px;height:28px;border-radius:50%;border:1px solid var(--line);">`
+      : '';
+    box.innerHTML = `<div style="display:flex;align-items:center;gap:8px;">${pic}
+      <span style="font-size:12px;color:var(--text-dim);max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${first}</span>
+      <button onclick="signOut()" style="background:var(--panel);border:1px solid var(--line);color:var(--text-dim);border-radius:8px;padding:5px 10px;font-size:11px;cursor:pointer;">${en?'Sign out':'התנתק'}</button></div>`;
+  } else {
+    box.innerHTML = '<div id="g-btn"></div>';
+    _gisTries = 0;
+    renderGoogleButton();
+  }
+}
+
+async function onGoogleCredential(resp){
+  try{
+    const res = await fetch(`${API_BASE}/api/auth/google`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ credential: resp.credential }),
+    });
+    if(!res.ok) throw new Error('login failed ' + res.status);
+    const data = await res.json();
+    authToken = data.token; authUser = data.user;
+    localStorage.setItem('swing_token', authToken);
+    localStorage.setItem('swing_user', JSON.stringify(authUser));
+    renderAuthBox();
+    await refreshWatchlistData();
+    if(moversPanelMode === 'watchlist') renderWatchlistPanel();
+  } catch(e){
+    console.error('[auth] login failed', e);
+    alert(lang==='en' ? 'Sign-in failed. Please try again.' : 'ההתחברות נכשלה. נסה שוב.');
+  }
+}
+
+function signOut(){
+  authToken = null; authUser = null;
+  localStorage.removeItem('swing_token');
+  localStorage.removeItem('swing_user');
+  try { if(window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect(); } catch(e){}
+  latestWatchlistData = []; watchlistTickers = new Set();
+  renderAuthBox();
+  if(moversPanelMode === 'watchlist') renderWatchlistPanel();
+}
+
 const statusEl = document.createElement("div");
 statusEl.style.cssText="position:fixed;bottom:12px;left:16px;font-size:11px;font-family:'JetBrains Mono',monospace;padding:4px 9px;border-radius:6px;z-index:60;";
 document.body.appendChild(statusEl);
@@ -5082,6 +5190,7 @@ function applyLang(){
   document.getElementById('search-btn-label').textContent = t.search_btn;
   document.getElementById('search-btn-mobile').textContent = t.search_btn;
   document.getElementById('lang-toggle').textContent = t.lang_btn;
+  renderAuthBox();
   document.querySelector('.breaking-bar-title').innerHTML = `<span class="pulse"></span> ${t.breaking_title}`;
   document.querySelector('.right .col-title').innerHTML = `<span class="dot"></span> ${t.scanner_title}`;
   document.querySelector('.left .col-title').innerHTML = `<span class="dot"></span> ${t.macro_title}`;
