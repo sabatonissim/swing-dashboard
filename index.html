@@ -4,6 +4,32 @@
 <meta charset="UTF-8">
 <title>Swing Desk — דשבורד מסחר</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script>
+// Theme: saved choice is 'dark' | 'light' | 'system' (default: dark, as before).
+(function(){
+  var KEY = 'swing_theme';
+  function pref(){ try { var v = localStorage.getItem(KEY); return (v==='light'||v==='dark'||v==='system') ? v : 'dark'; } catch(e){ return 'dark'; } }
+  function systemLight(){ return !!(window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches); }
+  function resolved(){ var p = pref(); return p==='system' ? (systemLight() ? 'light' : 'dark') : p; }
+  function apply(){ document.documentElement.setAttribute('data-theme', resolved()); }
+  window.themePref = pref;
+  window.themeResolved = resolved;
+  window.tvTheme = function(){ return resolved(); };
+  window.tvToolbarBg = function(){ return resolved()==='light' ? '#ffffff' : '#161a20'; };
+  window.chartGrid = function(){ return resolved()==='light' ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.05)'; };
+  window.setThemePref = function(v){
+    try { localStorage.setItem(KEY, v); } catch(e){}
+    apply();
+    if(typeof onThemeChanged === 'function') onThemeChanged();
+  };
+  apply();
+  if(window.matchMedia){
+    var mq = matchMedia('(prefers-color-scheme: light)');
+    var h = function(){ if(pref()==='system'){ apply(); if(typeof onThemeChanged === 'function') onThemeChanged(); } };
+    if(mq.addEventListener) mq.addEventListener('change', h);
+  }
+})();
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Frank+Ruhl+Libre:wght@500;700&family=Heebo:wght@300;400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <style>
@@ -20,6 +46,32 @@
     --teal-dim: #1c4b45;
     --green: #3ecf7e;
     --red: #ef5b5b;
+    --panel-3: #1c1f26;
+    --line-hover: #39414f;
+    --header-a: #12151a;
+    --header-b: #0f1216;
+    --shadow: rgba(0,0,0,.45);
+    color-scheme: dark;
+  }
+  :root[data-theme="light"]{
+    --bg: #f3f4f7;
+    --panel: #ffffff;
+    --panel-2: #eef0f4;
+    --panel-3: #ffffff;
+    --line: #dde1e8;
+    --line-hover: #b9c0cc;
+    --text: #1a1f29;
+    --text-dim: #5b6575;
+    --amber: #c27a0a;
+    --amber-dim: #f3dfb8;
+    --teal: #16897b;
+    --teal-dim: #c9e9e4;
+    --green: #16a05a;
+    --red: #d63c3c;
+    --header-a: #ffffff;
+    --header-b: #f3f4f7;
+    --shadow: rgba(20,30,50,.18);
+    color-scheme: light;
   }
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:'Heebo',sans-serif;}
@@ -29,7 +81,7 @@
   header{
     display:flex;align-items:center;justify-content:space-between;
     padding:14px 28px;border-bottom:1px solid var(--line);
-    background:linear-gradient(180deg,#12151a,#0f1216);
+    background:linear-gradient(180deg,var(--header-a),var(--header-b));
     position:sticky;top:0;z-index:40;
   }
   header .logo{display:flex;align-items:center;gap:10px;}
@@ -389,7 +441,7 @@
   .fund-legend-dot{width:9px;height:9px;border-radius:2px;display:inline-block;}
   .fund-info{position:relative;display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:var(--line);color:var(--text-dim);font-size:10px;font-weight:700;cursor:pointer;margin-inline-start:6px;user-select:none;vertical-align:middle;}
   .fund-info:hover, .fund-info.open{background:var(--amber);color:#1a1a1a;}
-  .fund-tip{display:none;position:absolute;z-index:20;top:20px;inset-inline-start:0;width:230px;background:#1c1f26;border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:11.5px;line-height:1.45;color:var(--text);font-weight:400;box-shadow:0 6px 18px rgba(0,0,0,.35);text-transform:none;letter-spacing:normal;white-space:normal;}
+  .fund-tip{display:none;position:absolute;z-index:20;top:20px;inset-inline-start:0;width:230px;background:var(--panel-3);border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:11.5px;line-height:1.45;color:var(--text);font-weight:400;box-shadow:0 6px 18px rgba(0,0,0,.35);text-transform:none;letter-spacing:normal;white-space:normal;}
   .fund-tip.show{display:block;}
   .fund-card-title{position:relative;}
   .fund-source-note{font-size:11px;color:var(--text-dim);background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:8px 12px;margin-bottom:12px;line-height:1.5;}
@@ -418,7 +470,7 @@
   /* ---- Market Pulse sub-views ---- */
   .pulse-view-switch{display:flex;gap:8px;margin-bottom:16px;}
   .pulse-view-btn{background:var(--panel);border:1px solid var(--line);color:var(--text-dim);font-family:inherit;font-size:13.5px;font-weight:500;padding:8px 16px;border-radius:999px;cursor:pointer;}
-  .pulse-view-btn:hover{border-color:#39414f;color:var(--text);}
+  .pulse-view-btn:hover{border-color:var(--line-hover);color:var(--text);}
   .pulse-view-btn.active{background:rgba(232,163,61,.14);border-color:var(--amber);color:var(--amber);}
   /* ---- Upcoming Market Events (economic calendar) ---- */
   .econ-box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;}
@@ -428,7 +480,7 @@
   .econ-day-label{font-size:11px;letter-spacing:1px;color:var(--text-dim);text-transform:uppercase;margin:12px 0 7px;padding-bottom:5px;border-bottom:1px solid var(--line);}
   .econ-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px;}
   .econ-card{background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:11px 12px;cursor:pointer;}
-  .econ-card:hover{border-color:#39414f;}
+  .econ-card:hover{border-color:var(--line-hover);}
   .econ-card.next{border-color:var(--amber);box-shadow:0 0 0 1px var(--amber-dim);}
   .econ-card.done{opacity:.92;}
   .econ-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;}
@@ -461,14 +513,14 @@
   .cal-nav{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;}
   .cal-nav-title{font-family:'Frank Ruhl Libre',serif;font-weight:700;font-size:18px;}
   .cal-nav-btn{background:var(--panel-2);border:1px solid var(--line);color:var(--text);font-family:inherit;font-size:13px;padding:5px 12px;border-radius:8px;cursor:pointer;}
-  .cal-nav-btn:hover{border-color:#39414f;}
+  .cal-nav-btn:hover{border-color:var(--line-hover);}
   .cal-summary{font-size:12.5px;color:var(--text-dim);margin-bottom:10px;line-height:1.6;}
   .cal-summary b{color:var(--text);}
   .cal-wd{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:4px;}
   .cal-wd div{text-align:center;font-size:11px;color:var(--text-dim);}
   .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;}
   .cal-cell{min-height:92px;background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:5px 6px;cursor:pointer;overflow:hidden;}
-  .cal-cell:hover{border-color:#39414f;}
+  .cal-cell:hover{border-color:var(--line-hover);}
   .cal-cell.empty{background:transparent;border:none;cursor:default;}
   .cal-cell.past{opacity:.72;}
   .cal-cell.today{border-color:var(--amber);}
@@ -530,10 +582,10 @@
     <button class="search-btn" onclick="handleSearch()" id="search-btn-label">חפש</button>
   </div>
   <div style="display:flex;align-items:center;gap:12px;">
-    <div id="auth-box" style="display:flex;align-items:center;min-height:32px;"></div>
     <button class="info-badge-btn" id="info-badge-btn" onclick="openInfoModal()" title="מקורות המידע">ⓘ</button>
     <button id="lang-toggle" onclick="toggleLang()" style="background:var(--panel);border:1px solid var(--line);color:var(--text-dim);border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;font-family:'JetBrains Mono',monospace;transition:all .15s;" onmouseover="this.style.borderColor='var(--amber)'" onmouseout="this.style.borderColor='var(--line)'">EN</button>
     <div class="clock mono" id="clock"></div>
+    <div id="auth-box" style="position:relative;display:flex;align-items:center;min-height:34px;"></div>
   </div>
 </header>
 
@@ -1435,7 +1487,7 @@ function renderBacktestContent(data){
       },
       scales: {
         x: { display: false },
-        y: { position: 'right', grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8a93a3', font: { size: 10 } } }
+        y: { position: 'right', grid: { color: chartGrid() }, ticks: { color: '#8a93a3', font: { size: 10 } } }
       }
     }
   });
@@ -1489,7 +1541,7 @@ function renderBacktestPeriodChart(){
       },
       scales: {
         x: { grid: { display: false }, ticks: { color: '#8a93a3', font: { size: 10 } } },
-        y: { position: 'right', grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8a93a3', font: { size: 10 }, callback: v => v+'%' } }
+        y: { position: 'right', grid: { color: chartGrid() }, ticks: { color: '#8a93a3', font: { size: 10 }, callback: v => v+'%' } }
       }
     }
   });
@@ -1706,9 +1758,9 @@ function renderDeepDive(quote, sector, signals, news){
   if(typeof TradingView !== 'undefined'){
     new TradingView.widget({
       autosize: true, symbol: tvSymbol(quote.ticker), interval: 'D',
-      timezone: 'Asia/Jerusalem', theme: 'dark', style: '1',
+      timezone: 'Asia/Jerusalem', theme: tvTheme(), style: '1',
       locale: lang==='en' ? 'en' : 'he_IL',
-      toolbar_bg: '#161a20', hide_top_toolbar: false, hide_legend: false,
+      toolbar_bg: tvToolbarBg(), hide_top_toolbar: false, hide_legend: false,
       save_image: false, container_id: 'dd-tv-chart',
       studies: ["MASimple@tv-basicstudies"],
       studies_overrides: {
@@ -1751,10 +1803,10 @@ function switchChart(symbol){
     container_id:'market-tv-chart',
     symbol: tvSymbol,
     interval:'D',
-    theme:'dark',
+    theme:tvTheme(),
     style:'1',
     locale: lang==='en' ? 'en' : 'he_IL',
-    toolbar_bg:'#161a20',
+    toolbar_bg:tvToolbarBg(),
     hide_side_toolbar:true,
     hide_top_toolbar:false,
     allow_symbol_change:false,
@@ -1940,7 +1992,7 @@ function renderDemoPortfolio(){
     options: { responsive: true, maintainAspectRatio: false, animation: false,
       plugins: { legend: { display: false }, tooltip: { callbacks: { label: (x) => `$${Math.round(x.parsed.y).toLocaleString()}` } } },
       scales: { x: { ticks: { color: '#8a93a3', font: { size: 10 }, maxTicksLimit: 6 }, grid: { display: false } },
-                y: { position: 'right', grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8a93a3', font: { size: 10 }, callback: v => '$' + Number(v).toLocaleString() } } } }
+                y: { position: 'right', grid: { color: chartGrid() }, ticks: { color: '#8a93a3', font: { size: 10 }, callback: v => '$' + Number(v).toLocaleString() } } } }
   });
 }
 
@@ -2980,7 +3032,7 @@ function renderSectorChart(data){
       },
       scales:{
         x:{ grid:{display:false}, ticks:{ font:{size:9}, maxRotation:0, autoSkip:true, maxTicksLimit:8 } },
-        y:{ position:'right', grid:{color:'rgba(255,255,255,0.06)'}, ticks:{ font:{size:9}, callback:(v)=>v+'%' } },
+        y:{ position:'right', grid:{color:chartGrid()}, ticks:{ font:{size:9}, callback:(v)=>v+'%' } },
       }
     }
   });
@@ -3481,8 +3533,8 @@ function renderTradingViewChart(ticker){
   container.innerHTML="";
   new TradingView.widget({
     autosize:true, symbol:tvSymbol(ticker), interval:"D",
-    timezone:"Asia/Jerusalem", theme:"dark", style:"1", locale: lang==='en' ? 'en' : 'he_IL',
-    toolbar_bg:"#161a20", hide_top_toolbar:false, hide_legend:false,
+    timezone:"Asia/Jerusalem", theme:tvTheme(), style:"1", locale: lang==='en' ? 'en' : 'he_IL',
+    toolbar_bg:tvToolbarBg(), hide_top_toolbar:false, hide_legend:false,
     save_image:false, container_id:"tv-chart",
     studies: ["MASimple@tv-basicstudies"],
     studies_overrides: {
@@ -3596,7 +3648,7 @@ function fundBarOptions(valueFormatter){
     },
     scales:{
       x:{ grid:{display:false}, ticks:{font:{size:9}, maxRotation:0, autoSkip:true, maxTicksLimit:12} },
-      y:{ position:'right', grid:{color:'rgba(255,255,255,0.06)'}, ticks:{font:{size:9}, callback: valueFormatter ? (v)=>valueFormatter(v) : undefined} },
+      y:{ position:'right', grid:{color:chartGrid()}, ticks:{font:{size:9}, callback: valueFormatter ? (v)=>valueFormatter(v) : undefined} },
     }
   };
 }
@@ -3609,7 +3661,7 @@ function fundLineOptions(valueFormatter){
     },
     scales:{
       x:{ grid:{display:false}, ticks:{font:{size:8}, maxRotation:0, autoSkip:true, maxTicksLimit:8} },
-      y:{ position:'right', grid:{color:'rgba(255,255,255,0.06)'}, ticks:{font:{size:9}, callback: valueFormatter ? (v)=>valueFormatter(v) : undefined} },
+      y:{ position:'right', grid:{color:chartGrid()}, ticks:{font:{size:9}, callback: valueFormatter ? (v)=>valueFormatter(v) : undefined} },
     }
   };
 }
@@ -4711,7 +4763,7 @@ function renderComparePriceChart(data, tickerList){
       },
       scales: {
         x: { display: false },
-        y: { position: 'right', grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8a93a3', font: { size: 10 }, callback: v=>v+'%' } }
+        y: { position: 'right', grid: { color: chartGrid() }, ticks: { color: '#8a93a3', font: { size: 10 }, callback: v=>v+'%' } }
       }
     }
   });
@@ -4789,9 +4841,18 @@ function renderGoogleButton(){
     _gisInitialized = true;
   }
   google.accounts.id.renderButton(el, {
-    theme: 'filled_black', size: 'medium', shape: 'pill', text: 'signin_with',
+    theme: themeResolved()==='light' ? 'outline' : 'filled_black', size: 'medium', shape: 'pill', text: 'signin_with',
     locale: lang==='en' ? 'en' : 'he',
   });
+}
+
+function _avatarHTML(size){
+  const label = (authUser && (authUser.name || authUser.email)) || '?';
+  const initial = _authEsc(label.trim().charAt(0).toUpperCase());
+  const img = (authUser && authUser.picture)
+    ? `<img src="${_authEsc(authUser.picture)}" alt="" referrerpolicy="no-referrer" onerror="this.remove()" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:50%;">`
+    : '';
+  return `<span style="position:relative;display:inline-flex;align-items:center;justify-content:center;width:${size}px;height:${size}px;border-radius:50%;overflow:hidden;background:var(--panel-2);border:1px solid var(--line);color:var(--text);font-weight:700;font-size:${Math.round(size*0.42)}px;flex-shrink:0;">${initial}${img}</span>`;
 }
 
 function renderAuthBox(){
@@ -4799,19 +4860,81 @@ function renderAuthBox(){
   if(!box) return;
   const en = lang==='en';
   if(authToken && authUser){
-    const first = _authEsc((authUser.name || authUser.email || '').split(' ')[0]);
-    const pic = authUser.picture
-      ? `<img src="${_authEsc(authUser.picture)}" alt="" referrerpolicy="no-referrer" style="width:28px;height:28px;border-radius:50%;border:1px solid var(--line);">`
-      : '';
-    box.innerHTML = `<div style="display:flex;align-items:center;gap:8px;">${pic}
-      <span style="font-size:12px;color:var(--text-dim);max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${first}</span>
-      <button onclick="signOut()" style="background:var(--panel);border:1px solid var(--line);color:var(--text-dim);border-radius:8px;padding:5px 10px;font-size:11px;cursor:pointer;">${en?'Sign out':'התנתק'}</button></div>`;
+    const name = _authEsc(authUser.name || authUser.email || '');
+    const email = _authEsc(authUser.email || '');
+    const opt = (key, he, enL) => `<button data-theme-opt="${key}" onclick="setThemePref('${key}')" style="flex:1;border:none;border-radius:7px;padding:6px 4px;font-size:12px;cursor:pointer;font-family:inherit;">${en?enL:he}</button>`;
+    box.innerHTML = `
+      <button id="profile-btn" onclick="toggleProfileMenu(event)" aria-haspopup="true" aria-expanded="false" title="${name}" style="background:none;border:none;padding:0;cursor:pointer;display:flex;">${_avatarHTML(34)}</button>
+      <div id="profile-menu" role="menu" style="display:none;position:absolute;top:calc(100% + 10px);left:0;width:270px;max-width:92vw;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 32px var(--shadow);padding:14px;z-index:60;text-align:start;">
+        <div style="display:flex;align-items:center;gap:10px;padding-bottom:12px;border-bottom:1px solid var(--line);">
+          ${_avatarHTML(40)}
+          <div style="min-width:0;">
+            <div style="font-weight:700;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${name}</div>
+            <div dir="ltr" style="font-size:12px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:start;">${email}</div>
+          </div>
+        </div>
+        <!-- Future menu sections (settings, connections, subscription...) go here -->
+        <div style="padding:12px 0;border-bottom:1px solid var(--line);">
+          <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;">${en?'Appearance':'תצוגה'}</div>
+          <div style="display:flex;gap:4px;background:var(--panel-2);border:1px solid var(--line);border-radius:9px;padding:3px;">
+            ${opt('dark','כהה','Dark')}${opt('light','בהיר','Light')}${opt('system','מערכת','System')}
+          </div>
+        </div>
+        <button onclick="signOut()" style="margin-top:10px;width:100%;text-align:start;background:none;border:none;color:var(--text);font-size:13px;padding:8px 4px;border-radius:7px;cursor:pointer;font-family:inherit;">${en?'Sign out':'התנתק'}</button>
+      </div>`;
+    updateThemeSeg();
   } else {
-    box.innerHTML = '<div id="g-btn"></div>';
+    box.innerHTML = `<div style="display:flex;align-items:center;gap:8px;">
+      <div id="g-btn"></div>
+      <button id="theme-quick" onclick="quickToggleTheme()" title="${en?'Light / dark':'בהיר / כהה'}" style="background:var(--panel);border:1px solid var(--line);color:var(--text-dim);border-radius:8px;width:32px;height:32px;font-size:15px;cursor:pointer;"></button>
+    </div>`;
+    updateThemeSeg();
     _gisTries = 0;
     renderGoogleButton();
   }
 }
+
+function updateThemeSeg(){
+  const cur = themePref();
+  document.querySelectorAll('#profile-menu [data-theme-opt]').forEach(b=>{
+    const on = b.dataset.themeOpt === cur;
+    b.style.background = on ? 'var(--amber)' : 'transparent';
+    b.style.color = on ? '#1a1a1a' : 'var(--text-dim)';
+    b.style.fontWeight = on ? '700' : '400';
+  });
+  const q = document.getElementById('theme-quick');
+  if(q) q.textContent = themeResolved()==='light' ? '☾' : '☀';
+}
+
+function quickToggleTheme(){ setThemePref(themeResolved()==='light' ? 'dark' : 'light'); }
+
+// Called by setThemePref (see the <head> script) after the theme attribute changed.
+function onThemeChanged(){
+  updateThemeSeg();
+  if(!authToken) renderAuthBox();   // re-draw the Google button in the matching style
+  try {
+    if(typeof currentChartSymbol !== 'undefined' && document.getElementById('market-tv-chart')) switchChart(currentChartSymbol);
+  } catch(e){ console.warn('[theme] chart refresh skipped', e); }
+}
+
+function toggleProfileMenu(ev){
+  if(ev) ev.stopPropagation();
+  const m = document.getElementById('profile-menu');
+  if(!m) return;
+  const open = m.style.display === 'none';
+  m.style.display = open ? 'block' : 'none';
+  const btn = document.getElementById('profile-btn');
+  if(btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+function closeProfileMenu(){
+  const m = document.getElementById('profile-menu');
+  if(m) m.style.display = 'none';
+}
+document.addEventListener('click', e=>{
+  const box = document.getElementById('auth-box');
+  if(box && !box.contains(e.target)) closeProfileMenu();
+});
+document.addEventListener('keydown', e=>{ if(e.key === 'Escape') closeProfileMenu(); });
 
 async function onGoogleCredential(resp){
   try{
