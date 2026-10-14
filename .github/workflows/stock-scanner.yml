@@ -1,32 +1,30 @@
-name: Stock Scanner (twice daily, each with a backup trigger)
+name: Stock Scanner (started externally at market open and close)
 
+# HOW THIS RUNS NOW
+# GitHub's own `schedule` trigger turned out to be unusable for this repo: real runs started
+# 3-12 hours after their cron time (see CLAUDE.md, section 19.6). So the scans are started by the
+# API server's built-in scheduler (scheduler.py on Render), which calls GitHub's workflow_dispatch API
+# at exact times in America/New_York (that also removes the twice-a-year daylight-saving drift):
+#     weekdays 09:45 ET  -> opening scan        weekdays 16:10 ET  -> closing scan (final daily bars)
+# Manual runs: GitHub -> Actions -> "Run workflow" (a manual run always scans, see main() in the scanner).
+#
+# EMERGENCY FALLBACK: if the built-in scheduler is ever unavailable, uncomment the `schedule:` lines
+# below (UTC, US summer time; add one hour after US clocks go back on 1 Nov 2026). Expect delays.
 on:
-  schedule:
-    # Times are in UTC. Converted for Israel time (summer/DST: UTC+3).
-    # Israel uses UTC+3 in daylight saving (roughly late Mar–late Oct) and
-    # UTC+2 the rest of the year — cron doesn't auto-adjust for that, so
-    # these times will drift by 1 hour when the clocks change. If you
-    # notice the scan running an hour off after a seasonal change, that's
-    # why — just ask and these lines get updated.
-    #
-    # Each session below has two triggers: a primary and a backup ~15 min
-    # later. GitHub Actions' `schedule` isn't guaranteed to fire exactly
-    # on time — it can be delayed, especially at popular round-number
-    # minutes (:00, :15, :30, :45). Using off-peak minutes plus a backup
-    # trigger makes the actual scan time much more consistent. The
-    # scanner itself skips the backup run if the primary already
-    # completed a scan recently (see should_skip_scan in
-    # pipeline_a_scanner.py), so this never double-scans.
-    - cron: '37 13 * * *'   # 16:37 Israel (summer/DST) — primary, morning session
-    - cron: '52 13 * * *'   # 16:52 Israel (summer/DST) — backup, morning session
-    - cron: '47 19 * * *'   # 22:47 Israel (summer/DST) — primary, evening session
-    - cron: '2 20 * * *'    # 23:02 Israel (summer/DST) — backup, evening session
   workflow_dispatch: {}
+  # schedule:
+  #   - cron: '45 13 * * 1-5'   # 09:45 ET (EDT)
+  #   - cron: '10 20 * * 1-5'   # 16:10 ET (EDT)
+
+# Never two scans at once (they used to overlap and double the Yahoo traffic).
+concurrency:
+  group: stock-scanner
+  cancel-in-progress: false
 
 jobs:
   run-scanner:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45          # was 30; real runs took up to 28 min
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

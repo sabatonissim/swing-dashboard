@@ -1,14 +1,14 @@
-# Quick refresh: heatmap prices + earnings results (EPS / revenue) for companies that already reported.
-# Runs every ~20 minutes on weekdays from 12:00 to 23:59 UTC (covers pre-market through after-hours,
-# in both summer and winter US time). Small and fast — the full scan stays in stock-scanner.yml.
-# Place this file in .github/workflows/ (the script it runs, pipeline_a_scanner.py, stays in the repo root).
 name: Quick refresh (heatmap + earnings results)
 
+# Heatmap prices + EPS/revenue for companies that already reported. Small and fast (~2-3 min).
+# Started by the API server's built-in scheduler (scheduler.py; see stock-scanner.yml and CLAUDE.md 19.6):
+#     weekdays, every 20 minutes between 06:00 and 20:00 America/New_York.
+# Manual runs: Actions -> "Run workflow".
+# EMERGENCY FALLBACK: uncomment the schedule below (UTC) if the built-in scheduler is unavailable.
 on:
-  schedule:
-    # odd minutes on purpose: GitHub delays jobs scheduled at :00 / :30 the most
-    - cron: "7,27,47 12-23 * * 1-5"
-  workflow_dispatch:
+  workflow_dispatch: {}
+  # schedule:
+  #   - cron: "7,27,47 10-23 * * 1-5"
 
 concurrency:
   group: quick-refresh
