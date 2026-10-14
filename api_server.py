@@ -21,6 +21,7 @@ Endpoints:
     GET /api/article-preview     -> short attributed excerpt of a news article (drawer detail)
     POST /api/auth/google        -> exchange a Google sign-in credential for our session token
     GET /api/auth/me             -> the signed-in user (requires Authorization: Bearer)
+    GET /api/scheduler/status    -> built-in scheduler: next slots, recent dispatches
     GET /api/ticker-search?q=    -> find any US stock/ETF by ticker or company name (compare picker)
     GET /api/econ-calendar       -> upcoming US economic events (CPI/NFP/FOMC/...) with forecast/previous/actual (econ_calendar.py)
 
@@ -58,7 +59,8 @@ except Exception as _auth_import_err:  # server still boots; auth endpoints answ
     pyjwt = google_id_token = google_requests = None
     print(f"[warn] auth libraries missing: {_auth_import_err}")
 
-import econ_calendar  # US economic calendar: providers -> processing -> uniform events (see econ_calendar.py)
+import econ_calendar  # US economic calendar
+import scheduler      # starts the GitHub Actions workflows at exact ET times (see scheduler.py): providers -> processing -> uniform events (see econ_calendar.py)
 
 DB_URL = os.environ.get("SWING_DB_PATH") or os.environ.get("DATABASE_URL")
 
@@ -390,6 +392,12 @@ try:
     econ_calendar.warm_up(get_conn)
 except Exception as e:
     print(f"Econ calendar warm-up skipped: {e}")
+
+# Built-in scheduler (needs GITHUB_DISPATCH_TOKEN in Render; otherwise it stays off).
+try:
+    scheduler.start(get_conn)
+except Exception as e:
+    print(f"Scheduler not started: {e}")
 
 
 @app.get("/api/stocks")
@@ -1141,6 +1149,18 @@ def get_ui_strings(lang: str = Query(default="he", pattern="^(he|en)$")):
     cur.close()
     conn.close()
     return {r["string_key"]: r[lang] for r in rows}
+
+
+@app.get("/api/ping")
+def ping():
+    """Cheapest possible answer — no database. Used by the server's own keep-alive."""
+    return {"ok": True}
+
+
+@app.get("/api/scheduler/status")
+def scheduler_status():
+    """When each workflow fires next (ET), what the scheduler started recently, and whether it is on. No secrets."""
+    return scheduler.status(get_conn)
 
 
 @app.get("/api/health")
