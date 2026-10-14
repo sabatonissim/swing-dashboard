@@ -89,6 +89,11 @@
   .mobile-search{display:none;padding:10px 16px;gap:8px;background:var(--panel-2);border-bottom:1px solid var(--line);}
   .mobile-search .search-input{flex:1;}
   @media(max-width:900px){.search-wrap{display:none;}.mobile-search{display:flex;}}
+  @media(max-width:600px){
+    header{padding:10px 14px;gap:8px;}
+    header h1{font-size:18px;}
+    header .sub,header .clock{display:none;}
+  }
 
   /* ---- Breaking news bar ---- */
   .breaking-bar{background:var(--panel);border-bottom:1px solid var(--line);padding:10px 24px 14px;}
@@ -575,7 +580,6 @@
     <button class="search-btn" onclick="handleSearch()" id="search-btn-label">חפש</button>
   </div>
   <div style="display:flex;align-items:center;gap:12px;">
-    <button class="info-badge-btn" id="info-badge-btn" onclick="openInfoModal()" title="מקורות המידע">ⓘ</button>
     <button id="lang-toggle" onclick="toggleLang()" style="background:var(--panel);border:1px solid var(--line);color:var(--text-dim);border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;font-family:'JetBrains Mono',monospace;transition:all .15s;" onmouseover="this.style.borderColor='var(--amber)'" onmouseout="this.style.borderColor='var(--line)'">EN</button>
     <div class="clock mono" id="clock"></div>
     <div id="auth-box" style="position:relative;display:flex;align-items:center;min-height:34px;"></div>
@@ -4493,7 +4497,7 @@ function openCompare(baseTicker){
     </div>
     <div class="cs-input-wrap">
       <span class="cs-input-icon">🔍</span>
-      <input type="text" class="cs-input" id="cs-input" placeholder="${t?'Type a ticker...':'הקלד טיקר...'}" oninput="renderCompareSearchList('${baseTicker}', this.value)" onkeydown="handleCompareSearchKey(event,'${baseTicker}')">
+      <input type="text" class="cs-input" id="cs-input" placeholder="${t?'Ticker or company name...':'טיקר או שם חברה...'}" oninput="renderCompareSearchList('${baseTicker}', this.value)" onkeydown="handleCompareSearchKey(event,'${baseTicker}')">
     </div>
     <div class="cs-list" id="cs-list"></div>
   `;
@@ -4517,7 +4521,7 @@ function openAddToCompare(){
     </div>
     <div class="cs-input-wrap">
       <span class="cs-input-icon">🔍</span>
-      <input type="text" class="cs-input" id="cs-input" placeholder="${t?'Type a ticker...':'הקלד טיקר...'}" oninput="renderCompareSearchList('${compareTickerList[0]}', this.value)" onkeydown="handleCompareSearchKey(event,'${compareTickerList[0]}')">
+      <input type="text" class="cs-input" id="cs-input" placeholder="${t?'Ticker or company name...':'טיקר או שם חברה...'}" oninput="renderCompareSearchList('${compareTickerList[0]}', this.value)" onkeydown="handleCompareSearchKey(event,'${compareTickerList[0]}')">
     </div>
     <div class="cs-list" id="cs-list"></div>
   `;
@@ -4533,37 +4537,67 @@ function closeCompareSearch(){
   if(overlay) overlay.classList.remove('open');
 }
 
-// Suggestions come from the tickers already loaded on this page (today's
-// scan results) — the same list the person is already looking at — so
-// picking one feels like browsing, not guessing a symbol from memory.
-// Typing something not in that list still works: Enter runs it as a
-// free-form ticker lookup via the API, same as before.
+// The picker searches EVERY US stock/ETF, not only today's scan results:
+//  * the first row always offers to compare with exactly what was typed (works with a tap — no Enter key needed on a phone),
+//  * matches from the whole universe + company names come from /api/ticker-search (debounced),
+//  * today's scan results that match are listed last as a convenience.
+let _csTimer = null, _csSeq = 0;
 function renderCompareSearchList(baseTicker, query){
   const t = lang==='en';
   const listEl = document.getElementById('cs-list');
   if(!listEl) return;
-  const q = (query||'').trim().toUpperCase();
+  const raw = (query||'').trim();
+  const q = raw.toUpperCase();
   const exclude = new Set(compareTickerList.map(x=>x.toUpperCase()));
   const pool = (stocks||[]).filter(s => s.ticker && !exclude.has(s.ticker.toUpperCase()));
-  const filtered = q ? pool.filter(s => s.ticker.toUpperCase().includes(q)) : pool;
+  const scanMatches = q ? pool.filter(s => s.ticker.toUpperCase().includes(q)) : pool;
 
-  if(!filtered.length){
-    listEl.innerHTML = q
-      ? `<div class="cs-empty">${t?`No match in today's scan — press Enter to look up "${q}" directly.`:`אין התאמה בסריקה של היום — לחץ Enter כדי לחפש את "${q}" ישירות.`}</div>`
-      : `<div class="cs-empty">${t?'Start typing a ticker.':'התחל להקליד טיקר.'}</div>`;
-    return;
+  let html = '';
+  const direct = q ? canonTicker(raw).replace(/[^A-Z0-9.\-^=]/g, '') : '';
+  if(direct && !exclude.has(direct)){
+    html += `<div class="cs-item" onclick="selectCompareTicker('${baseTicker}','${direct}')">
+      <span class="cs-ticker">${direct}</span>
+      <span class="cs-trigger" id="cs-direct-label">${t?`Compare with ${direct}`:`השווה מול ${direct}`}</span>
+      <span style="color:var(--teal);font-size:13px;">⇄</span></div>`;
   }
-
-  listEl.innerHTML = filtered.slice(0, 30).map(s => {
-    const triggerText = lang==='en' ? (s.trigger_en||s.trigger||'') : (s.trigger||s.trigger_he||'');
-    return `
+  html += `<div id="cs-remote"></div>`;
+  if(scanMatches.length){
+    html += `<div class="cs-empty" style="text-align:start;padding:8px 4px 2px;">${t?"From today's scan":'מהסריקה של היום'}</div>`;
+    html += scanMatches.slice(0, 30).map(s => {
+      const triggerText = lang==='en' ? (s.trigger_en||s.trigger||'') : (s.trigger||s.trigger_he||'');
+      return `
       <div class="cs-item" onclick="selectCompareTicker('${baseTicker}','${s.ticker}')">
         <span class="cs-ticker">${s.ticker}</span>
         <span class="cs-trigger">${triggerText}</span>
         <span class="score-badge ${scoreClass(s.score)}" style="font-size:11px;padding:2px 8px;">${s.score}</span>
-      </div>
-    `;
-  }).join('');
+      </div>`;
+    }).join('');
+  }
+  if(!q){
+    html = `<div class="cs-empty" style="text-align:start;padding:4px 4px 8px;">${t?'Type any ticker or company name — not limited to the scan.':'הקלד כל טיקר או שם חברה — לא מוגבל לסריקה.'}</div>` + html;
+  }
+  listEl.innerHTML = html;
+
+  clearTimeout(_csTimer);
+  if(!q) return;
+  const seq = ++_csSeq;
+  _csTimer = setTimeout(async () => {
+    try{
+      const res = await fetch(`${API_BASE}/api/ticker-search?q=${encodeURIComponent(raw)}`);
+      if(!res.ok) return;
+      const data = await res.json();
+      const remoteEl = document.getElementById('cs-remote');
+      if(!remoteEl || seq !== _csSeq) return;     // a newer keystroke superseded this answer
+      const named = (data.results || []).find(r => r.symbol && r.symbol.toUpperCase() === direct && r.name);
+      if(named){ const lbl = document.getElementById('cs-direct-label'); if(lbl) lbl.textContent = (t?'Compare with ':'השווה מול ') + named.name; }
+      const items = (data.results || []).filter(r => r.symbol && !exclude.has(r.symbol.toUpperCase()) && r.symbol.toUpperCase() !== direct);
+      remoteEl.innerHTML = items.map(r => `
+        <div class="cs-item" onclick="selectCompareTicker('${baseTicker}','${_authEsc(r.symbol)}')">
+          <span class="cs-ticker">${_authEsc(r.symbol)}</span>
+          <span class="cs-trigger">${_authEsc(r.name || '')}</span>
+        </div>`).join('');
+    } catch(e){ /* search is a convenience; the "compare with <typed ticker>" row above still works */ }
+  }, 250);
 }
 
 function handleCompareSearchKey(event, baseTicker){
@@ -4834,7 +4868,7 @@ function renderGoogleButton(){
     _gisInitialized = true;
   }
   google.accounts.id.renderButton(el, {
-    theme: themeResolved()==='light' ? 'outline' : 'filled_black', size: 'medium', shape: 'pill', text: 'signin_with',
+    theme: themeResolved()==='light' ? 'outline' : 'filled_black', size: 'large', shape: 'pill', text: 'signin_with', width: 236,
     locale: lang==='en' ? 'en' : 'he',
   });
 }
@@ -4848,24 +4882,39 @@ function _avatarHTML(size){
   return `<span style="position:relative;display:inline-flex;align-items:center;justify-content:center;width:${size}px;height:${size}px;border-radius:50%;overflow:hidden;background:var(--panel-2);border:1px solid var(--line);color:var(--text);font-weight:700;font-size:${Math.round(size*0.42)}px;flex-shrink:0;">${initial}${img}</span>`;
 }
 
+function _personIconHTML(size){
+  return `<span style="display:inline-flex;align-items:center;justify-content:center;width:${size}px;height:${size}px;border-radius:50%;background:var(--panel-2);border:1px solid var(--line);color:var(--text-dim);flex-shrink:0;">
+    <svg width="${Math.round(size*0.55)}" height="${Math.round(size*0.55)}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/></svg></span>`;
+}
+
 function renderAuthBox(){
   const box = document.getElementById('auth-box');
   if(!box) return;
   const en = lang==='en';
-  if(authToken && authUser){
-    const name = _authEsc(authUser.name || authUser.email || '');
-    const email = _authEsc(authUser.email || '');
-    const opt = (key, he, enL) => `<button data-theme-opt="${key}" onclick="setThemePref('${key}')" style="flex:1;border:none;border-radius:7px;padding:6px 4px;font-size:12px;cursor:pointer;font-family:inherit;">${en?enL:he}</button>`;
-    box.innerHTML = `
-      <button id="profile-btn" onclick="toggleProfileMenu(event)" aria-haspopup="true" aria-expanded="false" title="${name}" style="background:none;border:none;padding:0;cursor:pointer;display:flex;">${_avatarHTML(34)}</button>
-      <div id="profile-menu" role="menu" style="display:none;position:absolute;top:calc(100% + 10px);left:0;width:270px;max-width:92vw;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 32px var(--shadow);padding:14px;z-index:60;text-align:start;">
+  const signedIn = !!(authToken && authUser);
+  const name = _authEsc((signedIn && (authUser.name || authUser.email)) || '');
+  const email = _authEsc((signedIn && authUser.email) || '');
+  const opt = (key, he, enL) => `<button data-theme-opt="${key}" onclick="setThemePref('${key}')" style="flex:1;border:none;border-radius:7px;padding:6px 4px;font-size:12px;cursor:pointer;font-family:inherit;">${en?enL:he}</button>`;
+  const rowBtn = 'width:100%;text-align:start;background:none;border:none;color:var(--text);font-size:13px;padding:9px 4px;border-radius:7px;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:8px;';
+
+  const topSection = signedIn ? `
         <div style="display:flex;align-items:center;gap:10px;padding-bottom:12px;border-bottom:1px solid var(--line);">
           ${_avatarHTML(40)}
           <div style="min-width:0;">
             <div style="font-weight:700;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${name}</div>
             <div dir="ltr" style="font-size:12px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:start;">${email}</div>
           </div>
-        </div>
+        </div>` : `
+        <div style="padding-bottom:12px;border-bottom:1px solid var(--line);">
+          <div style="font-weight:700;font-size:14px;margin-bottom:4px;">${en?'Sign in':'התחברות'}</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;line-height:1.4;">${en?'Sign in to keep your own watchlist.':'התחבר כדי לשמור רשימת מעקב אישית.'}</div>
+          <div id="g-btn" style="min-height:40px;"></div>
+        </div>`;
+
+  box.innerHTML = `
+      <button id="profile-btn" onclick="toggleProfileMenu(event)" aria-haspopup="true" aria-expanded="false" title="${signedIn ? name : (en?'Menu':'תפריט')}" style="background:none;border:none;padding:0;cursor:pointer;display:flex;">${signedIn ? _avatarHTML(34) : _personIconHTML(34)}</button>
+      <div id="profile-menu" role="menu" style="display:none;position:absolute;top:calc(100% + 10px);left:0;width:270px;max-width:92vw;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 32px var(--shadow);padding:14px;z-index:60;text-align:start;">
+        ${topSection}
         <!-- Future menu sections (settings, connections, subscription...) go here -->
         <div style="padding:12px 0;border-bottom:1px solid var(--line);">
           <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;">${en?'Appearance':'תצוגה'}</div>
@@ -4873,18 +4922,13 @@ function renderAuthBox(){
             ${opt('dark','כהה','Dark')}${opt('light','בהיר','Light')}
           </div>
         </div>
-        <button onclick="signOut()" style="margin-top:10px;width:100%;text-align:start;background:none;border:none;color:var(--text);font-size:13px;padding:8px 4px;border-radius:7px;cursor:pointer;font-family:inherit;">${en?'Sign out':'התנתק'}</button>
+        <div style="padding-top:6px;">
+          <button onclick="closeProfileMenu();openInfoModal()" style="${rowBtn}"><span style="color:var(--amber);font-size:15px;">ⓘ</span>${en?'Data sources & disclosure':'מקורות מידע וגילוי נאות'}</button>
+          ${signedIn ? `<button onclick="signOut()" style="${rowBtn}">${en?'Sign out':'התנתק'}</button>` : ''}
+        </div>
       </div>`;
-    updateThemeSeg();
-  } else {
-    box.innerHTML = `<div style="display:flex;align-items:center;gap:8px;">
-      <div id="g-btn"></div>
-      <button id="theme-quick" onclick="quickToggleTheme()" title="${en?'Light / dark':'בהיר / כהה'}" style="background:var(--panel);border:1px solid var(--line);color:var(--text-dim);border-radius:8px;width:32px;height:32px;font-size:15px;cursor:pointer;"></button>
-    </div>`;
-    updateThemeSeg();
-    _gisTries = 0;
-    renderGoogleButton();
-  }
+  updateThemeSeg();
+  if(!signedIn){ _gisTries = 0; renderGoogleButton(); }
 }
 
 function updateThemeSeg(){
@@ -4895,16 +4939,12 @@ function updateThemeSeg(){
     b.style.color = on ? '#1a1a1a' : 'var(--text-dim)';
     b.style.fontWeight = on ? '700' : '400';
   });
-  const q = document.getElementById('theme-quick');
-  if(q) q.textContent = themeResolved()==='light' ? '☾' : '☀';
 }
-
-function quickToggleTheme(){ setThemePref(themeResolved()==='light' ? 'dark' : 'light'); }
 
 // Called by setThemePref (see the <head> script) after the theme attribute changed.
 function onThemeChanged(){
   updateThemeSeg();
-  if(!authToken) renderAuthBox();   // re-draw the Google button in the matching style
+  if(!authToken) renderGoogleButton();   // re-draw the Google button in the matching style
   try {
     if(typeof currentChartSymbol !== 'undefined' && document.getElementById('market-tv-chart')) switchChart(currentChartSymbol);
   } catch(e){ console.warn('[theme] chart refresh skipped', e); }
@@ -4916,6 +4956,7 @@ function toggleProfileMenu(ev){
   if(!m) return;
   const open = m.style.display === 'none';
   m.style.display = open ? 'block' : 'none';
+  if(open && !authToken){ _gisTries = 0; renderGoogleButton(); }
   const btn = document.getElementById('profile-btn');
   if(btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
 }
@@ -5331,7 +5372,6 @@ function applyLang(){
   document.getElementById('page-nav-backtest').textContent = t.nav_backtest;
   document.getElementById('page-nav-deepdive').textContent = t.nav_deepdive;
   document.getElementById('dd-ticker-input').placeholder = t.dd_placeholder;
-  document.getElementById('info-badge-btn').title = t.info_badge_title;
   document.getElementById('mode-btn-indices').textContent = t.mode_indices;
   document.getElementById('mode-btn-sectors').textContent = t.mode_sectors;
   document.getElementById('chart-tab-gld-label').textContent = t.gld_label;

@@ -21,6 +21,7 @@ Endpoints:
     GET /api/article-preview     -> short attributed excerpt of a news article (drawer detail)
     POST /api/auth/google        -> exchange a Google sign-in credential for our session token
     GET /api/auth/me             -> the signed-in user (requires Authorization: Bearer)
+    GET /api/ticker-search?q=    -> find any US stock/ETF by ticker or company name (compare picker)
     GET /api/econ-calendar       -> upcoming US economic events (CPI/NFP/FOMC/...) with forecast/previous/actual (econ_calendar.py)
 
 CORS is open for local development. Lock this down (allow_origins) before
@@ -3240,6 +3241,87 @@ def _fetch_close_series(ticker: str) -> Optional[pd.Series]:
     closes = hist["Close"].copy()
     closes.index = pd.to_datetime(closes.index).tz_localize(None).normalize()
     return closes[~closes.index.duplicated(keep="last")]
+
+
+# ------------------------------------------------------------------
+# Ticker / company-name search for the "compare with another stock" picker.
+# Two sources, merged: (1) our own scanned universe (S&P 500 + Nasdaq 100 + extras,
+# prefix match on the symbol) and (2) Yahoo's symbol search, which also finds a
+# company by NAME and any other US-listed stock or ETF. Either source may fail
+# (Yahoo throttles cloud IPs) — the endpoint then just returns what the other found.
+# ------------------------------------------------------------------
+_TS_CACHE = {}
+_TS_TTL = 3600
+_US_EXCHANGES = {"NMS", "NYQ", "NGM", "NCM", "ASE", "PCX", "BTS", "NAS", "NYS", "NASDAQ", "NYSE", "AMEX", "ARCA", "BATS"}
+
+
+def _yahoo_symbol_search(q: str):
+    quotes = []
+    try:
+        quotes = list(getattr(yf.Search(q, max_results=10, news_count=0), "quotes", None) or [])
+    except Exception as e:
+        print(f"[warn] yf.Search failed for {q!r}: {type(e).__name__}: {e}")
+    if not quotes:
+        try:
+            r = requests.get(
+                "https://query2.finance.yahoo.com/v1/finance/search",
+                params={"q": q, "quotesCount": 10, "newsCount": 0, "listsCount": 0},
+                headers={"User-Agent": "Mozilla/5.0"}, timeout=5,
+            )
+            if r.status_code == 200:
+                quotes = r.json().get("quotes") or []
+        except Exception as e:
+            print(f"[warn] Yahoo search request failed for {q!r}: {type(e).__name__}: {e}")
+    out = []
+    for it in quotes:
+        sym = (it.get("symbol") or "").upper()
+        if not sym or "." in sym or it.get("quoteType") not in ("EQUITY", "ETF"):
+            continue
+        exch = (it.get("exchange") or "").upper()
+        if exch and exch not in _US_EXCHANGES:
+            continue
+        out.append({"symbol": sym, "name": it.get("shortname") or it.get("longname") or "", "exchange": exch})
+    return out
+
+
+@app.get("/api/ticker-search")
+def ticker_search(q: str = Query(..., min_length=1, max_length=40)):
+    q = q.strip()
+    key = q.lower()
+    hit = _TS_CACHE.get(key)
+    if hit and time.time() - hit[0] < _TS_TTL:
+        return hit[1]
+
+    results, seen = [], set()
+    sym_q = re.sub(r"[^A-Za-z0-9.\-]", "", q).upper()
+    if sym_q:
+        try:
+            with db_cursor(dict_cursor=True) as (conn, cur):
+                cur.execute("SELECT ticker FROM universe_movers WHERE ticker ILIKE %s ORDER BY ticker LIMIT 8",
+                            (_canon_ticker(sym_q) + "%",))
+                for r in cur.fetchall():
+                    if r["ticker"] not in seen:
+                        seen.add(r["ticker"])
+                        results.append({"symbol": r["ticker"], "name": "", "exchange": "", "source": "universe"})
+        except Exception as e:
+            print(f"[warn] ticker-search universe lookup failed: {type(e).__name__}: {e}")
+
+    for r in _yahoo_symbol_search(q):
+        if r["symbol"] in seen:
+            # keep our row but borrow Yahoo's company name
+            for existing in results:
+                if existing["symbol"] == r["symbol"] and not existing["name"]:
+                    existing["name"] = r["name"]
+            continue
+        seen.add(r["symbol"])
+        results.append({**r, "source": "yahoo"})
+
+    payload = {"query": q, "results": results[:12]}
+    if len(_TS_CACHE) > 500:
+        _TS_CACHE.clear()
+    if results:                       # don't cache an empty answer: it may just be a throttled Yahoo
+        _TS_CACHE[key] = (time.time(), payload)
+    return payload
 
 
 @app.get("/api/price-compare")

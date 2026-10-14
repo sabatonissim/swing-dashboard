@@ -403,25 +403,60 @@ _MONTHS = {m: i for i, m in enumerate(["january", "february", "march", "april", 
                                        "august", "september", "october", "november", "december"], 1)}
 
 
+# BLS release titles as they appear in bls.ics / on bls.gov, e.g. "Consumer Price Index for
+# September 2026". The title used to be compared for EXACT equality with "Consumer Price Index",
+# so every release whose title carries the reference month ("... for September 2026") was
+# silently dropped — CPI, PPI, jobs report and JOLTS never reached the calendar.
+BLS_TITLES = [
+    ("Employment Situation", ["nfp", "unemployment"]),
+    ("Consumer Price Index", ["cpi", "core_cpi"]),
+    ("Producer Price Index", ["ppi"]),
+    ("Job Openings and Labor Turnover Survey", ["jolts"]),
+]
+_BLS_REF_RE = re.compile(r"^for\s+([A-Za-z]+)\s+(\d{4})$", re.I)
+_bls_seen = {"matched": [], "ignored": []}     # last parse, shown in /api/econ-calendar/debug
+
+
+def _bls_match(title):
+    """-> (event types, reference month or None) for a BLS title, or (None, None)."""
+    t = " ".join((title or "").split())
+    for prefix, types in BLS_TITLES:
+        if t.lower().startswith(prefix.lower()):
+            rest = t[len(prefix):].strip(" -:()")
+            if rest and not rest.lower().startswith("for "):
+                continue          # e.g. "Consumer Price Index Detailed Report" is a different publication
+            m = _BLS_REF_RE.match(rest) if rest else None
+            ref = None
+            if m and m.group(1).lower() in _MONTHS:
+                ref = date(int(m.group(2)), _MONTHS[m.group(1).lower()], 1)
+            return types, ref
+    return None, None
+
+
 def schedule_bls(start, end):
-    """BLS official release calendar (ICS). The reference period of each release is
-    derived from its date — the same convention BLS uses."""
-    out = []
+    """BLS official release calendar (ICS). The reference period comes from the title
+    ("... for September 2026") when present, otherwise it is derived from the release date."""
+    out, matched, ignored = [], [], []
     for ev in parse_ics(_cached_text("ics_bls", BLS_ICS)):
         name = ev["summary"].strip()
-        targets = {"Employment Situation": ["nfp", "unemployment"],
-                   "Consumer Price Index": ["cpi", "core_cpi"],
-                   "Producer Price Index": ["ppi"],
-                   "Job Openings and Labor Turnover Survey": ["jolts"]}.get(name)
+        targets, ref = _bls_match(name)
         if not targets:
+            if len(ignored) < 60:
+                ignored.append(name)
             continue
         d, when = _start_parts(ev["start"], targets[0])
+        matched.append(f"{d.isoformat()} {name}")
         if not (start <= d <= end):
             continue
-        # JOLTS reports ~5-6 weeks after its reference month; everything else: previous month
-        period = _month_of(d - timedelta(days=45)) if name.startswith("Job Openings") else _first_of_prev_month(d)
+        if ref is not None:
+            period = ref
+        else:  # JOLTS reports ~5-6 weeks after its reference month; everything else: previous month
+            period = _month_of(d - timedelta(days=45)) if name.startswith("Job Openings") else _first_of_prev_month(d)
         for t in targets:
             out.append(dict(type=t, date=d, when=when, period=period, source="bls", estimated=False))
+    _bls_seen["matched"], _bls_seen["ignored"] = matched[-80:], ignored
+    if not matched:
+        raise RuntimeError("bls.ics parsed but contained no CPI/PPI/jobs releases (format changed?)")
     return out
 
 
@@ -962,4 +997,6 @@ def _meta(now_utc):
 
 
 def debug_info():
-    return {"unmatched_provider_titles": list(_unmatched_titles), "meta": _meta(datetime.now(UTC))}
+    return {"unmatched_provider_titles": list(_unmatched_titles),
+            "bls": {"matched_titles": _bls_seen["matched"], "ignored_titles": _bls_seen["ignored"]},
+            "meta": _meta(datetime.now(UTC))}

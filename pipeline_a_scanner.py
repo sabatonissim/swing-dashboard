@@ -1913,9 +1913,11 @@ _sec_ticker_cik = None
 
 _REV_NUM = r"\$\s?([\d,]+(?:\.\d+)?)\s*(billion|million|bn|mm|b|m)\b"
 _REV_PATTERNS = [
-    re.compile(r"(?:total\s+|net\s+)?(?:revenues?|net\s+sales|sales)\s+(?:were|was|of|totaled|reached|came\s+in\s+at|:)?\s*(?:approximately\s+)?" + _REV_NUM, re.I),
+    re.compile(r"(?:(?:total|net|quarterly|record|gaap)\s+)*(?:revenues?|net\s+sales|sales)\s+(?:were|was|of|totaled|reached|came\s+in\s+at|:)?\s*(?:approximately\s+)?" + _REV_NUM, re.I),
     re.compile(r"(?:revenues?|net\s+sales)\s+(?:increased|decreased|rose|fell|grew|declined|climbed|jumped)[^$]{0,80}?(?:to|at)\s+(?:approximately\s+)?" + _REV_NUM, re.I),
     re.compile(r"\$\s?([\d,]+(?:\.\d+)?)\s*(billion|million)\s+(?:in|of)\s+(?:total\s+|net\s+)?(?:revenues?|net\s+sales)", re.I),
+    # "Revenues for the third quarter were $1.2 billion" / "Net sales for the quarter totaled $850 million"
+    re.compile(r"(?:revenues?|net\s+sales)\s+for\s+the\s+[^$.]{0,80}?(?:were|was|of|totaled|reached)\s+(?:approximately\s+)?" + _REV_NUM, re.I),
 ]
 
 
@@ -1950,20 +1952,62 @@ def _sec_find_release_accession(cik, report_date):
     return None
 
 
-def _sec_release_text(cik, accession):
-    """Plain text of the Exhibit 99.x document of an 8-K filing."""
+def _sec_exhibit_names(cik, accession):
+    """File names of the earnings press release (EX-99.x) of an 8-K, best candidate first."""
     base = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession.replace('-', '')}"
-    listing = _sec_get(base + "/index.json")
-    names = [it.get("name", "") for it in (listing.get("directory") or {}).get("item", [])]
-    cands = [n for n in names if re.search(r"(ex|exhibit)[-_]?99", n, re.I) and n.lower().endswith((".htm", ".html", ".txt"))]
-    cands.sort(key=lambda n: 0 if re.search(r"99[-_.]?0?1", n) else 1)
-    if not cands:
-        return None
-    raw = _sec_get(f"{base}/{cands[0]}", as_json=False)
+    ranked = []   # (priority, name)
+    # 1) the filing's index page lists every document WITH its type — EX-99.1 is the press release.
+    #    Much more reliable than guessing from file names (companies name them anything).
+    try:
+        page = _sec_get(f"{base}/{accession}-index.htm", as_json=False)
+        for row in re.findall(r"(?is)<tr[^>]*>(.*?)</tr>", page):
+            mt = re.search(r">\s*(EX-99(?:\.0?[12])?)\s*<", row, re.I)
+            mh = re.search(r'href="([^"]+?\.(?:htm|html|txt))"', row, re.I)
+            if mt and mh:
+                typ = mt.group(1).upper()
+                ranked.append((0 if typ in ("EX-99", "EX-99.1", "EX-99.01") else 1, mh.group(1).split("/")[-1]))
+    except Exception as e:
+        print(f"[info] SEC filing index page unavailable for {cik}/{accession}: {type(e).__name__}: {e}")
+    # 2) directory listing + file-name guess, 3) last resort: the biggest ordinary document
+    try:
+        items = (_sec_get(base + "/index.json").get("directory") or {}).get("item", [])
+    except Exception as e:
+        items = []
+        print(f"[info] SEC directory listing unavailable for {cik}/{accession}: {type(e).__name__}: {e}")
+    names = [it.get("name", "") for it in items]
+    for n in names:
+        if re.search(r"(ex|exhibit)[-_]?99", n, re.I) and n.lower().endswith((".htm", ".html", ".txt")):
+            ranked.append((0 if re.search(r"99[-_.]?0?1", n) else 1, n))
+    if not ranked:
+        sized = []
+        for it in items:
+            n = it.get("name", "")
+            if n.lower().endswith((".htm", ".html")) and not re.search(r"^R\d+\.htm$|index|filingsummary|8-?k\b", n, re.I):
+                try:
+                    sized.append((int(str(it.get("size", "0")).replace(",", "") or 0), n))
+                except ValueError:
+                    pass
+        ranked += [(2, n) for _, n in sorted(sized, reverse=True)[:2]]
+    seen, ordered = set(), []
+    for _, n in sorted(ranked, key=lambda r: r[0]):
+        if n not in seen:
+            seen.add(n)
+            ordered.append(n)
+    return ordered
+
+
+def _sec_release_text(cik, accession):
+    """Plain text of the earnings press release (Exhibit 99.x) of an 8-K filing."""
     import html as _html
-    text = re.sub(r"(?is)<(script|style).*?</\1>", " ", raw)
-    text = re.sub(r"<[^>]+>", " ", text)
-    return re.sub(r"\s+", " ", _html.unescape(text)).strip()
+    base = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession.replace('-', '')}"
+    for name in _sec_exhibit_names(cik, accession)[:3]:
+        raw = _sec_get(f"{base}/{name}", as_json=False)
+        text = re.sub(r"(?is)<(script|style).*?</\1>", " ", raw)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", _html.unescape(text)).strip()
+        if re.search(r"revenue|net sales", text[:20000], re.I):
+            return text
+    return None
 
 
 def _parse_press_release_revenue(text, reference=None):
@@ -1991,11 +2035,21 @@ def _revenue_from_press_release(ticker, report_date, reference=None):
     try:
         cik = _sec_cik_for(ticker)
         if not cik:
+            print(f"[info] SEC revenue {ticker}: no CIK found for this ticker")
             return None
         acc = _sec_find_release_accession(cik, report_date)
         if not acc:
+            print(f"[info] SEC revenue {ticker}: no 8-K (Item 2.02) filed around {report_date} yet")
             return None
-        return _parse_press_release_revenue(_sec_release_text(cik, acc), reference)
+        text = _sec_release_text(cik, acc)
+        if not text:
+            print(f"[info] SEC revenue {ticker}: 8-K {acc} found but no readable press-release exhibit")
+            return None
+        val = _parse_press_release_revenue(text, reference)
+        if val is None:
+            print(f"[info] SEC revenue {ticker}: press release read ({len(text)} chars) but no revenue figure passed the checks"
+                  f" (reference={reference}) — start of text: {text[:160]!r}")
+        return val
     except Exception as e:
         print(f"[warn] press-release revenue fetch failed for {ticker}: {type(e).__name__}: {e}")
         return None
@@ -2402,12 +2456,145 @@ def backfill_sim_outcomes():
     print(f"Demo-portfolio simulation: evaluated {evaluated} signals, {resolved} closed (stop/target/time).")
 
 
+# ------------------------------------------------------------------
+# Quick refresh jobs (run by earnings-refresh.yml, every ~20 minutes on weekdays).
+# The full scan takes many minutes and everything it produces — stocks, heatmap,
+# earnings results — only lands in the database when the WHOLE run ends, twice a
+# day. These two jobs are small and independent:
+#   * refresh_earnings_results(): re-checks only companies that have already reported
+#     but still miss EPS or revenue (Yahoo, then the SEC press release).
+#   * refresh_movers_only(): one batched price download -> heatmap / movers table.
+# ------------------------------------------------------------------
+_SESSION_REPORT_HOUR_UTC = {"bmo": 10, "amc": 20}   # earliest moment the figures can plausibly exist
+
+
+def refresh_earnings_results():
+    init_db()
+    now = datetime.now(timezone.utc)
+    today = now.date()
+    start = today - timedelta(days=EARNINGS_CALENDAR_WINDOW_PAST_DAYS)
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT ticker, report_date, session, eps_actual, revenue_actual FROM earnings_calendar
+           WHERE report_date BETWEEN %s AND %s AND (eps_actual IS NULL OR revenue_actual IS NULL)
+           ORDER BY report_date DESC, market_cap DESC NULLS LAST""",
+        (start, today),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    todo = []
+    for ticker, rdate, session, eps_actual, rev_actual in rows:
+        report_dt = datetime(rdate.year, rdate.month, rdate.day, _SESSION_REPORT_HOUR_UTC.get(session or "", 15), 0, tzinfo=timezone.utc)
+        if report_dt <= now:
+            todo.append((ticker, rdate, report_dt, eps_actual, rev_actual))
+    print(f"[info] earnings refresh: {len(todo)} reported name(s) still missing EPS or revenue.")
+
+    updates = []
+    for ticker, rdate, report_dt, eps_actual, rev_actual in todo:
+        eps_est = eps_new = eps_sur = eps_src = rev_new = rev_pe = None
+        if eps_actual is None:
+            eps_est, eps_new, eps_sur, eps_src = _fetch_eps_result(ticker, rdate)
+            time.sleep(INTER_TICKER_DELAY_SEC)
+        if rev_actual is None:
+            _, rev_new, rev_pe = _fetch_revenue_result(ticker, report_dt)
+            time.sleep(INTER_TICKER_DELAY_SEC)
+        if eps_new is not None or rev_new is not None:
+            updates.append((ticker, rdate, eps_est, eps_new, eps_sur, eps_src, rev_new, rev_pe))
+
+    if updates:
+        conn = get_conn()
+        cur = conn.cursor()
+        for ticker, rdate, eps_est, eps_new, eps_sur, eps_src, rev_new, rev_pe in updates:
+            cur.execute(
+                """UPDATE earnings_calendar SET
+                       eps_estimate = COALESCE(%s, eps_estimate), eps_actual = COALESCE(%s, eps_actual),
+                       surprise_pct = COALESCE(%s, surprise_pct), eps_source_date = COALESCE(%s, eps_source_date),
+                       revenue_actual = COALESCE(%s, revenue_actual),
+                       revenue_period_end = CASE WHEN %s IS NOT NULL THEN %s ELSE revenue_period_end END,
+                       updated_at = NOW()
+                   WHERE ticker = %s AND report_date = %s""",
+                (eps_est, eps_new, eps_sur, eps_src, rev_new, rev_new, rev_pe, ticker, rdate),
+            )
+        cur.execute(
+            """UPDATE earnings_calendar SET revenue_surprise_pct =
+                   CASE WHEN revenue_estimate > 0 AND revenue_actual IS NOT NULL
+                        THEN ROUND(((revenue_actual - revenue_estimate) / revenue_estimate * 100)::numeric, 2)
+                        ELSE NULL END
+               WHERE report_date BETWEEN %s AND %s""",
+            (start, today),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    print(f"[info] earnings refresh: {len(updates)} row(s) updated with new results.")
+
+
+def refresh_movers_only():
+    init_db()
+    universe = build_scan_universe()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT ticker, market_cap FROM universe_movers")
+    mcaps = {r[0]: r[1] for r in cur.fetchall()}
+    cur.close()
+    conn.close()
+
+    changes = []
+    for i in range(0, len(universe), 100):
+        chunk = universe[i:i + 100]
+        try:
+            df = yf.download(chunk, period="5d", interval="1d", group_by="ticker",
+                             auto_adjust=False, progress=False, threads=True)
+        except Exception as e:
+            print(f"[warn] movers refresh: batch {i // 100} failed: {type(e).__name__}: {e}")
+            continue
+        for t in chunk:
+            try:
+                closes = df[t]["Close"].dropna()
+            except Exception:
+                continue
+            if len(closes) < 2:
+                continue
+            last, prev = float(closes.iloc[-1]), float(closes.iloc[-2])
+            if not prev:
+                continue
+            changes.append((t, round((last - prev) / prev * 100, 2), round(last, 2), mcaps.get(t)))
+        time.sleep(1.0)
+    if len(changes) < 50:
+        print(f"[warn] movers refresh: only {len(changes)} prices came back — not overwriting the table.")
+        return
+    upsert_universe_movers(changes)
+
+
 def main():
+    import sys
+    if "--quick" in sys.argv:
+        for job in (refresh_movers_only, refresh_earnings_results):
+            try:
+                job()
+            except Exception:
+                print(f"[fatal] {job.__name__} crashed:")
+                print(traceback.format_exc())
+        return
+    if "--earnings-only" in sys.argv:
+        refresh_earnings_results()
+        return
+    if "--movers-only" in sys.argv:
+        refresh_movers_only()
+        return
+
     init_db()
 
     guard_conn = get_conn()
     try:
-        if should_skip_scan(guard_conn):
+        # A manual "Run workflow" click must always scan. The guard exists only to stop the
+        # scheduled backup trigger from duplicating the primary one; it used to swallow manual runs too.
+        if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
+            print("[info] manual run — skipping the duplicate-scan guard.")
+        elif should_skip_scan(guard_conn):
             return
     finally:
         guard_conn.close()
