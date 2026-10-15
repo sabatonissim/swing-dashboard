@@ -12,7 +12,8 @@ Safe by design:
                                  investment advice is rejected.
   * English first, then Hebrew through the project's existing free translator (passed in by the caller)
 
-Manual test:   python ai_digest.py --force
+Manual test:   python ai_digest.py --force     (generate now)
+               python ai_digest.py --probe     (which AI models work for my key right now?)
 """
 import json
 import os
@@ -169,7 +170,7 @@ def maybe_generate(get_conn, translate_fn, force=False):
                 return False
             text, model = llm_provider.chat(
                 [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": _prompt(items)}],
-                max_tokens=3000, temperature=0.2)
+                max_tokens=2500, temperature=0.2)
             payload = _build_payload(_parse(text), items, translate_fn)
             cur = conn.cursor()
             cur.execute("INSERT INTO ai_digests (window_hours, item_count, model, payload) VALUES (%s, %s, %s, %s)",
@@ -189,6 +190,8 @@ def maybe_generate(get_conn, translate_fn, force=False):
 
 
 if __name__ == "__main__":
+    if "--probe" in sys.argv:
+        sys.exit(0 if llm_provider.probe() else 1)
     import pipeline_b_news_aggregator as pb
     ok = maybe_generate(pb.get_conn, pb.translate_to_hebrew, force="--force" in sys.argv)
     sys.exit(0 if ok else 1)
