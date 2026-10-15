@@ -32,4 +32,9 @@ jobs:
       - name: Run news aggregator
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # AI digest (optional). Without the secret nothing AI runs. To switch AI provider: change the secret
+          # and the two optional repository variables — no code change (see llm_provider.py).
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODELS: ${{ vars.LLM_MODELS }}
         run: python pipeline_b_news_aggregator.py
