@@ -1,15 +1,24 @@
 name: AI Digest (manual test)
 
-# Runs ONLY the AI digest step (about 1 minute) — for testing the AI connection without waiting for the full
-# news pipeline. Manual only: Actions -> "AI Digest (manual test)" -> Run workflow.
+# Manual only: Actions -> "AI Digest (manual test)" -> Run workflow, then pick a mode:
+#   probe  = test which AI models really work for your key right now (prints a ready LLM_MODELS value) ~2 min
+#   digest = generate the AI digest now (forced) ~1 min
 # Uses the same settings as news-aggregator.yml (LLM_API_KEY secret, optional LLM_BASE_URL / LLM_MODELS variables).
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "probe = which models work for my key | digest = generate the digest now"
+        type: choice
+        options:
+          - probe
+          - digest
+        default: probe
 
 jobs:
   ai-digest:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -23,10 +32,10 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Generate AI digest now (forced)
+      - name: Run AI step (${{ inputs.mode }})
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
           LLM_MODELS: ${{ vars.LLM_MODELS }}
-        run: python ai_digest.py --force
+        run: python ai_digest.py --${{ inputs.mode == 'digest' && 'force' || 'probe' }}
