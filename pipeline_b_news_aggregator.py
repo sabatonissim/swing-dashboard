@@ -712,6 +712,14 @@ def run_pipeline_b():
     print(f"Pipeline B complete. {saved} new high-impact items saved, "
           f"{skipped_dupe} duplicates skipped, {skipped_no_match} not market-relevant.")
 
+    # AI daily digest (optional): only runs when LLM_API_KEY is set, at most every few hours,
+    # and can never break this pipeline. See ai_digest.py / llm_provider.py.
+    try:
+        import ai_digest
+        ai_digest.maybe_generate(get_conn, translate_to_hebrew)
+    except Exception as e:
+        print(f"[ai_digest] skipped (non-fatal): {type(e).__name__}: {e}")
+
 
 if __name__ == "__main__":
     run_pipeline_b()

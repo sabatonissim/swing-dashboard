@@ -4015,11 +4015,32 @@ def get_daily_digest(hours: int = Query(default=24, ge=1, le=72), top_n: int = Q
         })
     hot_topics.sort(key=lambda h: h["count"], reverse=True)
 
+    # Optional AI-written summary, produced by ai_digest.py (runs inside pipeline_b). Absent/failed -> None,
+    # and the frontend simply shows the rule-based digest as before.
+    ai_summary = None
+    try:
+        conn2 = get_conn()
+        try:
+            cur2 = conn2.cursor()
+            cur2.execute("SELECT generated_at, model, payload FROM ai_digests "
+                         "WHERE generated_at > NOW() - INTERVAL '36 hours' ORDER BY generated_at DESC LIMIT 1")
+            row = cur2.fetchone()
+            cur2.close()
+            if row:
+                ai_summary = json.loads(row[2])
+                ai_summary["generated_at"] = row[0].isoformat()
+                ai_summary["model"] = row[1]
+        finally:
+            conn2.close()
+    except Exception:
+        ai_summary = None
+
     return {
         "window_hours": hours,
         "total_items": len(rows),
         "critical": critical,
         "hot_topics": hot_topics[:top_n],
+        "ai_summary": ai_summary,
     }
 
 
