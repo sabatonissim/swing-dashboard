@@ -26,15 +26,20 @@ MAX_ITEMS = 50
 MIN_ITEMS = 5
 BODY_CHARS = 240
 
-SYSTEM_PROMPT = """You are a neutral news editor for a market-data website. You write a short daily digest.
+SYSTEM_PROMPT = """You are a neutral news editor for a market-data website. You write a short daily digest with context.
 STRICT RULES:
-- Use ONLY facts stated in the numbered news items you are given. Never add numbers, names, causes, dates or background that are not in the items.
-- No investment advice: never say or imply to buy, sell or hold anything; no price targets; no predictions about what prices will do.
-- Neutral, plain language. If the items are thin or contradict each other, say so briefly instead of guessing.
-- Group related items into 3 to 5 topics, most important/most covered first.
+- Base every statement on the numbered news items you are given. Never add numbers, names, causes, dates or background that are not in the items.
+- "impact" explains in plain words which parts of the market (sectors, asset classes, currencies, interest rates) this kind of news typically matters for, and why. Word it with "may", "could" or "tends to". It is context, NOT a forecast: never predict a price level or a direction, never give a target.
+- No investment advice: never say or imply that anyone should buy, sell or hold anything.
+- "takeaways" are neutral observations about the day's themes (what dominated, what is uncertain, where items disagree). They are not recommendations.
+- "watch" lists up to 3 things worth keeping an eye on, taken from the items (for example an upcoming decision or data release mentioned in them). Use an empty list if the items mention none.
+- If the items are thin or contradict each other, say so briefly instead of guessing.
+- Group related items into 3 to 5 topics, most important / most covered first.
 Reply with ONLY a JSON object (no markdown, no commentary) in exactly this shape:
 {"overview": "2-3 sentences describing the day in markets/macro news, max 350 characters",
- "topics": [{"title": "max 70 characters", "summary": "1-2 sentences, max 280 characters", "items": [numbers of the supporting items]}]}"""
+ "topics": [{"title": "max 70 characters", "summary": "1-2 sentences, max 280 characters", "impact": "1-2 sentences, max 280 characters", "items": [numbers of the supporting items]}],
+ "takeaways": ["max 200 characters each, 2 to 3 entries"],
+ "watch": ["max 120 characters each, 0 to 3 entries"]}"""
 
 _ADVICE = re.compile(r"\b(you should|we recommend|recommend(?:ed|s)? (?:to )?(?:buy|sell)|should (?:buy|sell|hold)|time to (?:buy|sell)|buy now|sell now)\b", re.I)
 
@@ -119,18 +124,25 @@ def _build_payload(raw, items, translate_fn):
         title, summary = str(t.get("title", "")).strip(), str(t.get("summary", "")).strip()
         if not (title and summary and nums):
             continue                                        # no valid source -> dropped
-        topics.append({"title_en": title, "summary_en": summary,
+        topics.append({"title_en": title, "summary_en": summary, "impact_en": str(t.get("impact", "")).strip(),
                        "sources": [{"title_en": items[n - 1]["title"], "title_he": items[n - 1]["title_he"],
                                     "url": items[n - 1]["url"], "category": items[n - 1]["tag"]} for n in nums[:3]]})
     if not overview or not topics:
         raise ValueError("answer had no usable overview/topics")
-    blob = overview + " " + " ".join(t["title_en"] + " " + t["summary_en"] for t in topics)
+    def _strings(key, n):
+        out = [str(x).strip() for x in (raw.get(key) or []) if str(x).strip()]
+        return out[:n]
+    takeaways, watch = _strings("takeaways", 3), _strings("watch", 3)
+    blob = " ".join([overview] + takeaways + watch + [t["title_en"] + " " + t["summary_en"] + " " + t["impact_en"] for t in topics])
     if _ADVICE.search(blob):
         raise ValueError("answer looked like investment advice — rejected")
-    payload = {"overview_en": overview, "overview_he": _he(overview, translate_fn), "topics": topics}
+    payload = {"overview_en": overview, "overview_he": _he(overview, translate_fn), "topics": topics,
+               "takeaways_en": takeaways, "takeaways_he": [_he(x, translate_fn) for x in takeaways],
+               "watch_en": watch, "watch_he": [_he(x, translate_fn) for x in watch]}
     for t in topics:
         t["title_he"] = _he(t["title_en"], translate_fn)
         t["summary_he"] = _he(t["summary_en"], translate_fn)
+        t["impact_he"] = _he(t["impact_en"], translate_fn)
     return payload
 
 
@@ -157,7 +169,7 @@ def maybe_generate(get_conn, translate_fn, force=False):
                 return False
             text, model = llm_provider.chat(
                 [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": _prompt(items)}],
-                max_tokens=900, temperature=0.2)
+                max_tokens=3000, temperature=0.2)
             payload = _build_payload(_parse(text), items, translate_fn)
             cur = conn.cursor()
             cur.execute("INSERT INTO ai_digests (window_hours, item_count, model, payload) VALUES (%s, %s, %s, %s)",
