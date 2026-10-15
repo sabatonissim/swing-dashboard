@@ -126,12 +126,14 @@ def _try_model(base, key, model, messages, max_tokens, temperature):
     raise _Skip(f"{model}: gave no usable answer after retries")
 
 
-def chat(messages, max_tokens=2500, temperature=0.2):
+def chat(messages, max_tokens=2500, temperature=0.2, validate=None):
     """Send a chat request. Returns (text, model_used).
 
     Tries each model in LLM_MODELS in order within a total time budget. If none works and LLM_MODELS was not
     set explicitly, the provider's own model list is consulted and a few mid-sized chat models are tried.
     A rejected key (401/403) stops at once.
+    `validate(text)` (optional) may raise ValueError to reject a model's answer (e.g. broken JSON) — the next
+    model is then tried instead of giving up.
     Raises LLMNotConfigured / LLMAuthError / RuntimeError (all models failed).
     """
     key = _setting("LLM_API_KEY")
@@ -150,9 +152,15 @@ def chat(messages, max_tokens=2500, temperature=0.2):
                 return None
             tried.append(model)
             try:
-                return _try_model(base, key, model, messages, max_tokens, temperature), model
+                text = _try_model(base, key, model, messages, max_tokens, temperature)
+                if validate:
+                    validate(text)
+                return text, model
             except _Skip as e:
                 last = str(e)
+                print(f"[llm] {last}")
+            except ValueError as e:
+                last = f"{model}: answer rejected — {e}"
                 print(f"[llm] {last}")
         return None
 

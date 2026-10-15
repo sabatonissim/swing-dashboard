@@ -36,7 +36,7 @@ STRICT RULES:
 - "watch" lists up to 3 things worth keeping an eye on, taken from the items (for example an upcoming decision or data release mentioned in them). Use an empty list if the items mention none.
 - If the items are thin or contradict each other, say so briefly instead of guessing.
 - Group related items into 3 to 5 topics, most important / most covered first.
-Reply with ONLY a JSON object (no markdown, no commentary) in exactly this shape:
+Reply with ONLY a valid JSON object (no markdown, no commentary). Use straight double quotes, no trailing commas, and never put a double quote character inside a text value. Exact shape:
 {"overview": "2-3 sentences describing the day in markets/macro news, max 350 characters",
  "topics": [{"title": "max 70 characters", "summary": "1-2 sentences, max 280 characters", "impact": "1-2 sentences, max 280 characters", "items": [numbers of the supporting items]}],
  "takeaways": ["max 200 characters each, 2 to 3 entries"],
@@ -80,10 +80,23 @@ def _prompt(items):
 
 
 def _parse(text):
+    """Models often return almost-JSON (trailing commas, curly quotes, code fences). Try strict first, then repair."""
     m = re.search(r"\{.*\}", text, re.DOTALL)
     if not m:
         raise ValueError("no JSON object in the answer")
-    return json.loads(m.group(0))
+    raw = m.group(0)
+    try:
+        return json.loads(raw)
+    except ValueError as first:
+        fixed = (raw.replace("\u201c", '"').replace("\u201d", '"').replace("\u2018", "'").replace("\u2019", "'"))
+        fixed = re.sub(r",\s*([}\]])", r"\1", fixed)                    # trailing commas
+        fixed = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", fixed)       # stray control characters
+        try:
+            return json.loads(fixed, strict=False)
+        except ValueError:
+            pos = getattr(first, "pos", 0)
+            print(f"[ai_digest] unreadable JSON ({first}); around the error: ...{raw[max(0, pos - 60):pos + 60]!r}...")
+            raise ValueError(f"unreadable JSON ({first})")
 
 
 def _split_for_translation(text, limit=380):
@@ -168,9 +181,12 @@ def maybe_generate(get_conn, translate_fn, force=False):
             if len(items) < MIN_ITEMS:
                 print(f"[ai_digest] only {len(items)} items in the window — skipping")
                 return False
+            # validate = parse + sanity checks (no translation yet); a model whose answer fails is skipped and
+            # the next model in LLM_MODELS is tried.
             text, model = llm_provider.chat(
                 [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": _prompt(items)}],
-                max_tokens=2500, temperature=0.2)
+                max_tokens=2500, temperature=0.1,
+                validate=lambda t: _build_payload(_parse(t), items, lambda x: x))
             payload = _build_payload(_parse(text), items, translate_fn)
             cur = conn.cursor()
             cur.execute("INSERT INTO ai_digests (window_hours, item_count, model, payload) VALUES (%s, %s, %s, %s)",
