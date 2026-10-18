@@ -774,6 +774,8 @@
 <div class="disclaimer-strip" id="disclaimer-strip">
   התוכן להמחשה בלבד ואינו מהווה ייעוץ השקעות או המלצה לביצוע עסקה.
 </div>
+<div class="disclaimer-strip" id="legal-links" style="border-top:none;padding-top:0;"></div>
+<style>#legal-links a{color:var(--text-dim);text-decoration:underline;}</style>
 
 <div class="overlay" id="overlay">
   <div class="drawer" id="drawer"></div>
@@ -1045,7 +1047,7 @@ function renderSectorFilter(){
     ? `<button class="sector-btn sector-clear-btn" onclick="clearSelectedCategories()">${lang==='en'?'Show all':'הצג הכל'}</button>`
     : '';
   el.innerHTML = clearBtn + allTags.map(tag => `
-    <button class="sector-btn ${selectedCategories.has(tag)?'active':''}" onclick="toggleSelectedCategory('${tag.replace(/'/g,"\\'")}')">${tag}</button>
+    <button class="sector-btn ${selectedCategories.has(tag)?'active':''}" data-tag="${escH(tag)}" onclick="toggleSelectedCategory(this.dataset.tag)">${escH(tagLabel(tag))}</button>
   `).join("");
 }
 
@@ -1069,10 +1071,10 @@ function renderMacro(){
     }
     el.innerHTML = newsSearchResults.map((m,i)=>`
       <div class="macro-item" onclick="openMacroDrawer(${i}, true)">
-        <div class="macro-tag ${m.impact==='Critical'?'tag-critical':'tag-high'}">${m.tag}</div>
+        <div class="macro-tag ${m.impact==='Critical'?'tag-critical':'tag-high'}">${escH(tagLabel(m.tag))}</div>
         <div>
-          <div class="macro-text">${getNewsText(m)}</div>
-          ${(lang==='he' && m.hook_he) ? `<div class="macro-hook">💡 ${m.hook_he}</div>` : ''}
+          <div class="macro-text">${escH(getNewsText(m))}</div>
+          ${hookText(m) ? `<div class="macro-hook">💡 ${escH(hookText(m))}</div>` : ''}
           <div class="macro-time">${m.time}</div>
         </div>
       </div>
@@ -1085,10 +1087,10 @@ function renderMacro(){
   if(!filtered.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${t?'No news in the selected categories.':'אין חדשות בקטגוריות שנבחרו.'}</div>`; return; }
   el.innerHTML = filtered.map((m,i)=>`
     <div class="macro-item" onclick="openMacroDrawer(${macro.indexOf(m)})">
-      <div class="macro-tag ${m.impact==='Critical'?'tag-critical':'tag-high'}">${m.tag}</div>
+      <div class="macro-tag ${m.impact==='Critical'?'tag-critical':'tag-high'}">${escH(tagLabel(m.tag))}</div>
       <div>
-        <div class="macro-text">${getNewsText(m)}</div>
-        ${(lang==='he' && m.hook_he) ? `<div class="macro-hook">💡 ${m.hook_he}</div>` : ''}
+        <div class="macro-text">${escH(getNewsText(m))}</div>
+        ${hookText(m) ? `<div class="macro-hook">💡 ${escH(hookText(m))}</div>` : ''}
         <div class="macro-time">${m.time}</div>
       </div>
     </div>
@@ -1113,9 +1115,9 @@ function renderBreakingNews(){
   }
   el.innerHTML = critical.map((m)=>`
     <div class="breaking-card" onclick="openMacroDrawer(${macro.indexOf(m)})">
-      <div class="b-tag">${m.tag}</div>
-      <div class="b-text">${getNewsText(m)}</div>
-      ${(lang==='he' && m.hook_he) ? `<div class="b-hook">💡 ${m.hook_he}</div>` : ''}
+      <div class="b-tag">${escH(tagLabel(m.tag))}</div>
+      <div class="b-text">${escH(getNewsText(m))}</div>
+      ${hookText(m) ? `<div class="b-hook">💡 ${escH(hookText(m))}</div>` : ''}
     </div>
   `).join("");
 }
@@ -1740,8 +1742,8 @@ function renderDeepDive(quote, sector, signals, news){
   if(news && news.length){
     html += news.map(n => `
       <div class="dd-news-item">
-        <a href="${n.link}" target="_blank" rel="noopener">${n.title}</a>
-        <div class="meta">${n.publisher||''}</div>
+        <a href="${escH(safeUrl(n.link))}" target="_blank" rel="noopener noreferrer">${escH(n.title)}</a>
+        <div class="meta">${escH(n.publisher||'')}</div>
       </div>
     `).join('');
   } else {
@@ -2559,16 +2561,16 @@ function renderDailyDigest(data){
 
   const itemRow = (r) => `
     <div class="digest-item digest-click" onclick="openDigestItem(${reg(r)})">
-      <div class="macro-tag ${r.impact_level==='Critical'?'tag-critical':'tag-high'}">${r.category_tag}</div>
-      <div class="macro-text">${t ? (r.summary_en||'') : (r.summary_he||'')}</div>
+      <div class="macro-tag ${r.impact_level==='Critical'?'tag-critical':'tag-high'}">${escH(tagLabel(r.category_tag))}</div>
+      <div class="macro-text">${escH(t ? (r.summary_en||'') : (r.summary_he||''))}</div>
       <div class="digest-open-hint">${t?'Open ←':'פתח ←'}</div>
     </div>
   `;
 
   const hotTopicRow = (h) => `
     <div class="digest-item digest-click" onclick="openDigestItem(${reg(h.representative)})">
-      <div class="macro-tag ${h.representative.impact_level==='Critical'?'tag-critical':'tag-high'}">${h.tag}<span class="digest-hot-count">🔥 ${h.count} ${t?(h.count===1?'story':'stories'):(h.count===1?'כתבה':'כתבות')}</span></div>
-      <div class="macro-text">${t ? (h.representative.summary_en||'') : (h.representative.summary_he||'')}</div>
+      <div class="macro-tag ${h.representative.impact_level==='Critical'?'tag-critical':'tag-high'}">${escH(tagLabel(h.tag))}<span class="digest-hot-count">🔥 ${h.count} ${t?(h.count===1?'story':'stories'):(h.count===1?'כתבה':'כתבות')}</span></div>
+      <div class="macro-text">${escH(t ? (h.representative.summary_en||'') : (h.representative.summary_he||''))}</div>
       <div class="digest-open-hint">${t?'Open ←':'פתח ←'}</div>
     </div>
   `;
@@ -3503,29 +3505,29 @@ function openMacroDrawerItem(m, onTop){
   const drawer = document.getElementById("drawer");
   drawer.innerHTML = `
     <div class="drawer-head">
-      <h2 style="font-family:'Heebo',sans-serif;font-size:19px;">${m.tag}</h2>
+      <h2 style="font-family:'Heebo',sans-serif;font-size:19px;">${escH(tagLabel(m.tag))}</h2>
       <button class="close-btn" onclick="closeDrawer()">✕</button>
     </div>
     <div class="stat-grid" style="grid-template-columns:1fr 1fr;">
       <div class="stat"><div class="k">${lang==='en'?'Importance':'רמת חשיבות'}</div><div class="v" style="color:${m.impact==='Critical'?'var(--red)':'var(--teal)'}">${m.impact==='Critical'?(lang==='en'?'Critical':'קריטית'):(lang==='en'?'High':'גבוהה')}</div></div>
-      <div class="stat"><div class="k">${lang==='en'?'Source':'מקור'}</div><div class="v" style="font-size:12px;">${m.source||'—'}</div></div>
+      <div class="stat"><div class="k">${lang==='en'?'Source':'מקור'}</div><div class="v" style="font-size:12px;">${escH(m.source||'—')}</div></div>
     </div>
     <div class="ai-box">
       <div class="label">${lang==='en'?'Summary':'תקציר'}</div>
-      ${getNewsText(m)}
+      ${escH(getNewsText(m))}
     </div>
     ${(() => {
       const body = lang==='en' ? m.body_en : m.body_he;
-      return body ? `<div class="ai-box"><div class="label">📄 ${lang==='en'?'More from the source':'עוד מהמקור'}</div>${body}</div>` : '';
+      return body ? `<div class="ai-box"><div class="label">📄 ${lang==='en'?'More from the source':'עוד מהמקור'}</div>${escH(body)}</div>` : '';
     })()}
-    ${(lang==='he' && m.hook_he) ? `<div class="ai-box"><div class="label">💡 ${lang==='en'?'Why this matters':'למה זה חשוב'}</div>${m.hook_he}</div>` : ''}
+    ${hookText(m) ? `<div class="ai-box"><div class="label">💡 ${lang==='en'?'Why this matters':'למה זה חשוב'}</div>${escH(hookText(m))}</div>` : ''}
     <div class="ai-box">
       <div class="label">${lang==='en'?'Affected Sectors':'סקטורים מושפעים'}</div>
-      ${m.sectors||m.sector||'—'}
+      ${escH(tagLabel(m.sectors||m.sector)||'—')}
     </div>
     ${(m.link && m.link!=='#') ? `<div id="macro-preview" class="ai-box"><div class="label">📄 ${lang==='en'?'From the article':'מהכתבה'}</div><span style="color:var(--text-dim);font-size:12.5px;">${lang==='en'?'Loading a preview from the source…':'טוען תצוגה מקדימה מהמקור…'}</span></div>` : ''}
     <div class="macro-time" style="margin-bottom:14px;">${m.time}</div>
-    ${m.link&&m.link!=='#'?`<button class="deep-btn" onclick="window.open('${m.link}','_blank')">${lang==='en'?'To original article ←':'לכתבה המקורית ←'}</button>`:''}
+    ${safeUrl(m.link)&&m.link!=='#'?`<button class="deep-btn" data-url="${escH(safeUrl(m.link))}" onclick="window.open(this.dataset.url,'_blank','noopener,noreferrer')">${lang==='en'?'To original article ←':'לכתבה המקורית ←'}</button>`:''}
   `;
   document.getElementById("overlay").classList.add("open");
   track('view_macro', m.tag);
@@ -3597,8 +3599,8 @@ async function loadStockNews(ticker){
     if(!items.length){ el.innerHTML=`<div class="macro-time">${lang==='en'?'No recent articles found':'לא נמצאו כתבות עדכניות'}</div>`; return; }
     el.innerHTML = items.map(n=>`
       <div class="news-item">
-        <a href="${n.link}" target="_blank" rel="noopener">${n.title}</a>
-        <div class="macro-time">${n.publisher||''}</div>
+        <a href="${escH(safeUrl(n.link))}" target="_blank" rel="noopener noreferrer">${escH(n.title)}</a>
+        <div class="macro-time">${escH(n.publisher||'')}</div>
       </div>
     `).join("");
   } catch { el.innerHTML=`<div class="macro-time">${lang==='en'?'Could not load news right now':'לא ניתן לטעון חדשות כרגע'}</div>`; }
@@ -4856,17 +4858,159 @@ setInterval(tickClock,1000); tickClock();
 // (see CLAUDE.md "Moving to a different host" section).
 const API_BASE = "https://swing-dashboard-3btx.onrender.com";
 
+
+// ==== v14: output-safety + bilingual category helpers ====
+// Everything that comes from outside (RSS headlines, publisher names, links, AI text) must go through
+// escH() before it is placed in innerHTML, and links through safeUrl() (blocks javascript: URLs).
+function escH(x){ return String(x==null?'':x).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function safeUrl(u){ try{ const p=new URL(String(u||''), location.href); return (p.protocol==='http:'||p.protocol==='https:') ? p.href : ''; }catch(e){ return ''; } }
+// News categories are stored in the database in Hebrew (the pipeline's tag). The DB value stays the stable key
+// (filters, saved selections, hooks); only the label shown to the person is translated.
+const TAG_EN = {
+  'ריבית':'Interest Rates','אינפלציה':'Inflation','גאופוליטי':'Geopolitics','תעסוקה':'Employment','מאקרו':'Macro',
+  'אג"ח':'Bonds','שוק':'Market','דוחות':'Earnings','פשיטת רגל':'Bankruptcy','טכנולוגיה':'Technology','שבבים':'Semiconductors',
+  'אנרגיה':'Energy','קריפטו':'Crypto','רגולציה':'Regulation','סחורות':'Commodities'
+};
+const HOOK_EN = {
+  'CPI':'The consumer price index is the inflation reading the Fed watches most closely for rate decisions; a surprise can move the whole market that day.',
+  'PPI':'Producer prices often lead CPI by a month or two, so they serve as an early indicator of inflation pressure.',
+  'ריבית':'Interest-rate changes directly affect companies\' financing costs and how growth and technology stocks are valued.',
+  'אינפלציה':'Inflation above expectations raises the odds of further rate hikes, which tends to weigh on growth stocks.',
+  'גאופוליטי':'Geopolitical events often affect oil, gold and the VIX (fear index) in the short term.',
+  'תעסוקה':'A jobs report that is too strong can discourage the Fed from cutting rates, while a weak one raises expectations of easing.',
+  'GDP':'The economy\'s growth rate affects companies\' earnings expectations and Fed policy.',
+  'מאקרו':'A broad macro-economic data point that can affect overall stock-market sentiment.',
+  'אג"ח':'An inverted yield curve has historically been a leading indicator of recession, so investors follow it closely.',
+  'שוק':'Moves in the leading indices reflect investors\' general sentiment toward the economy as a whole.',
+  'דוחות':'Quarterly results better or worse than expected can move a stock by tens of percent the next trading day.',
+  'M&A':'Mergers and acquisitions usually affect both the buyer\'s stock (often down) and the target\'s stock (often sharply up).',
+  'IPO':'Initial public offerings can influence sentiment toward a whole sector, especially for a prominent company.',
+  'פשיטת רגל':'The bankruptcy of a large company can affect suppliers, competitors and investors across the sector.',
+  'AI':'News around artificial intelligence often moves the whole technology and chip sector, not just the specific company.',
+  'שבבים':'The semiconductor sector is very sensitive to global demand and export limits, so it reacts sharply to such news.',
+  'טכנולוגיה':'Large technology companies carry significant weight in the leading indices, so news about them affects the broad market.',
+  'אנרגיה':'Energy prices affect both overall inflation and the profitability of energy companies directly.',
+  'קריפטו':'The crypto market tends to react sharply and in sync to news, even compared with the stock market.',
+  'רגולציה':'Regulatory changes can alter the profit model of an entire sector, not just a single company.'
+};
+function tagLabel(tag){ return (lang==='en' && TAG_EN[tag]) ? TAG_EN[tag] : (tag||''); }
+function hookText(m){ return lang==='he' ? (m.hook_he||'') : (HOOK_EN[m.tag]||''); }
+
+// ==== v14: privacy consent, legal pages, personal-data tools ====
+const LEGAL_CONTACT_EMAIL = '';   // <-- put your contact email here (required for a public product)
+const LEGAL_LAST_UPDATED = '2026-10-18';
+function consentState(){ try{ return localStorage.getItem('swing_consent'); }catch(e){ return null; } }
+function setConsent(v){ try{ localStorage.setItem('swing_consent', v); if(v!=='yes') localStorage.removeItem('swing_sid'); }catch(e){} const b=document.getElementById('consent-banner'); if(b) b.remove(); if(v==='yes') track('page_view', null); }
+function renderConsentBanner(){
+  if(consentState()) return;
+  const en = lang==='en';
+  const d = document.createElement('div');
+  d.id = 'consent-banner';
+  d.setAttribute('role','dialog');
+  d.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:200;background:var(--panel);border-top:1px solid var(--line);padding:12px 16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;font-size:12.5px;color:var(--text);box-shadow:0 -6px 24px var(--shadow);';
+  d.innerHTML = `<span style="max-width:720px;">${en?'We would like to collect anonymous usage statistics (which pages and tickers are viewed) to improve the site. No ads, no selling of data.':'נשמח לאסוף סטטיסטיקות שימוש אנונימיות (אילו עמודים וטיקרים נצפים) כדי לשפר את האתר. בלי פרסומות ובלי מכירת מידע.'} <a href="#" onclick="openLegal('privacy');return false;" style="color:var(--teal);">${en?'Privacy policy':'מדיניות פרטיות'}</a></span>
+    <button onclick="setConsent('yes')" style="background:var(--amber);color:#1a1a1a;border:none;border-radius:8px;padding:7px 16px;font-weight:700;cursor:pointer;">${en?'Allow':'אישור'}</button>
+    <button onclick="setConsent('no')" style="background:transparent;color:var(--text-dim);border:1px solid var(--line);border-radius:8px;padding:7px 16px;cursor:pointer;">${en?'Decline':'סירוב'}</button>`;
+  document.body.appendChild(d);
+}
+function _legalDoc(kind){
+  const en = lang==='en';
+  const mail = LEGAL_CONTACT_EMAIL ? escH(LEGAL_CONTACT_EMAIL) : (en?'(contact email not set)':'(כתובת מייל ליצירת קשר טרם הוגדרה)');
+  if(kind==='privacy') return en ? `
+    <h3>Privacy Policy</h3><p class="lg-dim">Last updated: ${LEGAL_LAST_UPDATED}</p>
+    <p><b>What we collect.</b> (1) If you sign in with Google: your email address, name and profile picture, as provided by Google, plus the tickers on your watchlist and the last-login time. (2) If you allow it in the consent banner: anonymous usage events (page views, tickers or news categories opened) tied to a random identifier stored in your browser, not to your name or email. (3) Technical data processed by our hosting providers (such as IP address in server logs).</p>
+    <p><b>Browser storage.</b> We store in your browser: your language and theme, selected news categories, the sign-in token (needed to keep you signed in), and — only if you allow analytics — the random identifier.</p>
+    <p><b>Why.</b> To operate the site, keep your personal watchlist, secure the service and, with your consent, understand which features are used. We do not sell your data and do not show ads.</p>
+    <p><b>Service providers.</b> Hosting and database (Render, Neon, Vercel — servers may be outside your country, including the US), Google (sign-in, fonts), TradingView (embedded charts), and market-data and news sources listed under "Data sources". These providers may process technical data such as your IP address according to their own policies.</p>
+    <p><b>Retention.</b> Account data is kept until you delete your account. Raw anonymous usage events are deleted after 180 days.</p>
+    <p><b>Your rights.</b> From the profile menu you can download a copy of your data and permanently delete your account and watchlist. You may also contact us to request access, correction or deletion.</p>
+    <p><b>Security.</b> We use encrypted connections and limit access to the database, but no system is completely secure.</p>
+    <p><b>Contact.</b> ${mail}</p>` : `
+    <h3>מדיניות פרטיות</h3><p class="lg-dim">עודכן לאחרונה: ${LEGAL_LAST_UPDATED}</p>
+    <p><b>איזה מידע נאסף.</b> (1) אם התחברת עם Google: כתובת המייל, השם ותמונת הפרופיל כפי ש-Google מוסרת, רשימת המעקב שלך וזמן ההתחברות האחרון. (2) אם אישרת בבאנר ההסכמה: אירועי שימוש אנונימיים (צפייה בעמודים, בטיקרים או בקטגוריות חדשות) המקושרים למזהה אקראי בדפדפן, לא לשם או למייל שלך. (3) מידע טכני שמעובד אצל ספקי האחסון (למשל כתובת IP ביומני שרת).</p>
+    <p><b>אחסון בדפדפן.</b> נשמרים בדפדפן שלך: השפה וערכת הנושא, קטגוריות חדשות שנבחרו, אסימון ההתחברות (נדרש כדי להישאר מחובר), ורק אם אישרת סטטיסטיקה — המזהה האקראי.</p>
+    <p><b>למה.</b> להפעלת האתר, לשמירת רשימת המעקב האישית, לאבטחת השירות ו— בהסכמתך — להבין באילו תכונות משתמשים. איננו מוכרים את המידע שלך ואיננו מציגים פרסומות.</p>
+    <p><b>ספקי שירות.</b> אחסון ומסד נתונים (Render, Neon, Vercel — השרתים עשויים להיות מחוץ לישראל, כולל בארה"ב), Google (התחברות, גופנים), TradingView (גרפים משובצים), ומקורות נתוני השוק והחדשות המפורטים תחת "מקורות מידע". ספקים אלה עשויים לעבד מידע טכני כמו כתובת IP לפי מדיניותם.</p>
+    <p><b>שמירה.</b> נתוני החשבון נשמרים עד שתמחק את החשבון. אירועי שימוש אנונימיים גולמיים נמחקים לאחר 180 יום.</p>
+    <p><b>הזכויות שלך.</b> מתפריט הפרופיל אפשר להוריד עותק של המידע ולמחוק לצמיתות את החשבון ורשימת המעקב. אפשר גם לפנות אלינו בבקשה לעיון, תיקון או מחיקה.</p>
+    <p><b>אבטחה.</b> אנו משתמשים בחיבורים מוצפנים ומגבילים גישה למסד הנתונים, אך אין מערכת מאובטחת לחלוטין.</p>
+    <p><b>יצירת קשר.</b> ${mail}</p>`;
+  return en ? `
+    <h3>Terms of Use</h3><p class="lg-dim">Last updated: ${LEGAL_LAST_UPDATED}</p>
+    <p><b>Information only.</b> Everything on this site — prices, scores, chart patterns, statistics, simulated "demo portfolio" results, economic calendar and AI-generated summaries — is general information for illustration and education. It is <b>not investment advice, an investment recommendation, marketing, or an offer to buy or sell any security</b>, and it does not take into account your personal situation. We are not a licensed investment adviser. Consult a licensed professional before making decisions.</p>
+    <p><b>Past performance.</b> Historical and back-tested results, including pattern success rates and the demo portfolio, are simulations with simplifying assumptions (no fees, slippage or taxes) and do not guarantee future results. Trading involves a risk of loss, including loss of the entire investment.</p>
+    <p><b>AI content.</b> AI summaries are generated automatically from news headlines, may contain errors or omissions, and are not a forecast or recommendation. Check the original sources.</p>
+    <p><b>Data accuracy and availability.</b> Data comes from third parties, may be delayed, incomplete or wrong, and may be unavailable at times. The service is provided "as is" without warranties, and to the extent permitted by law we are not liable for losses arising from its use.</p>
+    <p><b>Third-party content.</b> News items link to their original publishers; headlines and excerpts belong to their owners. Names and logos of third parties belong to them. Automatic translations may be inaccurate.</p>
+    <p><b>Acceptable use.</b> Do not scrape, overload, reverse-engineer or attack the service, or use it in violation of law. We may limit or block access to protect the service.</p>
+    <p><b>Changes.</b> We may change the service or these terms; continued use means you accept the updated terms.</p>
+    <p><b>Contact.</b> ${mail}</p>` : `
+    <h3>תנאי שימוש</h3><p class="lg-dim">עודכן לאחרונה: ${LEGAL_LAST_UPDATED}</p>
+    <p><b>מידע בלבד.</b> כל מה שמוצג באתר — מחירים, ציונים, תבניות גרף, סטטיסטיקות, תוצאות "תיק דמו" מדומה, לוח אירועים כלכלי וסיכומי AI — הוא מידע כללי להמחשה ולמטרות לימוד. הוא <b>אינו ייעוץ השקעות, המלצה להשקעה, שיווק השקעות או הצעה לקנות או למכור נייר ערך</b>, ואינו מביא בחשבון את מצבך האישי. איננו יועץ השקעות מורשה. לפני קבלת החלטות יש להיוועץ באיש מקצוע מורשה.</p>
+    <p><b>ביצועי עבר.</b> תוצאות היסטוריות ובדיקות עבר, כולל שיעורי הצלחה של תבניות ותיק הדמו, הן סימולציות עם הנחות מפשטות (ללא עמלות, החלקות ומסים) ואינן מבטיחות תוצאות בעתיד. מסחר כרוך בסיכון להפסד, לרבות אובדן מלוא ההשקעה.</p>
+    <p><b>תוכן AI.</b> סיכומי AI נוצרים אוטומטית מכותרות חדשות, עלולים להכיל טעויות או השמטות, ואינם תחזית או המלצה. יש לבדוק במקורות המקוריים.</p>
+    <p><b>דיוק וזמינות הנתונים.</b> הנתונים מגיעים מצדדים שלישיים, עשויים להיות מאוחרים, חלקיים או שגויים, ולעיתים לא זמינים. השירות ניתן "כמות שהוא" וללא אחריות, ובמידה המותרת בדין איננו אחראים להפסדים הנובעים משימוש בו.</p>
+    <p><b>תוכן צד שלישי.</b> פריטי חדשות מקשרים למו"לים המקוריים; הכותרות והקטעים שייכים לבעליהם. שמות ולוגואים של צדדים שלישיים שייכים להם. תרגומים אוטומטיים עשויים להיות לא מדויקים.</p>
+    <p><b>שימוש הולם.</b> אין לסרוק, להעמיס, לפרוץ לאחור או לתקוף את השירות, ואין להשתמש בו בניגוד לדין. אנו רשאים להגביל או לחסום גישה כדי להגן על השירות.</p>
+    <p><b>שינויים.</b> אנו עשויים לשנות את השירות או את התנאים; המשך שימוש מהווה הסכמה לתנאים המעודכנים.</p>
+    <p><b>יצירת קשר.</b> ${mail}</p>`;
+}
+function openLegal(kind){
+  closeLegal();
+  const o = document.createElement('div');
+  o.id = 'legal-overlay';
+  o.style.cssText = 'position:fixed;inset:0;z-index:300;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:16px;';
+  o.onclick = e => { if(e.target===o) closeLegal(); };
+  o.innerHTML = `<div style="background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:14px;max-width:680px;width:100%;max-height:86vh;overflow:auto;padding:22px 24px;font-size:13.5px;line-height:1.7;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <div><button onclick="openLegal('privacy')" style="background:none;border:none;color:${kind==='privacy'?'var(--amber)':'var(--text-dim)'};cursor:pointer;font-weight:700;">${lang==='en'?'Privacy':'פרטיות'}</button> ·
+      <button onclick="openLegal('terms')" style="background:none;border:none;color:${kind==='terms'?'var(--amber)':'var(--text-dim)'};cursor:pointer;font-weight:700;">${lang==='en'?'Terms':'תנאי שימוש'}</button></div>
+      <button class="close-btn" onclick="closeLegal()">✕</button></div>
+    <style>#legal-overlay h3{margin:0 0 4px;font-size:17px}#legal-overlay p{margin:9px 0}#legal-overlay .lg-dim{color:var(--text-dim);font-size:11.5px}</style>
+    ${_legalDoc(kind)}</div>`;
+  document.body.appendChild(o);
+}
+function closeLegal(){ const o=document.getElementById('legal-overlay'); if(o) o.remove(); }
+function renderLegalLinks(){
+  const el = document.getElementById('legal-links'); if(!el) return;
+  const en = lang==='en';
+  el.innerHTML = `<a href="#" onclick="openLegal('privacy');return false;">${en?'Privacy':'פרטיות'}</a> · <a href="#" onclick="openLegal('terms');return false;">${en?'Terms of Use':'תנאי שימוש'}</a> · <a href="#" onclick="openInfoModal();return false;">${en?'Data sources':'מקורות מידע'}</a>`;
+}
+async function exportMyData(){
+  closeProfileMenu();
+  try{
+    const res = await authFetch(`${API_BASE}/api/auth/export`);
+    if(!res.ok) throw new Error();
+    const blob = new Blob([JSON.stringify(await res.json(), null, 2)], {type:'application/json'});
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'my-swing-desk-data.json';
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
+  }catch(e){ alert(lang==='en'?'Could not export your data right now.':'לא ניתן לייצא את המידע כרגע.'); }
+}
+async function deleteMyAccount(){
+  closeProfileMenu();
+  if(!confirm(lang==='en'?'Permanently delete your account and watchlist? This cannot be undone.':'למחוק לצמיתות את החשבון ורשימת המעקב? אי אפשר לשחזר.')) return;
+  try{
+    const res = await authFetch(`${API_BASE}/api/auth/me`, {method:'DELETE'});
+    if(!res.ok) throw new Error();
+    signOut();
+    alert(lang==='en'?'Your account was deleted.':'החשבון נמחק.');
+  }catch(e){ alert(lang==='en'?'Could not delete the account right now — try again later.':'לא ניתן למחוק את החשבון כרגע — נסה שוב מאוחר יותר.'); }
+}
+// ==== end v14 helpers ====
+
 function getSessionId(){
   let sid = localStorage.getItem('swing_sid');
   if(!sid){ sid=crypto.randomUUID(); localStorage.setItem('swing_sid',sid); }
   return sid;
 }
 function track(eventType, entityId){
+  if(consentState()!=='yes') return;   // analytics only after the person allowed it
   fetch(`${API_BASE}/api/track`,{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({event_type:eventType,entity_id:entityId,session_id:getSessionId()})
   }).catch(()=>{});
 }
 track('page_view',null);
+window.addEventListener('load', renderConsentBanner);
 
 // ---- Accounts: Sign in with Google ----
 // The Client ID is public by design (not a secret). The server verifies the
@@ -4968,7 +5112,11 @@ function renderAuthBox(){
         </div>
         <div style="padding-top:6px;">
           <button onclick="closeProfileMenu();openInfoModal()" style="${rowBtn}"><span style="color:var(--amber);font-size:15px;">ⓘ</span>${en?'Data sources & disclosure':'מקורות מידע וגילוי נאות'}</button>
-          ${signedIn ? `<button onclick="signOut()" style="${rowBtn}">${en?'Sign out':'התנתק'}</button>` : ''}
+          <button onclick="closeProfileMenu();openLegal('privacy')" style="${rowBtn}">${en?'Privacy policy':'מדיניות פרטיות'}</button>
+          <button onclick="closeProfileMenu();openLegal('terms')" style="${rowBtn}">${en?'Terms of use':'תנאי שימוש'}</button>
+          ${signedIn ? `<button onclick="exportMyData()" style="${rowBtn}">${en?'Download my data':'הורדת המידע שלי'}</button>
+          <button onclick="signOut()" style="${rowBtn}">${en?'Sign out':'התנתק'}</button>
+          <button onclick="deleteMyAccount()" style="${rowBtn}color:var(--red);">${en?'Delete my account':'מחיקת החשבון שלי'}</button>` : ''}
         </div>
       </div>`;
   updateThemeSeg();
@@ -5445,6 +5593,7 @@ function applyLang(){
   document.getElementById('backtest-horizon-20').textContent = t.horizon_20;
   document.getElementById('dd-search-btn').textContent = t.dd_search_btn;
   document.getElementById('disclaimer-strip').textContent = t.disclaimer;
+  renderLegalLinks();
   if(typeof lastConnectedState !== 'undefined' && lastConnectedState !== null){
     setStatus(lastConnectedState.connected, lastConnectedState.connecting);
   }

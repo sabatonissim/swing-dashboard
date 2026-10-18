@@ -35,6 +35,9 @@ import os
 import re
 import time
 import io
+import hmac
+import threading
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
 from datetime import date, datetime as dt, timedelta, timezone
@@ -43,10 +46,10 @@ from typing import List, Optional
 import pandas as pd
 import numpy as np
 import requests
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import yfinance as yf
 import psycopg2
 import psycopg2.extras
@@ -87,7 +90,10 @@ class SafeJSONResponse(JSONResponse):
         ).encode("utf-8")
 
 
-app = FastAPI(title="Swing Desk API", default_response_class=SafeJSONResponse)
+_DOCS_ON = os.environ.get("ENABLE_DOCS", "0") == "1"
+app = FastAPI(title="Swing Desk API", default_response_class=SafeJSONResponse,
+              docs_url="/docs" if _DOCS_ON else None, redoc_url=None,
+              openapi_url="/openapi.json" if _DOCS_ON else None)
 
 # Allowed frontend origins for CORS. Set via the ALLOWED_ORIGINS env var
 # (comma-separated) on whatever host runs this — e.g.
@@ -102,8 +108,90 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["*"],
+    allow_headers=["Authorization", "Content-Type"],
+    max_age=600,
 )
+
+
+# ------------------------------------------------------------------
+# SECURITY LAYER (v14): security headers + per-IP rate limiting.
+# Rate limit is in-memory (one Render instance). If the site ever runs on several
+# instances, move the counters to Redis / the database / a CDN rule.
+# ------------------------------------------------------------------
+_PROXY_HOPS = int(os.environ.get("TRUSTED_PROXY_HOPS", "1") or 1)   # how many proxies sit in front of the app
+_rl_lock = threading.Lock()
+_rl_hits: dict = {}          # (bucket, ip) -> deque[timestamps]
+_RL_MAX_KEYS = 20000
+
+# (name, path prefixes, max requests, per seconds). First match wins; "default" last.
+_RATE_RULES = [
+    ("auth",   ("/api/auth/google", "/api/auth/refresh"), 20, 60),
+    ("track",  ("/api/track",), 60, 60),
+    ("heavy",  ("/api/article-preview", "/api/lookup", "/api/fundamentals", "/api/ticker-search",
+                "/api/stock-news", "/api/technical-setup", "/api/watchlist-setups", "/api/price-compare",
+                "/api/sector-comparison", "/api/signal-history", "/api/backtest", "/api/demo-portfolio",
+                "/api/pattern-stats"), 40, 60),
+    ("default", ("/api/",), 240, 60),
+]
+
+
+def _client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for", "")
+    parts = [x.strip() for x in xff.split(",") if x.strip()]
+    if parts and len(parts) >= _PROXY_HOPS:
+        return parts[-_PROXY_HOPS]
+    return request.client.host if request.client else "unknown"
+
+
+def _rate_limited(bucket: str, ip: str, limit: int, window: int) -> bool:
+    now = time.time()
+    key = (bucket, ip)
+    with _rl_lock:
+        if len(_rl_hits) > _RL_MAX_KEYS:
+            _rl_hits.clear()
+        dq = _rl_hits.get(key)
+        if dq is None:
+            dq = _rl_hits[key] = deque()
+        while dq and dq[0] < now - window:
+            dq.popleft()
+        if len(dq) >= limit:
+            return True
+        dq.append(now)
+    return False
+
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    path = request.url.path
+    if request.method != "OPTIONS" and path != "/api/ping":
+        for name, prefixes, limit, window in _RATE_RULES:
+            if path.startswith(prefixes):
+                if _rate_limited(name, _client_ip(request), limit, window):
+                    return JSONResponse({"detail": "too many requests — slow down"}, status_code=429,
+                                        headers={"Retry-After": str(window)})
+                break
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    if path.startswith("/api/auth") or path.startswith("/api/watchlist"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
+# Admin-only endpoints (analytics, debug): send header  X-Admin-Token: <ADMIN_TOKEN>.
+# Without ADMIN_TOKEN set in Render these endpoints are switched off entirely.
+ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
+
+
+def require_admin(x_admin_token: Optional[str] = Header(default=None)):
+    if not ADMIN_TOKEN or len(ADMIN_TOKEN) < 16:
+        raise HTTPException(status_code=404, detail="not found")
+    if not x_admin_token or not hmac.compare_digest(x_admin_token, ADMIN_TOKEN):
+        raise HTTPException(status_code=404, detail="not found")   # 404, not 403: do not reveal the endpoint exists
+
 
 
 # BRK.B / BF.B style class-share tickers: Yahoo (and the SEC/DB in this
@@ -290,6 +378,8 @@ GOOGLE_CLIENT_ID = os.environ.get(
 )
 JWT_SECRET = os.environ.get("JWT_SECRET", "")
 JWT_TTL_DAYS = 90
+if JWT_SECRET and len(JWT_SECRET) < 32:
+    print("[SECURITY WARNING] JWT_SECRET is shorter than 32 characters — replace it with a long random string in Render.")
 
 
 def _auth_ready() -> bool:
@@ -378,6 +468,30 @@ def auth_me(user_id: int = Depends(current_user_id)):
     if not row:
         raise HTTPException(status_code=401, detail="user not found")
     return dict(row)
+
+
+@app.get("/api/auth/export")
+def auth_export(user_id: int = Depends(current_user_id)):
+    """Everything the site stores about the signed-in user (privacy: right of access)."""
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute("SELECT id, email, name, picture, created_at, last_login FROM users WHERE id = %s", (user_id,))
+        u = cur.fetchone()
+        if not u:
+            raise HTTPException(status_code=401, detail="user not found")
+        cur.execute("SELECT ticker, added_at FROM watchlist WHERE user_id = %s ORDER BY added_at", (user_id,))
+        wl = [dict(r) for r in cur.fetchall()]
+    return {"user": dict(u), "watchlist": wl,
+            "note": "Anonymous usage statistics are not linked to your account and are not included."}
+
+
+@app.delete("/api/auth/me")
+def auth_delete_me(user_id: int = Depends(current_user_id)):
+    """Permanently delete the account and its personal data (privacy: right to erasure)."""
+    with db_cursor() as (conn, cur):
+        cur.execute("DELETE FROM watchlist WHERE user_id = %s", (user_id,))
+        cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
+        conn.commit()
+    return {"deleted": True}
 
 
 # Initialize DB tables on startup
@@ -1173,7 +1287,8 @@ def health():
         conn.close()
         return {"status": "ok", "db": "connected"}
     except Exception as e:
-        return {"status": "error", "detail": str(e)}
+        print(f"[error] health check failed: {type(e).__name__}: {e}")
+        return JSONResponse({"status": "error"}, status_code=503)
 
 
 _headline_translation_cache: dict = {}
@@ -3466,23 +3581,23 @@ def get_watchlist(user_id: int = Depends(current_user_id)):
 
 
 class WatchlistTicker(BaseModel):
-    ticker: str
+    ticker: str = Field(max_length=12)
 
 
 @app.post("/api/watchlist")
 def add_to_watchlist(body: WatchlistTicker, user_id: int = Depends(current_user_id)):
     ticker = _canon_ticker(body.ticker)
-    if not ticker:
-        raise HTTPException(status_code=400, detail="ticker is required")
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO watchlist (user_id, ticker) VALUES (%s, %s) ON CONFLICT (user_id, ticker) DO NOTHING",
-        (user_id, ticker),
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
+    if not ticker or not re.fullmatch(r"[A-Z0-9][A-Z0-9.\-^=]{0,10}", ticker):
+        raise HTTPException(status_code=400, detail="invalid ticker")
+    with db_cursor() as (conn, cur):
+        cur.execute("SELECT COUNT(*) FROM watchlist WHERE user_id = %s", (user_id,))
+        if cur.fetchone()[0] >= 200:
+            raise HTTPException(status_code=400, detail="watchlist is limited to 200 tickers")
+        cur.execute(
+            "INSERT INTO watchlist (user_id, ticker) VALUES (%s, %s) ON CONFLICT (user_id, ticker) DO NOTHING",
+            (user_id, ticker),
+        )
+        conn.commit()
     return {"ticker": ticker, "added": True}
 
 
@@ -3638,7 +3753,7 @@ def market_movers(limit: int = Query(default=15, le=50)):
         fallback = _fetch_fallback_movers_from_db(limit)
         if fallback:
             return fallback
-        raise HTTPException(status_code=502, detail=f"שגיאה בשליפת נתוני שוק: {e}")
+        raise HTTPException(status_code=502, detail="שגיאה בשליפת נתוני שוק")
     finally:
         executor.shutdown(wait=False)
 
@@ -3808,10 +3923,10 @@ def get_econ_calendar(days: int = Query(21, ge=1, le=60), limit: int = Query(14,
         return econ_calendar.build_calendar(get_conn, days=days, limit=limit)
     except Exception as e:
         print(f"[error] econ-calendar failed: {e}")
-        return {"events": [], "meta": {"error": str(e)[:200]}}
+        return {"events": [], "meta": {"error": "calendar temporarily unavailable"}}
 
 
-@app.get("/api/econ-calendar/debug")
+@app.get("/api/econ-calendar/debug", dependencies=[Depends(require_admin)])
 def get_econ_calendar_debug():
     """Provider health + forecast-provider titles we could not map to a supported event
     (add an alias in econ_calendar.CATALOG[...]['ff'] if one is a missing event)."""
@@ -3957,7 +4072,7 @@ def get_market_ticker():
     except Exception as e:
         if _market_ticker_cache["data"]:
             return {"items": _market_ticker_cache["data"]}
-        raise HTTPException(status_code=502, detail=f"Market ticker fetch failed: {e}")
+        raise HTTPException(status_code=502, detail="Market ticker fetch failed")
     finally:
         executor.shutdown(wait=False)
 
@@ -4064,7 +4179,7 @@ def sector_performance(period: str = Query(default="YTD", pattern="^(1M|3M|YTD|1
     except Exception as e:
         if cached:
             return cached["data"]
-        raise HTTPException(status_code=502, detail=f"שגיאה בשליפת ביצועי הסקטורים: {e}")
+        raise HTTPException(status_code=502, detail="שגיאה בשליפת ביצועי הסקטורים")
     finally:
         executor.shutdown(wait=False)
 
@@ -4939,7 +5054,7 @@ def get_fundamentals(ticker: str):
         raise HTTPException(status_code=504, detail="החישוב לקח יותר מדי זמן, נסה שוב")
     except Exception as e:
         print(f"[warn] /api/fundamentals/{ticker} failed: {e}")
-        raise HTTPException(status_code=502, detail=f"שגיאה בשליפת נתונים פונדמנטליים: {e}")
+        raise HTTPException(status_code=502, detail="שגיאה בשליפת נתונים פונדמנטליים")
     finally:
         executor.shutdown(wait=False)
 
@@ -4947,30 +5062,29 @@ def get_fundamentals(ticker: str):
 
 
 class TrackEvent(BaseModel):
-    event_type: str            # 'view_stock' / 'view_macro' / 'page_view'
-    entity_id: Optional[str] = None
-    session_id: Optional[str] = None
+    event_type: str = Field(pattern=r"^(view_stock|view_macro|page_view|search_stock)$")
+    entity_id: Optional[str] = Field(default=None, max_length=60)
+    session_id: Optional[str] = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9-]*$")
 
 
 @app.post("/api/track")
 def track_event(event: TrackEvent):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO analytics_events (event_type, entity_id, session_id) VALUES (%s, %s, %s)",
-        (event.event_type, event.entity_id, event.session_id),
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
+    with db_cursor() as (conn, cur):
+        cur.execute(
+            "INSERT INTO analytics_events (event_type, entity_id, session_id) VALUES (%s, %s, %s)",
+            (event.event_type, event.entity_id, event.session_id),
+        )
+        if int(time.time()) % 50 == 0:      # cheap retention: raw events are kept 180 days only
+            cur.execute("DELETE FROM analytics_events WHERE timestamp < NOW() - INTERVAL '180 days'")
+        conn.commit()
     return {"status": "logged"}
 
 
-@app.get("/api/analytics/top-interest")
+@app.get("/api/analytics/top-interest", dependencies=[Depends(require_admin)])
 def top_interest(
     event_type: str = Query(default="view_stock", pattern="^(view_stock|view_macro|page_view|search_stock)$"),
-    days: int = 7,
-    limit: int = 10,
+    days: int = Query(7, ge=1, le=365),
+    limit: int = Query(10, ge=1, le=100),
 ):
     conn = get_conn()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -4991,8 +5105,8 @@ def top_interest(
     return [dict(r) for r in rows]
 
 
-@app.get("/api/analytics/summary")
-def analytics_summary(days: int = 7):
+@app.get("/api/analytics/summary", dependencies=[Depends(require_admin)])
+def analytics_summary(days: int = Query(7, ge=1, le=365)):
     conn = get_conn()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
