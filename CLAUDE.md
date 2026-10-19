@@ -713,3 +713,18 @@ Actions → **AI Digest (manual test)** → Run workflow → `mode = probe` → 
 8. **SEC:** ה-User-Agent הוא `admin@swingdesk.app` — חייב להיות מייל אמיתי שנקרא (מדיניות SEC). דמיית דפדפן (`Mozilla/5.0`) מול שירותי צד שלישי — להחליף ב-UA כן כשעוברים לספקים מורשים. תיאורי חברות מ-Wikipedia דורשים ייחוס (CC BY-SA).
 9. **אבטחה — המשך:** טוקן ב-localStorage (עם דומיין משלך: cookie httpOnly+SameSite); אין ביטול טוקן (JWT 90 יום); אין connection pool ל-Postgres; תלויות לא מוצמדות בגרסאות (`pip freeze` + Dependabot); גיבויים/ניטור (UptimeRobot/Sentry); SSRF ב-`/api/article-preview` — בדיקת ה-DNS נפרדת מהחיבור (TOCTOU); הגבלת הקצב בזיכרון — לא תקפה עם כמה instances.
 10. **שפה — המשך:** `dir="rtl"` קבוע גם באנגלית (החלטה קודמת); הודעות שגיאה מהשרת בעברית; סקירה ויזואלית של כל עמוד באנגלית נדרשת (סריקה אוטומטית לא מוכיחה שלמות).
+
+---
+
+## 22. v15 — מקורות חדשות, סיכום AI, ולוח אירועים (19.10.2026)
+
+- **מקור חדשות אמיתי:** עמודה `macro_news.source_name` (נוצרת אוטומטית ב-`init`). לפידי Google News המו"ל נלקח מתג `<source>` ב-RSS (גיבוי: סיומת ` - Outlet` בכותרת); לפידים ישירים — שם המו"ל. כתבות ישנות מוצגות כ-"Google News". לא מפענחים קישורי Google News (שיטה לא רשמית).
+- **פידים רשמיים (`OFFICIAL_FEEDS` ב-pipeline_b):** הפד (מדיניות מוניטרית, נאומים) ו-BLS (CPI, PPI, Employment Situation, JOLTS, ECI). קטגוריה/חומרה נקבעות לפי הפיד (`forced`), רק פריטים מ-72 השעות האחרונות, User-Agent מזהה (`NEWS_USER_AGENT`). **נבדק רק על פידים מדומים** — לוודא בלוג הראשון (`failed to fetch feed`). BEA/EIA/ECB — כתובות לא אומתו, לא נוספו.
+- **סיכום AI:** ה-payload שומר `covers_from/covers_to/item_count/window_hours`; ה-API מחזיר `new_since` (כותרות שהגיעו אחרי יצירת הסיכום); האתר מציג "חושב ב-… · מכסה כותרות עד … · N חדשות לא נכללו" ואזהרה מעל 6 שעות.
+- **מהירות לוח האירועים:** תוצאה מוכנה נשמרת בטבלה `econ_snapshots` (Postgres) ומוגשת מיד אחרי התעוררות של Render, ומתרעננת ברקע (`snap_load/snap_save/_refresh_bg`); בדפדפן — העתק ב-localStorage (`swing_econ_*`), רינדור מיידי ורינדור מחדש רק אם האירועים השתנו; תוצאה ריקה לא דורסת עותק תקין.
+- **CPI/PPI בלי תאריכים ותוצאות — אבחון (מ-`/api/econ-calendar` → `meta.providers`):** `schedule_bls: HTTP 403 for www.bls.gov` (BLS חוסם IP של שרתי ענן — גם ICS וגם דפי HTML) ו-`actual: FRED read timeout`. **תיקון:**
+  1. `BLS_STATIC` — תאריכי פרסום רשמיים (CPI/PPI/תעסוקה, אוג'–דצמ' 2026) נכנסים כשה-ICS נכשל (`source: "bls-static"`). **לעדכן כש-BLS מפרסם את לוח 2027** ולבדוק מול bls.gov/schedule/news_release/cpi.htm ו-ppi.htm. JOLTS לא כלול (תאריכים לא אומתו) — יופיע רק כש-ICS זמין.
+  2. מקור שני ל"בפועל"/"קודם" של סדרות BLS (CPI, ליבה, PPI, NFP, אבטלה, JOLTS): ה-API הציבורי של BLS (v1, בלי מפתח, 25 בקשות ליום ל-IP — בקשה אחת לכל הסדרות, מטמון 20+ דקות, חסימה שעה אחרי כישלון) כשה-FRED נכשל; מפסק זרם ל-FRED (10 דקות) כדי שלא כל בקשה תמתין ל-timeout. סדרות שאינן של BLS (PCE, תמ"ג, קמעונאות, claims) עדיין תלויות ב-FRED.
+  3. ניסיון חוזר עם User-Agent מזהה כש-403/429.
+  נבדק עם מדומים בלבד — **לוודא בלייב:** `meta.providers` אמור להראות `bls_fallback: ok` ו-`actual_fallback: ok`.
+- **לא להשכיח:** `/api/econ-calendar/debug` ו-`/api/analytics/*` דורשים `X-Admin-Token` (סעיף 21); `meta.providers` ב-`/api/econ-calendar` פתוח ומספיק לאבחון.

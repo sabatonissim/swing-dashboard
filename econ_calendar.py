@@ -441,9 +441,45 @@ def _bls_match(title):
     return None, None
 
 
+# bls.gov answers cloud servers (Render) with HTTP 403 — both the ICS file and every HTML page. When that happens the
+# release dates below are used instead. They are the official BLS dates (bls.gov/schedule/news_release/{cpi,ppi}.htm
+# and the monthly schedule pages), checked 19.10.2026. BLS can move a date (e.g. after a government shutdown), and
+# the 2027 calendar was not published yet — REFRESH THIS TABLE when BLS publishes it (see CLAUDE.md section 22).
+# (release date, reference month) per type.
+BLS_STATIC = {
+    "cpi":  [("2026-08-12", "2026-07"), ("2026-09-11", "2026-08"), ("2026-10-14", "2026-09"), ("2026-11-10", "2026-10"), ("2026-12-10", "2026-11")],
+    "ppi":  [("2026-08-13", "2026-07"), ("2026-09-10", "2026-08"), ("2026-10-15", "2026-09"), ("2026-11-13", "2026-10"), ("2026-12-15", "2026-11")],
+    "nfp":  [("2026-08-07", "2026-07"), ("2026-09-04", "2026-08"), ("2026-10-02", "2026-09"), ("2026-11-06", "2026-10"), ("2026-12-04", "2026-11")],
+}
+BLS_STATIC["core_cpi"] = BLS_STATIC["cpi"]
+BLS_STATIC["unemployment"] = BLS_STATIC["nfp"]
+
+
+def _bls_static(start, end):
+    out = []
+    for t, rows in BLS_STATIC.items():
+        for d_s, ref_s in rows:
+            d = date.fromisoformat(d_s)
+            if start <= d <= end:
+                ref = date.fromisoformat(ref_s + "-01")
+                out.append(dict(type=t, date=d, when=_et_dt(d, CATALOG[t]["time_et"]), period=ref, source="bls-static", estimated=False))
+    return out
+
+
 def schedule_bls(start, end):
     """BLS official release calendar (ICS). The reference period comes from the title
-    ("... for September 2026") when present, otherwise it is derived from the release date."""
+    ("... for September 2026") when present, otherwise it is derived from the release date.
+    If bls.gov refuses us (HTTP 403 from cloud IPs), the built-in official dates are used."""
+    try:
+        out = _schedule_bls_ics(start, end)
+        _set_status("bls_fallback", True, None)
+        return out
+    except Exception as e:  # noqa: BLE001
+        _set_status("bls_fallback", True, f"bls.ics unavailable ({str(e)[:80]}) — using the built-in official release dates")
+        return _bls_static(start, end)
+
+
+def _schedule_bls_ics(start, end):
     out, matched, ignored = [], [], []
     for ev in parse_ics(_cached_text("ics_bls", BLS_ICS)):
         name = ev["summary"].strip()
@@ -606,21 +642,99 @@ def get_forecasts():
 # --------------------------------------------------------------------------
 # PROVIDER: actual / previous  (FRED public CSV — no key, no sign-up)
 # --------------------------------------------------------------------------
+# Second source for the series BLS itself owns (CPI, PPI, jobs, unemployment, JOLTS): the BLS public API (v1, no key;
+# limits: 25 requests/day per IP, so ONE request fetches all mapped series and is cached 20+ minutes).
+BLS_API = "https://api.bls.gov/publicAPI/v1/timeseries/data/"
+BLS_FALLBACK_SERIES = {            # FRED series id -> BLS series id (same seasonally adjusted series)
+    "CPIAUCSL": "CUSR0000SA0", "CPILFESL": "CUSR0000SA0L1E", "PPIFIS": "WPSFD4",
+    "PAYEMS": "CES0000000001", "UNRATE": "LNS14000000", "JTSJOL": "JTS000000000000000JOL",
+}
+BLS_API_MIN_TTL = 20 * 60
+FRED_TIMEOUT = 10
+FRED_COOLDOWN = 10 * 60           # after a FRED failure, don't make every request wait for the timeout again
+_fred_down_until = 0.0
+_bls_api_down_until = 0.0
+
+
+def _bls_api_load():
+    """One request for all mapped series -> fills the cache under ('blsapi', <FRED series id>)."""
+    global _bls_api_down_until
+    if time.time() < _bls_api_down_until:
+        raise RuntimeError("BLS API cooling down after a failure")
+    year = date.today().year
+    try:
+        r = requests.post(BLS_API, json={"seriesid": list(BLS_FALLBACK_SERIES.values()),
+                                         "startyear": str(year - 2), "endyear": str(year)},
+                          headers=HTTP_HEADERS_ALT, timeout=15)
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code} for api.bls.gov")
+        js = r.json()
+        if js.get("status") != "REQUEST_SUCCEEDED":
+            raise RuntimeError("BLS API: " + "; ".join(js.get("message") or ["request not succeeded"])[:120])
+        by_bls = {s["seriesID"]: s.get("data", []) for s in js["Results"]["series"]}
+    except Exception:
+        _bls_api_down_until = time.time() + 3600      # protect the 25-requests/day quota
+        raise
+    for fred_id, bls_id in BLS_FALLBACK_SERIES.items():
+        rows = {}
+        for d in by_bls.get(bls_id, []):
+            p = d.get("period", "")
+            if not (p.startswith("M") and p != "M13"):
+                continue
+            try:
+                rows[date(int(d["year"]), int(p[1:]), 1)] = float(d["value"])
+            except (ValueError, KeyError):
+                continue
+        if rows:
+            _cset(("blsapi", fred_id), sorted(rows.items()))
+
+
+def bls_api_rows(series, ttl):
+    key = ("blsapi", series)
+    hit = _cget(key, max(ttl, BLS_API_MIN_TTL))
+    if hit is not None:
+        return hit
+    try:
+        _bls_api_load()
+    except Exception:
+        stale = _cache.get(key)
+        if stale:
+            return stale[1]
+        raise
+    got = _cache.get(key)
+    if not got:
+        raise RuntimeError(f"BLS API returned no data for {series}")
+    return got[1]
+
+
 def fred_csv(series, ttl):
     """[(date, float)] oldest->newest from FRED's public CSV download (the file behind the
-    'Download CSV' button of every FRED chart). `ttl` decides how fresh the copy must be."""
+    'Download CSV' button of every FRED chart). `ttl` decides how fresh the copy must be.
+    If FRED is slow/unreachable, the BLS-owned series fall back to the BLS public API."""
+    global _fred_down_until
     key = ("csv", series)
     hit = _cget(key, ttl)
     if hit is not None:
         return hit
     cosd = (date.today() - timedelta(days=900)).isoformat()
     try:
-        text = _http_text(f"{FRED_CSV}?id={series}&cosd={cosd}")
-    except Exception:
+        if time.time() < _fred_down_until:
+            raise RuntimeError("FRED unavailable (cooling down)")
+        text = _http_text(f"{FRED_CSV}?id={series}&cosd={cosd}", timeout=FRED_TIMEOUT)
+    except Exception as fred_err:
+        if not str(fred_err).startswith("FRED unavailable"):
+            _fred_down_until = time.time() + FRED_COOLDOWN
+        if series in BLS_FALLBACK_SERIES:
+            try:
+                rows = bls_api_rows(series, ttl)
+                _set_status("actual_fallback", True, "FRED unavailable — using the BLS public API")
+                return rows
+            except Exception as e:  # noqa: BLE001
+                _set_status("actual_fallback", False, e)
         stale = _cache.get(key)
         if stale:
             return stale[1]
-        raise
+        raise fred_err
     rows = []
     for line in text.splitlines()[1:]:
         parts = line.strip().split(",")
