@@ -60,7 +60,31 @@ RSS_FEEDS = {
     "Investing.com":         "https://www.investing.com/rss/news_301.rss",
     "Markets & Macro (Google News)": "https://news.google.com/rss/search?q=(stocks+OR+earnings+OR+%22Federal+Reserve%22+OR+inflation+OR+%22interest+rates%22+OR+%22rate+cut%22+OR+%22rate+hike%22)+when:8h&hl=en-US&gl=US&ceid=US:en",
     "Geopolitics & Markets (Google News)": "https://news.google.com/rss/search?q=(war+OR+sanctions+OR+%22oil+prices%22+OR+OPEC+OR+conflict+OR+tariffs)+when:8h&hl=en-US&gl=US&ceid=US:en",
+    # --- Official primary sources (US government / central bank) — real article links, real summaries, no licensing issue ---
+    "Federal Reserve - Monetary Policy": "https://www.federalreserve.gov/feeds/press_monetary.xml",
+    "Federal Reserve - Speeches & Testimony": "https://www.federalreserve.gov/feeds/speeches_and_testimony.xml",
+    "BLS - CPI": "https://www.bls.gov/feed/cpi.rss",
+    "BLS - PPI": "https://www.bls.gov/feed/ppi.rss",
+    "BLS - Employment Situation": "https://www.bls.gov/feed/empsit.rss",
+    "BLS - JOLTS": "https://www.bls.gov/feed/jolts.rss",
+    "BLS - Employment Cost Index": "https://www.bls.gov/feed/eci.rss",
 }
+
+# For the official feeds the category is known from the feed itself (a CPI release has no need to be guessed
+# from keywords), so (publisher, tag, impact) are fixed here. Only entries from the last `max_age_h` hours are
+# taken — otherwise the first run would dump the feed's whole back-catalogue in as "new" news.
+# Feeds without a forced tag (speeches) still go through the normal keyword classifier.
+OFFICIAL_FEEDS = {
+    "Federal Reserve - Monetary Policy":      dict(publisher="Federal Reserve", tag="ריבית",     impact="Critical", max_age_h=72),
+    "Federal Reserve - Speeches & Testimony": dict(publisher="Federal Reserve", tag=None,         impact=None,       max_age_h=72),
+    "BLS - CPI":                              dict(publisher="BLS",             tag="אינפלציה",  impact="Critical", max_age_h=72),
+    "BLS - PPI":                              dict(publisher="BLS",             tag="אינפלציה",  impact="High",     max_age_h=72),
+    "BLS - Employment Situation":             dict(publisher="BLS",             tag="תעסוקה",    impact="Critical", max_age_h=72),
+    "BLS - JOLTS":                            dict(publisher="BLS",             tag="תעסוקה",    impact="High",     max_age_h=72),
+    "BLS - Employment Cost Index":            dict(publisher="BLS",             tag="תעסוקה",    impact="High",     max_age_h=72),
+}
+# Government sites reject anonymous scrapers; identify ourselves honestly.
+OFFICIAL_USER_AGENT = os.environ.get("NEWS_USER_AGENT") or "SwingDesk/1.0 (+https://swing-desk-tau.vercel.app)"
 
 # ------------------------------------------------------------------
 # Keyword matrix — split into two tiers:
@@ -254,6 +278,29 @@ def _clean_google_news_title(title: str) -> str:
     return re.sub(r'\s+-\s+[^-]{2,40}$', '', title).strip()
 
 
+# Several feeds are different sections of one outlet — show the outlet, not the section.
+_PUBLISHER_BY_FEED = {
+    "CNBC Top News": "CNBC", "CNBC Markets": "CNBC", "CNBC World": "CNBC",
+    "Seeking Alpha Markets": "Seeking Alpha",
+}
+
+
+def _publisher_name(feed_name: str, entry, raw_title: str) -> str:
+    """The outlet a headline really comes from. Google News feeds list the outlet in the entry's
+    <source> tag (and as a ' - Outlet' suffix on the title); for them the feed name itself ('Google News')
+    would be useless to the reader. Direct outlet feeds use the outlet's own name."""
+    if "Google News" in feed_name:
+        try:
+            name = (entry.get("source") or {}).get("title", "")
+        except Exception:  # noqa: BLE001
+            name = ""
+        if not name:
+            m = re.search(r'\s+-\s+([^-]{2,40})$', raw_title or "")
+            name = m.group(1).strip() if m else ""
+        return name[:60]
+    return _PUBLISHER_BY_FEED.get(feed_name, feed_name)[:60]
+
+
 def _clean_rss_body(raw_summary: str, title: str) -> str:
     """The RSS <description>/<summary> field, cleaned into plain readable
     text — this is publisher-provided teaser text, meant to be excerpted
@@ -277,21 +324,43 @@ def _clean_rss_body(raw_summary: str, title: str) -> str:
     return text
 
 
+def _entry_age_hours(entry):
+    """Hours since the entry was published, or None when the feed gives no usable date."""
+    t = entry.get("published_parsed") or entry.get("updated_parsed")
+    if not t:
+        return None
+    try:
+        dt = datetime(*t[:6], tzinfo=timezone.utc)
+    except Exception:  # noqa: BLE001
+        return None
+    return (datetime.now(timezone.utc) - dt).total_seconds() / 3600.0
+
+
 def fetch_raw_headlines() -> List[dict]:
     items = []
     for source_name, url in RSS_FEEDS.items():
+        official = OFFICIAL_FEEDS.get(source_name)
         try:
-            feed = feedparser.parse(url)
+            feed = feedparser.parse(url, agent=OFFICIAL_USER_AGENT) if official else feedparser.parse(url)
             for entry in feed.entries:
                 link = entry.get("link", "")
                 if not link:
                     continue  # no usable source URL — can't dedupe or display it
-                items.append({
+                if official:
+                    age = _entry_age_hours(entry)
+                    if age is None or age > official["max_age_h"]:
+                        continue  # old back-catalogue entry (or undated) — not news
+                item = {
                     "source": source_name,
-                    "title": _clean_google_news_title(entry.get("title", "")),
+                    "publisher": official["publisher"] if official else _publisher_name(source_name, entry, entry.get("title", "")),
+                    # the " - Outlet" suffix exists only on Google News titles; elsewhere a trailing " - September 2026" is real
+                    "title": _clean_google_news_title(entry.get("title", "")) if "Google News" in source_name else entry.get("title", "").strip(),
                     "summary": entry.get("summary", ""),
                     "link": link,
-                })
+                }
+                if official and official["tag"]:
+                    item["forced"] = {"tag": official["tag"], "impact": official["impact"]}
+                items.append(item)
         except Exception as e:
             print(f"[warn] failed to fetch feed {source_name}: {e}")
     return items
@@ -539,6 +608,7 @@ def init_db():
     cur.execute("ALTER TABLE macro_news ADD COLUMN IF NOT EXISTS hook_he TEXT;")
     cur.execute("ALTER TABLE macro_news ADD COLUMN IF NOT EXISTS body_en TEXT;")
     cur.execute("ALTER TABLE macro_news ADD COLUMN IF NOT EXISTS body_he TEXT;")
+    cur.execute("ALTER TABLE macro_news ADD COLUMN IF NOT EXISTS source_name TEXT;")   # real publisher shown on the site (v15)
     conn.commit()
 
     # --- one-time cleanup, required before the UNIQUE constraint below can
@@ -590,7 +660,7 @@ def init_db():
 
 def upsert_macro_news(category_tag: str, summary_he: str,
                       summary_en: str, impact_level: str, source_url: str,
-                      hook_he: str = "", body_en: str = "", body_he: str = "") -> bool:
+                      hook_he: str = "", body_en: str = "", body_he: str = "", source_name: str = "") -> bool:
     """Returns True if a new row was inserted, False if this source_url was
     already saved (duplicate story — skipped instead of piling up).
 
@@ -604,12 +674,12 @@ def upsert_macro_news(category_tag: str, summary_he: str,
     try:
         cur.execute(
             """
-            INSERT INTO macro_news (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, body_en, body_he, timestamp)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO macro_news (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, body_en, body_he, source_name, timestamp)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (source_url) DO NOTHING
             RETURNING id
             """,
-            (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, body_en, body_he,
+            (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, body_en, body_he, source_name or None,
              datetime.now(timezone.utc).isoformat()),
         )
         inserted = cur.fetchone() is not None
@@ -623,10 +693,10 @@ def upsert_macro_news(category_tag: str, summary_he: str,
         else:
             cur.execute(
                 """
-                INSERT INTO macro_news (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, body_en, body_he, timestamp)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO macro_news (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, body_en, body_he, source_name, timestamp)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, body_en, body_he,
+                (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, body_en, body_he, source_name or None,
                  datetime.now(timezone.utc).isoformat()),
             )
             inserted = True
@@ -687,7 +757,7 @@ def run_pipeline_b():
     skipped_no_match = 0
 
     for item in raw_items:
-        classification = classify_headline(item["title"], item.get("summary", ""))
+        classification = item.get("forced") or classify_headline(item["title"], item.get("summary", ""))
         if not classification:
             skipped_no_match += 1
             continue
@@ -703,7 +773,7 @@ def run_pipeline_b():
         body_en = _clean_rss_body(item.get("summary", ""), title)
         body_he = translate_to_hebrew(body_en) if body_en else ""
 
-        was_new = upsert_macro_news(tag, headline_he, summary_en, impact, item["link"], hook_he, body_en, body_he)
+        was_new = upsert_macro_news(tag, headline_he, summary_en, impact, item["link"], hook_he, body_en, body_he, item.get("publisher", ""))
         if was_new:
             saved += 1
         else:

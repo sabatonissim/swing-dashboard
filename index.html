@@ -5366,7 +5366,7 @@ function mapDbRowToMacro(r){
     body_he: r.body_he || '',
     body_en: r.body_en || '',
     time: new Date(r.timestamp).toLocaleString(lang==='he'?'he-IL':'en-US'),
-    source: r.source_url ? new URL(r.source_url).hostname.replace('www.','') : '',
+    source: r.source_name || (function(){ try { const h = new URL(r.source_url).hostname.replace('www.',''); return h==='news.google.com' ? 'Google News' : h; } catch(e){ return ''; } })(),
     link: r.source_url||'#',
     sectors: r.category_tag || '',  // use tag as sector fallback until API sends sector data
   };
