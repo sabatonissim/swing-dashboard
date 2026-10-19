@@ -644,14 +644,20 @@ def get_forecasts():
 # --------------------------------------------------------------------------
 # Second source for the series BLS itself owns (CPI, PPI, jobs, unemployment, JOLTS): the BLS public API (v1, no key;
 # limits: 25 requests/day per IP, so ONE request fetches all mapped series and is cached 20+ minutes).
-BLS_API = "https://api.bls.gov/publicAPI/v1/timeseries/data/"
+BLS_API_V1 = "https://api.bls.gov/publicAPI/v1/timeseries/data/"
+BLS_API_V2 = "https://api.bls.gov/publicAPI/v2/timeseries/data/"
+# Optional env var BLS_API_KEY (free registration at data.bls.gov/registrationEngine): v2 = 500 requests/day instead of
+# 25 — on Render the IP is shared with other customers, so the keyless quota is often already used up.
+# Optional env var FRED_API_KEY (free, fredaccount.stlouisfed.org): the official FRED API (host api.stlouisfed.org),
+# usually reachable when the CSV download host (fred.stlouisfed.org) times out; covers ALL series.
+FRED_API = "https://api.stlouisfed.org/fred/series/observations"
 BLS_FALLBACK_SERIES = {            # FRED series id -> BLS series id (same seasonally adjusted series)
     "CPIAUCSL": "CUSR0000SA0", "CPILFESL": "CUSR0000SA0L1E", "PPIFIS": "WPSFD4",
     "PAYEMS": "CES0000000001", "UNRATE": "LNS14000000", "JTSJOL": "JTS000000000000000JOL",
 }
 BLS_API_MIN_TTL = 20 * 60
-FRED_TIMEOUT = 10
-FRED_COOLDOWN = 10 * 60           # after a FRED failure, don't make every request wait for the timeout again
+FRED_TIMEOUT = 25                 # FRED's CSV host is often slow, not blocked; results are built in the background, so waiting is harmless
+FRED_COOLDOWN = 5 * 60           # after a FRED failure, don't make every request wait for the timeout again
 _fred_down_until = 0.0
 _bls_api_down_until = 0.0
 
@@ -662,18 +668,25 @@ def _bls_api_load():
     if time.time() < _bls_api_down_until:
         raise RuntimeError("BLS API cooling down after a failure")
     year = date.today().year
+    api_key = (os.environ.get("BLS_API_KEY") or "").strip()
+    body = {"seriesid": list(BLS_FALLBACK_SERIES.values()), "startyear": str(year - 2), "endyear": str(year)}
+    if api_key:
+        body["registrationkey"] = api_key
     try:
-        r = requests.post(BLS_API, json={"seriesid": list(BLS_FALLBACK_SERIES.values()),
-                                         "startyear": str(year - 2), "endyear": str(year)},
-                          headers=HTTP_HEADERS_ALT, timeout=15)
+        r = requests.post(BLS_API_V2 if api_key else BLS_API_V1, json=body, headers=HTTP_HEADERS_ALT, timeout=15)
         if r.status_code != 200:
             raise RuntimeError(f"HTTP {r.status_code} for api.bls.gov")
         js = r.json()
         if js.get("status") != "REQUEST_SUCCEEDED":
-            raise RuntimeError("BLS API: " + "; ".join(js.get("message") or ["request not succeeded"])[:120])
+            raise RuntimeError("BLS API: " + "; ".join(js.get("message") or ["request not succeeded"])[:140])
         by_bls = {s["seriesID"]: s.get("data", []) for s in js["Results"]["series"]}
-    except Exception:
-        _bls_api_down_until = time.time() + 3600      # protect the 25-requests/day quota
+    except Exception as e:
+        if "threshold" in str(e).lower():              # daily quota used up: it resets at 00:00 UTC — don't hammer it
+            now = datetime.now(timezone.utc)
+            midnight = (now + timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0)
+            _bls_api_down_until = midnight.timestamp()
+        else:
+            _bls_api_down_until = time.time() + 3600
         raise
     for fred_id, bls_id in BLS_FALLBACK_SERIES.items():
         rows = {}
@@ -707,6 +720,23 @@ def bls_api_rows(series, ttl):
     return got[1]
 
 
+def _fred_api_rows(series, cosd):
+    r = requests.get(FRED_API, params={"series_id": series, "api_key": os.environ["FRED_API_KEY"].strip(),
+                                       "file_type": "json", "observation_start": cosd},
+                     headers=HTTP_HEADERS_ALT, timeout=FRED_TIMEOUT)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code} for api.stlouisfed.org")
+    rows = []
+    for o in r.json().get("observations", []):
+        try:
+            rows.append((date.fromisoformat(o["date"]), float(o["value"])))
+        except (ValueError, KeyError):          # "." = no value yet
+            continue
+    if not rows:
+        raise RuntimeError(f"FRED API returned no data for {series}")
+    return rows
+
+
 def fred_csv(series, ttl):
     """[(date, float)] oldest->newest from FRED's public CSV download (the file behind the
     'Download CSV' button of every FRED chart). `ttl` decides how fresh the copy must be.
@@ -720,6 +750,8 @@ def fred_csv(series, ttl):
     try:
         if time.time() < _fred_down_until:
             raise RuntimeError("FRED unavailable (cooling down)")
+        if (os.environ.get("FRED_API_KEY") or "").strip():
+            return _cset(key, _fred_api_rows(series, cosd))
         text = _http_text(f"{FRED_CSV}?id={series}&cosd={cosd}", timeout=FRED_TIMEOUT)
     except Exception as fred_err:
         if not str(fred_err).startswith("FRED unavailable"):
