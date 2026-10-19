@@ -48,6 +48,9 @@ JOBS = [
     dict(name="scan_close", workflow="stock-scanner.yml",   kind="daily",    at=(16, 10), weekdays_only=True,  grace_min=300),
     dict(name="quick",      workflow="earnings-refresh.yml", kind="interval", every_min=20, window=(6 * 60, 20 * 60), weekdays_only=True,  grace_min=25),
     dict(name="news",       workflow="news-aggregator.yml", kind="interval", every_min=30, window=None,               weekdays_only=False, grace_min=35),
+    # economic-calendar numbers (FRED/BLS -> Postgres): every 30 min around the 08:30/10:00 ET releases, plus once in the evening
+    dict(name="econ",       workflow="econ-refresh.yml",    kind="interval", every_min=30, window=(7 * 60, 12 * 60),  weekdays_only=True,  grace_min=35),
+    dict(name="econ_eve",   workflow="econ-refresh.yml",    kind="daily",    at=(18, 30), weekdays_only=False, grace_min=300),
 ]
 
 _done = {}        # slot key -> outcome (this process)

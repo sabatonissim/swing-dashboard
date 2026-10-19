@@ -720,6 +720,21 @@ def bls_api_rows(series, ttl):
     return got[1]
 
 
+def _parse_fred_csv(text, series):
+    rows = []
+    for line in text.splitlines()[1:]:
+        parts = line.strip().split(",")
+        if len(parts) < 2 or parts[1] in ("", "."):
+            continue
+        try:
+            rows.append((date.fromisoformat(parts[0]), float(parts[1])))
+        except ValueError:
+            continue
+    if not rows:
+        raise RuntimeError(f"FRED CSV for {series} is empty")
+    return rows
+
+
 def _fred_api_rows(series, cosd):
     r = requests.get(FRED_API, params={"series_id": series, "api_key": os.environ["FRED_API_KEY"].strip(),
                                        "file_type": "json", "observation_start": cosd},
@@ -746,6 +761,9 @@ def fred_csv(series, ttl):
     hit = _cget(key, ttl)
     if hit is not None:
         return hit
+    stored = _series_from_db(series, SERIES_FRESH_S)      # filled by the Actions job; no network call needed
+    if stored:
+        return _cset(key, stored[0])
     cosd = (date.today() - timedelta(days=900)).isoformat()
     try:
         if time.time() < _fred_down_until:
@@ -766,19 +784,11 @@ def fred_csv(series, ttl):
         stale = _cache.get(key)
         if stale:
             return stale[1]
+        old = _series_from_db(series, SERIES_STALE_S)
+        if old:
+            return old[0]
         raise fred_err
-    rows = []
-    for line in text.splitlines()[1:]:
-        parts = line.strip().split(",")
-        if len(parts) < 2 or parts[1] in ("", "."):
-            continue
-        try:
-            rows.append((date.fromisoformat(parts[0]), float(parts[1])))
-        except ValueError:
-            continue
-    if not rows:
-        raise RuntimeError(f"FRED CSV for {series} is empty")
-    return _cset(key, rows)
+    return _cset(key, _parse_fred_csv(text, series))
 
 
 def _transform(rows, idx, units):
@@ -950,6 +960,7 @@ STALE_MAX = 30 * 60      # a cached result older than RESULT_TTL but younger tha
 SNAPSHOT_MAX_AGE = 24 * 3600   # a stored copy older than this is not served (rebuilt synchronously instead)
 _refreshing = set()      # while a background refresh runs
 _snap_ready = False
+_conn_factory = None     # set by build_calendar/build_month — lets the series loader reach the database
 
 
 # --------------------------------------------------------------------------
@@ -958,6 +969,29 @@ _snap_ready = False
 # FRED downloads again. Now the stored copy is served at once and refreshed in the background, so the
 # data is built only when something may have changed.
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# SERIES STORE — the FRED/BLS series (the numbers behind "actual"/"previous") are kept in Postgres too. FRED's CSV
+# host does not answer from Render (timeouts even at 25 s), so a GitHub Actions job (econ_refresh.py, workflow
+# econ-refresh.yml) downloads them and stores them here; the server reads them from the database.
+# --------------------------------------------------------------------------
+SERIES_FRESH_S = 36 * 3600          # a stored series younger than this is used without any network call
+SERIES_STALE_S = 14 * 24 * 3600     # when the network fails, a stored series up to this old still beats nothing
+
+
+def series_to_db(get_conn, series, rows):
+    snap_save(get_conn, f"series-{series}", [[d.isoformat(), v] for d, v in rows])
+
+
+def _series_from_db(series, max_age):
+    got = snap_load(_conn_factory, f"series-{series}", max_age=max_age)
+    if not got:
+        return None
+    try:
+        return [(date.fromisoformat(d), float(v)) for d, v in got[0]], got[1]
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _snap_table(get_conn):
     global _snap_ready
     if _snap_ready or not get_conn:
@@ -974,8 +1008,8 @@ def _snap_table(get_conn):
         conn.close()
 
 
-def snap_load(get_conn, skey):
-    """-> (result dict, age in seconds) or None."""
+def snap_load(get_conn, skey, max_age=None):
+    """-> (stored object, age in seconds) or None."""
     if not get_conn:
         return None
     try:
@@ -988,7 +1022,7 @@ def snap_load(get_conn, skey):
             cur.close()
         finally:
             conn.close()
-        if not row or row[1] is None or float(row[1]) > SNAPSHOT_MAX_AGE:
+        if not row or row[1] is None or float(row[1]) > (max_age or SNAPSHOT_MAX_AGE):
             return None
         return json.loads(row[0]), float(row[1])
     except Exception as e:  # noqa: BLE001 — a storage hiccup must never break the calendar
@@ -997,7 +1031,7 @@ def snap_load(get_conn, skey):
 
 
 def snap_save(get_conn, skey, res):
-    if not get_conn or not res or not res.get("events"):
+    if not get_conn or not res or (isinstance(res, dict) and "events" in res and not res.get("events")):
         return                                   # never replace a good stored copy with an empty result
     try:
         _snap_table(get_conn)
@@ -1049,11 +1083,18 @@ def _serve_snapshot(key, snap):
     return payload
 
 
+def _remember_conn(get_conn):
+    global _conn_factory
+    if get_conn:
+        _conn_factory = get_conn
+
+
 def build_calendar(get_conn=None, days=21, limit=14):
     """Public entry point. Returns {"events": [...], "meta": {...}} — the ONLY
     structure the frontend depends on. Stale-while-revalidate: a result younger than
     RESULT_TTL is returned as is; one younger than STALE_MAX is returned immediately
     while a background thread rebuilds it; only a cold start builds synchronously."""
+    _remember_conn(get_conn)
     key = ("result", days, limit)
     hit = _cache.get(key)
     if hit:
@@ -1163,6 +1204,7 @@ MONTH_LOOKBACK_DAYS = 62      # a month view must show the actual of events rele
 def build_month(get_conn=None, year=None, month=None):
     """Every supported event of one calendar month (past ones with their actual, upcoming
     ones with date/time) for the monthly calendar view. Same uniform event structure."""
+    _remember_conn(get_conn)
     today = datetime.now(UTC).astimezone(ET).date()
     year, month = year or today.year, month or today.month
     if not (1 <= month <= 12 and 2000 <= year <= 2100):
