@@ -188,6 +188,13 @@ def maybe_generate(get_conn, translate_fn, force=False):
                 max_tokens=2500, temperature=0.1,
                 validate=lambda t: _build_payload(_parse(t), items, lambda x: x))
             payload = _build_payload(_parse(text), items, translate_fn)
+            # which headlines this digest was computed from — the site shows "covers news up to ..."
+            stamps = [it["ts"] for it in items if it.get("ts")]
+            if stamps:
+                payload["covers_from"] = min(stamps).isoformat()
+                payload["covers_to"] = max(stamps).isoformat()
+            payload["item_count"] = len(items)
+            payload["window_hours"] = WINDOW_HOURS
             cur = conn.cursor()
             cur.execute("INSERT INTO ai_digests (window_hours, item_count, model, payload) VALUES (%s, %s, %s, %s)",
                         (WINDOW_HOURS, len(items), model, json.dumps(payload, ensure_ascii=False)))

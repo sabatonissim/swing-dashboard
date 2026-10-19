@@ -4145,6 +4145,14 @@ def get_daily_digest(hours: int = Query(default=24, ge=1, le=72), top_n: int = Q
                 ai_summary = json.loads(row[2])
                 ai_summary["generated_at"] = row[0].isoformat()
                 ai_summary["model"] = row[1]
+                ai_summary.setdefault("covers_to", row[0].isoformat())     # digests saved before v15 have no coverage stamp
+                try:                                                       # headlines that arrived after the digest was made
+                    cur3 = conn2.cursor()
+                    cur3.execute("SELECT COUNT(*) FROM macro_news WHERE timestamp > %s", (row[0],))
+                    ai_summary["new_since"] = int(cur3.fetchone()[0])
+                    cur3.close()
+                except Exception:
+                    ai_summary["new_since"] = None
         finally:
             conn2.close()
     except Exception:

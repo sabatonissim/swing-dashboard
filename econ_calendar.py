@@ -31,6 +31,7 @@ Every provider failure degrades gracefully: the event is still shown, the
 missing field is just "—".  Provider health is returned in `meta.providers`.
 """
 
+import json
 import os
 import re
 import threading
@@ -49,6 +50,8 @@ BLS_ICS = "https://www.bls.gov/schedule/news_release/bls.ics"
 BEA_ICS = "https://bea.gov/news/schedule/ics/online-calendar-subscription.ics"
 CENSUS_RETAIL = "https://www.census.gov/retail/release_schedule.html"
 HTTP_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"}
+# Some government sites turn away browser-like scripts but accept an honest, identified client (and vice versa) — try both.
+HTTP_HEADERS_ALT = {"User-Agent": "SwingDesk/1.0 (+https://swing-desk-tau.vercel.app)"}
 
 # which forecast provider to use: "none" (default) or a key of FORECAST_PROVIDERS
 FORECAST_PROVIDER = os.environ.get("ECON_FORECAST_PROVIDER", "none").lower()
@@ -340,10 +343,15 @@ def _last_tuesday(year, month):
 
 
 def _http_text(url, timeout=12):
-    r = requests.get(url, headers=HTTP_HEADERS, timeout=timeout)
-    if r.status_code != 200:
-        raise RuntimeError(f"HTTP {r.status_code} for {url.split('/')[2]}")
-    return r.text
+    last = None
+    for headers in (HTTP_HEADERS, HTTP_HEADERS_ALT):
+        r = requests.get(url, headers=headers, timeout=timeout)
+        if r.status_code == 200:
+            return r.text
+        last = r.status_code
+        if r.status_code not in (403, 429):
+            break
+    raise RuntimeError(f"HTTP {last} for {url.split('/')[2]}")
 
 
 def _cached_text(key, url):
@@ -793,10 +801,76 @@ def _merge(start, end, now_utc):
 
 
 STALE_MAX = 30 * 60      # a cached result older than RESULT_TTL but younger than this is served instantly
+SNAPSHOT_MAX_AGE = 24 * 3600   # a stored copy older than this is not served (rebuilt synchronously instead)
 _refreshing = set()      # while a background refresh runs
+_snap_ready = False
 
 
-def _refresh_async(key, get_conn, days, limit):
+# --------------------------------------------------------------------------
+# SNAPSHOTS — the finished result is also kept in Postgres. The server's memory is empty after every
+# Render sleep/restart; without this, the first visitor waited for three government calendars and the
+# FRED downloads again. Now the stored copy is served at once and refreshed in the background, so the
+# data is built only when something may have changed.
+# --------------------------------------------------------------------------
+def _snap_table(get_conn):
+    global _snap_ready
+    if _snap_ready or not get_conn:
+        return
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("""CREATE TABLE IF NOT EXISTS econ_snapshots (
+            skey TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TIMESTAMPTZ DEFAULT NOW())""")
+        conn.commit()
+        cur.close()
+        _snap_ready = True
+    finally:
+        conn.close()
+
+
+def snap_load(get_conn, skey):
+    """-> (result dict, age in seconds) or None."""
+    if not get_conn:
+        return None
+    try:
+        _snap_table(get_conn)
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT payload, EXTRACT(EPOCH FROM (NOW() - updated_at)) FROM econ_snapshots WHERE skey = %s", (skey,))
+            row = cur.fetchone()
+            cur.close()
+        finally:
+            conn.close()
+        if not row or row[1] is None or float(row[1]) > SNAPSHOT_MAX_AGE:
+            return None
+        return json.loads(row[0]), float(row[1])
+    except Exception as e:  # noqa: BLE001 — a storage hiccup must never break the calendar
+        _set_status("snapshot", False, e)
+        return None
+
+
+def snap_save(get_conn, skey, res):
+    if not get_conn or not res or not res.get("events"):
+        return                                   # never replace a good stored copy with an empty result
+    try:
+        _snap_table(get_conn)
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("""INSERT INTO econ_snapshots (skey, payload, updated_at) VALUES (%s, %s, NOW())
+                           ON CONFLICT (skey) DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()""",
+                        (skey, json.dumps(res, ensure_ascii=False)))
+            conn.commit()
+            cur.close()
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001
+        _set_status("snapshot", False, e)
+
+
+def _refresh_bg(key, get_conn, builder, skey):
+    """Rebuild in a background thread (one at a time per key); keep the memory copy and the stored copy."""
     with _lock:
         if key in _refreshing:
             return
@@ -804,9 +878,10 @@ def _refresh_async(key, get_conn, days, limit):
 
     def work():
         try:
-            res = _build(get_conn, days, limit)
+            res = builder()
             with _lock:
                 _cset(key, res)
+            snap_save(get_conn, skey, res)
         except Exception as e:  # noqa: BLE001
             _set_status("build", False, e)
         finally:
@@ -814,6 +889,18 @@ def _refresh_async(key, get_conn, days, limit):
                 _refreshing.discard(key)
 
     threading.Thread(target=work, daemon=True).start()
+
+
+def _refresh_async(key, get_conn, days, limit):
+    _refresh_bg(key, get_conn, lambda: _build(get_conn, days, limit), f"list-{days}-{limit}")
+
+
+def _serve_snapshot(key, snap):
+    """Put a stored copy into memory as 'stale but servable' (a background refresh follows) and return it."""
+    payload, age = snap
+    with _lock:
+        _cache[key] = (time.time() - min(age, STALE_MAX - 1), payload)
+    return payload
 
 
 def build_calendar(get_conn=None, days=21, limit=14):
@@ -834,7 +921,14 @@ def build_calendar(get_conn=None, days=21, limit=14):
         hit = _cache.get(key)
         if hit and time.time() - hit[0] < RESULT_TTL:
             return hit[1]
+    skey = f"list-{days}-{limit}"
+    snap = snap_load(get_conn, skey)          # cold memory (server just woke up): serve the stored copy at once
+    if snap:
+        payload = _serve_snapshot(key, snap)
+        _refresh_async(key, get_conn, days, limit)
+        return payload
     res = _build(get_conn, days, limit)
+    snap_save(get_conn, skey, res)
     with _lock:
         return _cset(key, res)
 
@@ -928,14 +1022,31 @@ def build_month(get_conn=None, year=None, month=None):
     if not (1 <= month <= 12 and 2000 <= year <= 2100):
         raise ValueError("bad month")
     key = ("month", year, month)
-    hit = _cache.get(key)
-    if hit and time.time() - hit[0] < RESULT_TTL:
-        return hit[1]
+    skey = f"month-{year:04d}-{month:02d}"
     start = date(year, month, 1)
     end = (date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)) - timedelta(days=1)
-    with _lock:
+
+    def builder():
         res = _build_range(get_conn, start, end, MONTH_LOOKBACK_DAYS)
         res["month"] = f"{year:04d}-{month:02d}"
+        return res
+
+    hit = _cache.get(key)
+    if hit:
+        age = time.time() - hit[0]
+        if age < RESULT_TTL:
+            return hit[1]
+        if age < STALE_MAX:
+            _refresh_bg(key, get_conn, builder, skey)
+            return hit[1]
+    snap = snap_load(get_conn, skey)
+    if snap:
+        payload = _serve_snapshot(key, snap)
+        _refresh_bg(key, get_conn, builder, skey)
+        return payload
+    res = builder()
+    snap_save(get_conn, skey, res)
+    with _lock:
         return _cset(key, res)
 
 

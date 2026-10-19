@@ -2519,7 +2519,17 @@ function aiSummaryHtml(ai){
   }
   const esc = (x) => String(x==null?'':x).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const pick = (en, he) => esc(t ? en : (he || en));
-  const when = ai.generated_at ? new Date(ai.generated_at).toLocaleString(t?'en-GB':'he-IL', {hour:'2-digit', minute:'2-digit', day:'2-digit', month:'2-digit'}) : '';
+  const fmtT = (iso) => iso ? new Date(iso).toLocaleString(t?'en-GB':'he-IL', {hour:'2-digit', minute:'2-digit', day:'2-digit', month:'2-digit'}) : '';
+  const when = fmtT(ai.generated_at);
+  // freshness line: when it was computed, which headlines it covers, how old it is, what arrived since
+  const ageMin = ai.generated_at ? Math.max(0, Math.round((Date.now() - Date.parse(ai.generated_at)) / 60000)) : null;
+  const agoTxt = ageMin==null ? '' : (ageMin < 60 ? (t?`${ageMin} min ago`:`לפני ${ageMin} דק׳`)
+                  : (t?`${Math.floor(ageMin/60)}h ${ageMin%60}m ago`:`לפני ${Math.floor(ageMin/60)} שע׳ ו-${ageMin%60} דק׳`));
+  const stale = ageMin != null && ageMin > 360;
+  const newer = (ai.new_since != null && ai.new_since > 0) ? (t?` · ${ai.new_since} newer headlines are not included yet`:` · ${ai.new_since} כותרות חדשות יותר עדיין לא נכללו`) : '';
+  const freshHtml = ai.generated_at ? `<div class="digest-note" style="margin:0 0 8px;${stale?'color:var(--amber);':''}">🕒 ${t
+      ? `Computed ${esc(when)} (${agoTxt}). Covers headlines ${ai.covers_from?`from ${esc(fmtT(ai.covers_from))} `:''}up to ${esc(fmtT(ai.covers_to||ai.generated_at))}${newer}.${stale?' It may not reflect the latest news.':''}`
+      : `חושב ב-${esc(when)} (${agoTxt}). מכסה כותרות ${ai.covers_from?`מ-${esc(fmtT(ai.covers_from))} `:''}עד ${esc(fmtT(ai.covers_to||ai.generated_at))}${newer}.${stale?' ייתכן שהוא לא משקף את החדשות האחרונות.':''}`}</div>` : '';
   const topicRow = (tp) => `
     <div class="digest-item">
       <div class="macro-text"><b>${pick(tp.title_en, tp.title_he)}</b></div>
@@ -2537,6 +2547,7 @@ function aiSummaryHtml(ai){
   return `
     <div class="digest-section">
       <div class="digest-section-title">🤖 ${t?'AI summary — overview':'סיכום AI — סקירה'}</div>
+      ${freshHtml}
       <div class="macro-text">${pick(ai.overview_en, ai.overview_he)}</div>
     </div>
     <div class="digest-section">
@@ -2608,13 +2619,24 @@ let lastEconData = null;
 let econHasForecast = false;   // false while no licensed forecast provider is configured (official-only mode)
 const econOpen = {};   // event id -> explanation expanded?
 
+// Browser copy of the calendar: the page paints instantly from it, then asks the server and re-renders ONLY when
+// the events actually changed (the data hardly changes between visits).
+function econCacheGet(key){ try { const o = JSON.parse(localStorage.getItem('swing_econ_' + key) || 'null'); return (o && o.data && o.data.events) ? o : null; } catch(e){ return null; } }
+function econCacheSet(key, data){ try { localStorage.setItem('swing_econ_' + key, JSON.stringify({ts: Date.now(), data})); } catch(e){} }
+const econSig = (d) => JSON.stringify((d && d.events) || []);
+
 async function loadEconCalendar(){
+  const cached = econCacheGet('list');
+  if(cached && !lastEconData){ lastEconData = cached.data; renderEconCalendar(); }
+  if(cached && Date.now() - cached.ts < 60000) return;     // seen a minute ago — nothing to fetch
   try {
     const res = await fetch(`${API_BASE}/api/econ-calendar`);
     if(!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
+    const changed = !lastEconData || econSig(lastEconData) !== econSig(data);
     lastEconData = data;
-    renderEconCalendar();
+    econCacheSet('list', data);
+    if(changed) renderEconCalendar();
   } catch(e) {
     console.error('[econ-calendar] load failed', e);
     const el = document.getElementById('econ-wrap');
@@ -2783,12 +2805,19 @@ function renderEconActive(){
 
 async function loadEconMonth(month){
   econSetHeader();
+  const cached = econCacheGet('month-' + month);
+  if(!econMonthCache[month] && cached) econMonthCache[month] = cached.data;
   if(!econMonthCache[month]) renderEconMonth();   // shows the loading state
+  else if(month === econMonth) renderEconMonth(); // paint the browser copy at once
+  if(cached && Date.now() - cached.ts < 60000) return;
   try {
     const res = await fetchWithTimeout(`${API_BASE}/api/econ-calendar?month=${month}`, 30000);
     if(!res.ok) throw new Error('HTTP ' + res.status);
-    econMonthCache[month] = await res.json();
-    if(month === econMonth) renderEconMonth();
+    const data = await res.json();
+    const changed = !econMonthCache[month] || econSig(econMonthCache[month]) !== econSig(data);
+    econMonthCache[month] = data;
+    econCacheSet('month-' + month, data);
+    if(month === econMonth && changed) renderEconMonth();
   } catch(e) {
     console.error('[econ-calendar] month load failed', e);
     if(!econMonthCache[month]){
