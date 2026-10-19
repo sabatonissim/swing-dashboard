@@ -481,7 +481,7 @@ def auth_export(user_id: int = Depends(current_user_id)):
         cur.execute("SELECT ticker, added_at FROM watchlist WHERE user_id = %s ORDER BY added_at", (user_id,))
         wl = [dict(r) for r in cur.fetchall()]
     return {"user": dict(u), "watchlist": wl,
-            "note": "Anonymous usage statistics are not linked to your account and are not included."}
+            "note": "Anonymous usage statistics are currently not linked to your account and are not included."}
 
 
 @app.delete("/api/auth/me")

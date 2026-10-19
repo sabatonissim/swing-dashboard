@@ -775,7 +775,9 @@
   התוכן להמחשה בלבד ואינו מהווה ייעוץ השקעות או המלצה לביצוע עסקה.
 </div>
 <div class="disclaimer-strip" id="legal-links" style="border-top:none;padding-top:0;"></div>
-<style>#legal-links a{color:var(--text-dim);text-decoration:underline;}</style>
+<style>#legal-links a{color:var(--text-dim);text-decoration:underline;}
+/* Google's sign-in button lives in an iframe whose page is light; with the site in dark mode the browser paints an opaque white box behind it. Matching the colour scheme keeps the iframe transparent. */
+#g-btn, #g-btn iframe, #g-btn div[role=button]{color-scheme: light;}</style>
 
 <div class="overlay" id="overlay">
   <div class="drawer" id="drawer"></div>
@@ -4908,7 +4910,7 @@ function renderConsentBanner(){
   d.id = 'consent-banner';
   d.setAttribute('role','dialog');
   d.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:200;background:var(--panel);border-top:1px solid var(--line);padding:12px 16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;font-size:12.5px;color:var(--text);box-shadow:0 -6px 24px var(--shadow);';
-  d.innerHTML = `<span style="max-width:720px;">${en?'We would like to collect anonymous usage statistics (which pages and tickers are viewed) to improve the site. No ads, no selling of data.':'נשמח לאסוף סטטיסטיקות שימוש אנונימיות (אילו עמודים וטיקרים נצפים) כדי לשפר את האתר. בלי פרסומות ובלי מכירת מידע.'} <a href="#" onclick="openLegal('privacy');return false;" style="color:var(--teal);">${en?'Privacy policy':'מדיניות פרטיות'}</a></span>
+  d.innerHTML = `<span style="max-width:720px;">${en?'We would like to collect anonymous usage statistics (which pages and tickers are viewed) to improve the site.':'נשמח לאסוף סטטיסטיקות שימוש אנונימיות (אילו עמודים וטיקרים נצפים) כדי לשפר את האתר.'} <a href="#" onclick="openLegal('privacy');return false;" style="color:var(--teal);">${en?'Privacy policy':'מדיניות פרטיות'}</a></span>
     <button onclick="setConsent('yes')" style="background:var(--amber);color:#1a1a1a;border:none;border-radius:8px;padding:7px 16px;font-weight:700;cursor:pointer;">${en?'Allow':'אישור'}</button>
     <button onclick="setConsent('no')" style="background:transparent;color:var(--text-dim);border:1px solid var(--line);border-radius:8px;padding:7px 16px;cursor:pointer;">${en?'Decline':'סירוב'}</button>`;
   document.body.appendChild(d);
@@ -4920,20 +4922,22 @@ function _legalDoc(kind){
     <h3>Privacy Policy</h3><p class="lg-dim">Last updated: ${LEGAL_LAST_UPDATED}</p>
     <p><b>What we collect.</b> (1) If you sign in with Google: your email address, name and profile picture, as provided by Google, plus the tickers on your watchlist and the last-login time. (2) If you allow it in the consent banner: anonymous usage events (page views, tickers or news categories opened) tied to a random identifier stored in your browser, not to your name or email. (3) Technical data processed by our hosting providers (such as IP address in server logs).</p>
     <p><b>Browser storage.</b> We store in your browser: your language and theme, selected news categories, the sign-in token (needed to keep you signed in), and — only if you allow analytics — the random identifier.</p>
-    <p><b>Why.</b> To operate the site, keep your personal watchlist, secure the service and, with your consent, understand which features are used. We do not sell your data and do not show ads.</p>
+    <p><b>Why.</b> To operate the site, keep your personal watchlist, secure the service and, with your consent, understand which features are used and improve the service.</p>
     <p><b>Service providers.</b> Hosting and database (Render, Neon, Vercel — servers may be outside your country, including the US), Google (sign-in, fonts), TradingView (embedded charts), and market-data and news sources listed under "Data sources". These providers may process technical data such as your IP address according to their own policies.</p>
     <p><b>Retention.</b> Account data is kept until you delete your account. Raw anonymous usage events are deleted after 180 days.</p>
     <p><b>Your rights.</b> From the profile menu you can download a copy of your data and permanently delete your account and watchlist. You may also contact us to request access, correction or deletion.</p>
     <p><b>Security.</b> We use encrypted connections and limit access to the database, but no system is completely secure.</p>
+    <p><b>Changes to this policy.</b> We may update this policy as the service develops. Material changes, such as a new use of your data, will be published here with a new "last updated" date and, where required by law, will ask for your consent.</p>
     <p><b>Contact.</b> ${mail}</p>` : `
     <h3>מדיניות פרטיות</h3><p class="lg-dim">עודכן לאחרונה: ${LEGAL_LAST_UPDATED}</p>
     <p><b>איזה מידע נאסף.</b> (1) אם התחברת עם Google: כתובת המייל, השם ותמונת הפרופיל כפי ש-Google מוסרת, רשימת המעקב שלך וזמן ההתחברות האחרון. (2) אם אישרת בבאנר ההסכמה: אירועי שימוש אנונימיים (צפייה בעמודים, בטיקרים או בקטגוריות חדשות) המקושרים למזהה אקראי בדפדפן, לא לשם או למייל שלך. (3) מידע טכני שמעובד אצל ספקי האחסון (למשל כתובת IP ביומני שרת).</p>
     <p><b>אחסון בדפדפן.</b> נשמרים בדפדפן שלך: השפה וערכת הנושא, קטגוריות חדשות שנבחרו, אסימון ההתחברות (נדרש כדי להישאר מחובר), ורק אם אישרת סטטיסטיקה — המזהה האקראי.</p>
-    <p><b>למה.</b> להפעלת האתר, לשמירת רשימת המעקב האישית, לאבטחת השירות ו— בהסכמתך — להבין באילו תכונות משתמשים. איננו מוכרים את המידע שלך ואיננו מציגים פרסומות.</p>
+    <p><b>למה.</b> להפעלת האתר, לשמירת רשימת המעקב האישית, לאבטחת השירות ו— בהסכמתך — להבין באילו תכונות משתמשים ולשפר את השירות.</p>
     <p><b>ספקי שירות.</b> אחסון ומסד נתונים (Render, Neon, Vercel — השרתים עשויים להיות מחוץ לישראל, כולל בארה"ב), Google (התחברות, גופנים), TradingView (גרפים משובצים), ומקורות נתוני השוק והחדשות המפורטים תחת "מקורות מידע". ספקים אלה עשויים לעבד מידע טכני כמו כתובת IP לפי מדיניותם.</p>
     <p><b>שמירה.</b> נתוני החשבון נשמרים עד שתמחק את החשבון. אירועי שימוש אנונימיים גולמיים נמחקים לאחר 180 יום.</p>
     <p><b>הזכויות שלך.</b> מתפריט הפרופיל אפשר להוריד עותק של המידע ולמחוק לצמיתות את החשבון ורשימת המעקב. אפשר גם לפנות אלינו בבקשה לעיון, תיקון או מחיקה.</p>
     <p><b>אבטחה.</b> אנו משתמשים בחיבורים מוצפנים ומגבילים גישה למסד הנתונים, אך אין מערכת מאובטחת לחלוטין.</p>
+    <p><b>שינויים במדיניות.</b> ייתכן שנעדכן מדיניות זו ככל שהשירות מתפתח. שינויים מהותיים, כגון שימוש חדש במידע שלך, יפורסמו כאן עם תאריך עדכון חדש, ואם החוק דורש — נבקש את הסכמתך מחדש.</p>
     <p><b>יצירת קשר.</b> ${mail}</p>`;
   return en ? `
     <h3>Terms of Use</h3><p class="lg-dim">Last updated: ${LEGAL_LAST_UPDATED}</p>
