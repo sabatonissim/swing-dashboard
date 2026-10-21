@@ -2477,7 +2477,7 @@ function renderWatchlistSetups(results){
   `;
 }
 
-async function openDailyDigest(){
+async function openDailyDigest(day){
   const t = lang==='en';
   const modal = document.getElementById("digest-modal");
   modal.innerHTML = `
@@ -2489,19 +2489,42 @@ async function openDailyDigest(){
   `;
   document.getElementById("digest-overlay").classList.add("open");
   try {
-    const res = await fetch(`${API_BASE}/api/daily-digest?hours=24`);
+    const res = await fetch(`${API_BASE}/api/daily-digest` + (day ? `?day=${encodeURIComponent(day)}` : ''));
     if(!res.ok) throw new Error('bad response');
     const data = await res.json();
-    renderDailyDigest(data);
+    renderDailyDigest(data, !!day);
+    loadDigestHistory(data.day);
   } catch(e) {
     console.error('[daily-digest] load failed', e);
-    const body = document.getElementById("digest-body");
+    const body = document.querySelector('#digest-modal .digest-empty');
     if(body) body.innerHTML = `<div class="digest-empty">${t?'Could not load the digest right now.':'לא ניתן לטעון את הסיכום כרגע.'}</div>`;
   }
 }
 
 function closeDailyDigest(){
   document.getElementById("digest-overlay").classList.remove("open");
+}
+
+async function loadDigestHistory(currentDay){
+  const box = document.getElementById('digest-history');
+  if(!box) return;
+  const t = lang==='en';
+  try {
+    const res = await fetch(`${API_BASE}/api/daily-digest/days?limit=14`);
+    if(!res.ok) return;
+    const days = ((await res.json()).days || []).filter(d => d.day !== currentDay);
+    if(!days.length) return;
+    const card = (d) => {
+      const ov = (t ? d.overview_en : (d.overview_he || d.overview_en)) || '';
+      const tops = ((t ? d.topics_en : (d.topics_he && d.topics_he.length ? d.topics_he : d.topics_en)) || []).slice(0,4);
+      return `<div class="digest-item digest-click" onclick="openDailyDigest('${escH(d.day)}')">
+        <div class="macro-text"><b>${escH(fmtDigestDay(d.day))}</b><span class="digest-hot-count">${d.item_count||0} ${t?'headlines':'כתבות'}</span></div>
+        <div class="macro-text" style="margin-top:3px;color:var(--text-dim);">${escH(ov)}</div>
+        ${tops.length ? `<div class="digest-note" style="margin:5px 0 0;">${tops.map(x=>'• '+escH(x)).join(' ')}</div>` : ''}
+        <div class="digest-open-hint">${t?'Open the full day ←':'פתח את היום המלא ←'}</div></div>`;
+    };
+    box.innerHTML = `<div class="digest-section-title">📅 ${t?'Previous days':'ימים קודמים'}</div>` + days.map(card).join('');
+  } catch(e) { console.error('[digest-history] load failed', e); }
 }
 
 let digestItemList = [];
@@ -2514,8 +2537,8 @@ function aiSummaryHtml(ai){
   const t = lang==='en';
   if(!ai || !ai.topics || !ai.topics.length){
     return `<div class="digest-section"><div class="digest-section-title">🤖 ${t?'AI summary':'סיכום AI'}</div><div class="digest-empty">${t
-      ? 'No AI summary is available yet. It is generated automatically every few hours from the latest headlines.'
-      : 'עדיין אין סיכום AI זמין. הוא נוצר אוטומטית כל כמה שעות מהכותרות האחרונות.'}</div></div>`;
+      ? 'No AI summary is available yet. It is generated automatically through the day from the latest headlines.'
+      : 'עדיין אין סיכום AI זמין. הוא נוצר אוטומטית לאורך היום מהכותרות האחרונות.'}</div></div>`;
   }
   const esc = (x) => String(x==null?'':x).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const pick = (en, he) => esc(t ? en : (he || en));
@@ -2525,11 +2548,11 @@ function aiSummaryHtml(ai){
   const ageMin = ai.generated_at ? Math.max(0, Math.round((Date.now() - Date.parse(ai.generated_at)) / 60000)) : null;
   const agoTxt = ageMin==null ? '' : (ageMin < 60 ? (t?`${ageMin} min ago`:`לפני ${ageMin} דק׳`)
                   : (t?`${Math.floor(ageMin/60)}h ${ageMin%60}m ago`:`לפני ${Math.floor(ageMin/60)} שע׳ ו-${ageMin%60} דק׳`));
-  const stale = ageMin != null && ageMin > 360;
+  const stale = ageMin != null && ageMin > 360 && !ai.is_final && ai.is_today !== false;
   const newer = (ai.new_since != null && ai.new_since > 0) ? (t?` · ${ai.new_since} newer headlines are not included yet`:` · ${ai.new_since} כותרות חדשות יותר עדיין לא נכללו`) : '';
   const freshHtml = ai.generated_at ? `<div class="digest-note" style="margin:0 0 8px;${stale?'color:var(--amber);':''}">🕒 ${t
-      ? `Computed ${esc(when)} (${agoTxt}). Covers headlines ${ai.covers_from?`from ${esc(fmtT(ai.covers_from))} `:''}up to ${esc(fmtT(ai.covers_to||ai.generated_at))}${newer}.${stale?' It may not reflect the latest news.':''}`
-      : `חושב ב-${esc(when)} (${agoTxt}). מכסה כותרות ${ai.covers_from?`מ-${esc(fmtT(ai.covers_from))} `:''}עד ${esc(fmtT(ai.covers_to||ai.generated_at))}${newer}.${stale?' ייתכן שהוא לא משקף את החדשות האחרונות.':''}`}</div>` : '';
+      ? `Computed ${esc(when)} (${agoTxt}). Covers headlines ${ai.covers_from?`from ${esc(fmtT(ai.covers_from))} `:''}up to ${esc(fmtT(ai.covers_to||ai.generated_at))}${newer}.${ai.is_final?' 🏁 Final summary of that day.':(ai.is_today?' Updated through the day as news arrives.':'')}${stale?' It may not reflect the latest news.':''}`
+      : `חושב ב-${esc(when)} (${agoTxt}). מכסה כותרות ${ai.covers_from?`מ-${esc(fmtT(ai.covers_from))} `:''}עד ${esc(fmtT(ai.covers_to||ai.generated_at))}${newer}.${ai.is_final?' 🏁 סיכום סופי של היום.':(ai.is_today?' מתעדכן לאורך היום ככל שנכנסות חדשות.':'')}${stale?' ייתכן שהוא לא משקף את החדשות האחרונות.':''}`}</div>` : '';
   const topicRow = (tp) => `
     <div class="digest-item">
       <div class="macro-text"><b>${pick(tp.title_en, tp.title_he)}</b></div>
@@ -2561,7 +2584,12 @@ function aiSummaryHtml(ai){
       : `נוצר אוטומטית על ידי מודל AI מתוך הכותרות בפיד הזה${when?` (עודכן ${when})`:''}. הוא מתאר הקשר והשפעות אפשריות, לא תחזיות או המלצות, ועלול להכיל טעויות — כדאי לבדוק במקורות. למידע בלבד, לא ייעוץ השקעות.`}</div>`;
 }
 
-function renderDailyDigest(data){
+function fmtDigestDay(iso){
+  const d = new Date(iso + 'T12:00:00');
+  return d.toLocaleDateString(lang==='en'?'en-GB':'he-IL', {weekday:'long', day:'2-digit', month:'2-digit'});
+}
+
+function renderDailyDigest(data, picked){
   const t = lang==='en';
   const modal = document.getElementById("digest-modal");
   const critical = data.critical || [];
@@ -2590,23 +2618,25 @@ function renderDailyDigest(data){
 
   modal.innerHTML = `
     <div class="drawer-head">
-      <h2>${t?'Daily Digest — Last 24h':'סיכום יומי — 24 השעות האחרונות'}</h2>
+      <h2>${t?'Daily Digest':'סיכום יומי'} — ${escH(fmtDigestDay(data.day))}${data.is_today?(t?' (today)':' (היום)'):''}</h2>
       <button class="close-btn" onclick="closeDailyDigest()">✕</button>
     </div>
     <div id="digest-body">
+      ${picked ? `<div class="digest-note" style="margin:0 0 10px;"><a href="#" onclick="openDailyDigest();return false;" style="color:var(--teal);">${t?'← Back to the latest summary':'← חזרה לסיכום האחרון'}</a></div>` : ''}
       ${aiSummaryHtml(data.ai_summary)}
       <div class="digest-section">
-        <div class="digest-section-title">${t?"Today's most-covered topics":'הנושאים עם הכי הרבה סיקור היום'}</div>
+        <div class="digest-section-title">${t?'Most-covered topics of the day':'הנושאים עם הכי הרבה סיקור ביום הזה'}</div>
         <div class="digest-note">${t
-          ? "Ranked by how many separate articles covered each topic in the last 24h — a volume-based proxy for \"buzz\", not an AI-written summary."
-          : 'מדורג לפי כמות הכתבות הנפרדות שסיקרו כל נושא ב-24 השעות האחרונות — מדד נפח סיקור כתחליף ל"הייפ", לא סיכום שנכתב ע"י AI.'}</div>
+          ? "Ranked by how many separate articles covered each topic that day — a volume-based proxy for \"buzz\", not an AI-written summary."
+          : 'מדורג לפי כמות הכתבות הנפרדות שסיקרו כל נושא באותו יום — מדד נפח סיקור כתחליף ל"הייפ", לא סיכום שנכתב ע"י AI.'}</div>
         ${hotTopics.length ? hotTopics.map(hotTopicRow).join('') : `<div class="digest-empty">${t?'Not enough volume yet to rank topics.':'עדיין אין מספיק נפח כדי לדרג נושאים.'}</div>`}
       </div>
       <div class="digest-section">
         <div class="digest-section-title">${t?`Critical (${critical.length})`:`קריטי (${critical.length})`}</div>
         ${critical.length ? critical.map(itemRow).join('') : `<div class="digest-empty">${t?'No critical news in this window.':'אין חדשות קריטיות בחלון הזמן הזה.'}</div>`}
       </div>
-      <div class="digest-note" style="margin-top:4px;">${t?`${data.total_items} items in the last ${data.window_hours}h total.`:`סה"כ ${data.total_items} כתבות ב-${data.window_hours} השעות האחרונות.`}</div>
+      <div class="digest-note" style="margin-top:4px;">${t?`${data.total_items} items on this day in total.`:`סה"כ ${data.total_items} כתבות ביום הזה.`}</div>
+      <div class="digest-section" id="digest-history" style="margin-top:18px;"></div>
     </div>
   `;
 }

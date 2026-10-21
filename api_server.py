@@ -4089,82 +4089,122 @@ def get_market_ticker():
 # the frontend needing to change.
 # ------------------------------------------------------------------
 
-@app.get("/api/daily-digest")
-def get_daily_digest(hours: int = Query(default=24, ge=1, le=72), top_n: int = Query(default=6, ge=1, le=15)):
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(
-        """
-        SELECT * FROM macro_news
-        WHERE timestamp > NOW() - make_interval(hours => %s)
-        ORDER BY timestamp DESC
-        """,
-        (hours,),
-    )
-    rows = [dict(r) for r in cur.fetchall()]
+DIGEST_DEFAULT_TODAY_MIN = 15   # fewer headlines than this today -> open on the previous (complete) day
+
+
+def _digest_ai_for_day(conn, day):
+    """The stored AI digest of one day (running summary, or the final one for a finished day) or None."""
+    import ai_digest as aid
+    cur = conn.cursor()
+    cur.execute("SELECT updated_at, model, payload, last_item_id, is_final FROM ai_daily_digests WHERE day = %s", (day,))
+    row = cur.fetchone()
     cur.close()
-    conn.close()
+    if not row:
+        return None
+    ai = json.loads(row[2])
+    ai["generated_at"] = row[0].isoformat()
+    ai["model"] = row[1]
+    ai["is_final"] = bool(row[4])
+    ai["is_today"] = (day == aid.today_local())
+    ai.setdefault("covers_to", row[0].isoformat())
+    ai["new_since"] = None
+    if not row[4] and row[3] is not None:
+        try:                                                       # headlines of that day that arrived after the last update
+            start, end = aid.day_bounds(day)
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM macro_news WHERE id > %s AND timestamp >= %s AND timestamp < %s", (row[3], start, end))
+            ai["new_since"] = int(cur.fetchone()[0])
+            cur.close()
+        except Exception:
+            pass
+    return ai
+
+
+@app.get("/api/daily-digest")
+def get_daily_digest(day: Optional[str] = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+                     top_n: int = Query(default=6, ge=1, le=15)):
+    """Digest of ONE calendar day (DIGEST_TZ, default US Eastern). No `day` -> today, or yesterday while today is
+    still thin. Response: rule-based sections (critical + most-covered topics) + the AI running summary."""
+    import ai_digest as aid
+    from datetime import date as _date, timedelta as _td
+    today = aid.today_local()
+    conn = get_conn()
+    try:
+        if day:
+            try:
+                d = _date.fromisoformat(day)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="bad day")
+            if d > today:
+                raise HTTPException(status_code=400, detail="day is in the future")
+        else:
+            d = today
+            s0, e0 = aid.day_bounds(today)
+            c0 = conn.cursor()
+            c0.execute("SELECT COUNT(*) FROM macro_news WHERE timestamp >= %s AND timestamp < %s", (s0, e0))
+            if int(c0.fetchone()[0]) < DIGEST_DEFAULT_TODAY_MIN:
+                d = today - _td(days=1)
+            c0.close()
+        start, end = aid.day_bounds(d)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM macro_news WHERE timestamp >= %s AND timestamp < %s ORDER BY timestamp DESC", (start, end))
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.close()
+        try:
+            ai_summary = _digest_ai_for_day(conn, d)
+        except Exception:
+            conn.rollback()
+            ai_summary = None
+    finally:
+        conn.close()
 
     critical = [r for r in rows if r.get("impact_level") == "Critical"]
-
-    # "Buzz" ranking — NOT an AI-written summary (genuinely blending several
-    # articles into one narrative paragraph needs a language model; this is
-    # the honest rule-based version). The proxy for "what people are
-    # actually talking about today" is simple: which category had the most
-    # separate articles in the window. Only the busiest handful of topics
-    # are returned, each represented by its single most relevant story
-    # (Critical first, then most recent) — a real digest, not every
-    # category dumped into the response.
+    # "Buzz" ranking — NOT AI: which category had the most separate articles that day (Critical first as the
+    # representative story, then the most recent).
     tag_groups: dict = {}
     for r in rows:
         tag_groups.setdefault(r["category_tag"], []).append(r)
-
     hot_topics = []
     for tag, items in tag_groups.items():
         items_sorted = sorted(items, key=lambda r: r["timestamp"], reverse=True)
         items_sorted.sort(key=lambda r: 0 if r.get("impact_level") == "Critical" else 1)
-        hot_topics.append({
-            "tag": tag,
-            "count": len(items),
-            "representative": items_sorted[0],
-        })
+        hot_topics.append({"tag": tag, "count": len(items), "representative": items_sorted[0]})
     hot_topics.sort(key=lambda h: h["count"], reverse=True)
 
-    # Optional AI-written summary, produced by ai_digest.py (runs inside pipeline_b). Absent/failed -> None,
-    # and the frontend simply shows the rule-based digest as before.
-    ai_summary = None
-    try:
-        conn2 = get_conn()
-        try:
-            cur2 = conn2.cursor()
-            cur2.execute("SELECT generated_at, model, payload FROM ai_digests "
-                         "WHERE generated_at > NOW() - INTERVAL '36 hours' ORDER BY generated_at DESC LIMIT 1")
-            row = cur2.fetchone()
-            cur2.close()
-            if row:
-                ai_summary = json.loads(row[2])
-                ai_summary["generated_at"] = row[0].isoformat()
-                ai_summary["model"] = row[1]
-                ai_summary.setdefault("covers_to", row[0].isoformat())     # digests saved before v15 have no coverage stamp
-                try:                                                       # headlines that arrived after the digest was made
-                    cur3 = conn2.cursor()
-                    cur3.execute("SELECT COUNT(*) FROM macro_news WHERE timestamp > %s", (row[0],))
-                    ai_summary["new_since"] = int(cur3.fetchone()[0])
-                    cur3.close()
-                except Exception:
-                    ai_summary["new_since"] = None
-        finally:
-            conn2.close()
-    except Exception:
-        ai_summary = None
-
     return {
-        "window_hours": hours,
+        "day": d.isoformat(),
+        "is_today": d == today,
         "total_items": len(rows),
         "critical": critical,
         "hot_topics": hot_topics[:top_n],
         "ai_summary": ai_summary,
     }
+
+
+@app.get("/api/daily-digest/days")
+def get_daily_digest_days(limit: int = Query(default=14, ge=1, le=60)):
+    """History: one short card per day that has an AI summary, newest first (overview + topic titles)."""
+    out = []
+    try:
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT day, updated_at, item_count, is_final, payload FROM ai_daily_digests ORDER BY day DESC LIMIT %s", (limit,))
+            for day_, upd, cnt, fin, payload in cur.fetchall():
+                p = json.loads(payload)
+                out.append({
+                    "day": day_.isoformat(), "updated_at": upd.isoformat() if upd else None,
+                    "item_count": cnt, "is_final": bool(fin),
+                    "overview_en": p.get("overview_en", ""), "overview_he": p.get("overview_he", ""),
+                    "topics_en": [t.get("title_en", "") for t in p.get("topics", [])],
+                    "topics_he": [t.get("title_he", "") for t in p.get("topics", [])],
+                })
+            cur.close()
+        finally:
+            conn.close()
+    except Exception:
+        out = []
+    return {"days": out}
 
 
 @app.get("/api/sector-performance")
