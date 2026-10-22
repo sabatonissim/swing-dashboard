@@ -6,12 +6,13 @@
 
 ---
 
-## 0. סטטוס נוכחי ומשימות פתוחות (עודכן 16.10.2026 — v13.1: שכבת AI)
+## 0. סטטוס נוכחי ומשימות פתוחות (עודכן 22.10.2026 — v16: סיכום יומי מצטבר + ביקורת אתר)
 
 **מצב המוצר:** האתר חי. **התחברות עם Google פעילה ועובדת** (תפריט פרופיל, רשימת מעקב אישית, מצב כהה/בהיר). עדיין **בלי דומיין** (נשארים על `vercel.app`/`onrender.com`), בלי שם סופי למוצר, ובלי דף מדיניות פרטיות/תנאי שימוש. המשתמש רוצה להתקדם **לאט לאט** למוצר שאנשים גולשים בו.
 
 **פתוח עכשיו (לפי סדר חשיבות):**
-0. **סיכום AI יומי (v13.1, סעיף 20) — נוצר ונשמר, ממתין לאימות בפרונט.** הריצה הידנית הדפיסה `[ai_digest] saved — 50 items, 3 topics, model nvidia/nemotron-3.5-lightning-30b-a3b`. **נשאר:** (א) לוודא ש-`index.html` החדש (כפתור אחד) פרוס ושבלחיצה על 📰 סיכום יומי מופיע למעלה בלוק "🤖 סיכום AI"; (ב) לבדוק איכות/עברית על כמה ימים; (ג) **לפני פתיחה לציבור:** לעבור לספק AI בתשלום או לוודא את תנאי השימוש של NVIDIA (החינמי מיועד לפיתוח — לא אומת מול התנאים עצמם).
+00. **v16 (סעיף 23, 22.10.2026) — הועלה ונבדק חלקית:** סיכום AI מצטבר לכל יום + היסטוריית ימים (אומת: נוצר סיכום של אתמול), פס "חדשות שוברות" נגלל בעכבר (אומת), ותיקוני ביקורת-אתר (SEO/ביצועים/נגישות/אבטחה — **חלקם בלתי נראים לעין בכוונה**; ממתין להרצה חוזרת של הסורק ולשורות ה-Console האדומות). פירוט וצ'קליסט: סעיף 23.
+0. **סיכום AI יומי (v13.1, סעיף 20) — הוחלף ב-v16 (מודל "סיכום מצטבר לכל יום", סעיף 23); הטקסט כאן היסטורי.** הריצה הידנית הדפיסה `[ai_digest] saved — 50 items, 3 topics, model nvidia/nemotron-3.5-lightning-30b-a3b`. **נשאר:** (א) לוודא ש-`index.html` החדש (כפתור אחד) פרוס ושבלחיצה על 📰 סיכום יומי מופיע למעלה בלוק "🤖 סיכום AI"; (ב) לבדוק איכות/עברית על כמה ימים; (ג) **לפני פתיחה לציבור:** לעבור לספק AI בתשלום או לוודא את תנאי השימוש של NVIDIA (החינמי מיועד לפיתוח — לא אומת מול התנאים עצמם).
 1. **תזמון הסריקות:** GitHub `schedule` מאחר 3–12 שעות (נמדד, 19.6). **נבנה `scheduler.py` — תזמון מובנה בשרת ב-Render, בלי הרשמה לשום שירות חיצוני** (המשתמש ביקש במפורש בלי הרשמה). **ממתין להקמה ע"י המשתמש (לפי הסדר):** (א) טוקן GitHub (Fine-grained, הריפו הזה בלבד, Actions: Read and write) → משתנה סביבה `GITHUB_DISPATCH_TOKEN` ב-Render; (ב) העלאה במכה אחת: `scheduler.py` (חדש, בשורש), `api_server.py`, `pipeline_a_scanner.py`, `econ_calendar.py`, `index.html`, ושלושת ה-yml (`stock-scanner`, `earnings-refresh`, `news-aggregator` — **בלי `schedule`**, לכן **הטוקן חייב להיות מוגדר לפני/יחד עם ההעלאה**); (ג) לבדוק `/api/scheduler/status` (`enabled:true`, `thread_alive:true`) ובדיקה ב-Actions שהריצה הבאה התחילה בזמן.
 2. **הכנסות ביומן דוחות:** ריצת Quick refresh ידנית הצליחה, אבל **לא כל השורות מלאות**. ממתין ללוגים (שורות `SEC revenue ...` בלוג הריצה ב-Actions) כדי לראות באיזה שלב כל חברה נעצרת.
 3. **לוח כלכלי אחרי v13:** לפתוח `/api/econ-calendar/debug` — `bls.matched_titles` אמור להכיל CPI/PPI; ב-`meta.providers` הרכיב `actual` אמור להיות `ok:true`. אם `actual` נכשל (FRED חסום מ-Render) — fallback מוצע: BLS Public API v1 (סעיף 19.4).
@@ -152,11 +153,14 @@ GitHub Actions מגביל ריפו **פרטי** ל-2,000 דקות ריצה/חו�
 ### `users` (v13)
 `id` (SERIAL), `google_sub` (UNIQUE — מזהה גוגל קבוע), `email`, `name`, `picture`, `created_at`, `last_login`. נוצרת ב-`init_db` של `api_server.py`. נכתבת ב-`POST /api/auth/google` (upsert לפי `google_sub`).
 
-### `ai_digests` (v13.1)
+### `ai_daily_digests` (v16) — הטבלה הנוכחית של הסיכום היומי
+`day` (DATE, מפתח), `updated_at`, `item_count`, `last_item_id` (ה-id האחרון של `macro_news` שנכלל), `updates`, `since_rebuild`, `is_final`, `model`, `payload` (TEXT = JSON). שורה אחת ליום; נוצרת אוטומטית ע"י `ai_digest.py`; נמחקת אחרי 90 יום. ראה סעיף 23.
+
+### `ai_digests` (v13.1) — ישנה, כבר לא נכתבת ולא נקראת
 `id`, `generated_at`, `window_hours`, `item_count`, `model`, `payload` (TEXT = JSON). נוצרת אוטומטית (`CREATE TABLE IF NOT EXISTS`) ע"י `ai_digest.py`; שורות מעל 7 ימים נמחקות. השרת קורא את השורה האחרונה מ-36 השעות האחרונות; אם הטבלה חסרה/ריקה — `ai_summary: null` והפרונט מציג הודעה "עדיין אין סיכום".
 
 ### משתני סביבה
-**(v13.1, ב-GitHub — לא ב-Render! ה-AI רץ ב-Actions):** **Secret `LLM_API_KEY`** (מפתח NVIDIA `nvapi-...`; סוד — לא בקוד/בתיעוד). **Variables (Settings → Secrets and variables → Actions → Variables):** `LLM_MODELS` (רשימת מודלים מופרדת בפסיקים, לפי סדר העדפה — מקור האמת הוא תוצאת ה-`probe`; כרגע `nvidia/nemotron-3.5-lightning-30b-a3b,nvidia/nemotron-3-super-120b-a12b,google/gemma-4-31b-it`), `LLM_BASE_URL` (ברירת מחדל NVIDIA `https://integrate.api.nvidia.com/v1`). אופציונלי: `AI_DIGEST_MIN_HOURS` (ברירת מחדל 3), `LLM_BUDGET_SECONDS` (ברירת מחדל 150). בלי `LLM_API_KEY` — שום דבר AI לא רץ והאתר מתנהג כמו קודם.
+**(v13.1, ב-GitHub — לא ב-Render! ה-AI רץ ב-Actions):** **Secret `LLM_API_KEY`** (מפתח NVIDIA `nvapi-...`; סוד — לא בקוד/בתיעוד). **Variables (Settings → Secrets and variables → Actions → Variables):** `LLM_MODELS` (רשימת מודלים מופרדת בפסיקים, לפי סדר העדפה — מקור האמת הוא תוצאת ה-`probe`; **מומלץ אחרי ה-probe של 22.10.2026:** `nvidia/nemotron-3.5-lightning-30b-a3b,nvidia/nemotron-3-ultra-550b-a55b` (שני האחרים — `nemotron-3-super-120b-a12b`, `gemma-4-31b-it` — נתנו 404/timeout; לבדוק שוב ב-probe מדי פעם כי הקטלוג החינמי לא יציב). **v16, אופציונלי ב-GitHub Variables:** `DIGEST_TZ` (אזור זמן שקובע את "היום" של הסיכום; ברירת מחדל `America/New_York`), `AI_DIGEST_MIN_HOURS` (מרווח מינימלי בין עדכונים, ברירת מחדל 3)), `LLM_BASE_URL` (ברירת מחדל NVIDIA `https://integrate.api.nvidia.com/v1`). אופציונלי: `AI_DIGEST_MIN_HOURS` (ברירת מחדל 3), `LLM_BUDGET_SECONDS` (ברירת מחדל 150). בלי `LLM_API_KEY` — שום דבר AI לא רץ והאתר מתנהג כמו קודם.
 `DATABASE_URL` (Neon), `ALLOWED_ORIGINS` (`https://swing-desk-tau.vercel.app`).
 **(v13, ב-Render):** **`GITHUB_DISPATCH_TOKEN`** — טוקן GitHub Fine-grained (הריפו בלבד, Actions: Read and write) שמאפשר ל-`scheduler.py` להפעיל workflows; **בלעדיו התזמון כבוי** והשרת מתנהג כמו קודם. **סוד — רק ב-Render.** אופציונלי: `GITHUB_REPO`, `SCHEDULER_GIT_REF` (ברירת מחדל `main`), `SCHEDULER_KEEPALIVE=0`.
 **(v13, ב-Render):** **`JWT_SECRET` — חובה** (מחרוזת אקראית ארוכה; בלעדיה כל נקודות הקצה של ההתחברות עונות 503; **סוד — לא בקוד/בתיעוד**). `GOOGLE_CLIENT_ID` — אופציונלי (ברירת מחדל בקוד: Client ID הציבורי של הפרויקט `swing-desk` ב-Google Cloud).
@@ -176,7 +180,8 @@ GitHub Actions מגביל ריפו **פרטי** ל-2,000 דקות ריצה/חו�
 | **`GET /api/ticker-search?q=`** (v13) | חיפוש מניה/ETF לפי טיקר או שם חברה (לבורר ההשוואה): `universe_movers` (קידומת טיקר) + Yahoo search. כשל באחד המקורות לא שובר. קאש שעה (תשובה ריקה לא נשמרת) |
 | `/api/watchlist`, `/api/watchlist-setups` (v13) | **דורשים התחברות** (401 בלי טוקן); כל משתמש רואה רק את הרשימה שלו |
 | `/api/macro-news`, `/api/macro-news/search` | חדשות (`SELECT *` — כולל `body_*` כשקיימים) |
-| **`/api/daily-digest?hours=24&top_n=6`** | **חדש.** סיכום יומי **בלי AI**: `critical` (כל הקריטיות) + `hot_topics` (הקטגוריות עם הכי הרבה כתבות, כל אחת עם כתבה מייצגת — קריטית קודם, אחר כך הכי חדשה) + `total_items` + **`ai_summary`** (v13.1: אובייקט הסיכום של ה-AI או `null`; ראה סעיף 20) |
+| **`/api/daily-digest?day=YYYY-MM-DD&top_n=6`** (v16) | סיכום של **יום קלנדרי אחד** (לפי `DIGEST_TZ`). בלי `day`: היום, או אתמול כל עוד להיום פחות מ-15 כתבות. מחזיר `day`, `is_today`, `critical`, `hot_topics`, `total_items` (כולם של אותו יום) + **`ai_summary`** (הסיכום המצטבר/הסופי של היום או `null`; כולל `is_final`, `is_today`, `new_since`, `covers_from/to`, `item_count`, `updates`). `day` עתידי/לא תקין → 400 |
+| **`/api/daily-digest/days?limit=14`** (v16) | היסטוריה: כרטיס קצר לכל יום שיש לו סיכום AI, מהחדש לישן — `day`, `item_count`, `is_final`, `overview_en/he`, `topics_en/he` (כותרות בלבד). הפרונט מציג אותם תחת "📅 ימים קודמים" |
 | **`/api/market-ticker`** | **חדש.** S&P 500 / נאסד"ק / דאו / VIX / ביטקוין / את'ריום / זהב. yfinance `.history(5d)` לכל סמל, קאש 90 שניות, מחזיר `price`, `change_points`, `change_pct`. fallback לקאש האחרון בכשל |
 | **`/api/technical-setup/{ticker}`** | **חדש.** מבנה טכני נוכחי — ראה 7.1. מחזיר `candidates[]` (ממוינים), `scan_match`, `price_series` (OHLC, 160 נרות אחרונים) |
 | **`/api/watchlist-setups`** | **חדש.** אותה בדיקה על כל טיקרי ה-`watchlist` במקביל (`ThreadPoolExecutor(6)`), מחזיר רק את מי שיש לו מועמד; לכל טיקר המועמד העליון בלבד; פעילים קודם, אחר כך לפי מרחק |
@@ -662,6 +667,8 @@ Postgres econ_events ► ערכים שמורים + גיבוי לוח זמנים 
 - שמע שאפשר לקבל API חינמי מ-build.nvidia.com ורצה ניתוח AI וסיכום חדשות יומי. **הסכים להירשם כל עוד זה חינמי**, ודרש: **(א)** כל הבנייה כך שקל להחליף שירותים כשהאתר יהפוך למוצר וימומן מהכנסות; **(ב)** **כפתור אחד** — 📰 סיכום יומי הקיים, עם סיכום ה-AI (כולל השפעות ומסקנות) למעלה ומתחתיו מה שהיה (בהתחלה נבנה כפתור נפרד "🤖 סיכום AI" — נדחה והוסר).
 - **הסיכום נוצר ברקע (Actions), לא בכל לחיצה/ביקור.** כך עלות/מגבלות האינטרנט לא תלויות במספר המבקרים, והלחיצה רק קוראת שורה שמורה.
 
+> ⚠️ **v16 החליף את הארכיטקטורה שבסעיף 20.2** (חלון של 24 שעות ו-50 כתבות, שורה אחרונה מ-`ai_digests`) בסיכום מצטבר לכל יום — ראה סעיף 23. שאר סעיף 20 (שכבת הספק, הגנות, כרונולוגיית תקלות) עדיין נכון.
+
 ### 20.2 ארכיטקטורה
 `pipeline_b` (סוף ריצה) → `ai_digest.maybe_generate` → בוחר עד 50 כתבות מ-`macro_news` (24 שעות, קריטיות קודם) → `llm_provider.chat` → JSON → ולידציה → תרגום לעברית דרך `translate_to_hebrew` הקיים → `ai_digests` → `/api/daily-digest` (`ai_summary`) → `index.html` (`aiSummaryHtml`). המודל מייצר **באנגלית** ומתרגמים (עברית של מודלים פתוחים חלשה יותר; התרגום נעשה משפט-משפט כי המתרגם חותך ב-400 תווים).
 **צורת `ai_summary`:** `overview_en/he`, `topics[]` (`title`, `summary`, `impact` — כל אחד `_en/_he` — ו-`sources[]` עם `url`/`category`/`title`), `takeaways_en/he[]`, `watch_en/he[]`, `generated_at`, `model`. שדות ישנים בלי `impact`/`takeaways` נתמכים (הפרונט מדלג).
@@ -745,6 +752,58 @@ Actions → **AI Digest (manual test)** → Run workflow → `mode = probe` → 
 **פתוח / לבדוק:**
 1. ה-"בפועל" של PCE, ליבת PCE, תמ"ג, קמעונאות, claims וריבית הפד — תלוי ב-FRED שלא עונה מ-Render וגם לא מ-GitHub (פתרון: `FRED_API_KEY`, לא אומת ש-api.stlouisfed.org נגיש). "בפועל" ל-CPI/PPI אמור להופיע אחרי הפרסום (PPI הבא 13.11, CPI 10.11) — **לוודא שהוא מופיע, ושאחוז ה-m/m של PPI תואם לפרסום הרשמי של BLS** (`WPSFD4` מול `PPIFIS` לא אומת).
 2. `meta.providers` מציג שאריות כשל ישנות (`FRED unavailable`, `BLS API cooling down`) עד שהשרת מופעל מחדש; תווית `"previous":"fred"` מדויקת רק חלקית (הערכים מ-BLS).
-3. `vercel.json`: CSP במצב Report-Only — לבדוק קונסול ולעבור ל-`Content-Security-Policy`.
+3. `vercel.json`: **v16 הוסיף CSP מחייב מינימלי** (`frame-ancestors 'none'; base-uri 'self'; object-src 'none'`); ה-CSP המלא עדיין Report-Only — לבדוק קונסול (F12) ורק אז לשקול אכיפה (סעיף 23.6).
 4. חוסמי רישוי/משפט (סעיף 21: נתוני שוק, חדשות+תרגום, תרגום לא רשמי, F&G, NVIDIA חינמי, שיווק השקעות, פרטיות/נגישות, SEC User-Agent) — לא נפתרו, ממתינים למעבר לספקים מורשים; בכל החלפת ספק לעדכן את מדיניות הפרטיות/תנאי השימוש.
 5. מוכן להמשך ללא תלות בספקים: connection pool ל-Postgres, הצמדת גרסאות ב-`requirements.txt`, ביטול טוקנים, הודעות שגיאה דו-לשוניות, SSRF (TOCTOU) ב-`/api/article-preview`, סקירה ויזואלית של כל עמוד באנגלית, עמוד אדמין לאנליטיקה (כרגע: שאילתות ב-Neon על branch `live`), BEA/EIA כמקורות רשמיים נוספים (כתובות לא אומתו).
+
+---
+
+## 23. v16 — סיכום AI מצטבר לכל יום + היסטוריה + ביקורת אתר (22.10.2026)
+
+### 23.1 מה המשתמש ביקש והחלטות
+- הסיכום היומי של ה-AI לא יכיל רק את השעות האחרונות אלא **את כל היום**, וכל פעם שמתווסף מידע — **ישוקלל במה שכבר חושב** (סיכום מצטבר). בנוסף: **גישה לסיכומי הימים הקודמים**, בקצרה ובצורה מסודרת, למי שלא הספיק לקרוא.
+- היסטוריית הימים תופיע **מיד אחרי הסיכום של היום** (לא בתחתית החלון). בפס "חדשות שוברות" יהיה אפשר לגלול הצידה בעכבר.
+- המשתמש העלה את הקבצים; סיכום של אתמול נוצר בהצלחה; מוכן לחכות להרצות האוטומטיות (לא מריץ ידנית).
+- המשתמש הריץ סורק-אתרים שראה בלינקדאין (Schema, Core Web Vitals, נגישות, Best Practices, אבטחה, Meta Tags) וביקש הסבר פשוט, תיקון, ותיעוד. **אחרי ההעלאה לא ראה שינוי באתר — צפוי**: רוב התיקונים בלתי נראים (תגיות בראש הדף, כותרות שרת, תוויות נגישות).
+
+### 23.2 הארכיטקטורה (`ai_digest.py` — נכתב מחדש)
+- **"יום"** = יום קלנדרי ב-`DIGEST_TZ` (ברירת מחדל `America/New_York`, כלומר יום מסחר אמריקאי שנגמר ב-07:00 בישראל; אפשר `Asia/Jerusalem`, אבל אז היום נחתך באמצע המסחר). כתבה שייכת ליום לפי `macro_news.timestamp` (מתי נשמרה במסד), ו-`id` עולה — לכן "מה חדש" נקבע לפי `id > last_item_id`.
+- **ריצה ראשונה ביום:** בונים מכל כתבות היום (עד 80; קריטיות קודם — עד שליש — והשאר מפוזרות שווה על פני היום, לא רק השעות האחרונות). מינימום 5 כתבות.
+- **ריצות הבאות (עדכון):** המודל מקבל (A) את הסיכום הקיים עם נושאים P1..Pn ו-(B) רק הכתבות **החדשות** (עד 60), ומחזיר סיכום מעודכן לכל היום. כל נושא מציין `from_topics` (נושאים קיימים שעליהם נבנה) ו-`items` (כתבות חדשות). **המקורות נשמרים לאורך העדכונים** (עד 4 לנושא, החדשות קודם). נושא בלי אף מקור — נזרק. מינימום 5 כתבות חדשות ו-`AI_DIGEST_MIN_HOURS` (3) בין עדכונים.
+- **מניעת סחף:** כל 8 עדכונים (`REBUILD_EVERY`) היום נבנה מחדש מאפס מכל כתבותיו. `--force` = בנייה מחדש מאפס של היום.
+- **סגירת יום:** בריצה הראשונה אחרי חצות, כל יום פתוח קודם (עד 3 ימים אחורה) מקבל עדכון אחרון ומסומן `is_final` ("🏁 סיכום סופי"); ימים ישנים יותר רק מסומנים סופיים.
+- **תרגום:** משפט באנגלית שלא השתנה מהסיכום הקודם לא מתורגם שוב (מילון en→he מה-payload הקודם) — חוסך קריאות למתרגמים החינמיים.
+- **הגנות** (ללא שינוי מ-20.4): רק כותרות שניתנו + הסיכום הקודם שכבר עבר ולידציה; פלט שנשמע כייעוץ השקעות נדחה; כשל בכל שלב → לא נשמר כלום והסיכום הקודם נשאר.
+- **החלטה מכוונת — בלי נעילה בין ריצות** (`pg_advisory_lock`): Neon בדרך כלל מגיע דרך pooler במצב transaction שבו נעילות סשן לא אמינות. ריצות חופפות נדירות והשמירה היא upsert, ולכן במקרה הגרוע ריצה אחת דורסת את האחרת.
+- **CLI:** `python ai_digest.py` (עדכון רגיל), `--force`, `--backfill N` (סיכום סופי לכל אחד מ-N הימים האחרונים שאין להם סיכום), `--probe`.
+- **`ai-digest.yml`** (ידני): מצבים `probe` / `digest` (ברירת מחדל, = `--force`) / `backfill` (= `--backfill 7`). `timeout-minutes: 30`. כדי להשלים ימים שלפני v16 — להריץ `backfill` פעם אחת.
+
+### 23.3 API ופרונט
+- `/api/daily-digest` ו-`/api/daily-digest/days` — ראה סעיף 6. הסעיפים "קריטי" ו"נושאים הכי מסוקרים" מחושבים עכשיו על אותו יום (לא 24 שעות מתגלגלות).
+- בחלון "📰 סיכום יומי": כותרת עם תאריך (`(היום)` כשזה היום), קישור "← חזרה לסיכום האחרון" כשפותחים יום ישן, שורת מצב ("מתעדכן לאורך היום" / "🏁 סיכום סופי"), ו-**"📅 ימים קודמים" מיד אחרי סיכום ה-AI** — כרטיס לכל יום (תאריך, מספר כתבות, סקירה, כותרות נושאים); לחיצה פותחת את היום המלא (`openDailyDigest('YYYY-MM-DD')`, `loadDigestHistory`).
+- **פס "חדשות שוברות":** כפתורי ‹ › (רק כשיש גלישה; מוסתרים במסכי מגע), גלגלת עכבר (נתפסת רק כל עוד הפס יכול לזוז; הכיוון מותאם ל-RTL) וגרירה בעכבר (לחיצה אחרי גרירה לא פותחת ידיעה). קוד: `initBreakingScroll` / `updateBreakingNav` ב-`index.html`.
+
+### 23.4 ממצאי ה-probe (22.10.2026)
+עובדים כרגע למפתח: `nvidia/nemotron-3.5-lightning-30b-a3b` ו-`nvidia/nemotron-3-ultra-550b-a55b`. נכשלים: `nemotron-3-super-120b-a12b` (404), `gemma-4-31b-it` (timeout), ועוד עשרות 404. מומלץ לעדכן `LLM_MODELS` (סעיף 5). הערה: ריצת `probe` לא מדפיסה שורות `[ai_digest]` — זה צפוי.
+
+### 23.5 ביקורת האתר — מה הדוח אמר ומה נעשה
+| תחום | ממצא | פעולה |
+|---|---|---|
+| Schema (JSON-LD) | לא נמצא | נוסף `WebApplication` ב-`<head>` (שם, תיאור, קטגוריה, שפות). בלי `url`/מחיר/דירוגים — לא להמציא |
+| Meta | חסרים description, Open Graph, Twitter, Canonical, Robots, Author/Publisher/Creator/Keywords | נוספו `description`, `og:*` (כולל `og:url`, `og:image` + מידות), `twitter:*` (`summary_large_image` + תמונה), `canonical` ו-`og:url` = `https://swing-desk-tau.vercel.app/` (**לעדכן כשיש דומיין**), `robots: index, follow`, ו-`author/publisher/creator` = "Swing Desk" (שם המוצר, לא שם אישי) + `keywords`. אלה האחרונים קוסמטיים בלבד (גוגל מתעלם מ-keywords). תמונת השיתוף `og-image.png` (1200x630, שורש הריפו) היא **placeholder שנוצר בקוד** — להחליף בלוגו אמיתי |
+| ביצועים (LCP 6.5s, FCP, Speed Index; אחרי התיקון הראשון עדיין נכשלים: JS Takes Too Long to Start, Long Scripts, Layout Recalculations, Main Thread, Unused JS, Third-Party, Page Too Heavy) | סקריפטים חוסמים, JS כבד | סבב 1: `tv.js` נטען `async` (היה חוסם); פונטים בלי חסימה (`preload`+`noscript`); `preconnect` לברנדר. סבב 2: `tv.js` נטען **רק אחרי אירוע `load` ובזמן שהדפדפן פנוי** (`window.loadTV(cb)` בראש הדף; תור callbacks), וכל שימוש ב-`TradingView` (גרף הבית `switchChart`, גרף המגירה `renderTradingViewChart`, גרף ה-Deep Dive) קורא ל-`loadTV` אם הוא עוד לא נטען. **מה שנשאר ממשיך להיכשל בגלל:** (א) ווידג'ט TradingView עצמו (קוד צד שלישי כבד — אין לנו שליטה, וגם שגיאות הקונסול `support-portal-problems` / `Moving Average has no plot` מגיעות ממנו); (ב) `index.html` הוא קובץ אחד של ~350KB עם ~270KB JavaScript מוטבע שנפרס בכל טעינה. **פתרון אמיתי (שינוי גדול, לא נעשה):** להוציא את ה-JS לקובץ חיצוני ממוזער ב-cache, ולטעון חלקים בעצלתיים |
+| נגישות | תפריטי בחירה בלי תווית; חלונות בלי שם | `aria-label` לשני תפריטי סינון התבניות (דו-לשוני לפי שפה); `role="dialog" aria-modal aria-label` (עברית/אנגלית יחד) ל-5 החלונות (drawer, מחשבון סיכון, מידע, בורר השוואה, סיכום יומי) ולבאנר ההסכמה |
+| אבטחה | אין CSP מחייב; ניתן להטמעה באתרים אחרים; Cross-Origin Isolation; Trusted Types | `vercel.json`: נוסף `Content-Security-Policy: frame-ancestors 'none'; base-uri 'self'; object-src 'none'` (ה-`X-Frame-Options: DENY` כבר היה, אבל `frame-ancestors` בתוך Report-Only לא נאכף). ה-CSP המלא נשאר **Report-Only** — אכיפה עלולה לשבור TradingView/התחברות Google/`onclick` מוטבעים. **לא נעשה בכוונה:** COOP/COEP (שוברים הטמעות של צד שלישי) ו-Trusted Types (דורש כתיבה מחדש של כל ה-`innerHTML`) — רמת אבטחה שלא מתאימה לאתר הזה |
+| שגיאות JS, פיצ'רים מיושנים, Main thread עמוס, JS לא דחוס, Unused JS, Third-party | לא ניתן לאבחן מהדוח | **פתוח:** לבקש מהמשתמש F12 → Console והעתקת השורות האדומות. חלק כנראה מסקריפטים של TradingView/גוגל. Vercel דוחס את `index.html` לבד |
+
+### 23.6 צ'קליסט אימות (טרם נבדק)
+1. להריץ את הסורק מחדש על האתר ולהשוות (בעיקר Schema, Meta, Accessibility, ו-"Page can be embedded").
+2. לוודא בדפדפן שגרף הבית (TradingView) עדיין מופיע אחרי הטעינה האסינכרונית, ושחלון מניה/Deep Dive מציג גרף.
+3. F12 → Console: לאסוף שגיאות אדומות; לבדוק גם הודעות `Content-Security-Policy-Report-Only` לפני אכיפת ה-CSP המלא.
+4. לוודא שמופיע "📅 ימים קודמים" אחרי שיש יותר מיום אחד (או אחרי `backfill`).
+5. לבדוק בעברית ובאנגלית: כותרת התאריך בחלון הסיכום, והכפתורים בפס "חדשות שוברות".
+
+### 23.7 פתוח אחרי v16
+- הרצת `backfill` להשלמת ימים שלפני v16; עדכון `LLM_MODELS`.
+- כשיש דומיין: לעדכן `canonical` ו-`og:url`/`og:image` ב-`index.html` (כרגע `swing-desk-tau.vercel.app`); להחליף את `og-image.png` ה-placeholder בלוגו אמיתי.
+- אכיפת CSP מלא (אחרי בדיקת קונסול); שיפור LCP נוסף (פירוק `index.html`, טעינה עצלה של חלקים).

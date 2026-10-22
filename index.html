@@ -5,12 +5,24 @@
 <title>Swing Desk — דשבורד מסחר</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="description" content="Swing Desk — דשבורד למסחר סווינג: סורק מניות לפי מבנים טכניים, חדשות מאקרו עם סיכום יומי, יומן כלכלי ומפת חום. מידע בלבד, לא ייעוץ השקעות.">
+<link rel="canonical" href="https://swing-desk-tau.vercel.app/">
+<meta name="robots" content="index, follow">
+<meta name="author" content="Swing Desk">
+<meta name="publisher" content="Swing Desk">
+<meta name="creator" content="Swing Desk">
+<meta name="keywords" content="מסחר סווינג, סורק מניות, ניתוח טכני, חדשות מאקרו, יומן כלכלי, swing trading, stock scanner, market dashboard">
 <meta property="og:type" content="website">
+<meta property="og:url" content="https://swing-desk-tau.vercel.app/">
+<meta property="og:image" content="https://swing-desk-tau.vercel.app/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Swing Desk — swing-trading dashboard">
 <meta property="og:site_name" content="Swing Desk">
 <meta property="og:title" content="Swing Desk — דשבורד מסחר">
 <meta property="og:description" content="סורק מניות לפי מבנים טכניים, חדשות מאקרו עם סיכום יומי, יומן כלכלי ומפת חום. מידע בלבד, לא ייעוץ השקעות.">
 <meta property="og:locale" content="he_IL">
-<meta name="twitter:card" content="summary">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://swing-desk-tau.vercel.app/og-image.png">
 <meta name="twitter:title" content="Swing Desk — דשבורד מסחר">
 <meta name="twitter:description" content="סורק מניות לפי מבנים טכניים, חדשות מאקרו עם סיכום יומי, יומן כלכלי ומפת חום.">
 <script type="application/ld+json">
@@ -21,7 +33,25 @@
 <script>
 // TradingView's tv.js now loads in the background (it used to block the whole page). When it arrives, the charts
 // that were skipped because it was not ready yet are drawn (see window.__tvCb in the main script).
-window.__tvLoaded = function(){ window.__tvReadyFlag = true; if(window.__tvCb) window.__tvCb(); };
+window.__tvQueue = [];
+window.loadTV = function(cb){                     // loads TradingView's tv.js once; runs cb when it is ready
+  if(window.TradingView){ if(cb) cb(); return; }
+  if(cb) window.__tvQueue.push(cb);
+  if(window.__tvInjected) return;
+  window.__tvInjected = true;
+  var s = document.createElement('script');
+  s.async = true; s.src = 'https://s3.tradingview.com/tv.js';
+  s.onload = function(){
+    window.__tvReadyFlag = true;
+    window.__tvQueue.splice(0).forEach(function(f){ try{ f(); }catch(e){ console.error(e); } });
+    if(window.__tvCb) window.__tvCb();
+  };
+  document.head.appendChild(s);
+};
+// not at page start: the page, data and scripts of our own come first; tv.js (the heaviest file) loads once the browser is idle
+window.addEventListener('load', function(){
+  (window.requestIdleCallback || function(f){ setTimeout(f, 1200); })(function(){ window.loadTV(); }, {timeout: 2500});
+});
 </script>
 <script>
 // Theme: saved choice is 'dark' | 'light'. Default (and anything else) = dark.
@@ -576,7 +606,6 @@ window.__tvLoaded = function(){ window.__tvReadyFlag = true; if(window.__tvCb) w
     .pulse-view-btn{flex:1;padding:8px 10px;}
   }
 </style>
-<script async src="https://s3.tradingview.com/tv.js" onload="window.__tvLoaded && window.__tvLoaded()"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
 (function(){
@@ -1829,7 +1858,8 @@ function renderDeepDive(quote, sector, signals, news){
   renderDeepDivePeCard(); // fills in the NTM/LTM P/E stat card built above
   renderDeepDiveSectorSection(sector); // fills in dd-sector-compare-section built above
 
-  if(typeof TradingView !== 'undefined'){
+  const _mkDdChart = () => {
+    if(!document.getElementById('dd-tv-chart')) return;
     new TradingView.widget({
       autosize: true, symbol: tvSymbol(quote.ticker), interval: 'D',
       timezone: 'Asia/Jerusalem', theme: tvTheme(), style: '1',
@@ -1843,7 +1873,8 @@ function renderDeepDive(quote, sector, signals, news){
         "Moving Average.plot.linewidth": 2,
       },
     });
-  }
+  };
+  if(typeof TradingView !== 'undefined') _mkDdChart(); else loadTV(_mkDdChart);
 }
 
 function formatMarketCap(n){
@@ -1868,7 +1899,7 @@ function switchChart(symbol){
   });
   const container = document.getElementById('market-tv-chart');
   container.innerHTML = '';
-  if(typeof TradingView === 'undefined'){ return; }
+  if(typeof TradingView === 'undefined'){ loadTV(() => switchChart(symbol)); return; }
   // SPY, QQQ, IWM are regular ETF tickers — always work on TradingView free widget
   // Bitcoin needs specific exchange prefix
   const tvSymbol =
@@ -3706,7 +3737,8 @@ document.getElementById("overlay").addEventListener("click", e=>{ if(e.target.id
 // ---- TradingView chart in drawer ----
 function renderTradingViewChart(ticker){
   const container = document.getElementById("tv-chart");
-  if(!container||typeof TradingView==="undefined") return;
+  if(!container) return;
+  if(typeof TradingView==="undefined"){ loadTV(() => renderTradingViewChart(ticker)); return; }
   container.innerHTML="";
   new TradingView.widget({
     autosize:true, symbol:tvSymbol(ticker), interval:"D",
