@@ -102,6 +102,14 @@
   @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.3;}}
   .breaking-items{display:flex;gap:10px;overflow-x:auto;scrollbar-width:none;}
   .breaking-items::-webkit-scrollbar{display:none;}
+  .breaking-items{cursor:grab;}
+  .breaking-items.dragging{cursor:grabbing;user-select:none;}
+  .breaking-wrap{position:relative;}
+  .breaking-nav{position:absolute;top:50%;transform:translateY(-50%);z-index:3;width:30px;height:30px;border-radius:50%;border:1px solid var(--line);background:var(--panel);color:var(--text);font-size:18px;line-height:1;cursor:pointer;display:none;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.35);}
+  .breaking-nav.show{display:flex;}
+  .breaking-nav:hover{border-color:var(--red);}
+  #breaking-prev{left:2px;} #breaking-next{right:2px;}
+  @media (pointer:coarse){.breaking-nav{display:none !important;}}
   .breaking-card{flex-shrink:0;max-width:260px;background:rgba(239,91,91,.07);border:1px solid rgba(239,91,91,.2);border-radius:10px;padding:10px 14px;cursor:pointer;transition:border-color .15s;}
   .breaking-card:hover{border-color:rgba(239,91,91,.5);}
   .breaking-card .b-tag{font-size:10px;color:var(--red);font-weight:700;margin-bottom:4px;letter-spacing:1px;}
@@ -613,7 +621,11 @@
 <!-- Breaking News Bar -->
 <div class="breaking-bar">
   <div class="breaking-bar-title"><span class="pulse"></span> חדשות שוברות — קריטי</div>
-  <div class="breaking-items" id="breaking-news"></div>
+  <div class="breaking-wrap">
+    <button class="breaking-nav" id="breaking-prev" type="button" aria-label="Scroll left">‹</button>
+    <div class="breaking-items" id="breaking-news"></div>
+    <button class="breaking-nav" id="breaking-next" type="button" aria-label="Scroll right">›</button>
+  </div>
 </div>
 
 <!-- Market Index Charts -->
@@ -1099,6 +1111,40 @@ function renderMacro(){
   `).join("");
 }
 
+// Breaking-news strip: on a computer the strip had no visible way to move sideways. Now it has ‹ › buttons
+// (shown only when there are more cards than fit), mouse-wheel scrolling and click-and-drag.
+function updateBreakingNav(){
+  const el = document.getElementById('breaking-news');
+  if(!el) return;
+  const more = el.scrollWidth > el.clientWidth + 4;
+  ['breaking-prev','breaking-next'].forEach(id => { const b = document.getElementById(id); if(b) b.classList.toggle('show', more); });
+}
+(function initBreakingScroll(){
+  const el = document.getElementById('breaking-news');
+  if(!el) return;
+  const step = () => Math.max(200, Math.round(el.clientWidth * 0.8));
+  document.getElementById('breaking-prev').onclick = () => el.scrollBy({left:-step(), behavior:'smooth'});
+  document.getElementById('breaking-next').onclick = () => el.scrollBy({left: step(), behavior:'smooth'});
+  el.addEventListener('wheel', (e) => {
+    if(el.scrollWidth <= el.clientWidth + 4 || Math.abs(e.deltaY) < Math.abs(e.deltaX)) return;
+    const rtl = getComputedStyle(el).direction === 'rtl';
+    const before = el.scrollLeft;
+    el.scrollLeft += (rtl ? -1 : 1) * e.deltaY;
+    if(el.scrollLeft !== before) e.preventDefault();          // only capture the wheel while the strip can still move
+  }, {passive:false});
+  let down = false, startX = 0, startLeft = 0, moved = false;
+  el.addEventListener('mousedown', (e) => { down = true; moved = false; startX = e.clientX; startLeft = el.scrollLeft; });
+  window.addEventListener('mousemove', (e) => {
+    if(!down) return;
+    const dx = e.clientX - startX;
+    if(Math.abs(dx) > 5){ moved = true; el.classList.add('dragging'); }
+    if(moved) el.scrollLeft = startLeft - dx;
+  });
+  window.addEventListener('mouseup', () => { down = false; el.classList.remove('dragging'); });
+  el.addEventListener('click', (e) => { if(moved){ e.stopPropagation(); e.preventDefault(); moved = false; } }, true);
+  window.addEventListener('resize', updateBreakingNav);
+})();
+
 function renderBreakingNews(){
   const el = document.getElementById("breaking-news");
   // Show ONLY items the backend itself classified as Critical (Fed
@@ -1113,6 +1159,7 @@ function renderBreakingNews(){
   const critical = macro.filter(m => m.impact === 'Critical');
   if(!critical.length){
     el.innerHTML=`<div style="color:var(--text-dim);font-size:13px;padding:4px 0;">${UI[lang].no_breaking}</div>`;
+    updateBreakingNav();
     return;
   }
   el.innerHTML = critical.map((m)=>`
@@ -1122,6 +1169,7 @@ function renderBreakingNews(){
       ${hookText(m) ? `<div class="b-hook">💡 ${escH(hookText(m))}</div>` : ''}
     </div>
   `).join("");
+  updateBreakingNav();
 }
 
 // ---- Market chart ----
@@ -2624,6 +2672,7 @@ function renderDailyDigest(data, picked){
     <div id="digest-body">
       ${picked ? `<div class="digest-note" style="margin:0 0 10px;"><a href="#" onclick="openDailyDigest();return false;" style="color:var(--teal);">${t?'← Back to the latest summary':'← חזרה לסיכום האחרון'}</a></div>` : ''}
       ${aiSummaryHtml(data.ai_summary)}
+      <div class="digest-section" id="digest-history"></div>
       <div class="digest-section">
         <div class="digest-section-title">${t?'Most-covered topics of the day':'הנושאים עם הכי הרבה סיקור ביום הזה'}</div>
         <div class="digest-note">${t
@@ -2636,7 +2685,6 @@ function renderDailyDigest(data, picked){
         ${critical.length ? critical.map(itemRow).join('') : `<div class="digest-empty">${t?'No critical news in this window.':'אין חדשות קריטיות בחלון הזמן הזה.'}</div>`}
       </div>
       <div class="digest-note" style="margin-top:4px;">${t?`${data.total_items} items on this day in total.`:`סה"כ ${data.total_items} כתבות ביום הזה.`}</div>
-      <div class="digest-section" id="digest-history" style="margin-top:18px;"></div>
     </div>
   `;
 }
