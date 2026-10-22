@@ -23,10 +23,16 @@
 <meta property="og:locale" content="he_IL">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://swing-desk-tau.vercel.app/og-image.png">
+<meta name="twitter:image:alt" content="Swing Desk — swing-trading dashboard">
 <meta name="twitter:title" content="Swing Desk — דשבורד מסחר">
 <meta name="twitter:description" content="סורק מניות לפי מבנים טכניים, חדשות מאקרו עם סיכום יומי, יומן כלכלי ומפת חום.">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"WebApplication","name":"Swing Desk","description":"Swing-trading dashboard: technical-pattern stock scanner, macro news with a daily digest, economic calendar and market heatmap. Information only, not investment advice.","applicationCategory":"FinanceApplication","operatingSystem":"Any (web browser)","inLanguage":["he","en"]}
+{"@context":"https://schema.org","@graph":[
+ {"@type":"Organization","@id":"https://swing-desk-tau.vercel.app/#org","name":"Swing Desk","url":"https://swing-desk-tau.vercel.app/"},
+ {"@type":"WebSite","@id":"https://swing-desk-tau.vercel.app/#website","url":"https://swing-desk-tau.vercel.app/","name":"Swing Desk","description":"Swing-trading dashboard: technical-pattern stock scanner, macro news with a daily digest, economic calendar and market heatmap.","inLanguage":["he","en"],"publisher":{"@id":"https://swing-desk-tau.vercel.app/#org"}},
+ {"@type":"WebPage","@id":"https://swing-desk-tau.vercel.app/#webpage","url":"https://swing-desk-tau.vercel.app/","name":"Swing Desk — דשבורד מסחר","description":"סורק מניות לפי מבנים טכניים, חדשות מאקרו עם סיכום יומי, יומן כלכלי ומפת חום. מידע בלבד, לא ייעוץ השקעות.","inLanguage":"he","isPartOf":{"@id":"https://swing-desk-tau.vercel.app/#website"},"about":{"@id":"https://swing-desk-tau.vercel.app/#app"}},
+ {"@type":"SoftwareApplication","@id":"https://swing-desk-tau.vercel.app/#app","name":"Swing Desk","applicationCategory":"FinanceApplication","operatingSystem":"Any (web browser)","description":"Information only, not investment advice.","publisher":{"@id":"https://swing-desk-tau.vercel.app/#org"}}
+]}
 </script>
 <link rel="preconnect" href="https://swing-dashboard-3btx.onrender.com" crossorigin>
 <link rel="dns-prefetch" href="https://s3.tradingview.com">
@@ -150,7 +156,7 @@ window.addEventListener('load', function(){
   .breaking-bar-title{display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:11px;letter-spacing:1.5px;color:var(--red);text-transform:uppercase;font-weight:700;}
   .pulse{width:7px;height:7px;border-radius:50%;background:var(--red);animation:pulse 1.5s infinite;}
   @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.3;}}
-  .breaking-items{display:flex;gap:10px;overflow-x:auto;scrollbar-width:none;}
+  .breaking-items{display:flex;gap:10px;overflow-x:auto;scrollbar-width:none;min-height:128px;} /* reserved height: the strip fills in after the data arrives — avoids the page jumping (CLS) */
   .breaking-items::-webkit-scrollbar{display:none;}
   .breaking-items{cursor:grab;}
   .breaking-items.dragging{cursor:grabbing;user-select:none;}

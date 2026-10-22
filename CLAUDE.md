@@ -807,3 +807,9 @@ Actions → **AI Digest (manual test)** → Run workflow → `mode = probe` → 
 - הרצת `backfill` להשלמת ימים שלפני v16; עדכון `LLM_MODELS`.
 - כשיש דומיין: לעדכן `canonical` ו-`og:url`/`og:image` ב-`index.html` (כרגע `swing-desk-tau.vercel.app`); להחליף את `og-image.png` ה-placeholder בלוגו אמיתי.
 - אכיפת CSP מלא (אחרי בדיקת קונסול); שיפור LCP נוסף (פירוק `index.html`, טעינה עצלה של חלקים).
+
+### 23.8 סריקה שנייה ושלישית — תוצאות ומה השתנה (22.10.2026)
+- **אחרי סבב 2:** LCP ירד מ-6.5s ל-**1.2s (GOOD)**, Speed Index 1.6s, Meta Tags 11/12 עברו, נגישות עברה. נשארו: CLS 0.14 (דורש <0.1), CSP/הטמעה/Cross-Origin/Trusted Types, ביצועי JS (בעיקר TradingView), ו-Schema 74/100.
+- **Schema:** הסורק (בטא) לא מכיר `WebApplication` (הוא טיפוס תקין ב-schema.org). הוחלף ב-`@graph` של `Organization` + `WebSite` + `WebPage` + `SoftwareApplication` (בלי לוגו/איש קשר/דירוגים/מחיר — לא להמציא; איש קשר רק כש-`LEGAL_CONTACT_EMAIL` יוזן, סעיף 22). מזהים `@id` מבוססים על `https://swing-desk-tau.vercel.app/` — **לעדכן עם הדומיין**.
+- **CLS:** נשמר גובה מינימלי (`min-height:128px`) לפס "חדשות שוברות" (נטען אחרי הנתונים וגרם לקפיצה). נוסף `twitter:image:alt`. לא נמדד שוב — לבדוק בסריקה הבאה; חשד נוסף: החלפת פונטים (`preload`) ונתונים שנכנסים אחרי הטעינה.
+- **אבטחה:** הסורק עדיין מדווח "Missing CSP" ו-"Page can be embedded" גם אחרי הוספת `Content-Security-Policy: frame-ancestors 'none'...` ב-`vercel.json`. **לא ידוע אם זה כי הסורק בודק רק מטא ב-HTML, כי הכותרות לא נפרסו, או כי הוא דורש CSP מלא עם `script-src`.** לבדוק: F12 → Network → המסמך הראשי → Response Headers. לצעד הבא (אכיפת CSP מלא) — לגלוש בכל התכונות עם הקונסול פתוח ולוודא שאין הודעות `[Report Only]`; בגרף הבית נראתה קונסול נקי מהן.
