@@ -4,6 +4,25 @@
 <meta charset="UTF-8">
 <title>Swing Desk — דשבורד מסחר</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="Swing Desk — דשבורד למסחר סווינג: סורק מניות לפי מבנים טכניים, חדשות מאקרו עם סיכום יומי, יומן כלכלי ומפת חום. מידע בלבד, לא ייעוץ השקעות.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Swing Desk">
+<meta property="og:title" content="Swing Desk — דשבורד מסחר">
+<meta property="og:description" content="סורק מניות לפי מבנים טכניים, חדשות מאקרו עם סיכום יומי, יומן כלכלי ומפת חום. מידע בלבד, לא ייעוץ השקעות.">
+<meta property="og:locale" content="he_IL">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Swing Desk — דשבורד מסחר">
+<meta name="twitter:description" content="סורק מניות לפי מבנים טכניים, חדשות מאקרו עם סיכום יומי, יומן כלכלי ומפת חום.">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebApplication","name":"Swing Desk","description":"Swing-trading dashboard: technical-pattern stock scanner, macro news with a daily digest, economic calendar and market heatmap. Information only, not investment advice.","applicationCategory":"FinanceApplication","operatingSystem":"Any (web browser)","inLanguage":["he","en"]}
+</script>
+<link rel="preconnect" href="https://swing-dashboard-3btx.onrender.com" crossorigin>
+<link rel="dns-prefetch" href="https://s3.tradingview.com">
+<script>
+// TradingView's tv.js now loads in the background (it used to block the whole page). When it arrives, the charts
+// that were skipped because it was not ready yet are drawn (see window.__tvCb in the main script).
+window.__tvLoaded = function(){ window.__tvReadyFlag = true; if(window.__tvCb) window.__tvCb(); };
+</script>
 <script>
 // Theme: saved choice is 'dark' | 'light'. Default (and anything else) = dark.
 (function(){
@@ -24,7 +43,8 @@
 })();
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Frank+Ruhl+Libre:wght@500;700&family=Heebo:wght@300;400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Frank+Ruhl+Libre:wght@500;700&family=Heebo:wght@300;400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Frank+Ruhl+Libre:wght@500;700&family=Heebo:wght@300;400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet"></noscript>
 <style>
   :root{
     --bg: #0f1216;
@@ -556,7 +576,7 @@
     .pulse-view-btn{flex:1;padding:8px 10px;}
   }
 </style>
-<script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+<script async src="https://s3.tradingview.com/tv.js" onload="window.__tvLoaded && window.__tvLoaded()"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
 (function(){
@@ -792,19 +812,19 @@
 #g-btn, #g-btn iframe, #g-btn div[role=button]{color-scheme: light;}</style>
 
 <div class="overlay" id="overlay">
-  <div class="drawer" id="drawer"></div>
+  <div class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="פרטי מניה / Stock details"></div>
 </div>
 <div class="risk-calc-overlay" id="risk-calc-overlay" onclick="if(event.target===this) closeRiskCalc();">
-  <div class="risk-calc-modal" id="risk-calc-modal"></div>
+  <div class="risk-calc-modal" id="risk-calc-modal" role="dialog" aria-modal="true" aria-label="מחשבון סיכון / Risk calculator"></div>
 </div>
 <div class="risk-calc-overlay" id="info-modal-overlay" onclick="if(event.target===this) closeInfoModal();">
-  <div class="risk-calc-modal" id="info-modal"></div>
+  <div class="risk-calc-modal" id="info-modal" role="dialog" aria-modal="true" aria-label="מידע / Information"></div>
 </div>
 <div class="risk-calc-overlay" id="compare-search-overlay" onclick="if(event.target===this) closeCompareSearch();">
-  <div class="risk-calc-modal" id="compare-search-modal"></div>
+  <div class="risk-calc-modal" id="compare-search-modal" role="dialog" aria-modal="true" aria-label="השוואת מניות / Compare stocks"></div>
 </div>
 <div class="digest-overlay" id="digest-overlay" onclick="if(event.target===this) closeDailyDigest();">
-  <div class="digest-modal" id="digest-modal"></div>
+  <div class="digest-modal" id="digest-modal" role="dialog" aria-modal="true" aria-label="סיכום יומי / Daily digest"></div>
 </div>
 
 <script>
@@ -893,7 +913,7 @@ function renderScanPatternFilter(){
   const allLabel = lang==='en' ? 'All Patterns' : 'כל התבניות';
   const options = [`<option value="all" ${activeScanPattern==='all'?'selected':''}>${allLabel}</option>`]
     .concat(present.map(p => `<option value="${p.replace(/"/g,'&quot;')}" ${activeScanPattern===p?'selected':''}>${patternLabel(p)}</option>`));
-  el.innerHTML = `<select class="backtest-pattern-select" onchange="setScanPatternFilter(this.value)">${options.join('')}</select>`;
+  el.innerHTML = `<select class="backtest-pattern-select" aria-label="${lang==='en'?'Filter by pattern':'סינון לפי תבנית'}" onchange="setScanPatternFilter(this.value)">${options.join('')}</select>`;
 }
 
 function setScanPatternFilter(p){
@@ -1113,6 +1133,11 @@ function renderMacro(){
 
 // Breaking-news strip: on a computer the strip had no visible way to move sideways. Now it has ‹ › buttons
 // (shown only when there are more cards than fit), mouse-wheel scrolling and click-and-drag.
+window.__tvCb = function(){
+  if(typeof chartMode !== 'undefined' && chartMode === 'indices' && document.getElementById('market-tv-chart')
+     && !document.querySelector('#market-tv-chart iframe')) switchChart(currentChartSymbol);
+};
+if(window.__tvReadyFlag) window.__tvCb();
 function updateBreakingNav(){
   const el = document.getElementById('breaking-news');
   if(!el) return;
@@ -1299,7 +1324,7 @@ function renderBacktestPatternFilter(){
   const patterns = (backtestPatternsCache || []).slice().sort((a,b) => patternLabel(a).localeCompare(patternLabel(b), lang==='en'?'en':'he'));
   const options = [`<option value="all" ${backtestPattern==='all'?'selected':''}>${allLabel}</option>`]
     .concat(patterns.map(p => `<option value="${p.replace(/"/g,'&quot;')}" ${backtestPattern===p?'selected':''}>${patternLabel(p)}</option>`));
-  el.innerHTML = `<select class="backtest-pattern-select" onchange="setBacktestPattern(this.value)">${options.join('')}</select>`;
+  el.innerHTML = `<select class="backtest-pattern-select" aria-label="${lang==='en'?'Filter by pattern':'סינון לפי תבנית'}" onchange="setBacktestPattern(this.value)">${options.join('')}</select>`;
 }
 
 function setBacktestPattern(p){
@@ -5016,6 +5041,7 @@ function renderConsentBanner(){
   const d = document.createElement('div');
   d.id = 'consent-banner';
   d.setAttribute('role','dialog');
+  d.setAttribute('aria-label', en ? 'Privacy and cookies' : 'פרטיות ועוגיות');
   d.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:200;background:var(--panel);border-top:1px solid var(--line);padding:12px 16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;font-size:12.5px;color:var(--text);box-shadow:0 -6px 24px var(--shadow);';
   d.innerHTML = `<span style="max-width:720px;">${en?'We would like to collect anonymous usage statistics (which pages and tickers are viewed) to improve the site.':'נשמח לאסוף סטטיסטיקות שימוש אנונימיות (אילו עמודים וטיקרים נצפים) כדי לשפר את האתר.'} <a href="#" onclick="openLegal('privacy');return false;" style="color:var(--teal);">${en?'Privacy policy':'מדיניות פרטיות'}</a></span>
     <button onclick="setConsent('yes')" style="background:var(--amber);color:#1a1a1a;border:none;border-radius:8px;padding:7px 16px;font-weight:700;cursor:pointer;">${en?'Allow':'אישור'}</button>
