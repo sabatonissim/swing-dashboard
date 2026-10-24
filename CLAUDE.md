@@ -11,7 +11,7 @@
 **מצב המוצר:** האתר חי. **התחברות עם Google פעילה ועובדת** (תפריט פרופיל, רשימת מעקב אישית, מצב כהה/בהיר). עדיין **בלי דומיין** (נשארים על `vercel.app`/`onrender.com`), בלי שם סופי למוצר, ובלי דף מדיניות פרטיות/תנאי שימוש. המשתמש רוצה להתקדם **לאט לאט** למוצר שאנשים גולשים בו.
 
 **פתוח עכשיו (לפי סדר חשיבות):**
-000. **חיבור Vercel ל-GitHub (סעיף 24, 23.10.2026) — בתהליך:** כרגע הפרונט נפרס בגרירה ידנית (Vercel Drop). ממתין לסיום החיבור ולאימות; אחרי זה לעדכן את סעיף 24 ל"הושלם".
+000. **חיבור Vercel ל-GitHub — הושלם ואומת (24.10.2026, סעיף 24):** הפרונט נפרס אוטומטית מ-`main`; אין יותר Vercel Drop. פתוח: favicon (אין כרגע, סעיף 24.3).
 00. **v16 (סעיף 23, 22.10.2026) — הועלה ונבדק חלקית:** סיכום AI מצטבר לכל יום + היסטוריית ימים (אומת: נוצר סיכום של אתמול), פס "חדשות שוברות" נגלל בעכבר (אומת), ותיקוני ביקורת-אתר (SEO/ביצועים/נגישות/אבטחה — **חלקם בלתי נראים לעין בכוונה**; ממתין להרצה חוזרת של הסורק ולשורות ה-Console האדומות). פירוט וצ'קליסט: סעיף 23.
 0. **סיכום AI יומי (v13.1, סעיף 20) — הוחלף ב-v16 (מודל "סיכום מצטבר לכל יום", סעיף 23); הטקסט כאן היסטורי.** הריצה הידנית הדפיסה `[ai_digest] saved — 50 items, 3 topics, model nvidia/nemotron-3.5-lightning-30b-a3b`. **נשאר:** (א) לוודא ש-`index.html` החדש (כפתור אחד) פרוס ושבלחיצה על 📰 סיכום יומי מופיע למעלה בלוק "🤖 סיכום AI"; (ב) לבדוק איכות/עברית על כמה ימים; (ג) **לפני פתיחה לציבור:** לעבור לספק AI בתשלום או לוודא את תנאי השימוש של NVIDIA (החינמי מיועד לפיתוח — לא אומת מול התנאים עצמם).
 1. **תזמון הסריקות:** GitHub `schedule` מאחר 3–12 שעות (נמדד, 19.6). **נבנה `scheduler.py` — תזמון מובנה בשרת ב-Render, בלי הרשמה לשום שירות חיצוני** (המשתמש ביקש במפורש בלי הרשמה). **ממתין להקמה ע"י המשתמש (לפי הסדר):** (א) טוקן GitHub (Fine-grained, הריפו הזה בלבד, Actions: Read and write) → משתנה סביבה `GITHUB_DISPATCH_TOKEN` ב-Render; (ב) העלאה במכה אחת: `scheduler.py` (חדש, בשורש), `api_server.py`, `pipeline_a_scanner.py`, `econ_calendar.py`, `index.html`, ושלושת ה-yml (`stock-scanner`, `earnings-refresh`, `news-aggregator` — **בלי `schedule`**, לכן **הטוקן חייב להיות מוגדר לפני/יחד עם ההעלאה**); (ג) לבדוק `/api/scheduler/status` (`enabled:true`, `thread_alive:true`) ובדיקה ב-Actions שהריצה הבאה התחילה בזמן.
@@ -844,3 +844,10 @@ Actions → **AI Digest (manual test)** → Run workflow → `mode = probe` → 
 - **`og-image.png`** (1200×630) — תמונת תצוגה מקדימה בשיתוף קישור (וואטסאפ, לינקדאין, פייסבוק, טלגרם, X). מוזכרת ב-`og:image` ו-`twitter:image` בראש `index.html`. **לא מוצגת בתוך האתר.** Placeholder שנוצר בקוד; להחליף בתמונה אמיתית עם אותו שם ומידות.
 - **`logo.png`** (512×512, ריבוע "SD") — הלוגו של `Organization` ב-JSON-LD (מידע למנועי חיפוש; גוגל עשוי להשתמש בו בתוצאות). **לא מוצג באתר.** Placeholder; להחליף בלוגו אמיתי.
 - **אף אחת מהן אינה אייקון הלשונית (favicon).** ב-`index.html` אין כרגע `<link rel="icon">` בכלל, ו-`/favicon.ico` מחזיר 404 (שורה אדומה ב-Network) — לכן הלשונית מציגה אייקון ברירת מחדל. **פתוח:** להוסיף favicon (אפשר לבסס על `logo.png`).
+
+### 24.4 סטטוס — הושלם (24.10.2026)
+- ב-Vercel → Settings → Git חובר הריפו `sabatonissim/swing-dashboard` לפרויקט `swing-desk`. הדיפלוי הראשון מ-Git (הודעה "Add files via upload", commit `440ac46`, ענף `main`, Ready) הופיע ברשימת ה-Deployments במקום "Vercel Drop".
+- **אומת:** `/og-image.png` ו-`/logo.png` נפתחים; בכותרות המסמך הראשי (F12 → Network) מופיעים `Content-Security-Policy: frame-ancestors 'none'; base-uri 'self'; object-src 'none'`, `Content-Security-Policy-Report-Only` (המלא), `Permissions-Policy`, `Referrer-Policy` ו-`Strict-Transport-Security` — כלומר כל הכותרות מ-`vercel.json` נפרסות מ-Git.
+- **מעכשיו:** העלאה ל-`main` ב-GitHub = פריסה אוטומטית (~דקה). לא גוררים יותר קבצים ל-Vercel. הערת 23.8 על "Vercel Drop" היא היסטורית.
+- **שחזור:** Deployments → דיפלוי קודם → ⋯ → Instant Rollback.
+- **פתוח:** (1) favicon ללשונית; (2) להריץ את סורק האתר שוב (צפוי: "Page can be embedded" ייסגר); (3) להחליף את `og-image.png` ו-`logo.png` ה-placeholder בקבצים אמיתיים.
