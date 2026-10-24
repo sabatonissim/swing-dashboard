@@ -11,6 +11,7 @@
 **מצב המוצר:** האתר חי. **התחברות עם Google פעילה ועובדת** (תפריט פרופיל, רשימת מעקב אישית, מצב כהה/בהיר). עדיין **בלי דומיין** (נשארים על `vercel.app`/`onrender.com`), בלי שם סופי למוצר, ובלי דף מדיניות פרטיות/תנאי שימוש. המשתמש רוצה להתקדם **לאט לאט** למוצר שאנשים גולשים בו.
 
 **פתוח עכשיו (לפי סדר חשיבות):**
+000. **חיבור Vercel ל-GitHub (סעיף 24, 23.10.2026) — בתהליך:** כרגע הפרונט נפרס בגרירה ידנית (Vercel Drop). ממתין לסיום החיבור ולאימות; אחרי זה לעדכן את סעיף 24 ל"הושלם".
 00. **v16 (סעיף 23, 22.10.2026) — הועלה ונבדק חלקית:** סיכום AI מצטבר לכל יום + היסטוריית ימים (אומת: נוצר סיכום של אתמול), פס "חדשות שוברות" נגלל בעכבר (אומת), ותיקוני ביקורת-אתר (SEO/ביצועים/נגישות/אבטחה — **חלקם בלתי נראים לעין בכוונה**; ממתין להרצה חוזרת של הסורק ולשורות ה-Console האדומות). פירוט וצ'קליסט: סעיף 23.
 0. **סיכום AI יומי (v13.1, סעיף 20) — הוחלף ב-v16 (מודל "סיכום מצטבר לכל יום", סעיף 23); הטקסט כאן היסטורי.** הריצה הידנית הדפיסה `[ai_digest] saved — 50 items, 3 topics, model nvidia/nemotron-3.5-lightning-30b-a3b`. **נשאר:** (א) לוודא ש-`index.html` החדש (כפתור אחד) פרוס ושבלחיצה על 📰 סיכום יומי מופיע למעלה בלוק "🤖 סיכום AI"; (ב) לבדוק איכות/עברית על כמה ימים; (ג) **לפני פתיחה לציבור:** לעבור לספק AI בתשלום או לוודא את תנאי השימוש של NVIDIA (החינמי מיועד לפיתוח — לא אומת מול התנאים עצמם).
 1. **תזמון הסריקות:** GitHub `schedule` מאחר 3–12 שעות (נמדד, 19.6). **נבנה `scheduler.py` — תזמון מובנה בשרת ב-Render, בלי הרשמה לשום שירות חיצוני** (המשתמש ביקש במפורש בלי הרשמה). **ממתין להקמה ע"י המשתמש (לפי הסדר):** (א) טוקן GitHub (Fine-grained, הריפו הזה בלבד, Actions: Read and write) → משתנה סביבה `GITHUB_DISPATCH_TOKEN` ב-Render; (ב) העלאה במכה אחת: `scheduler.py` (חדש, בשורש), `api_server.py`, `pipeline_a_scanner.py`, `econ_calendar.py`, `index.html`, ושלושת ה-yml (`stock-scanner`, `earnings-refresh`, `news-aggregator` — **בלי `schedule`**, לכן **הטוקן חייב להיות מוגדר לפני/יחד עם ההעלאה**); (ג) לבדוק `/api/scheduler/status` (`enabled:true`, `thread_alive:true`) ובדיקה ב-Actions שהריצה הבאה התחילה בזמן.
@@ -815,3 +816,31 @@ Actions → **AI Digest (manual test)** → Run workflow → `mode = probe` → 
 - **אבטחה:** הסורק עדיין מדווח "Missing CSP" ו-"Page can be embedded" גם אחרי הוספת `Content-Security-Policy: frame-ancestors 'none'...` ב-`vercel.json`. **לא ידוע אם זה כי הסורק בודק רק מטא ב-HTML, כי הכותרות לא נפרסו, או כי הוא דורש CSP מלא עם `script-src`.** לבדוק: F12 → Network → המסמך הראשי → Response Headers. לצעד הבא (אכיפת CSP מלא) — לגלוש בכל התכונות עם הקונסול פתוח ולוודא שאין הודעות `[Report Only]`; בגרף הבית נראתה קונסול נקי מהן.
 - **סריקה שלישית:** CLS ירד ל-**0.03 (GOOD)**. ביצועי lab משתנים בין ריצות (LCP 1.2s → 3.9s, Speed Index 1.6s → 4.2s) — כנראה רעש / Render מתעורר; לא לשנות קוד לפי ריצה בודדת, להריץ 2-3 פעמים. Schema: נשארו אזהרות על `Organization` בלבד (logo, address, contactPoint, sameAs, description, alternateName, foundingDate). נוספו `description` ו-`logo` (`logo.png` 512x512 בשורש הריפו — **placeholder שנוצר בקוד**, להחליף בלוגו אמיתי). **בכוונה לא נוספו** address/contactPoint/sameAs/foundingDate/alternateName — אין נתונים אמיתיים, ולא ממציאים; כתובת מותרת להשמטה לארגון מקוון בלבד. איש קשר יתווסף כש-`LEGAL_CONTACT_EMAIL` יוזן.
 - **אימות כותרות Vercel:** צילום ה-Network הראשון הראה את כותרות ה-API של Render (`/api/market-ticker`) ולא את המסמך הראשי. לבדוק שוב: F12 → Network → סינון Doc → רענון → השורה הראשונה → Response Headers → `content-security-policy`.
+- **ממצא חשוב (22.10.2026, אומת בצילום Network של המסמך הראשי `swing-desk-tau.vercel.app`):** כל הכותרות מ-`vercel.json` **אינן מוחלות בפועל**. בתשובה אין `Content-Security-Policy`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy` או `Permissions-Policy`, וה-`Strict-Transport-Security` הוא ברירת המחדל של Vercel (`max-age=63072000; includeSubDomains; preload`) ולא הערך שב-`vercel.json` (`31536000`). **המשמעות: הדף הראשי כרגע ניתן להטמעה באתרים אחרים** (ה-`X-Frame-Options: DENY` שנראה בצילום קודם היה של ה-API ברנדר, לא של האתר). הקובץ קיים ב-GitHub ותקין; הסיבה עוד לא ידועה — חשד ראשון: מיקום הקובץ ביחס לתיקיית הפריסה של Vercel (Root Directory) או דיפלוי שלא כלל אותו. לברר לפני שמסתמכים על כל כותרת אבטחה.
+- **סיבת הבעיה כנראה נמצאה (22.10.2026):** בדף Deployments של Vercel כל הדיפלויים מסומנים **Vercel Drop** — הפרונט נפרס בגרירת קבצים ידנית, **לא** מ-GitHub (לכן אין commit/hash, והעלאה ל-GitHub לא מעדכנת את האתר). כל דיפלוי כזה מחליף את כל האתר בקבצים שנגררו, ולכן `vercel.json` (והתמונות `og-image.png`, `logo.png`) חייבים להיכלל **בכל גרירה** יחד עם `index.html`; אחרת הכותרות לא נפרסות או שהתמונות נעלמות. לאמת אחרי פריסה: `https://swing-desk-tau.vercel.app/og-image.png` ו-`/logo.png` נפתחים, ושבמסמך הראשי ב-Network (F12) מופיע `content-security-policy`.
+
+---
+
+## 24. חיבור Vercel ל-GitHub — פריסה אוטומטית של הפרונט (23.10.2026)
+
+### 24.1 מצב לפני
+- פרויקט Vercel בשם `swing-desk` (חשבון `sabatonissim`, תוכנית Hobby), כתובת ייצור `https://swing-desk-tau.vercel.app`. **כל הדיפלויים עד כה היו "Vercel Drop"** — גרירת קבצים ידנית, בלי קשר ל-GitHub (לכן אין commit/hash ברשימת ה-Deployments, והעלאה ל-GitHub לא עדכנה את האתר).
+- הגדרות הפרויקט (אומתו בצילומי מסך): Framework Preset = **Other**, בלי Override ל-Build/Output/Install, Root Directory = `./`, "Skip deployments when there are no changes" = Enabled, Ignored Build Step = Automatic.
+- הריפו `sabatonissim/swing-dashboard` **ציבורי**; כל הקבצים בשורש (ללא תת-תיקיות לפרונט): `index.html`, `vercel.json`, `og-image.png`, `logo.png` + קבצי השרת/ה-pipelines.
+- `vercel.json` תקין ונפרס רק כשהוא נגרר יחד עם `index.html` (אומת: ה-CSP המצומצם מופיע בכותרות המסמך הראשי).
+
+### 24.2 הליך החיבור (צעד אחר צעד)
+**לפני:** (א) לוודא שבשורש ב-GitHub נמצאים `index.html` (העדכני — מכיל `logo.png` ב-JSON-LD), `vercel.json`, **`og-image.png` ו-`logo.png`** (התמונות נגררו ל-Vercel אבל אולי לא הועלו ל-GitHub — בלעדיהן הפריסה הראשונה מ-Git תאבד אותן). (ב) להעלות גם את `CLAUDE.md` המעודכן.
+1. Vercel → הפרויקט `swing-desk` → **Settings → Git → Connect Git Repository** → GitHub → לבחור `sabatonissim/swing-dashboard` → **Connect**. אם מבקש להתקין/לאשר את אפליקציית Vercel ב-GitHub: **Only select repositories** → `swing-dashboard`.
+2. לוודא שענף הייצור הוא `main` (ב-Settings → Git, או Settings → Environments → Production → Branch Tracking).
+3. החיבור לבדו **לא** מפעיל דיפלוי. להפעיל ע"י העלאה כלשהי ל-GitHub (למשל `CLAUDE.md`).
+4. Deployments: אמורה להופיע שורה חדשה **עם הודעת commit** (לא "Vercel Drop") בסטטוס Ready.
+5. אימות: `/og-image.png` ו-`/logo.png` נפתחים; F12 → Network → Doc → רענון → שורה ראשונה → Response Headers מכילים `content-security-policy` (frame-ancestors); האתר נראה ופועל רגיל.
+- **שחזור אם משהו נשבר:** Deployments → הדיפלוי האחרון של Vercel Drop → ⋯ → **Instant Rollback** / **Promote to Production**. דיפלוי שנכשל לא מחליף את האתר החי.
+- **אחרי החיבור:** העלאה ל-`main` = פריסה אוטומטית (~דקה); אין עוד גרירות. שינוי בקבצי Python בלבד יגרום גם הוא לדיפלוי Vercel (לא מזיק; האתר לא משתנה). אם מופיעים הרבה דיפלויים בלי העלאה שלך — לבדוק אם workflow כלשהו עושה commit לריפו (מגבלת Hobby: 100 דיפלויים ליום).
+- הערה: כל קבצי הריפו (גם `.py` ו-`CLAUDE.md`) נפרסים כקבצים סטטיים כי אין תיקיית פלט — לא חשיפה חדשה (הריפו ציבורי); לא להכניס סודות לקבצים.
+
+### 24.3 שתי התמונות שנוספו ב-22.10 — מה הן ולמה
+- **`og-image.png`** (1200×630) — תמונת תצוגה מקדימה בשיתוף קישור (וואטסאפ, לינקדאין, פייסבוק, טלגרם, X). מוזכרת ב-`og:image` ו-`twitter:image` בראש `index.html`. **לא מוצגת בתוך האתר.** Placeholder שנוצר בקוד; להחליף בתמונה אמיתית עם אותו שם ומידות.
+- **`logo.png`** (512×512, ריבוע "SD") — הלוגו של `Organization` ב-JSON-LD (מידע למנועי חיפוש; גוגל עשוי להשתמש בו בתוצאות). **לא מוצג באתר.** Placeholder; להחליף בלוגו אמיתי.
+- **אף אחת מהן אינה אייקון הלשונית (favicon).** ב-`index.html` אין כרגע `<link rel="icon">` בכלל, ו-`/favicon.ico` מחזיר 404 (שורה אדומה ב-Network) — לכן הלשונית מציגה אייקון ברירת מחדל. **פתוח:** להוסיף favicon (אפשר לבסס על `logo.png`).
