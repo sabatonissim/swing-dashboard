@@ -2511,16 +2511,14 @@ function renderMarketTicker(){
   // never runs out of content and go blank — no percentage-of-a-
   // possibly-shrunk-flexbox guessing involved.
   const containerWidth = tape.clientWidth || window.innerWidth || 1200;
-  let html = baseRow;
+  // Measure ONE row, work out how many copies are needed, then measure the result once more.
+  // (Before: re-measuring after every added copy forced the browser to re-layout up to 12 times.)
+  segA.innerHTML = baseRow;
+  const oneRowWidth = segA.scrollWidth || 1;
+  const copies = Math.min(12, Math.max(1, Math.ceil(containerWidth / oneRowWidth)));
+  const html = baseRow.repeat(copies);
   segA.innerHTML = html;
-  let segWidth = segA.scrollWidth;
-  let guard = 0;
-  while(segWidth < containerWidth && guard < 12){
-    html += baseRow;
-    segA.innerHTML = html;
-    segWidth = segA.scrollWidth;
-    guard++;
-  }
+  const segWidth = segA.scrollWidth;
   segB.innerHTML = html;
 
   // The movement itself is driven by tickerEngine below (auto-scroll + finger drag).
