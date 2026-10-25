@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <title>Swing Desk — דשבורד מסחר</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <meta name="description" content="Swing Desk — דשבורד למסחר סווינג: סורק מניות לפי מבנים טכניים, חדשות מאקרו עם סיכום יומי, יומן כלכלי ומפת חום. מידע בלבד, לא ייעוץ השקעות.">
 <link rel="canonical" href="https://swing-desk-tau.vercel.app/">
 <meta name="robots" content="index, follow">
@@ -150,7 +153,8 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   /* header + market strip stay pinned together at the top while scrolling */
   .top-sticky{position:sticky;top:0;z-index:40;}
   header .logo{display:flex;align-items:center;gap:10px;}
-  header .logo .mark{width:10px;height:10px;border-radius:2px;background:var(--amber);box-shadow:0 0 12px var(--amber);}
+  /* The S mark follows the text colour: white on the dark theme, near-black on the light theme */
+  header .logo .logo-s{height:36px;width:auto;flex:none;color:var(--text);}
   header h1{font-family:'Frank Ruhl Libre',serif;font-weight:700;font-size:20px;margin:0;}
   header .sub{color:var(--text-dim);font-size:12px;margin-top:1px;}
   header .clock{color:var(--text-dim);font-size:13px;}
@@ -164,6 +168,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   @media(max-width:600px){
     header{padding:10px 14px;gap:8px;}
     header h1{font-size:18px;}
+    header .logo .logo-s{height:28px;}
     header .sub,header .clock{display:none;}
   }
 
@@ -654,7 +659,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
 <div class="top-sticky" id="top-sticky">
 <header>
   <div class="logo" onclick="setPage('home')" style="cursor:pointer;">
-    <div class="mark"></div>
+    <svg class="logo-s" viewBox="124 34 264 444" role="img" aria-label="Swing Desk"><path fill="currentColor" d="M320 55.15A128.0 128.0 0 1 0 256 294A52.0 52.0 0 1 1 207.14 363.79L192 456.85A128.0 128.0 0 1 0 256 218A52.0 52.0 0 1 1 304.86 148.21Z"/></svg>
     <div>
       <h1>Swing Desk</h1>
       <div class="sub" id="header-sub">דשבורד מסחר בזמן אמת</div>
