@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="he" dir="rtl">
+<html lang="he" dir="ltr">
 <head>
 <meta charset="UTF-8">
 <title>Swing Desk — דשבורד מסחר</title>
@@ -60,9 +60,9 @@ window.addEventListener('load', function(){
 });
 </script>
 <script>
-// Direction follows the language: Hebrew = right-to-left, English = left-to-right (applyLang keeps it in sync).
-// Set here, before the first paint, so an English visitor never sees the page flash in the wrong direction.
-try { if (localStorage.getItem('swing_lang') === 'en') { document.documentElement.setAttribute('lang','en'); document.documentElement.setAttribute('dir','ltr'); } } catch(e){}
+// The page LAYOUT is always left-to-right (same button/column positions in Hebrew and English — English is the base).
+// Hebrew TEXT is right-to-left: a small script near the end of the page marks every element that contains Hebrew letters.
+try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.setAttribute('lang','en'); } catch(e){}
 </script>
 <script>
 // Theme: saved choice is 'dark' | 'light'. Default (and anything else) = dark.
@@ -129,6 +129,8 @@ try { if (localStorage.getItem('swing_lang') === 'en') { document.documentElemen
     --on-amber: #ffffff;
     color-scheme: light;
   }
+  /* Hebrew text inside the left-to-right layout (class added by the hebDir script) */
+  .rtl-text{direction:rtl;unicode-bidi:isolate;}
   /* Light theme: Bloomberg-style crispness — a strong dark rule under the header, stronger tints on alert cards */
   :root[data-theme="light"] header{border-bottom:2px solid #05080f;}
   :root[data-theme="light"] .breaking-card{background:#fff4f3;border-color:rgba(196,22,28,.4);}
@@ -140,7 +142,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') { document.documentElemen
 
   /* ---- Header ---- */
   header{
-    display:flex;align-items:center;justify-content:space-between;
+    display:flex;flex-direction:row-reverse;align-items:center;justify-content:space-between;   /* logo on the right, profile + language on the left */
     padding:14px 28px;border-bottom:1px solid var(--line);
     background:linear-gradient(180deg,var(--header-a),var(--header-b));
     position:relative;z-index:2;
@@ -283,7 +285,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') { document.documentElemen
   .dd-search-row{display:flex;gap:8px;margin-bottom:18px;}
   .dd-header{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:10px;margin-bottom:16px;}
   .dd-header .ticker{font-family:'JetBrains Mono',monospace;font-size:26px;font-weight:700;}
-  .dd-header .name{color:var(--text-dim);font-size:13px;margin-inline-start:8px;}
+  .dd-header .name{color:var(--text-dim);font-size:13px;margin-left:8px;}
   .dd-header .price{font-family:'JetBrains Mono',monospace;font-size:20px;font-weight:700;}
   .dd-chart-wrap{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:16px;height:340px;}
   .dd-stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px;}
@@ -301,8 +303,8 @@ try { if (localStorage.getItem('swing_lang') === 'en') { document.documentElemen
   .dd-news-item .meta{font-size:10.5px;color:var(--text-dim);margin-top:3px;}
   .cs-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}
   .cs-input-wrap{position:relative;margin-bottom:8px;}
-  .cs-input-icon{position:absolute;top:50%;transform:translateY(-50%);inset-inline-start:12px;font-size:13px;color:var(--text-dim);pointer-events:none;}
-  .cs-input{width:100%;background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:10px 12px;padding-inline-start:34px;font-size:14px;outline:none;font-family:'JetBrains Mono',monospace;}
+  .cs-input-icon{position:absolute;top:50%;transform:translateY(-50%);left:12px;font-size:13px;color:var(--text-dim);pointer-events:none;}
+  .cs-input{width:100%;background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:10px 12px;padding-left:34px;font-size:14px;outline:none;font-family:'JetBrains Mono',monospace;}
   .cs-input:focus{border-color:var(--teal-dim);}
   .cs-list{max-height:320px;overflow-y:auto;margin-top:6px;}
   .cs-item{display:flex;align-items:center;gap:10px;padding:11px 10px;border-radius:8px;cursor:pointer;transition:background .12s;border-bottom:1px solid var(--line);}
@@ -354,7 +356,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') { document.documentElemen
   /* ---- Drawer ---- */
   .overlay{position:fixed;inset:0;background:rgba(6,8,10,.6);backdrop-filter:blur(2px);display:none;align-items:stretch;justify-content:flex-start;z-index:50;}
   .overlay.open{display:flex;}
-  .drawer{width:min(460px,92vw);background:var(--panel-2);height:100%;border-inline-end:1px solid var(--line);padding:24px 22px;overflow-y:auto;transform:translateX(-100%);transition:transform .25s ease;}
+  .drawer{width:min(460px,92vw);background:var(--panel-2);height:100%;border-right:1px solid var(--line);padding:24px 22px;overflow-y:auto;transform:translateX(-100%);transition:transform .25s ease;}
   .overlay.open .drawer{transform:translateX(0);}
   .drawer-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;}
   .drawer-head h2{font-family:'JetBrains Mono',monospace;font-size:22px;margin:0;}
@@ -376,7 +378,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') { document.documentElemen
   .trend-stage-badge{display:inline-block;padding:4px 11px;border:1px solid;border-radius:20px;font-size:11px;font-weight:700;margin:2px 0 10px;}
   .trend-ma-row{display:flex;justify-content:space-between;font-size:12.5px;padding:5px 0;border-bottom:1px solid var(--line);font-family:'JetBrains Mono',monospace;}
   .trend-ma-row:last-child{border-bottom:none;}
-  .pattern-stats-blurb{margin-top:10px;padding:9px 11px;border-inline-start:3px solid;border-radius:6px;background:var(--panel-2);font-size:12px;line-height:1.5;color:var(--text-dim);}
+  .pattern-stats-blurb{margin-top:10px;padding:9px 11px;border-left:3px solid;border-radius:6px;background:var(--panel-2);font-size:12px;line-height:1.5;color:var(--text-dim);}
   .risk-calc-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;align-items:center;justify-content:center;padding:16px;}
   .risk-calc-overlay.open{display:flex;}
   .risk-calc-modal{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px;width:100%;max-width:380px;max-height:90vh;overflow-y:auto;}
@@ -398,7 +400,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') { document.documentElemen
   .info-accordion-item:last-of-type{border-bottom:none;}
   .info-accordion-head{display:flex;justify-content:space-between;align-items:center;padding:11px 2px;cursor:pointer;font-size:13px;font-weight:600;color:var(--amber);user-select:none;}
   .info-accordion-body{padding:0 2px 12px;font-size:12.5px;line-height:1.6;color:var(--text-dim);}
-  .info-source-list{margin:8px 0;padding-inline-start:18px;}
+  .info-source-list{margin:8px 0;padding-left:18px;}
   .info-source-list li{margin-bottom:3px;}
   .ai-box .label{color:var(--amber);font-size:11px;letter-spacing:1px;text-transform:uppercase;margin-bottom:5px;}
   .deep-btn{display:block;width:100%;text-align:center;padding:11px;border-radius:9px;background:var(--amber);color:var(--on-amber);font-weight:700;border:none;cursor:pointer;font-size:14px;}
@@ -414,8 +416,8 @@ try { if (localStorage.getItem('swing_lang') === 'en') { document.documentElemen
   .news-search-wrap{position:relative;margin-bottom:10px;}
   .news-search-input{width:100%;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 34px 8px 12px;font-size:13px;outline:none;font-family:'Heebo',sans-serif;}
   .news-search-input:focus{border-color:var(--teal-dim);}
-  .news-search-icon{position:absolute;top:50%;transform:translateY(-50%);inset-inline-end:11px;color:var(--text-dim);font-size:13px;pointer-events:none;}
-  .news-search-clear{position:absolute;top:50%;transform:translateY(-50%);inset-inline-end:10px;color:var(--text-dim);font-size:15px;cursor:pointer;display:none;background:none;border:none;padding:2px 4px;}
+  .news-search-icon{position:absolute;top:50%;transform:translateY(-50%);right:11px;color:var(--text-dim);font-size:13px;pointer-events:none;}
+  .news-search-clear{position:absolute;top:50%;transform:translateY(-50%);right:10px;color:var(--text-dim);font-size:15px;cursor:pointer;display:none;background:none;border:none;padding:2px 4px;}
   .news-search-count{font-size:11px;color:var(--text-dim);margin-bottom:8px;}
 
   .disclaimer-strip{font-size:11px;color:var(--text-dim);text-align:center;padding:10px 24px;border-top:1px solid var(--line);}
@@ -460,7 +462,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') { document.documentElemen
   .ticker-tape{background:var(--panel);border-bottom:1px solid var(--line);overflow:hidden;position:relative;z-index:1;height:28px;touch-action:pan-y;cursor:grab;user-select:none;-webkit-user-select:none;}
   .ticker-tape:active{cursor:grabbing;}
   .ticker-tape-track{position:absolute;top:0;left:0;height:100%;display:flex;align-items:center;white-space:nowrap;will-change:transform;}
-  .ticker-tape-seg{display:flex;align-items:center;flex-shrink:0;gap:26px;padding-inline-end:26px;}
+  .ticker-tape-seg{display:flex;align-items:center;flex-shrink:0;gap:26px;padding-right:26px;}
   .ticker-item{display:inline-flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:11.5px;white-space:nowrap;}
   .ticker-item .t-name{color:var(--text-dim);}
   .ticker-item .t-price{color:var(--text);}
@@ -473,7 +475,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') { document.documentElemen
   .digest-overlay.open{display:flex;}
   .digest-modal{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:26px 30px;width:100%;max-width:860px;max-height:88vh;overflow-y:auto;}
   .digest-modal .macro-text{font-size:14.5px;}
-  .digest-hot-count{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim);margin-inline-start:8px;}
+  .digest-hot-count{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim);margin-left:8px;}
   .digest-note{color:var(--text-dim);font-size:12px;margin:-4px 0 16px;}
   .digest-section{margin-bottom:18px;}
   .digest-section-title{font-size:11px;letter-spacing:1px;color:var(--text-dim);text-transform:uppercase;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--line);}
@@ -514,9 +516,9 @@ try { if (localStorage.getItem('swing_lang') === 'en') { document.documentElemen
   .fund-legend{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px;font-size:11px;color:var(--text-dim);}
   .fund-legend-item{display:flex;align-items:center;gap:5px;}
   .fund-legend-dot{width:9px;height:9px;border-radius:2px;display:inline-block;}
-  .fund-info{position:relative;display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:var(--line);color:var(--text-dim);font-size:10px;font-weight:700;cursor:pointer;margin-inline-start:6px;user-select:none;vertical-align:middle;}
+  .fund-info{position:relative;display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:var(--line);color:var(--text-dim);font-size:10px;font-weight:700;cursor:pointer;margin-left:6px;user-select:none;vertical-align:middle;}
   .fund-info:hover, .fund-info.open{background:var(--amber);color:var(--on-amber);}
-  .fund-tip{display:none;position:absolute;z-index:20;top:20px;inset-inline-start:0;width:230px;background:var(--panel-3);border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:11.5px;line-height:1.45;color:var(--text);font-weight:400;box-shadow:0 6px 18px rgba(0,0,0,.35);text-transform:none;letter-spacing:normal;white-space:normal;}
+  .fund-tip{display:none;position:absolute;z-index:20;top:20px;left:0;width:230px;background:var(--panel-3);border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:11.5px;line-height:1.45;color:var(--text);font-weight:400;box-shadow:0 6px 18px rgba(0,0,0,.35);text-transform:none;letter-spacing:normal;white-space:normal;}
   .fund-tip.show{display:block;}
   .fund-card-title{position:relative;}
   .fund-source-note{font-size:11px;color:var(--text-dim);background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:8px 12px;margin-bottom:12px;line-height:1.5;}
@@ -560,7 +562,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') { document.documentElemen
   .econ-card.done{opacity:.92;}
   .econ-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;}
   .econ-name{font-weight:700;font-size:14px;line-height:1.3;}
-  .econ-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-inline-end:6px;}
+  .econ-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;}
   .econ-dot.high{background:var(--red);box-shadow:0 0 6px var(--red);}
   .econ-dot.medium{background:var(--amber);}
   .econ-when{color:var(--text-dim);font-size:12px;margin-top:3px;}
@@ -656,7 +658,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') { document.documentElemen
     <input type="text" id="search-input" class="search-input mono" placeholder="חפש טיקר... (למשל AAPL)" />
     <button class="search-btn" onclick="handleSearch()" id="search-btn-label">חפש</button>
   </div>
-  <div style="display:flex;align-items:center;gap:12px;">
+  <div style="display:flex;flex-direction:row-reverse;align-items:center;gap:12px;">
     <button id="lang-toggle" onclick="toggleLang()" style="background:var(--panel);border:1px solid var(--line);color:var(--text-dim);border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;font-family:'JetBrains Mono',monospace;transition:all .15s;" onmouseover="this.style.borderColor='var(--amber)'" onmouseout="this.style.borderColor='var(--line)'">EN</button>
     <div class="clock mono" id="clock"></div>
     <div id="auth-box" style="position:relative;display:flex;align-items:center;min-height:34px;"></div>
@@ -1678,6 +1680,9 @@ let deepDiveTvChart = null;
 // instead of leaving the old-language text on screen.
 let _ddState = null;
 let _ddLangToken = 0;
+let _ddRenderedKey = null;   // "language|theme" the page on screen was last built for
+let _ddChartPending = false; // chart could not be built because the page was hidden — build it when shown
+let _ddChartTicker = null;
 
 async function rerenderDeepDiveForLang(){
   const el = document.getElementById('deepdive-content');
@@ -1688,6 +1693,10 @@ async function rerenderDeepDiveForLang(){
     if(inp && !inp.value.trim()) loadDeepDive();
     return;
   }
+  // loadFromApi() calls applyLang() every 20 seconds. Re-drawing the whole analysis page (and building a brand-new
+  // TradingView chart) each time made the chart flash, jump and sometimes freeze half-sized. Only redo it when
+  // the language or the theme actually changed since the page was drawn.
+  if(_ddRenderedKey === lang + '|' + tvTheme()) return;
   const st = _ddState, token = ++_ddLangToken;
   // News titles/summaries come from the API in the requested language, so
   // fetch them again for the new language; everything else is re-rendered
@@ -1717,6 +1726,7 @@ async function loadDeepDive(){
   }
 
   _ddState = null;
+  _ddRenderedKey = null;
   el.innerHTML = `<div class="bt-empty">${UI[lang].loading}</div>`;
 
   try {
@@ -1800,7 +1810,7 @@ function renderDeepDive(quote, sector, signals, news){
       </div>
       <div>
         <span class="price">$${quote.price}</span>
-        <span style="color:${changeColor};font-family:'JetBrains Mono',monospace;font-size:14px;margin-inline-start:8px;">${quote.change_pct>=0?'+':''}${quote.change_pct}%</span>
+        <span style="color:${changeColor};font-family:'JetBrains Mono',monospace;font-size:14px;margin-left:8px;">${quote.change_pct>=0?'+':''}${quote.change_pct}%</span>
       </div>
     </div>
 
@@ -1879,23 +1889,33 @@ function renderDeepDive(quote, sector, signals, news){
   renderDeepDivePeCard(); // fills in the NTM/LTM P/E stat card built above
   renderDeepDiveSectorSection(sector); // fills in dd-sector-compare-section built above
 
-  const _mkDdChart = () => {
-    if(!document.getElementById('dd-tv-chart')) return;
-    new TradingView.widget({
-      autosize: true, symbol: tvSymbol(quote.ticker), interval: 'D',
-      timezone: 'Asia/Jerusalem', theme: tvTheme(), style: '1',
-      locale: lang==='en' ? 'en' : 'he_IL',
-      toolbar_bg: tvToolbarBg(), hide_top_toolbar: false, hide_legend: false,
-      save_image: false, container_id: 'dd-tv-chart',
-      studies: ["MASimple@tv-basicstudies"],
-      studies_overrides: {
-        "Moving Average.length": 150,
-        "Moving Average.plot.color": "#ef5b5b",
-        "Moving Average.plot.linewidth": 2,
-      },
-    });
-  };
-  if(typeof TradingView !== 'undefined') _mkDdChart(); else loadTV(_mkDdChart);
+  _ddRenderedKey = lang + '|' + tvTheme();
+  _ddChartTicker = quote.ticker;
+  if(typeof TradingView !== 'undefined') _ddMountChart(); else loadTV(_ddMountChart);
+}
+
+// Builds the TradingView chart of the analysis page. A chart created inside a hidden page (display:none) gets a wrong
+// size and stays "stuck" half-drawn, so in that case we wait until the page is shown (setPage calls this again).
+function _ddMountChart(){
+  const box = document.getElementById('dd-tv-chart');
+  if(!box || !_ddChartTicker) return;
+  if(box.offsetWidth === 0){ _ddChartPending = true; return; }
+  _ddChartPending = false;
+  new TradingView.widget({
+    autosize: true, symbol: tvSymbol(_ddChartTicker), interval: 'D',
+    timezone: 'Asia/Jerusalem', theme: tvTheme(), style: '1',
+    locale: lang==='en' ? 'en' : 'he_IL',
+    toolbar_bg: tvToolbarBg(), hide_top_toolbar: false, hide_legend: false,
+    save_image: false, container_id: 'dd-tv-chart',
+    studies: ["MASimple@tv-basicstudies"],
+    studies_overrides: {
+      "Moving Average.length": 150,
+      "Moving Average.plot.color": "#ef5b5b",
+      "Moving Average.plot.linewidth": 2,
+    },
+  });
+  // one nudge after the chart has appeared so its automatic sizing re-measures the box
+  setTimeout(() => { try { window.dispatchEvent(new Event('resize')); } catch(e){} }, 1200);
 }
 
 function formatMarketCap(n){
@@ -1965,6 +1985,7 @@ function setPage(page){
   document.getElementById('page-deepdive').style.display = page==='deepdive' ? '' : 'none';
   if(page === 'pulse') ensurePulseViewLoaded();
   if(page === 'backtest') ensureBtViewLoaded();
+  if(page === 'deepdive' && _ddChartPending){ requestAnimationFrame(() => { if(typeof TradingView !== 'undefined') _ddMountChart(); else loadTV(_ddMountChart); }); }
 }
 
 // ---- Backtest page: demo portfolio | signal statistics ----
@@ -2745,7 +2766,7 @@ function aiSummaryHtml(ai){
       <div class="macro-text" style="margin-top:3px;">${pick(tp.summary_en, tp.summary_he)}</div>
       ${tp.impact_en ? `<div class="macro-text" style="margin-top:6px;color:var(--text-dim);"><b>${t?'Possible impact:':'השפעה אפשרית:'}</b> ${pick(tp.impact_en, tp.impact_he)}</div>` : ''}
       <div class="digest-note" style="margin:6px 0 0;">${(tp.sources||[]).filter(s=>/^https?:\/\//.test(s.url||'')).map(s =>
-        `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--teal);margin-inline-end:10px;">${esc(s.category||'source')} ↗</a>`).join('')}</div>
+        `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer" title="${esc((lang==='en' ? s.title_en : (s.title_he||s.title_en))||'')}" style="color:var(--teal);margin-right:10px;">${esc(tagLabel(s.category)||'source')} ↗</a>`).join('')}</div>
     </div>`;
   const list = (en, he) => {
     const arr = (t ? en : (he && he.length ? he : en)) || [];
@@ -5352,7 +5373,7 @@ function renderAuthBox(){
 
   box.innerHTML = `
       <button id="profile-btn" onclick="toggleProfileMenu(event)" aria-haspopup="true" aria-expanded="false" title="${signedIn ? name : (en?'Menu':'תפריט')}" style="background:none;border:none;padding:0;cursor:pointer;display:flex;">${signedIn ? _avatarHTML(34) : _personIconHTML(34)}</button>
-      <div id="profile-menu" role="menu" style="display:none;position:absolute;top:calc(100% + 10px);inset-inline-end:0;width:270px;max-width:92vw;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 32px var(--shadow);padding:14px;z-index:60;text-align:start;">
+      <div id="profile-menu" role="menu" style="display:none;position:absolute;top:calc(100% + 10px);left:0;width:270px;max-width:92vw;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 32px var(--shadow);padding:14px;z-index:60;text-align:start;">
         ${topSection}
         <!-- Future menu sections (settings, connections, subscription...) go here -->
         <div style="padding:12px 0;border-bottom:1px solid var(--line);">
@@ -5379,7 +5400,7 @@ function updateThemeSeg(){
   document.querySelectorAll('#profile-menu [data-theme-opt]').forEach(b=>{
     const on = b.dataset.themeOpt === cur;
     b.style.background = on ? 'var(--amber)' : 'transparent';
-    b.style.color = on ? '#1a1a1a' : 'var(--text-dim)';
+    b.style.color = on ? 'var(--on-amber)' : 'var(--text-dim)';
     b.style.fontWeight = on ? '700' : '400';
   });
 }
@@ -5391,6 +5412,7 @@ function onThemeChanged(){
   try {
     if(typeof currentChartSymbol !== 'undefined' && document.getElementById('market-tv-chart')) switchChart(currentChartSymbol);
   } catch(e){ console.warn('[theme] chart refresh skipped', e); }
+  try { rerenderDeepDiveForLang(); } catch(e){ console.warn('[theme] analysis refresh skipped', e); }
 }
 
 function toggleProfileMenu(ev){
@@ -5792,9 +5814,8 @@ const UI = {
 
 function applyLang(){
   const t = UI[lang];
-  // Direction follows the language: English is a true left-to-right page (text, columns, arrows all mirror),
-  // Hebrew stays right-to-left.
-  document.documentElement.setAttribute('dir', lang === 'en' ? 'ltr' : 'rtl');
+  // The layout is always left-to-right in both languages. Hebrew text gets its own right-to-left direction (see hebDir).
+  document.documentElement.setAttribute('dir', 'ltr');
   document.documentElement.setAttribute('lang', lang === 'he' ? 'he' : 'en');
   document.title = lang==='en' ? 'Swing Desk — Real-time trading dashboard' : 'Swing Desk — דשבורד מסחר';
   document.getElementById('header-sub').textContent = t.sub;
@@ -5878,6 +5899,66 @@ function toggleLang(){
   localStorage.setItem('swing_lang', lang);
   applyLang();
 }
+
+// ==== Hebrew text direction inside the (always left-to-right) layout ====
+// WHY: the layout (header, buttons, columns) is the same in both languages, with English as the base. But Hebrew
+// words must still read right-to-left, align to the right and put punctuation on the correct end. So every element
+// that directly contains Hebrew letters gets the class "rtl-text" (CSS: direction:rtl). English text next to it,
+// numbers and tickers stay left-to-right, so English headlines inside the Hebrew page are no longer pushed right.
+// A MutationObserver keeps this true for everything the page draws later (lists, drawers, digest, tables...).
+const hebDir = (function(){
+  const HEB = /[\u0590-\u05FF]/;
+  const HTML_NS = 'http://www.w3.org/1999/xhtml';
+  const SKIP = new Set(['SCRIPT','STYLE','CANVAS','TEXTAREA','NOSCRIPT','TITLE','OPTION']);
+  const INLINE = new Set(['A','B','I','EM','STRONG','SPAN','BR','CODE','SMALL','SUB','SUP','U','MARK','WBR','S','ABBR','BDI','BDO']);
+  const usable = el => el && el.namespaceURI === HTML_NS && !SKIP.has(el.tagName);
+  function ownHebrew(el){
+    for(const n of el.childNodes) if(n.nodeType === 3 && HEB.test(n.nodeValue)) return true;
+    return false;
+  }
+  function settle(el){
+    if(!usable(el) || el.hasAttribute('dir')) return;           // an explicit dir="..." in the markup is respected
+    if(!ownHebrew(el)){ if(el.classList.contains('rtl-text')) el.classList.remove('rtl-text'); return; }
+    if(el.classList.contains('rtl-text')) return;
+    let simple = true;                                         // only inline children (b, span, a...) and not a flex/grid box
+    for(const c of el.children){ if(!INLINE.has(c.tagName)){ simple = false; break; } }
+    if(simple && el.children.length && /flex|grid/.test(getComputedStyle(el).display)) simple = false;
+    if(simple){ el.classList.add('rtl-text'); return; }
+    // The element lays out other blocks/flex items: mirroring it would flip that layout, so only its own Hebrew text is wrapped.
+    for(const n of Array.from(el.childNodes)){
+      if(n.nodeType === 3 && HEB.test(n.nodeValue)){
+        const sp = document.createElement('span');
+        sp.className = 'rtl-text';
+        el.insertBefore(sp, n);
+        sp.appendChild(n);
+      }
+    }
+  }
+  function scan(node){
+    if(!node || !node.isConnected) return;
+    if(node.nodeType === 3){ settle(node.parentElement); return; }
+    if(node.nodeType !== 1 || !usable(node)) return;
+    const parents = new Set([node]);
+    const w = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    let t;
+    while((t = w.nextNode())) parents.add(t.parentElement);
+    parents.forEach(settle);
+    const fields = node.matches('input,textarea') ? [node] : node.querySelectorAll('input,textarea');
+    fields.forEach(f => { if(!f.hasAttribute('dir') && f.type !== 'checkbox' && f.type !== 'radio') f.setAttribute('dir','auto'); });
+  }
+  const pending = new Set();
+  let queued = false;
+  function flush(){ queued = false; const items = Array.from(pending); pending.clear(); items.forEach(scan); }
+  function queue(n){ pending.add(n); if(!queued){ queued = true; requestAnimationFrame(flush); } }
+  scan(document.body);
+  new MutationObserver(records => {
+    for(const r of records){
+      if(r.type === 'characterData') queue(r.target);
+      else r.addedNodes.forEach(queue);
+    }
+  }).observe(document.body, {childList:true, subtree:true, characterData:true});
+  return {scan};
+})();
 
 loadFromApi();
 setInterval(loadFromApi, 20000);
