@@ -101,6 +101,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
     --amber-dim: #6b532a;
     --teal: #35b3a3;
     --teal-dim: #1c4b45;
+    --sky: #6fa8ff;              /* main (context) trendline on the stock-analysis chart */
     --green: #3ecf7e;
     --red: #ef5b5b;
     --panel-3: #1c1f26;
@@ -124,6 +125,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
     --amber-dim: #efcd8e;
     --teal: #006b5e;
     --teal-dim: #a9ddd5;
+    --sky: #1f5fcf;
     --green: #0a7a3a;
     --red: #c4161c;
     --header-a: #ffffff;
@@ -134,6 +136,10 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   }
   /* Hebrew text inside the left-to-right layout (class added by the hebDir script) */
   .rtl-text{direction:rtl;unicode-bidi:isolate;}
+  /* Hebrew text rows (name + badges, legend entries) start at the right edge — class added by hebDir */
+  html[lang="he"] .rtl-row{direction:rtl;}
+  /* Hebrew section headers that hold a title + controls (e.g. "מניה מול סקטור" + 1M/3M/YTD/1Y): title on the right */
+  html[lang="he"] .dd-section-title{direction:rtl;}
   /* Light theme: Bloomberg-style crispness — a strong dark rule under the header, stronger tints on alert cards */
   :root[data-theme="light"] header{border-bottom:2px solid #05080f;}
   :root[data-theme="light"] .breaking-card{background:#fff4f3;border-color:rgba(196,22,28,.4);}
@@ -1049,7 +1055,7 @@ function renderMovers(){
     return `
       <div class="mover-row" onclick="showTickerDrawer('${m.ticker}')">
         <div class="mover-ticker">${m.ticker}</div>
-        <div class="mover-trigger">${m.name||''}</div>
+        <div class="mover-trigger">${escH(m.name||'')}</div>
         <div class="mover-pct ${pctClass}">${pctSign}${m.change_pct.toFixed(1)}%</div>
       </div>
     `;
@@ -1841,7 +1847,7 @@ function renderDeepDive(quote, sector, signals, news){
     <div class="dd-header">
       <div>
         <span class="ticker">${quote.ticker}</span>
-        <span class="name">${quote.name||''}</span>
+        <span class="name">${escH(quote.name||'')}</span>
       </div>
       <div>
         <span class="price">$${quote.price}</span>
@@ -1868,7 +1874,7 @@ function renderDeepDive(quote, sector, signals, news){
       html += `<div style="font-size:12.5px;color:var(--text-dim);margin-bottom:8px;">${[quote.sector, quote.sub_industry].filter(Boolean).join(' · ')}</div>`;
     }
     if(quote.description){
-      html += `<div style="font-size:13px;line-height:1.6;color:var(--text);margin-bottom:6px;">${quote.description}</div>`;
+      html += `<div style="font-size:13px;line-height:1.6;color:var(--text);margin-bottom:6px;">${escH(quote.description)}</div>`;
     } else {
       html += `<div class="bt-empty" style="padding:10px 0;">${t?'Company description unavailable right now.':'תיאור החברה לא זמין כרגע.'}</div>`;
     }
@@ -3293,7 +3299,7 @@ function renderEarningsCalendar(items){
           <div class="earnings-cal-session ${it.session||'unknown'}" title="${sessionLabel}">${it.session==='bmo'?'☀️':it.session==='amc'?'🌙':'—'}</div>
           <div class="earnings-cal-ticker">${it.ticker}</div>
         </div>
-        <div class="earnings-cal-name">${it.name || ''}</div>
+        <div class="earnings-cal-name">${escH(it.name || '')}</div>
         <div class="earnings-cal-results">${epsHtml}${revHtml}</div>
       </div>`;
     }).join('');
@@ -3429,7 +3435,7 @@ function renderMoversOrSectorList(){
       return `
         <div class="mover-row" onclick="showTickerDrawer('${r.ticker}')">
           <div class="mover-ticker">${r.ticker}</div>
-          <div class="mover-trigger">${r.name||''} · ${sectorPeriod}: <span class="${perClass}">${perSign}${r.period_change_pct.toFixed(1)}%</span></div>
+          <div class="mover-trigger">${escH(r.name||'')} · ${sectorPeriod}: <span class="${perClass}">${perSign}${r.period_change_pct.toFixed(1)}%</span></div>
           <div class="mover-pct ${dayClass}">${daySign}${r.change_pct.toFixed(1)}%</div>
         </div>
       `;
@@ -3725,7 +3731,7 @@ function renderWatchlistPanel(){
     const has = r.price!=null;
     const cls = has && r.change_pct>=0 ? 'up' : 'down';
     const sign = has && r.change_pct>=0 ? '+' : '';
-    const name = r.name && r.name!==r.ticker ? r.name : '';
+    const name = r.name && r.name!==r.ticker ? escH(r.name) : '';
     const atrText = r.atr_pct!=null ? ` · ATR ${r.atr_pct}%` : '';
     return `
       <div class="mover-row" onclick="showTickerDrawer('${r.ticker}')">
@@ -4232,7 +4238,14 @@ function buildTechnicalSetupSvg(priceSeries, lines){
       if(i1===undefined || i2===undefined) return '';
       const y = yOf(ln.price);
       entries.push({color:'var(--amber)', kind:'horizontal', name, value:'$'+fmtP(ln.price), note:'', anchorX: xOf(i2), anchorY: y, dim});
-      return `<line x1="${xOf(i1).toFixed(1)}" y1="${y.toFixed(1)}" x2="${xOf(i2).toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--amber)" stroke-opacity="${dim}" stroke-width="2" stroke-dasharray="5 3"/>`;
+      // the real highs/lows that make up the level (the level itself is their average)
+      const hdots = (ln.touches||[]).map(([d,p]) => {
+        const k = dateIndex[d];
+        if(k===undefined) return '';
+        anyTouches = true;
+        return `<circle cx="${xOf(k).toFixed(1)}" cy="${yOf(p).toFixed(1)}" r="3.2" fill="var(--bg, #0f1216)" stroke="var(--amber)" stroke-opacity="${dim}" stroke-width="1.6"/>`;
+      }).join('');
+      return `<line x1="${xOf(i1).toFixed(1)}" y1="${y.toFixed(1)}" x2="${xOf(i2).toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--amber)" stroke-opacity="${dim}" stroke-width="2" stroke-dasharray="5 3"/>${hdots}`;
     }
     const pts = (ln.points||[]).map(([d,p]) => {
       const i2 = dateIndex[d];
@@ -4241,15 +4254,16 @@ function buildTechnicalSetupSvg(priceSeries, lines){
     if(pts.length < 2) return '';
     const first = pts[0], last = pts[pts.length-1];
     if(ln.type === 'trend'){
+      const col = ln.style === 'context' ? 'var(--sky)' : 'var(--teal)';   // main trendline (context) gets its own color
       const dots = (ln.touches||[]).map(([d,p]) => {
         const i2 = dateIndex[d];
         if(i2===undefined) return '';
         anyTouches = true;
-        return `<circle cx="${xOf(i2).toFixed(1)}" cy="${yOf(p).toFixed(1)}" r="3.2" fill="var(--bg, #0f1216)" stroke="var(--teal)" stroke-opacity="${dim}" stroke-width="1.6"/>`;
+        return `<circle cx="${xOf(i2).toFixed(1)}" cy="${yOf(p).toFixed(1)}" r="3.2" fill="var(--bg, #0f1216)" stroke="${col}" stroke-opacity="${dim}" stroke-width="1.6"/>`;
       }).join('');
-      entries.push({color:'var(--teal)', kind:'trend', name, value:'$'+fmtP(last.price),
+      entries.push({color:col, kind:'trend', name, value:'$'+fmtP(last.price),
                     note:(t?'from ':'מ-')+_fmtShortDate(first.date), anchorX: last.x, anchorY: last.y, dim});
-      return `<polyline points="${pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}" fill="none" stroke="var(--teal)" stroke-opacity="${dim}" stroke-width="2"/>${dots}`;
+      return `<polyline points="${pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}" fill="none" stroke="${col}" stroke-opacity="${dim}" stroke-width="2"/>${dots}`;
     }
     if(ln.type === 'curve'){
       entries.push({color:'var(--teal)', kind:'curve', name, value:'',
@@ -4349,7 +4363,7 @@ function renderTechnicalSetup(data, elId){
     o.stage === 'triggered' || o.stage === 'holding' || Math.abs(o.distance_pct) <= 6
   ).slice(0, 2);
   const drawCandidates = [c, ...others];
-  const svg = buildTechnicalSetupSvg(data.price_series, drawCandidates.flatMap(dc => dc.lines));
+  const svg = buildTechnicalSetupSvg(data.price_series, [...drawCandidates.flatMap(dc => dc.lines), ...(data.context_lines || [])]);
 
   let statsHtml = `
     <div class="dd-stats-row">
@@ -4460,7 +4474,7 @@ function renderDeepDiveSectorSection(sector){
       <div class="dd-rs-row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px;">
         ${sector.sub_industry_peers.map(p => `
           <div class="bt-rs-card">
-            <div class="label">${p.ticker}${p.name?' · '+p.name:''}</div>
+            <div class="label">${p.ticker}${p.name?' · '+escH(p.name):''}</div>
             <div class="row"><span>${t?'Return':'תשואה'}</span><span style="color:${p.return>=0?'var(--green)':'var(--red)'}">${p.return>=0?'+':''}${p.return}%</span></div>
             <div class="row"><span>P/E</span><span>${p.pe_ratio?Number(p.pe_ratio).toFixed(1):'—'}</span></div>
             <div class="row"><span>${t?'Mkt Cap':'שווי שוק'}</span><span>${formatMarketCap(p.market_cap)}</span></div>
@@ -4784,7 +4798,7 @@ async function showTickerDrawer(ticker){
     const changeColor = d.change_pct>=0?'var(--green)':'var(--red)';
     document.getElementById("loading-box").remove();
     drawer.insertAdjacentHTML('beforeend',`
-      <div class="macro-time" style="margin-bottom:12px;">${d.name} · ${d.exchange||''}</div>
+      <div class="macro-time" style="margin-bottom:12px;">${escH(d.name)} · ${escH(d.exchange||'')}</div>
       <div id="fundamentals-section"></div>
       <div class="gauge-wrap">
         <div class="gauge-num" style="color:${changeColor}">$${d.price}</div>
@@ -5978,6 +5992,7 @@ const hebDir = (function(){
     let simple = true;                                         // only inline children (b, span, a...) and not a flex/grid box
     for(const c of el.children){ if(!INLINE.has(c.tagName)){ simple = false; break; } }
     if(simple && el.children.length && /flex|grid/.test(getComputedStyle(el).display)) simple = false;
+    markRows(el);
     if(simple){ el.classList.add('rtl-text'); return; }
     // The element lays out other blocks/flex items: mirroring it would flip that layout, so only its own Hebrew text is wrapped.
     for(const n of Array.from(el.childNodes)){
@@ -5987,6 +6002,26 @@ const hebDir = (function(){
         el.insertBefore(sp, n);
         sp.appendChild(n);
       }
+    }
+  }
+  // v18 (owner: "in Hebrew the site should align right"): a TEXT ROW — a flex row made only of short inline pieces
+  // (a pattern name + its badges, a legend entry "① name $price", a legend line) — is laid out right-to-left in
+  // Hebrew (class rtl-row; CSS applies it only when <html lang="he">), so it starts at the right edge. Rows that hold
+  // blocks (cards, columns, charts) are not text rows and keep the shared left-to-right layout.
+  const ROW_OK = INLINE;   // no BUTTON: rows of buttons (page tabs, filters) keep the shared layout
+  function isTextRow(n){
+    if(!n || n === document.body || n.children.length < 2) return false;
+    if(n.closest('.ticker-tape, header, svg')) return false;
+    const cs = getComputedStyle(n);
+    if(!/flex/.test(cs.display) || cs.flexDirection !== 'row') return false;
+    for(const c of n.children){ if(!ROW_OK.has(c.tagName)) return false; }
+    return true;
+  }
+  function markRows(el){
+    let cur = el;
+    for(let k = 0; k < 3 && cur && cur !== document.body; k++, cur = cur.parentElement){
+      if(isTextRow(cur)) cur.classList.add('rtl-row');
+      else if(k > 0 && !INLINE.has(cur.tagName)) break;
     }
   }
   function scan(node){

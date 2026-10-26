@@ -63,6 +63,7 @@ except Exception as _auth_import_err:  # server still boots; auth endpoints answ
     print(f"[warn] auth libraries missing: {_auth_import_err}")
 
 import econ_calendar  # US economic calendar
+from translation_fixes import prep_en, fix_he   # shared EN->HE translation fixes (also used by pipeline_b)
 import scheduler      # starts the GitHub Actions workflows at exact ET times (see scheduler.py): providers -> processing -> uniform events (see econ_calendar.py)
 
 DB_URL = os.environ.get("SWING_DB_PATH") or os.environ.get("DATABASE_URL")
@@ -1119,6 +1120,17 @@ def article_preview(url: str = Query(..., max_length=2000), lang: str = Query(de
     hit = _preview_cache.get(key)
     if hit and time.time() - hit[0] < _PREVIEW_TTL_SEC:
         return hit[1]
+    # v18 security: only articles that are in OUR news table. Before this, anyone could make the server download any
+    # public URL (an open fetch proxy; the DNS check before the request also cannot stop DNS-rebinding tricks).
+    try:
+        with db_cursor() as (conn, cur):
+            cur.execute("SELECT 1 FROM macro_news WHERE source_url = %s LIMIT 1", (url,))
+            known = cur.fetchone() is not None
+    except Exception as e:
+        print(f"[warn] article-preview: news lookup failed: {type(e).__name__}")
+        known = False
+    if not known:
+        return {"available": False, "reason": "unknown_url"}
     try:
         final_url, html_text = _fetch_article_html(url)
         ex = _ArticleExtractor()
@@ -1307,10 +1319,11 @@ def _translate_headline_free(text: str) -> str:
         return _headline_translation_cache[text]
 
     translated = None
+    src = prep_en(text)   # v18: idioms rewritten first, known bad renderings fixed after (translation_fixes.py)
     try:
         resp = requests.get(
             "https://translate.googleapis.com/translate_a/single",
-            params={"client": "gtx", "sl": "en", "tl": "he", "dt": "t", "q": text},
+            params={"client": "gtx", "sl": "en", "tl": "he", "dt": "t", "q": src},
             headers={"User-Agent": "Mozilla/5.0"},
             timeout=5,
         )
@@ -1324,7 +1337,7 @@ def _translate_headline_free(text: str) -> str:
         try:
             resp = requests.get(
                 "https://api.mymemory.translated.net/get",
-                params={"q": text, "langpair": "en|he"},
+                params={"q": src, "langpair": "en|he"},
                 headers={"User-Agent": "Mozilla/5.0"},
                 timeout=5,
             )
@@ -1336,7 +1349,7 @@ def _translate_headline_free(text: str) -> str:
         except Exception as e:
             print(f"[warn] stock-news translation (MyMemory) failed: {type(e).__name__}: {e}")
 
-    result = translated or text  # fall back to English rather than showing nothing
+    result = fix_he(translated) if translated else text  # fall back to English rather than showing nothing
     if len(_headline_translation_cache) >= _HEADLINE_CACHE_MAX:
         _headline_translation_cache.clear()  # simple reset instead of LRU bookkeeping for this scale
     _headline_translation_cache[text] = result
@@ -1656,17 +1669,31 @@ def _get_info_with_retry(tk, ticker: str, context: str) -> dict:
     failures are a hard block, but some are just a transient rate-limit
     blip, which a single short retry clears up. This isn't a fix for the
     underlying reliability problem, just cheap insurance against the
-    failures that would have succeeded on the very next attempt."""
+    failures that would have succeeded on the very next attempt.
+
+    v18 circuit breaker: measured on 26.10.2026, .info was blocked for EVERY ticker from Render, so each stock page
+    paid two failed attempts + 1.2s sleep (lookup AND fundamentals). After a double failure .info is skipped for
+    _INFO_BREAKER_SEC; everything that uses it already has a fallback (CSV name/sector, SEC market cap / P/E)."""
+    global _info_blocked_until
+    if time.time() < _info_blocked_until:
+        return {}
     for attempt in (1, 2):
         try:
             info = tk.info
             if info:
+                _info_blocked_until = 0.0
                 return info
         except Exception as e:
             print(f"[warn] {context}: .info attempt {attempt} failed for {ticker}: {e}")
         if attempt == 1:
             time.sleep(1.2)
+    _info_blocked_until = time.time() + _INFO_BREAKER_SEC
+    print(f"[info] yfinance .info unavailable — skipping it for {_INFO_BREAKER_SEC // 60} minutes")
     return {}
+
+
+_INFO_BREAKER_SEC = 15 * 60
+_info_blocked_until = 0.0
 
 
 _sec_description_cache = {}  # ticker -> (timestamp, description_or_None)
@@ -1756,6 +1783,13 @@ def _find_swing_points(values, mode="low", span=2):
                all(values[i] < values[i+k] for k in range(1, span+1)):
                 out.append((i, float(values[i])))
     return out
+
+
+def _tested_times_he(n) -> str:
+    """'נבחנה N פעמים בעבר' with correct Hebrew for one touch ("נבחנה 1 פעמים" read wrong)."""
+    if n == 1:
+        return "נבחנה פעם אחת בעבר"
+    return f"נבחנה {n if n else 'כמה'} פעמים בעבר"
 
 
 def _fmt_date(ts) -> str:
@@ -2131,6 +2165,9 @@ def _setup_horizontal_resistance_breakout(hist: pd.DataFrame) -> Optional[dict]:
         stage = "approaching"
 
     anchor_idx = next(i for i, v in swing_highs if abs(v - level) / level <= 0.02)
+    # v18: the level is the AVERAGE of the cluster of swing highs (same rule as the scanner), so it does not sit on any
+    # one wick — the chart now marks the real highs that make up the level, so it is visible where it was tested.
+    touch_pts = [(i, v) for i, v in swing_highs if abs(v - level) / level <= 0.02]
     return {
         "pattern": "horizontal_resistance_breakout",
         "stage": stage,
@@ -2144,7 +2181,8 @@ def _setup_horizontal_resistance_breakout(hist: pd.DataFrame) -> Optional[dict]:
              "label_he": "התנגדות → הפכה לתמיכה" if stage == "triggered" else "התנגדות אופקית",
              "label_en": "Resistance → now support" if stage == "triggered" else "Horizontal resistance",
              "price": round(level, 2),
-             "from": _fmt_date(dates[anchor_idx]), "to": _fmt_date(dates[-1])},
+             "from": _fmt_date(dates[anchor_idx]), "to": _fmt_date(dates[-1]),
+             "touches": [[_fmt_date(dates[i]), round(float(v), 2)] for i, v in touch_pts]},
         ],
     }
 
@@ -2617,6 +2655,57 @@ def _fit_trendline(window: pd.DataFrame, kind: str, accept=None) -> Optional[dic
     return best
 
 
+_MAJOR_TL_MIN_TOUCHES = 4      # the lowest low + at least 3 more touches
+_MAJOR_TL_TOUCH_TOL = 0.012
+
+
+def _major_support_trendline(window: pd.DataFrame) -> Optional[dict]:
+    """The chart's main rising trendline, drawn for CONTEXT (v18, asked for by the owner on NOW): it starts at the
+    LOWEST low of the charted period, rises gently, and touches at least 3 more swing lows; no candle may cut below it
+    by more than _TL_TOLERANCE. Among valid lines: most touches, then the gentlest slope. Unlike the pattern detectors
+    it is shown even when price is far above it (NOW: from 10 Apr $81.24, touching 23 Apr, 14 May, 25 Jun, 23 Jul).
+    Display only — the scanner has no twin of it."""
+    lows = window["Low"].values
+    n = len(lows)
+    if n < 60:
+        return None
+    i0 = int(np.argmin(lows))
+    v0 = float(lows[i0])
+    if n - 1 - i0 < 30:             # the low is too recent for a rising line
+        return None
+    pts = [(i, v) for i, v in _find_swing_points(lows, mode="low") if i > i0]
+    best = None
+    for j, vj in pts:
+        if j - i0 < _TL_MIN_SPAN_BARS:
+            continue
+        slope = (vj - v0) / (j - i0)
+        if slope <= 0:
+            continue
+        line = v0 + slope * (np.arange(i0, n) - i0)
+        if float(((line - lows[i0:]) / line).max()) > _TL_TOLERANCE:
+            continue
+        touches = [(i0, v0)] + [(i, v) for i, v in pts
+                                if abs(v - (v0 + slope * (i - i0))) / (v0 + slope * (i - i0)) <= _MAJOR_TL_TOUCH_TOL]
+        if len(touches) < _MAJOR_TL_MIN_TOUCHES:
+            continue
+        score = (len(touches), -slope)
+        if best is None or score > best[0]:
+            best = (score, slope, touches)
+    if not best:
+        return None
+    _, slope, touches = best
+    value_today = v0 + slope * (n - 1 - i0)
+    if float(window["Close"].iloc[-1]) < value_today * 0.97:   # clearly broken — no longer a support line
+        return None
+    dates = window.index
+    return {
+        "type": "trend", "style": "context",
+        "label_he": "קו מגמה ראשי (מהשפל הנמוך)", "label_en": "Main trendline (from the lowest low)",
+        "points": [[_fmt_date(dates[i0]), round(v0, 2)], [_fmt_date(dates[-1]), round(float(value_today), 2)]],
+        "touches": [[_fmt_date(dates[i]), round(float(v), 2)] for i, v in touches],
+    }
+
+
 def _trendline_line_dict(fit: dict, window: pd.DataFrame, label_he: str, label_en: str) -> dict:
     dates = window.index
     return {
@@ -3006,7 +3095,7 @@ _SETUP_EXPLANATIONS = {
     },
     "horizontal_resistance_breakout": {
         "he": lambda d: (
-            f"רמת התנגדות אופקית (נבחנה {d.get('touches','כמה')} פעמים בעבר) נמצאת סביב ${d['key_level']}. "
+            f"רמת התנגדות אופקית ({_tested_times_he(d.get('touches'))}) נמצאת סביב ${d['key_level']}. "
             + (f"המחיר כבר פרץ מעליה." if d['stage']=='triggered' else f"המחיר כרגע כ-{abs(d['distance_pct'])}% מתחתיה.")
             + " ניתוח מבני בלבד, לא המלצת השקעה."
         ),
@@ -3018,7 +3107,7 @@ _SETUP_EXPLANATIONS = {
     },
     "horizontal_support_bounce": {
         "he": lambda d: (
-            f"רמת תמיכה אופקית (נבחנה {d.get('touches','כמה')} פעמים בעבר) נמצאת סביב ${d['key_level']}. "
+            f"רמת תמיכה אופקית ({_tested_times_he(d.get('touches'))}) נמצאת סביב ${d['key_level']}. "
             + (f"המחיר מחזיק מעליה כרגע — נראה כמו ריבאונד תקין." if d['stage']=='holding' else f"המחיר ירד קלות מתחתיה (כ-{abs(d['distance_pct'])}%) — שווה לעקוב אם היא תחזיק.")
             + " ניתוח מבני בלבד, לא המלצת השקעה."
         ),
@@ -3182,6 +3271,17 @@ def get_technical_setup(ticker: str):
         for idx, o, h, l, c in zip(tail_hist.index, tail_hist["Open"], tail_hist["High"], tail_hist["Low"], tail_hist["Close"])
     ]
 
+    # Main rising trendline for context (same 160 bars the chart shows); skipped if a pattern already draws a trend
+    # line from the same starting point.
+    context_lines = []
+    try:
+        major = _major_support_trendline(tail_hist)
+        starts = {ln["points"][0][0] for c in candidates for ln in c.get("lines", []) if ln.get("type") == "trend" and ln.get("points")}
+        if major and major["points"][0][0] not in starts:
+            context_lines.append(major)
+    except Exception as e:
+        print(f"[warn] technical-setup {ticker}: main trendline failed: {type(e).__name__}: {e}")
+
     return {
         "ticker": ticker,
         "has_setup": True,
@@ -3190,6 +3290,7 @@ def get_technical_setup(ticker: str):
         "current_price": round(float(hist["Close"].iloc[-1]), 2),
         "candidates": candidates,
         "price_series": price_series,
+        "context_lines": context_lines,
     }
 
 
@@ -4374,7 +4475,10 @@ def _sec_quarterly_series(facts_usgaap: dict, tag_candidates: List[str], instant
         if not node:
             continue
         units = node.get("units", {})
-        unit_key = next(iter(units), None)
+        # The unit with the MOST entries, not simply the first one: Coca-Cola's EarningsPerShareDiluted lists an old
+        # mis-tagged unit "pure" (4 rows, 2008-09) before "USD/shares" (213 rows to 2026), so the EPS history stopped in
+        # 2009 and the P/E came back empty (KO, KMB, PEP) or wrong (HSY 84.4 instead of ~23).
+        unit_key = max(units, key=lambda k: len(units[k] or []), default=None)
         if not unit_key:
             continue
         for e in units[unit_key]:
@@ -4450,7 +4554,10 @@ def _sec_cumulative_to_quarterly(facts_usgaap: dict, tag_candidates: List[str]) 
         if not node:
             continue
         units = node.get("units", {})
-        unit_key = next(iter(units), None)
+        # The unit with the MOST entries, not simply the first one: Coca-Cola's EarningsPerShareDiluted lists an old
+        # mis-tagged unit "pure" (4 rows, 2008-09) before "USD/shares" (213 rows to 2026), so the EPS history stopped in
+        # 2009 and the P/E came back empty (KO, KMB, PEP) or wrong (HSY 84.4 instead of ~23).
+        unit_key = max(units, key=lambda k: len(units[k] or []), default=None)
         if not unit_key:
             continue
 
@@ -4636,7 +4743,7 @@ def _build_fundamentals_yf(ticker: str, cik10: Optional[str], sec_currency: Opti
         f_inc = ex.submit(grab, "quarterly_income_stmt", "quarterly_financials")
         f_cf = ex.submit(grab, "quarterly_cashflow", "quarterly_cash_flow")
         f_bs = ex.submit(grab, "quarterly_balance_sheet")
-        f_info = ex.submit(lambda: (tk.info or {}))
+        f_info = ex.submit(lambda: (_get_info_with_retry(tk, ticker, "fundamentals-yf") or {}))
         inc, cf, bs = f_inc.result(), f_cf.result(), f_bs.result()
         try:
             info = f_info.result()
@@ -4971,7 +5078,7 @@ def _build_fundamentals(ticker: str) -> dict:
     trailing_pe = forward_pe = None
     info = {}
     try:
-        info = yf.Ticker(ticker).info or {}
+        info = _get_info_with_retry(yf.Ticker(ticker), ticker, "fundamentals") or {}   # skipped while .info is blocked
         trailing_pe = info.get("trailingPE")
         forward_pe = info.get("forwardPE")
     except Exception as e:
@@ -5020,6 +5127,11 @@ def _build_fundamentals(ticker: str) -> dict:
     revenue_ltm = _ltm_sum(revenue)
     net_income_ltm = _ltm_sum(net_income)
     fcf_ltm = _ltm_sum(fcf)
+
+    # v18: when .info is blocked (almost always from Render), prefer market cap ÷ last-4-quarters net income over the
+    # P/E-band value: it needs no per-share EPS history (which can be mis-tagged in SEC data) and matches the ADR path.
+    if info.get("trailingPE") is None and market_cap and net_income_ltm and net_income_ltm > 0:
+        trailing_pe = round(float(market_cap) / net_income_ltm, 1)
 
     return _json_safe({
         "ticker": ticker,

@@ -366,97 +366,9 @@ def fetch_raw_headlines() -> List[dict]:
     return items
 
 
-# ------------------------------------------------------------------
-# Glossary of common macro/finance terms with a fixed, correct Hebrew
-# rendering. Google's free auto-translate sometimes renders these
-# inconsistently depending on surrounding sentence context (e.g. a
-# "jobless" reference coming out oddly). We mask these phrases with
-# placeholders before translation and restore the correct Hebrew
-# afterward, so the important terms are always right regardless of
-# what Google does with the rest of the sentence.
-# Ordered longest-phrase-first so e.g. "Jobless Claims" is masked
-# before a shorter overlapping term could grab part of it.
-# ------------------------------------------------------------------
-TERM_GLOSSARY = {
-    "Non-Farm Payrolls": "משרות חוץ-חקלאיות",
-    "Nonfarm Payrolls": "משרות חוץ-חקלאיות",
-    "Jobless Claims": "תביעות דמי אבטלה",
-    "Initial Claims": "תביעות אבטלה ראשוניות",
-    "Employment Report": "דוח התעסוקה",
-    "Jobs Report": "דוח התעסוקה",
-    "Interest Rate": "ריבית",
-    "Rate Hike": "העלאת ריבית",
-    "Rate Cut": "הורדת ריבית",
-    "Federal Reserve": "הפדרל ריזרב",
-    "Yield Curve": "עקום התשואות",
-    "Bull Market": "שוק שורי",
-    "Bear Market": "שוק דובי",
-    "Stock Market": "שוק המניות",
-    "Quarterly Results": "דוחות רבעוניים",
-    "Recession": "מיתון",
-    "Inflation": "אינפלציה",
-    "Bankruptcy": "פשיטת רגל",
-    "CPI": "מדד המחירים לצרכן",
-    "PPI": "מדד מחירי היצרן",
-    "GDP": "התמ\"ג",
-    "IPO": "הנפקה ראשונית",
-    # --- expanded terms (broader coverage = fewer awkward literal renderings) ---
-    "Rate Decision": "החלטת ריבית",
-    "Basis Points": "נקודות בסיס",
-    "Soft Landing": "נחיתה רכה",
-    "Hard Landing": "נחיתה קשה",
-    "Stagflation": "סטגפלציה",
-    "Quantitative Easing": "הרחבה כמותית",
-    "Quantitative Tightening": "כיווץ כמותי",
-    "Balance Sheet": "מאזן",
-    "Trade Deficit": "גירעון סחר",
-    "Trade Surplus": "עודף סחר",
-    "Current Account": "חשבון שוטף",
-    "Consumer Confidence": "אמון הצרכנים",
-    "Consumer Sentiment": "סנטימנט הצרכנים",
-    "Retail Sales": "מכירות קמעונאיות",
-    "Manufacturing PMI": "מדד מנהלי הרכש בתעשייה",
-    "Services PMI": "מדד מנהלי הרכש בשירותים",
-    "Durable Goods": "מוצרים בני-קיימא",
-    "Housing Starts": "התחלות בנייה",
-    "Existing Home Sales": "מכירות בתים קיימים",
-    "Debt Ceiling": "תקרת החוב",
-    "Government Shutdown": "השבתת הממשלה",
-    "Credit Rating": "דירוג אשראי",
-    "Credit Downgrade": "הורדת דירוג אשראי",
-    "Short Squeeze": "לחיצת שורטים",
-    "Circuit Breaker": "שובר מעגלים",
-    "Stock Split": "פיצול מניות",
-    "Share Buyback": "רכישה עצמית של מניות",
-    "Buyback Program": "תוכנית רכישה עצמית",
-    "Dividend Cut": "קיצוץ דיבידנד",
-    "Profit Warning": "אזהרת רווח",
-    "Guidance Cut": "הורדת תחזית",
-    "Beat Expectations": "עקפו את התחזיות",
-    "Miss Expectations": "לא עמדו בתחזיות",
-    "Price Target": "מחיר יעד",
-    "Analyst Upgrade": "שדרוג המלצת אנליסט",
-    "Analyst Downgrade": "הורדת המלצת אנליסט",
-    "Antitrust": "הגבלים עסקיים",
-    "Regulatory Approval": "אישור רגולטורי",
-    "Supply Chain": "שרשרת האספקה",
-    "Chip Shortage": "מחסור בשבבים",
-    "Export Controls": "מגבלות ייצוא",
-    "Tariffs": "מכסי מסחר",
-    "Trade War": "מלחמת סחר",
-    "Ceasefire": "הפסקת אש",
-    "Peace Talks": "שיחות שלום",
-    "Central Bank": "בנק מרכזי",
-    "Monetary Policy": "מדיניות מוניטרית",
-    "Fiscal Policy": "מדיניות פיסקלית",
-    "Safe Haven": "מקלט בטוח",
-    "Risk-Off": "בריחה מסיכון",
-    "Risk-On": "נטילת סיכון",
-    "All-Time High": "שיא כל הזמנים",
-    "Record High": "שיא היסטורי",
-    "Record Low": "שפל היסטורי",
-}
-GLOSSARY_TERMS = sorted(TERM_GLOSSARY.items(), key=lambda kv: -len(kv[0]))
+# Translation fixes (v18): idioms rewritten before Google, known bad Hebrew renderings fixed after — shared with
+# api_server.py; see translation_fixes.py for the lists and for why the old placeholder masking was dropped.
+from translation_fixes import prep_en as _prep_en, fix_he as _fix_he
 
 
 def translate_to_hebrew(text: str) -> str:
@@ -473,9 +385,9 @@ def translate_to_hebrew(text: str) -> str:
     instead of giving up immediately, so a block on ONE of them doesn't
     mean 100% of headlines go untranslated.
 
-    Known finance/macro terms are masked with placeholders first and
-    restored with a fixed correct Hebrew phrase afterward, instead of
-    trusting a translator's sentence-dependent guess for those terms.
+    The whole sentence is translated (idioms rewritten first, known bad
+    renderings fixed after) — see translation_fixes.py for why the old
+    placeholder masking was dropped.
     """
     import urllib.parse, urllib.request, urllib.error, json as _json, random, time
 
@@ -483,20 +395,10 @@ def translate_to_hebrew(text: str) -> str:
     if not clean:
         return text
 
-    placeholders = {}
-    working = clean
-    for idx, (phrase, hebrew) in enumerate(GLOSSARY_TERMS):
-        token = f"Q{idx}Q"
-        working, count = re.subn(r'\b' + re.escape(phrase) + r'\b', token, working, flags=re.IGNORECASE)
-        if count:
-            placeholders[token] = hebrew
-
     def _restore(result: str) -> str:
-        for token, hebrew in placeholders.items():
-            result = result.replace(token, hebrew)
-        return result
+        return _fix_he(result)
 
-    encoded = urllib.parse.quote(working)
+    encoded = urllib.parse.quote(_prep_en(clean))
 
     # A brief random delay before calling out — free/unofficial endpoints
     # rate-limit by request *pattern* as much as by volume, and this runs
