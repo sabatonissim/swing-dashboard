@@ -2919,12 +2919,24 @@ function econGroupOf(e){
   return diff <= daysLeftInWeek ? 'week' : 'later';
 }
 
+// The server decides each event's status when it builds the calendar, and that copy can be a few minutes old (or a stored copy
+// served right after the server woke up). In that gap an event can pass its release time while still saying "upcoming" — so
+// the status is re-derived from the clock here. A published number (actual) always wins.
+function econLiveStatus(e){
+  if(e.actual) return 'released';
+  const t = Date.parse(e.datetime_utc);
+  if(isNaN(t) || Date.now() < t) return e.status;
+  if(!e.has_actual_source || Date.now() >= t + 36*3600*1000) return 'released_no_data';
+  return 'pending';
+}
+function econLive(events){ return (events || []).map(e => { const st = econLiveStatus(e); return st === e.status ? e : Object.assign({}, e, {status: st}); }); }
+
 function renderEconCalendar(){
   const el = document.getElementById('econ-wrap');
   if(!el || !lastEconData) return;
   const en = lang==='en';
   econSetHeader();
-  const events = lastEconData.events || [];
+  const events = econLive(lastEconData.events);
   econHasForecast = !!(lastEconData.meta && lastEconData.meta.forecast_provider && lastEconData.meta.forecast_provider !== 'none');
   if(!events.length){
     el.innerHTML = `<div class="movers-empty">${en?'No upcoming events to show right now.':'אין אירועים קרובים להצגה כרגע.'}</div>`;
@@ -3112,7 +3124,7 @@ function renderEconMonth(){
   if(!data){ wrap.innerHTML = nav + `<div class="movers-empty">${en?'Loading the month…':'טוען את החודש…'}</div>`; return; }
 
   econHasForecast = !!(data.meta && data.meta.forecast_provider && data.meta.forecast_provider !== 'none');
-  const events = data.events || [];
+  const events = econLive(data.events);
   const byDay = {};
   events.forEach(e => (byDay[e.date_et] = byDay[e.date_et] || []).push(e));
   Object.values(byDay).forEach(list => list.sort((a, b) => (a.impact==='high' ? 0 : 1) - (b.impact==='high' ? 0 : 1) || a.datetime_utc.localeCompare(b.datetime_utc)));

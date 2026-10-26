@@ -1911,14 +1911,32 @@ def _pick_statement_revenue(inc, report_date) -> tuple:
 SEC_HEADERS = {"User-Agent": "SwingDesk-Dashboard admin@swingdesk.app", "Accept-Encoding": "gzip, deflate"}
 _sec_ticker_cik = None
 
-_REV_NUM = r"\$\s?([\d,]+(?:\.\d+)?)\s*(billion|million|bn|mm|b|m)\b"
+# Dollar amounts only: "US$4.1 billion" and "$4.1 billion" count, but "NT$759 billion", "C$1.2 billion", "HK$" etc. do NOT
+# (a foreign-currency figure shown as dollars would be a wrong number).
+_REV_NUM = r"(?:US\$|U\.S\.\$|(?<![A-Za-z])\$)\s?([\d,]+(?:\.\d+)?)\s*(billion|million|bn|mm|b|m)\b"
+_REV_NOUN = r"(?:(?:total|net|quarterly|record|gaap|consolidated)\s+)*(?:revenues?|net\s+sales|sales)(?:\s*\((?:GAAP|reported|non-GAAP|total)\))?"
+_REV_LEAD = r"(?:(?:were|was|of|totaled|reached|came\s+in\s+at|stood\s+at)\s+|:\s*)?(?:(?:a|an)\s+)?(?:record\s+)?(?:approximately\s+|about\s+|nearly\s+|roughly\s+|~\s*)?"
 _REV_PATTERNS = [
-    re.compile(r"(?:(?:total|net|quarterly|record|gaap)\s+)*(?:revenues?|net\s+sales|sales)\s+(?:were|was|of|totaled|reached|came\s+in\s+at|:)?\s*(?:approximately\s+)?" + _REV_NUM, re.I),
-    re.compile(r"(?:revenues?|net\s+sales)\s+(?:increased|decreased|rose|fell|grew|declined|climbed|jumped)[^$]{0,80}?(?:to|at)\s+(?:approximately\s+)?" + _REV_NUM, re.I),
-    re.compile(r"\$\s?([\d,]+(?:\.\d+)?)\s*(billion|million)\s+(?:in|of)\s+(?:total\s+|net\s+)?(?:revenues?|net\s+sales)", re.I),
+    # "Revenue was $54.2 billion" / "Total revenue of $634.7 million" / "Revenue: $850 million" / "Revenue (GAAP) was a record $4.1 billion"
+    re.compile(_REV_NOUN + r"\s*" + _REV_LEAD + _REV_NUM, re.I),
+    # "Revenue increased 8% to $2.4 billion" / "Revenue increased $120 million, or 6%, to $2.1 billion" / "Revenue up 11% year over year to $3.3 billion"
+    re.compile(r"(?:revenues?|net\s+sales)\s+(?:(?:was|were)\s+)?(?:increased|decreased|rose|fell|grew|declined|climbed|jumped|surged|up|down|increase|decrease|growth)\b.{0,120}?\b(?:to|at)\s+(?:approximately\s+|about\s+|nearly\s+|roughly\s+|~\s*)?" + _REV_NUM, re.I),
+    # "$12.5 billion in revenue"
+    re.compile(_REV_NUM + r"\s+(?:in|of)\s+(?:total\s+|net\s+)?(?:revenues?|net\s+sales)", re.I),
     # "Revenues for the third quarter were $1.2 billion" / "Net sales for the quarter totaled $850 million"
-    re.compile(r"(?:revenues?|net\s+sales)\s+for\s+the\s+[^$.]{0,80}?(?:were|was|of|totaled|reached)\s+(?:approximately\s+)?" + _REV_NUM, re.I),
+    re.compile(r"(?:revenues?|net\s+sales)\s+for\s+the\s+[^$.]{0,80}?(?:were|was|of|totaled|reached)\s+(?:(?:a|an)\s+)?(?:record\s+)?(?:approximately\s+|about\s+|nearly\s+|roughly\s+|~\s*)?" + _REV_NUM, re.I),
 ]
+# A figure is NOT this quarter's result when the words right before it (in the same clause) say it is guidance, a comparison,
+# a prior period, a longer period or only one segment — v17: found by testing 41 realistic phrasings (the old parser took
+# "expects revenue of $5.1 billion" and "compared with revenue of $2.0 billion a year ago" as the result).
+_BAD_BEFORE = re.compile(
+    r"(expect|anticipat|outlook|guidance|forecast|project|target|predict|estimat|"
+    r"compared\s+(?:with|to)|versus|\bvs\.?\b|\bfrom\b|prior[-\s]year|year[-\s]ago|last\s+year|"
+    r"full[-\s]year|fiscal[-\s]year|year\s+ended|twelve\s+months|nine\s+months|six\s+months|first\s+half|second\s+half|"
+    r"year[-\s]to[-\s]date|\bytd\b|pro\s+forma|\bsegment\b|\bwould\b|\bto\s+be\b|\bbacklog\b|\bbookings\b)\W*(?:\w+\W+){0,6}$", re.I)
+# ...or the words right after it say "a year ago" / "in the prior-year quarter"
+_BAD_AFTER = re.compile(
+    r"^\W{0,3}(?:a\s+year\s+ago|last\s+year|in\s+the\s+(?:year[-\s]ago|prior|same)|(?:in|for)\s+(?:the\s+)?(?:year[-\s]ago|prior[-\s]year|same\s+(?:quarter|period)))", re.I)
 
 
 def _sec_get(url, as_json=True, timeout=12):
@@ -1938,18 +1956,29 @@ def _sec_cik_for(ticker):
     return _sec_ticker_cik.get(t) or _sec_ticker_cik.get(t.replace("-", ".")) or _sec_ticker_cik.get(t.replace(".", "-"))
 
 
-def _sec_find_release_accession(cik, report_date):
+def _sec_release_accessions(cik, report_date, limit=3):
+    """Accession numbers of the filing(s) that carry the earnings press release, best first.
+    US companies: an 8-K with Item 2.02. Foreign private issuers (ADRs) furnish their results on a 6-K, which has no item
+    numbers — those are tried after the 8-Ks (the text is checked for a dollar revenue figure anyway)."""
     sub = _sec_get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json")
     recent = (sub.get("filings") or {}).get("recent") or {}
     forms, dates = recent.get("form", []), recent.get("filingDate", [])
     accs, items = recent.get("accessionNumber", []), recent.get("items", [])
+    k8, k6 = [], []
     for i, form in enumerate(forms):
-        if form != "8-K" or "2.02" not in (items[i] if i < len(items) else ""):
+        if form not in ("8-K", "6-K") or i >= len(dates):
+            continue
+        if form == "8-K" and "2.02" not in (items[i] if i < len(items) else ""):
             continue
         diff = (datetime.strptime(dates[i], "%Y-%m-%d").date() - report_date).days
         if -1 <= diff <= 3:
-            return accs[i]
-    return None
+            (k8 if form == "8-K" else k6).append(accs[i])
+    return (k8 + k6)[:limit]
+
+
+def _sec_find_release_accession(cik, report_date):
+    found = _sec_release_accessions(cik, report_date, 1)
+    return found[0] if found else None
 
 
 def _sec_exhibit_names(cik, accession):
@@ -2020,6 +2049,11 @@ def _parse_press_release_revenue(text, reference=None):
         for m in rx.finditer(head):
             unit = m.group(2).lower()
             val = float(m.group(1).replace(",", "")) * (1e9 if unit in ("billion", "bn", "b") else 1e6)
+            # only the clause the figure sits in counts ("...a year ago, revenue was $2.3 billion" is a new clause)
+            before = re.split(r"[;,.!?]\s|\s[-\u2013\u2014]\s|[()]", head[max(0, m.start() - 60):m.start()])[-1]
+            after = head[m.end():m.end() + 45]
+            if _BAD_BEFORE.search(before) or _BAD_AFTER.match(after):
+                continue
             if reference:
                 if not (0.5 <= val / reference <= 2.0):
                     continue
@@ -2037,19 +2071,21 @@ def _revenue_from_press_release(ticker, report_date, reference=None):
         if not cik:
             print(f"[info] SEC revenue {ticker}: no CIK found for this ticker")
             return None
-        acc = _sec_find_release_accession(cik, report_date)
-        if not acc:
-            print(f"[info] SEC revenue {ticker}: no 8-K (Item 2.02) filed around {report_date} yet")
+        accessions = _sec_release_accessions(cik, report_date)
+        if not accessions:
+            print(f"[info] SEC revenue {ticker}: no 8-K (Item 2.02) or 6-K filed around {report_date} yet")
             return None
-        text = _sec_release_text(cik, acc)
-        if not text:
-            print(f"[info] SEC revenue {ticker}: 8-K {acc} found but no readable press-release exhibit")
-            return None
-        val = _parse_press_release_revenue(text, reference)
-        if val is None:
-            print(f"[info] SEC revenue {ticker}: press release read ({len(text)} chars) but no revenue figure passed the checks"
+        for acc in accessions:
+            text = _sec_release_text(cik, acc)
+            if not text:
+                print(f"[info] SEC revenue {ticker}: filing {acc} has no readable press-release exhibit")
+                continue
+            val = _parse_press_release_revenue(text, reference)
+            if val is not None:
+                return val
+            print(f"[info] SEC revenue {ticker}: press release {acc} read ({len(text)} chars) but no revenue figure passed the checks"
                   f" (reference={reference}) — start of text: {text[:160]!r}")
-        return val
+        return None
     except Exception as e:
         print(f"[warn] press-release revenue fetch failed for {ticker}: {type(e).__name__}: {e}")
         return None

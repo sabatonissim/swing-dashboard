@@ -451,6 +451,9 @@ BLS_STATIC = {
     "ppi":  [("2026-08-13", "2026-07"), ("2026-09-10", "2026-08"), ("2026-10-15", "2026-09"), ("2026-11-13", "2026-10"), ("2026-12-15", "2026-11")],
     "nfp":  [("2026-08-07", "2026-07"), ("2026-09-04", "2026-08"), ("2026-10-02", "2026-09"), ("2026-11-06", "2026-10"), ("2026-12-04", "2026-11")],
 }
+# JOLTS (10:00 ET). 2026-11-03 is stated on bls.gov/jlt ("Next Release"); 2026-09-01 / 2026-09-29 are the published past releases;
+# 2026-12-01 comes from a secondary calendar that cites BLS — re-check it on bls.gov/schedule/news_release/jolts.htm.
+BLS_STATIC["jolts"] = [("2026-09-01", "2026-07"), ("2026-09-29", "2026-08"), ("2026-11-03", "2026-09"), ("2026-12-01", "2026-10")]
 BLS_STATIC["core_cpi"] = BLS_STATIC["cpi"]
 BLS_STATIC["unemployment"] = BLS_STATIC["nfp"]
 
@@ -504,9 +507,45 @@ def _schedule_bls_ics(start, end):
     return out
 
 
-def schedule_bea(start, end):
-    """BEA official release calendar (ICS). Titles carry the reference period explicitly."""
+# bea.gov / census.gov may refuse cloud servers exactly like bls.gov does (HTTP 403). Without a fallback, GDP, PCE, Core PCE and
+# Retail Sales then vanish from the calendar completely. These are the OFFICIAL dates, checked on 26.10.2026 against
+# bea.gov/news/schedule and census.gov/retail/release_schedule.html. Used ONLY when the live fetch fails or returns nothing usable.
+# REFRESH when BEA / Census publish the 2027 schedule (CLAUDE.md section 26).
+BEA_STATIC = {
+    # (release date, reference period). GDP = advance estimate only (the later estimates are revisions and are not shown).
+    "gdp":      [("2026-07-30", "2026-04"), ("2026-10-29", "2026-07")],
+    "pce":      [("2026-07-30", "2026-06"), ("2026-08-26", "2026-07"), ("2026-09-30", "2026-08"),
+                 ("2026-10-29", "2026-09"), ("2026-11-25", "2026-10"), ("2026-12-23", "2026-11")],
+}
+BEA_STATIC["core_pce"] = BEA_STATIC["pce"]
+CENSUS_STATIC = [("2026-10-15", "2026-09"), ("2026-11-17", "2026-10"), ("2026-12-16", "2026-11"), ("2027-01-15", "2026-12")]
+
+
+def _static_rows(table, start, end, source):
     out = []
+    for t, rows in table.items():
+        for d_s, ref_s in rows:
+            d = date.fromisoformat(d_s)
+            if start <= d <= end:
+                out.append(dict(type=t, date=d, when=_et_dt(d, CATALOG[t]["time_et"]),
+                                period=date.fromisoformat(ref_s + "-01"), source=source, estimated=False))
+    return out
+
+
+def schedule_bea(start, end):
+    """BEA release dates: the live ICS first, the built-in official dates when bea.gov refuses us or the file has no usable rows."""
+    try:
+        out = _schedule_bea_ics(start, end)
+        _set_status("bea_fallback", True, None)
+        return out
+    except Exception as e:  # noqa: BLE001
+        _set_status("bea_fallback", True, f"bea.gov unavailable ({str(e)[:80]}) — using the built-in official release dates")
+        return _static_rows(BEA_STATIC, start, end, "bea-static")
+
+
+def _schedule_bea_ics(start, end):
+    """BEA official release calendar (ICS). Titles carry the reference period explicitly."""
+    out, seen = [], 0
     for ev in parse_ics(_cached_text("ics_bea", BEA_ICS)):
         name = ev["summary"].strip()
         if name.startswith("GDP (") and "Advance Estimate" in name:   # 2nd/3rd estimates are revisions: skipped
@@ -520,32 +559,50 @@ def schedule_bea(start, end):
         else:
             continue
         d, when = _start_parts(ev["start"], targets[0])
+        seen += 1
         if start <= d <= end:
             for t in targets:
                 out.append(dict(type=t, date=d, when=when, period=period, source="bea", estimated=False))
+    if not seen:
+        raise RuntimeError("bea ICS parsed but contained no GDP / Personal Income and Outlays releases (format changed?)")
     return out
 
 
 def schedule_census(start, end):
+    """Census retail-sales dates: the live schedule page first, the built-in official dates when census.gov refuses us."""
+    try:
+        out = _schedule_census_page(start, end)
+        _set_status("census_fallback", True, None)
+        return out
+    except Exception as e:  # noqa: BLE001
+        _set_status("census_fallback", True, f"census.gov unavailable ({str(e)[:80]}) — using the built-in official release dates")
+        return _static_rows({"retail": CENSUS_STATIC}, start, end, "census-static")
+
+
+def _schedule_census_page(start, end):
     """Census 'Advance Monthly Retail Trade' schedule page (HTML table: data month -> release date)."""
     html = _cached_text("html_census_retail", CENSUS_RETAIL)
+    import html as _html
     text = re.sub(r"<[^>]+>", " ", html)
-    text = re.sub(r"&nbsp;|&#160;", " ", text)
+    text = _html.unescape(text).replace("\xa0", " ")          # &nbsp; &middot; &#160; ... -> plain characters
     text = re.sub(r"\s+", " ", text)
     i = text.find("Advance Monthly Retail Trade Report")
     if i < 0:
         raise RuntimeError("Census retail schedule: section not found (page layout changed?)")
     j = text.find("Monthly Retail Trade Report", i + 40)
     section = text[i:j if j > i else i + 2500]
-    out = []
+    out, seen = [], 0
     for mon, yr, mon2, day2, yr2 in re.findall(
             r"([A-Z][a-z]+) (\d{4})\s*[·|\-–:]?\s*([A-Z][a-z]+) (\d{1,2}), (\d{4})", section):
         if mon.lower() not in _MONTHS or mon2.lower() not in _MONTHS:
             continue
         d = date(int(yr2), _MONTHS[mon2.lower()], int(day2))
+        seen += 1
         if start <= d <= end:
             out.append(dict(type="retail", date=d, when=_et_dt(d, "08:30"),
                             period=date(int(yr), _MONTHS[mon.lower()], 1), source="census", estimated=False))
+    if not seen:
+        raise RuntimeError("Census retail schedule: no 'data month -> release date' rows found (page layout changed?)")
     return out
 
 
@@ -732,6 +789,25 @@ def _parse_fred_csv(text, series):
             continue
     if not rows:
         raise RuntimeError(f"FRED CSV for {series} is empty")
+    return rows
+
+
+FRED_TXT = "https://fred.stlouisfed.org/data/{series}.txt"
+
+
+def _parse_fred_txt(text, series):
+    """[(date, float)] from FRED's static data file (https://fred.stlouisfed.org/data/<SERIES>.txt): a header, then a
+    'DATE VALUE' line, then 'YYYY-MM-DD value' rows. Missing observations ('.') are skipped."""
+    rows, started = [], False
+    for line in (text or "").splitlines():
+        if not started:
+            started = bool(re.match(r"^\s*DATE\s+VALUE", line))
+            continue
+        m = re.match(r"^\s*(\d{4}-\d{2}-\d{2})\s+([-+]?\d[\d,]*\.?\d*)\s*$", line)
+        if m:
+            rows.append((date.fromisoformat(m.group(1)), float(m.group(2).replace(",", ""))))
+    if not rows:
+        raise RuntimeError(f"FRED {series}: no data rows in the .txt file")
     return rows
 
 
@@ -1286,8 +1362,46 @@ def _select(events, limit, now_utc):
     return chosen
 
 
+_health_cache = {"ts": 0.0, "val": {}}
+
+
+def series_health():
+    """Which series econ_refresh.py stored: last period, number of points and how long ago. Shown in meta.series of
+    /api/econ-calendar so a missing or stale series (the usual reason for an empty Actual/Previous) is visible at a glance."""
+    now = time.time()
+    if now - _health_cache["ts"] < 300 and _health_cache["val"]:
+        return _health_cache["val"]
+    out = {}
+    try:
+        if _conn_factory:
+            _snap_table(_conn_factory)
+            conn = _conn_factory()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT skey, payload, EXTRACT(EPOCH FROM (NOW() - updated_at)) FROM econ_snapshots WHERE skey LIKE 'series-%'")
+                for skey, payload, age in cur.fetchall():
+                    try:
+                        rows = json.loads(payload)
+                    except Exception:  # noqa: BLE001
+                        rows = []
+                    out[skey[len("series-"):]] = {"last_period": rows[-1][0] if rows else None, "points": len(rows),
+                                                  "stored_hours_ago": round(float(age) / 3600.0, 1)}
+                cur.close()
+            finally:
+                conn.close()
+        for c in CATALOG.values():
+            sid = (c.get("fred") or {}).get("series")
+            if sid and sid not in out:
+                out[sid] = {"last_period": None, "points": 0, "stored_hours_ago": None}
+    except Exception as e:  # noqa: BLE001
+        out["error"] = str(e)[:80]
+    _health_cache.update(ts=now, val=out)
+    return out
+
+
 def _meta(now_utc):
     return {
+        "series": series_health(),
         "generated_at": now_utc.isoformat().replace("+00:00", "Z"),
         "forecast_provider": FORECAST_PROVIDER if forecast_enabled() else "none",
         "providers": {k: {"ok": v["ok"], "error": v["error"]} for k, v in _status.items()},

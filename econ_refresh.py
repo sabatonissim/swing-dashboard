@@ -49,6 +49,15 @@ def fred_download(series):
             return ec._parse_fred_csv(ec._http_text(url, timeout=FRED_ATTEMPT_TIMEOUT_S), series)
         except Exception as e:  # noqa: BLE001
             last = e
+    # Third form: FRED's static data file. It is a plain file (not generated per request like the CSV download), so it can
+    # answer when the CSV host times out. Only the last ~900 days are kept, like the CSV.
+    try:
+        rows = ec._parse_fred_txt(ec._http_text(ec.FRED_TXT.format(series=series), timeout=FRED_ATTEMPT_TIMEOUT_S), series)
+        keep = [r for r in rows if r[0].isoformat() >= cosd]
+        if keep:
+            return keep
+    except Exception as e:  # noqa: BLE001
+        last = e
     raise last
 
 
