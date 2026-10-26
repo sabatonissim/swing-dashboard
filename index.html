@@ -1694,6 +1694,7 @@ let _ddLangToken = 0;
 let _ddRenderedKey = null;   // "language|theme" the page on screen was last built for
 let _ddChartPending = false; // chart could not be built because the page was hidden — build it when shown
 let _ddChartTicker = null;
+let _ddLoadId = 0;           // each search gets a number; late answers for an older search are ignored
 
 async function rerenderDeepDiveForLang(){
   const el = document.getElementById('deepdive-content');
@@ -1738,17 +1739,24 @@ async function loadDeepDive(){
 
   _ddState = null;
   _ddRenderedKey = null;
+  const loadId = ++_ddLoadId;
   el.innerHTML = `<div class="bt-empty">${UI[lang].loading}</div>`;
 
+  // The slow parts (sector comparison, technical setup and above all the SEC fundamentals — a first call can take 30s+ or
+  // time out and be retried) used to hold the WHOLE page on "Loading...". Now they are started together but not awaited:
+  // the page (price, chart, signals, news) is drawn first, and each slow section fills itself in when its data arrives.
+  const sectorP = fetchWithTimeout(`${API_BASE}/api/sector-comparison/${ticker}?period=${ddSectorPeriod}`, 30000).then(r => r.ok ? r.json() : Promise.reject());
+  const setupP = fetchWithTimeout(`${API_BASE}/api/technical-setup/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject());
+  const fundP = fetchFundamentalsData(ticker);
+  [sectorP, setupP, fundP].forEach(p => p.catch(() => {}));   // handled below; avoids "unhandled rejection" noise
+
   try {
-    const [lookupRes, sectorRes, signalsRes, newsRes, fundRes, setupRes] = await Promise.allSettled([
+    const [lookupRes, signalsRes, newsRes] = await Promise.allSettled([
       fetch(`${API_BASE}/api/lookup/${ticker}`).then(r => r.ok ? r.json() : Promise.reject(r.status)),
-      fetchWithTimeout(`${API_BASE}/api/sector-comparison/${ticker}?period=${ddSectorPeriod}`, 30000).then(r => r.ok ? r.json() : Promise.reject()),
       fetch(`${API_BASE}/api/signal-history/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
       fetch(`${API_BASE}/api/stock-news/${ticker}?lang=${lang}`).then(r => r.ok ? r.json() : Promise.reject()),
-      fetchFundamentalsData(ticker),
-      fetchWithTimeout(`${API_BASE}/api/technical-setup/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject()),
     ]);
+    if(loadId !== _ddLoadId) return;   // another ticker was searched meanwhile
 
     if(lookupRes.status !== 'fulfilled'){
       const notFound = lookupRes.reason === 404;
@@ -1760,17 +1768,40 @@ async function loadDeepDive(){
     }
 
     const quote = lookupRes.value;
-    const sector = sectorRes.status === 'fulfilled' ? sectorRes.value : null;
     const signals = signalsRes.status === 'fulfilled' ? signalsRes.value : [];
     const news = newsRes.status === 'fulfilled' ? newsRes.value : [];
-    const fundData = fundRes.status === 'fulfilled' ? fundRes.value : null;
-    const setupData = setupRes.status === 'fulfilled' ? setupRes.value : null;
+
+    const st = _ddState = {quote, sector: null, signals, news, fundData: null, setupData: null};
+    const current = () => loadId === _ddLoadId && _ddState === st;
+    renderDeepDive(quote, null, signals, news);
+    const loadingHtml = (title) => `<div class="dd-section-title">${title}</div><div class="bt-empty" style="padding:10px 0;">${UI[lang].loading}</div>`;
+    const secEl = document.getElementById('dd-sector-compare-section');
+    if(secEl) secEl.innerHTML = loadingHtml(t?'Stock vs. Sector':'מניה מול סקטור');
+    const setupEl = document.getElementById('dd-technical-setup-section');
+    if(setupEl) setupEl.innerHTML = loadingHtml(t?'Current Technical Setup':'מבנה טכני נוכחי');
+    const fundEl = document.getElementById('dd-fundamentals-section');
+    if(fundEl) fundEl.innerHTML = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div><div class="fund-empty">${t?'Loading fundamentals...':'טוען נתונים פונדמנטליים...'}</div>`;
+
+    sectorP.then(v => v, () => null).then(sector => {
+      if(!current()) return;
+      st.sector = sector;
+      renderDeepDiveSectorSection(sector);
+    });
+    setupP.then(v => v, () => null).then(setupData => {
+      if(!current()) return;
+      st.setupData = setupData;
+      renderTechnicalSetup(setupData, 'dd-technical-setup-section');
+    });
 
     // The lookup endpoint's own market_cap/pe_ratio depend on yfinance's
     // often-blocked .info — fundamentals computes both more reliably from
     // SEC data. Prefer that for the header stat cards whenever it's there.
-    if(fundData){
-      if(quote.market_cap == null && fundData.market_cap != null) quote.market_cap = fundData.market_cap;
+    const applyFund = (fundData) => {
+      if(quote.market_cap == null && fundData.market_cap != null){
+        quote.market_cap = fundData.market_cap;
+        const mc = document.getElementById('dd-mcap-val');
+        if(mc) mc.textContent = formatMarketCap(quote.market_cap);
+      }
       if(quote.pe_ratio == null && fundData.trailing_pe != null) quote.pe_ratio = fundData.trailing_pe;
       // Keep NTM (forward) and LTM (trailing) separately so the header
       // P/E stat can default to NTM with a toggle to LTM, instead of
@@ -1779,28 +1810,21 @@ async function loadDeepDive(){
       // be unavailable even when LTM isn't.
       quote.pe_ratio_ntm = fundData.forward_pe ?? null;
       quote.pe_ratio_ltm = fundData.trailing_pe ?? quote.pe_ratio ?? null;
-    }
-
-    _ddState = {quote, sector, signals, news, fundData, setupData};
-    renderDeepDive(quote, sector, signals, news);
-    renderTechnicalSetup(setupData, 'dd-technical-setup-section');
-    if(fundData){
+      st.fundData = fundData;
+      renderDeepDivePeCard();
+    };
+    fundP.then(fundData => {
+      if(!current()) return;
+      applyFund(fundData);
       try { renderFundamentals(fundData, 'dd-fundamentals-section'); }
       catch(e){ console.error('[fundamentals] render failed for', quote.ticker, e); loadFundamentals(quote.ticker, 'dd-fundamentals-section'); }
-    } else {
-      // The parallel attempt above failed — retry independently, and if
-      // it succeeds this time, back-fill the header P/E card too (it
-      // rendered already with "—" since fundData wasn't ready yet).
+    }, () => {
+      if(!current()) return;
+      // Both attempts failed — retry independently (shows its own loading / error message)
       loadFundamentals(quote.ticker, 'dd-fundamentals-section').then(retryData => {
-        if(retryData && _ddState && _ddState.quote === quote) _ddState.fundData = retryData;
-        if(retryData && _dd_lastQuote === quote){
-          quote.pe_ratio_ntm = retryData.forward_pe ?? null;
-          quote.pe_ratio_ltm = retryData.trailing_pe ?? quote.pe_ratio ?? null;
-          if(quote.market_cap == null) quote.market_cap = retryData.market_cap;
-          renderDeepDivePeCard();
-        }
+        if(retryData && current()) applyFund(retryData);
       });
-    }
+    });
   } catch(e) {
     console.error('[deep dive] failed', e);
     el.innerHTML = `<div class="bt-empty">${t?'Something went wrong loading this stock.':'משהו השתבש בטעינת המניה.'}</div>`;
@@ -1830,7 +1854,7 @@ function renderDeepDive(quote, sector, signals, news){
     <div class="dd-stats-row">
       <div class="dd-stat-card"><div class="k">${t?'52w High':'שיא 52ש'}</div><div class="v">${quote.week52_high ?? '—'}</div></div>
       <div class="dd-stat-card"><div class="k">${t?'52w Low':'שפל 52ש'}</div><div class="v">${quote.week52_low ?? '—'}</div></div>
-      <div class="dd-stat-card"><div class="k">${t?'Market Cap':'שווי שוק'}</div><div class="v">${formatMarketCap(quote.market_cap)}</div></div>
+      <div class="dd-stat-card"><div class="k">${t?'Market Cap':'שווי שוק'}</div><div class="v" id="dd-mcap-val">${formatMarketCap(quote.market_cap)}</div></div>
       <div class="dd-stat-card" id="dd-pe-card"></div>
       <div class="dd-stat-card"><div class="k">${t?'Avg Vol 20d':'ווליום ממוצע'}</div><div class="v">${formatMarketCap(quote.avg_volume_20d)}</div></div>
     </div>
