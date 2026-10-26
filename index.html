@@ -4164,6 +4164,7 @@ function buildTechnicalSetupSvg(priceSeries, lines){
   (lines||[]).forEach(ln => {
     (ln.points||[]).forEach(([,pr]) => { if(pr>0){ minP = Math.min(minP, pr); maxP = Math.max(maxP, pr); } });
     if(ln.type==='horizontal' && ln.price>0){ minP = Math.min(minP, ln.price); maxP = Math.max(maxP, ln.price); }
+    if(ln.type==='zone' && ln.lo>0){ minP = Math.min(minP, ln.lo); maxP = Math.max(maxP, ln.hi); }
   });
   const pad = (maxP - minP) * 0.04 || 1;
   minP -= pad; maxP += pad;
@@ -4230,9 +4231,20 @@ function buildTechnicalSetupSvg(priceSeries, lines){
   // ---- lines: drawn without text; each one yields a legend entry + a gutter marker ----
   const entries = [];     // {num, color, kind, name, value, note, anchorX, anchorY, dim}
   let anyTouches = false;
+  let zoneSvgs = '';      // support/resistance zones: drawn BEHIND the candles
   const lineSvgs = (lines||[]).map((ln, idx) => {
     const name = t ? ln.label_en : ln.label_he;
     const dim = idx > 0 ? 0.7 : 1;
+    if(ln.type === 'zone'){
+      const i1 = dateIndex[ln.from];
+      if(i1===undefined) return '';
+      const col = ln.kind === 'resistance' ? 'var(--red)' : 'var(--teal)';
+      const yTop = yOf(ln.hi), yBot = yOf(ln.lo), h = Math.max(3, yBot - yTop), x1 = xOf(i1), x2 = xOf(n-1);
+      entries.push({color: col, kind:'zone', name, value:'$'+fmtP(ln.lo)+'–'+fmtP(ln.hi),
+                    note: ln.touches ? (t ? `${ln.touches} touches` : `${ln.touches} נגיעות`) : '', anchorX: x2, anchorY: (yTop + yBot) / 2, dim: 1});
+      zoneSvgs += `<rect x="${x1.toFixed(1)}" y="${(yTop - (h - (yBot - yTop)) / 2).toFixed(1)}" width="${(x2 - x1).toFixed(1)}" height="${h.toFixed(1)}" fill="${col}" fill-opacity="0.16" stroke="${col}" stroke-opacity="0.55" stroke-width="1" stroke-dasharray="4 3"/>`;
+      return '';
+    }
     if(ln.type === 'horizontal'){
       const i1 = dateIndex[ln.from], i2 = dateIndex[ln.to];
       if(i1===undefined || i2===undefined) return '';
@@ -4295,6 +4307,7 @@ function buildTechnicalSetupSvg(priceSeries, lines){
   // direction:ltr — inside an RTL page an SVG's text-anchor start/end flips sides.
   const svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;margin:10px 0 4px;direction:ltr;">
     ${grid}
+    ${zoneSvgs}
     ${bars}
     ${lineSvgs}
     ${markers}
@@ -4307,7 +4320,7 @@ function buildTechnicalSetupSvg(priceSeries, lines){
   const legend = entries.length ? `<div class="ts-legend">${entries.map(e => `
     <span class="ts-legend-item" style="opacity:${e.dim === 1 ? 1 : 0.9}">
       <span class="ts-badge" style="border-color:${e.color};color:${e.color};">${e.num}</span>
-      <span class="ts-lg-name">${e.name}</span>${e.value ? `<b class="ts-lg-val">${e.value}</b>` : ''}${e.note ? `<span class="ts-lg-note">(${e.note})</span>` : ''}
+      <span class="ts-lg-name">${e.name}</span>${e.value ? `<b class="ts-lg-val" dir="ltr" style="unicode-bidi:isolate;">${e.value}</b>` : ''}${e.note ? `<span class="ts-lg-note">(${e.note})</span>` : ''}
     </span>`).join('')}${anyTouches ? `<span class="ts-legend-item"><span class="ts-dot"></span><span class="ts-lg-name">${t?'touches of the line':'נגיעות בקו'}</span></span>` : ''}</div>` : '';
   return svg + legend;
 }
@@ -4360,7 +4373,7 @@ function renderTechnicalSetup(data, elId){
     o.stage === 'triggered' || o.stage === 'holding' || Math.abs(o.distance_pct) <= 6
   ).slice(0, 2);
   const drawCandidates = [c, ...others];
-  const svg = buildTechnicalSetupSvg(data.price_series, [...drawCandidates.flatMap(dc => dc.lines), ...(data.context_lines || [])]);
+  const svg = buildTechnicalSetupSvg(data.price_series, [...drawCandidates.flatMap(dc => dc.lines), ...(data.context_lines || []), ...(data.zones || [])]);
 
   let statsHtml = `
     <div class="dd-stats-row">

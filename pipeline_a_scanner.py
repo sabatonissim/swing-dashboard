@@ -393,7 +393,9 @@ def compute_support_resistance(hist: pd.DataFrame, lookback: int = 120) -> dict:
 TRENDLINE_SEARCH_DAYS = 250        # how far back the two anchor points may be (v18: was 150 — only a MAXIMUM; the
                                    # line is chosen by touches/fit, so it can be short or long. KO's Jan->Oct line,
                                    # 8 touches incl. the early-October bounce, started before the old 150-bar limit)
-TRENDLINE_TOLERANCE = 0.015        # a wick may pierce the line by at most 1.5%
+TRENDLINE_TOLERANCE = 0.005        # a wick may pierce the line by at most 0.5% (v18: was 1.5% — KO's line from 20 Jan
+                                   # cut through the 4 Jun low by 1.4% and was still "valid"; at 0.5% the line found is
+                                   # the one a trader draws: 7 Jan $67.27 -> 4 Jun -> 5 Oct)
 TRENDLINE_TOUCH_TOL = 0.01         # a swing point within 1% of the line counts as a touch
 TRENDLINE_MIN_SPAN_BARS = 15       # anchors must be at least this many bars apart
 TRENDLINE_MIN_TOUCHES = 3          # 2 anchors + at least 1 more real touch = a confirmed line

@@ -2591,7 +2591,7 @@ def _setup_momentum_surge(hist: pd.DataFrame) -> Optional[dict]:
 # Twin of fit_trendline() and its constants in pipeline_a_scanner.py — see the
 # "Trendlines — how a line is chosen" note there. Change both together.
 _TL_SEARCH_DAYS = 250   # v18: was 150 — a MAXIMUM lookback; the line itself is chosen by touches/fit (KO: Jan->Oct)
-_TL_TOLERANCE = 0.015
+_TL_TOLERANCE = 0.005   # v18: was 0.015 — twin of TRENDLINE_TOLERANCE in the scanner (see the note there)
 _TL_TOUCH_TOL = 0.01
 _TL_MIN_SPAN_BARS = 15
 _TL_MIN_TOUCHES = 3
@@ -2700,6 +2700,59 @@ def _major_support_trendline(window: pd.DataFrame) -> Optional[dict]:
         "points": [[_fmt_date(dates[i0]), round(v0, 2)], [_fmt_date(dates[-1]), round(float(value_today), 2)]],
         "touches": [[_fmt_date(dates[i]), round(float(v), 2)] for i, v in touches],
     }
+
+
+_ZONE_MAX_WIDTH = 0.008     # a zone is at most 0.8% tall
+_ZONE_MIN_TOUCHES = 3
+_ZONE_MAX_DIST = 0.12       # only zones within 12% of the price
+
+
+def _sr_zones(window: pd.DataFrame) -> list:
+    """Support / resistance ZONES for the Deep Dive chart (v18, the owner draws them as rectangles in TradingView):
+    swing highs AND swing lows are pooled — a level that was resistance (highs) and later support (lows) counts once
+    with all its touches — and grouped into clusters no taller than _ZONE_MAX_WIDTH with at least _ZONE_MIN_TOUCHES
+    pivots. Returned: the strongest zone below the price (support) and the strongest above it (resistance) —
+    most touches, then a zone that has both highs and lows (role reversal), then the nearer one.
+    Checked on KO 26.10.2026: 85.13-85.68, 5 touches (Jul 7 & 17 highs, Aug 4 & 12 and Oct 5 lows) = the owner's zone.
+    Display only — the scanner does not use it."""
+    highs, lows = window["High"].values, window["Low"].values
+    close = float(window["Close"].iloc[-1])
+    piv = [(i, v, "H") for i, v in _find_swing_points(highs, mode="high")] + \
+          [(i, v, "L") for i, v in _find_swing_points(lows, mode="low")]
+    piv.sort(key=lambda p: p[1])
+    zones = []
+    for s in range(len(piv)):
+        grp = [p for p in piv[s:] if (p[1] - piv[s][1]) / piv[s][1] <= _ZONE_MAX_WIDTH]
+        if len(grp) < _ZONE_MIN_TOUCHES:
+            continue
+        lo, hi = piv[s][1], max(p[1] for p in grp)
+        mid = (lo + hi) / 2
+        if abs(mid - close) / close > _ZONE_MAX_DIST:
+            continue
+        hs = [p[0] for p in grp if p[2] == "H"]
+        ls = [p[0] for p in grp if p[2] == "L"]
+        kind = "support" if mid < close else "resistance"
+        # role reversal: highs came first and later lows held there (support), or the other way round (resistance)
+        flipped = bool(hs and ls) and (min(hs) < max(ls) if kind == "support" else min(ls) < max(hs))
+        zones.append({"lo": lo, "hi": hi, "n": len(grp), "both": flipped,
+                      "first": min(p[0] for p in grp), "kind": kind, "dist": abs(mid - close) / close})
+    out = []
+    for kind in ("support", "resistance"):
+        cands = sorted((z for z in zones if z["kind"] == kind), key=lambda z: (-z["n"], not z["both"], z["dist"]))
+        if not cands:
+            continue
+        z = cands[0]
+        dates = window.index
+        sup = kind == "support"
+        out.append({
+            "type": "zone", "kind": kind, "lo": round(float(z["lo"]), 2), "hi": round(float(z["hi"]), 2),
+            "from": _fmt_date(dates[z["first"]]), "to": _fmt_date(dates[-1]), "touches": z["n"],
+            "label_he": ("אזור תמיכה" if sup else "אזור התנגדות")
+                        + ((" (התנגדות שהפכה לתמיכה)" if sup else " (תמיכה שהפכה להתנגדות)") if z["both"] else ""),
+            "label_en": ("Support zone" if sup else "Resistance zone")
+                        + ((" (old resistance, now support)" if sup else " (old support, now resistance)") if z["both"] else ""),
+        })
+    return out
 
 
 def _snap_horizontal_lines(candidates: list, hist: pd.DataFrame) -> None:
@@ -3317,11 +3370,22 @@ def get_technical_setup(ticker: str):
             context_lines.append(major)
     except Exception as e:
         print(f"[warn] technical-setup {ticker}: main trendline failed: {type(e).__name__}: {e}")
+    zones = []
+    try:
+        zones = _sr_zones(hist.tail(_TL_SEARCH_DAYS))
+        # a pattern's horizontal line inside (or within 1% of) a zone is the same level — the rectangle replaces it
+        for c in candidates:
+            c["lines"] = [ln for ln in c.get("lines", []) if not (
+                ln.get("type") == "horizontal" and ln.get("price")
+                and any(z["lo"] * 0.99 <= float(ln["price"]) <= z["hi"] * 1.01 for z in zones))]
+    except Exception as e:
+        print(f"[warn] technical-setup {ticker}: S/R zones failed: {type(e).__name__}: {e}")
 
     # The chart covers 160 bars, or more (up to _TL_SEARCH_DAYS + 10) when a drawn line starts earlier — a line whose
     # start is off the chart used to be silently dropped by the frontend.
     starts = [ln.get("from") or (ln.get("points") or [[None]])[0][0]
-              for c in candidates for ln in c.get("lines", [])] + [ln["points"][0][0] for ln in context_lines]
+              for c in candidates for ln in c.get("lines", [])] + [ln["points"][0][0] for ln in context_lines] \
+             + [z["from"] for z in zones]
     pos = {_fmt_date(d): k for k, d in enumerate(hist.index)}
     first = min((pos[s] for s in starts if s in pos), default=len(hist) - 152)
     n_bars = min(max(160, len(hist) - first + 8), _TL_SEARCH_DAYS + 10)
@@ -3341,6 +3405,7 @@ def get_technical_setup(ticker: str):
         "candidates": candidates,
         "price_series": price_series,
         "context_lines": context_lines,
+        "zones": zones,
     }
 
 
