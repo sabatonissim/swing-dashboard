@@ -9,6 +9,7 @@ Order of work (fast and bounded — a hanging source can never stall the run):
   1. ONE request to the BLS public API for all BLS-owned series (CPI, core CPI, PPI, jobs, unemployment, JOLTS).
   2. FRED for everything that is still missing (PCE, GDP, retail, claims, Fed rate), in parallel, one short attempt
      per URL form, hard time limit for the whole step.
+  3. Keyless stand-ins for what FRED did not deliver: NY Fed (Fed rate) and DBnomics (PCE, core PCE, GDP).
 A series that cannot be downloaded keeps its previous stored copy. The run fails (red) only if NOTHING refreshed.
 Needs only the DATABASE_URL secret (FRED_API_KEY / BLS_API_KEY optional).     Manual run: python -u econ_refresh.py
 """
@@ -61,6 +62,58 @@ def fred_download(series):
     raise last
 
 
+# --------------------------------------------------------------------------
+# Keyless stand-ins for FRED (v18, 26.10.2026). fred.stlouisfed.org did not answer from Render, from GitHub, nor from the
+# owner's home PC (every URL timed out) — so 6 series never arrived. These official-data sources answered at once, with
+# no key and no sign-up. Used only for series FRED did not deliver.
+#   * New York Fed rates API: the Fed's target range (upper bound) published with every daily EFFR rate = DFEDTARU.
+#   * DBnomics: a public mirror of BEA's NIPA tables (same index base and numbers as FRED). It re-reads BEA once a day
+#     (~01:30 UTC), so a new PCE/GDP "actual" shows up about a day after the release, not within minutes.
+# Retail sales (RSAFS) and jobless claims (ICSA) have no keyless source found yet (Census API now wants a key).
+# --------------------------------------------------------------------------
+NYFED_EFFR = "https://markets.newyorkfed.org/api/rates/unsecured/effr/search.json?startDate={start}&endDate={end}"
+DBNOMICS = "https://api.db.nomics.world/v22/series/{code}?observations=1&format=json"
+DBNOMICS_SERIES = {                         # FRED id -> DBnomics series (BEA table / line)
+    "PCEPI": "BEA/NIPA-T20804/DPCERG-M",                # PCE price index, Table 2.8.4 line 1
+    "PCEPILFE": "BEA/NIPA-T20804/DPCCRG-M",             # PCE excluding food and energy, line 25
+    "A191RL1Q225SBEA": "BEA/NIPA-T10101/A191RL-Q",      # real GDP, % change at annual rate, Table 1.1.1 line 1
+}
+
+
+def nyfed_target_upper():
+    import json
+    end = date.today()
+    start = end - timedelta(days=900)
+    js = json.loads(ec._http_text(NYFED_EFFR.format(start=start.isoformat(), end=end.isoformat()), timeout=20))
+    rows = {}
+    for r in js.get("refRates", []):
+        try:
+            rows[date.fromisoformat(r["effectiveDate"])] = float(r["targetRateTo"])
+        except (KeyError, TypeError, ValueError):
+            continue
+    if not rows:
+        raise RuntimeError("NY Fed API returned no target-rate rows")
+    return sorted(rows.items())
+
+
+def dbnomics_rows(series):
+    import json
+    js = json.loads(ec._http_text(DBNOMICS.format(code=DBNOMICS_SERIES[series]), timeout=20))
+    doc = js["series"]["docs"][0]
+    cosd = date.today() - timedelta(days=900)
+    rows = []
+    for start, value in zip(doc.get("period_start_day", []), doc.get("value", [])):
+        try:
+            d, v = date.fromisoformat(start), float(value)       # "NA" = no value -> skipped
+        except (TypeError, ValueError):
+            continue
+        if d >= cosd:
+            rows.append((d, v))
+    if not rows:
+        raise RuntimeError(f"DBnomics returned no data for {series}")
+    return rows
+
+
 def main():
     series = sorted({v["fred"]["series"] for v in ec.CATALOG.values() if v.get("fred")})
     stored = {}
@@ -92,6 +145,16 @@ def main():
         except Exception:  # noqa: BLE001  (time budget used up)
             log("FRED: time budget used up — the rest keeps its stored copy")
         pool.shutdown(wait=False, cancel_futures=True)
+
+    # 3) keyless stand-ins for whatever FRED did not deliver
+    fallbacks = {"DFEDTARU": ("NY Fed", nyfed_target_upper)}
+    fallbacks.update({s: ("DBnomics (BEA)", lambda s=s: dbnomics_rows(s)) for s in DBNOMICS_SERIES})
+    for s, (src, fn) in fallbacks.items():
+        if s in series and s not in stored:
+            try:
+                stored[s] = (src, fn())
+            except Exception as e:  # noqa: BLE001
+                log(f"{src} {s}: failed — {type(e).__name__}: {str(e)[:120]}")
 
     for s, (src, rows) in sorted(stored.items()):
         ec.series_to_db(get_conn, s, rows)

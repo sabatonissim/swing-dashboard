@@ -1933,7 +1933,10 @@ _BAD_BEFORE = re.compile(
     r"(expect|anticipat|outlook|guidance|forecast|project|target|predict|estimat|"
     r"compared\s+(?:with|to)|versus|\bvs\.?\b|\bfrom\b|prior[-\s]year|year[-\s]ago|last\s+year|"
     r"full[-\s]year|fiscal[-\s]year|year\s+ended|twelve\s+months|nine\s+months|six\s+months|first\s+half|second\s+half|"
-    r"year[-\s]to[-\s]date|\bytd\b|pro\s+forma|\bsegment\b|\bwould\b|\bto\s+be\b|\bbacklog\b|\bbookings\b)\W*(?:\w+\W+){0,6}$", re.I)
+    r"year[-\s]to[-\s]date|\bytd\b|pro\s+forma|\bsegment\b|\bwould\b|\bto\s+be\b|\bbacklog\b|\bbookings\b|"
+    # v18 (26.10.2026, live): one LINE of revenue, not the total — Verizon "Mobility and broadband service revenue of $23.5
+    # billion" (total was $34.3B), Blackstone "Net Accrued Performance Revenues of $7.3 billion" (a balance, not revenue)
+    r"\bservice|\bsubscription|\bproducts?\b|\bequipment\b|\baccrued\b|\bdeferred\b|\bunearned\b)\W*(?:\w+\W+){0,6}$", re.I)
 # ...or the words right after it say "a year ago" / "in the prior-year quarter"
 _BAD_AFTER = re.compile(
     r"^\W{0,3}(?:a\s+year\s+ago|last\s+year|in\s+the\s+(?:year[-\s]ago|prior|same)|(?:in|for)\s+(?:the\s+)?(?:year[-\s]ago|prior[-\s]year|same\s+(?:quarter|period)))", re.I)
@@ -2039,10 +2042,86 @@ def _sec_release_text(cik, accession):
     return None
 
 
-def _parse_press_release_revenue(text, reference=None):
-    """Revenue in dollars from press-release text, or None. See guard rails above."""
+# v18: with the pre-report consensus stored, the figure must sit close to it. The old 0.5x–2x band around the last statement
+# revenue let Verizon's $23.5B service line (estimate $34.9B) and Blackstone's $7.3B accrued balance (estimate $3.4B) through.
+REV_ESTIMATE_BAND = (0.8, 1.25)
+
+
+def _in_band(val, reference, estimate):
+    if estimate:
+        return REV_ESTIMATE_BAND[0] <= val / estimate <= REV_ESTIMATE_BAND[1]
+    if reference:
+        return 0.5 <= val / reference <= 2.0
+    return None   # nothing to compare with
+
+
+def _parse_press_release_revenue(text, reference=None, estimate=None):
+    """Revenue in dollars from press-release text, or None. See guard rails above.
+    Sentences first ("revenue was $X billion"); then — only when a pre-report estimate exists — the income-statement
+    table ("Revenues $ 46,098 $ 32,168", see _parse_table_revenue)."""
     if not text:
         return None
+    val = _parse_sentence_revenue(text, reference, estimate)
+    if val is None and estimate:
+        val = _parse_table_revenue(text, estimate)
+    return val
+
+
+# Income-statement table rows. Abbott, Valero and Kinder Morgan give revenue ONLY in the table, e.g.
+#   "(In millions ...) Three Months Ended September 30, ... 2026 2025 2026 2025 Revenues $ 4,531 $ 4,146 $ 13,836 $ 12,429"
+_TBL_LABEL = re.compile(r"\b(?:total\s+)?(?:net\s+|operating\s+)?(?:revenues?|sales)\b", re.I)
+_TBL_BAD_PREFIX = re.compile(r"(cost\s+of|intersegment|deferred|unearned|accrued|service|product|equipment|subscription)\s*$", re.I)
+_TBL_UNIT = re.compile(r"\(\s*(?:\$\s*|U\.?S\.?\s*dollars\s*)?(?:in\s+)?(millions|thousands|billions)\b|\bin\s+(millions|thousands|billions)\b", re.I)
+# Column-header years: "2026", "3Q26", "3Q'26", "Q3 2026", "3Q’26"
+_TBL_YEAR = re.compile(r"(?<![\d,.$])(?:(20\d\d)|\d?Q\d?\s?[’'`]?\s?(\d\d))(?![\d,])", re.I)
+
+
+def _parse_table_revenue(text, estimate):
+    """Current-quarter revenue from the release's income-statement table, or None.
+    Accepted only when (a) a unit line ("in millions"/"in thousands") is found above the row, (b) the value is within
+    REV_ESTIMATE_BAND of the stored estimate, and (c) the column is unambiguous: either the header years show which of the
+    first two columns is the current year, or exactly ONE number in the row passes the band (NextEra's FPL/NEER/total row)."""
+    mult = {"millions": 1e6, "thousands": 1e3, "billions": 1e9}
+    for m in _TBL_LABEL.finditer(text):
+        if _TBL_BAD_PREFIX.search(text[max(0, m.start() - 25):m.start()]):
+            continue
+        region = re.match(r"[\s$\d,.()—–-]*", text[m.end():m.end() + 160]).group(0)
+        nums = [float(n.replace(",", "")) for n in re.findall(r"\d[\d,]*(?:\.\d+)?", region)]
+        nums = [n for n in nums if n >= 100][:6]
+        if len(nums) < 1:
+            continue
+        before = text[max(0, m.start() - 2500):m.start()]
+        units = list(_TBL_UNIT.finditer(before))
+        if not units:
+            continue
+        unit = mult[(units[-1].group(1) or units[-1].group(2)).lower()]
+        values = [n * unit for n in nums]
+        in_band = [v for v in values if _in_band(v, None, estimate)]
+        if not in_band:
+            continue
+        # header order: the LAST run of column-header years (tokens less than 40 characters apart). Trusted only when it
+        # alternates current/prior year — "2026 2025 2026 2025" or "3Q'25 3Q'26 3Q'25 YTD 3Q'26 YTD". A five-quarter table
+        # ("Q3-2025 Q4-2025 Q1-2026 Q2-2026 Q3-2026", Tesla/Newmont) is NOT a two-column header: there the second column
+        # is an older quarter, so the order is left unknown.
+        toks = [(g.start(), int(g.group(1) or ("20" + g.group(2)))) for g in _TBL_YEAR.finditer(before[-2000:])]
+        run = toks[-1:]
+        for tok in reversed(toks[:-1]):
+            if run[0][0] - tok[0] > 40:
+                break
+            run.insert(0, tok)
+        years = [y for _, y in run]
+        order = None
+        # ...and only when every number in the row has its own header year (Newmont: "2025 2026" over Q1 Q2 Q3 Q4 FY columns)
+        if len(values) <= len(years) and len(years) >= 2 and all(abs(a - b) == 1 for a, b in zip(years, years[1:])):
+            order = 0 if years[0] > years[1] else 1
+        if order is not None and len(values) >= 2 and _in_band(values[order], None, estimate):
+            return values[order]
+        if len(in_band) == 1 and (order is None or len(values) == 1):
+            return in_band[0]
+    return None
+
+
+def _parse_sentence_revenue(text, reference=None, estimate=None):
     head = text[:15000]
     best = None   # (position, value)
     for rx in _REV_PATTERNS:
@@ -2054,10 +2133,10 @@ def _parse_press_release_revenue(text, reference=None):
             after = head[m.end():m.end() + 45]
             if _BAD_BEFORE.search(before) or _BAD_AFTER.match(after):
                 continue
-            if reference:
-                if not (0.5 <= val / reference <= 2.0):
-                    continue
-            elif m.start() > 2500 or val < 1e7:
+            ok = _in_band(val, reference, estimate)
+            if ok is False:
+                continue
+            if ok is None and (m.start() > 2500 or val < 1e7):
                 continue
             if best is None or m.start() < best[0]:
                 best = (m.start(), val)
@@ -2065,7 +2144,7 @@ def _parse_press_release_revenue(text, reference=None):
     return best[1] if best else None
 
 
-def _revenue_from_press_release(ticker, report_date, reference=None):
+def _revenue_from_press_release(ticker, report_date, reference=None, estimate=None):
     try:
         cik = _sec_cik_for(ticker)
         if not cik:
@@ -2080,11 +2159,11 @@ def _revenue_from_press_release(ticker, report_date, reference=None):
             if not text:
                 print(f"[info] SEC revenue {ticker}: filing {acc} has no readable press-release exhibit")
                 continue
-            val = _parse_press_release_revenue(text, reference)
+            val = _parse_press_release_revenue(text, reference, estimate)
             if val is not None:
                 return val
             print(f"[info] SEC revenue {ticker}: press release {acc} read ({len(text)} chars) but no revenue figure passed the checks"
-                  f" (reference={reference}) — start of text: {text[:160]!r}")
+                  f" (estimate={estimate}, reference={reference}) — start of text: {text[:160]!r}")
         return None
     except Exception as e:
         print(f"[warn] press-release revenue fetch failed for {ticker}: {type(e).__name__}: {e}")
@@ -2104,7 +2183,7 @@ def _latest_statement_revenue(inc):
         return None
 
 
-def _fetch_revenue_result(ticker: str, report_dt) -> tuple:
+def _fetch_revenue_result(ticker: str, report_dt, stored_estimate=None) -> tuple:
     """Returns (revenue_estimate, revenue_actual, revenue_period_end).
 
     * estimate: Yahoo's "0q" row is the quarter being reported ONLY until the
@@ -2136,7 +2215,8 @@ def _fetch_revenue_result(ticker: str, report_dt) -> tuple:
         if revenue_actual is None:
             # Yahoo's statement still holds the previous quarter -> take the figure from the
             # company's own earnings press release (SEC 8-K), validated against the last known revenue.
-            rev_pr = _revenue_from_press_release(ticker, report_dt.date(), _latest_statement_revenue(inc))
+            rev_pr = _revenue_from_press_release(ticker, report_dt.date(), _latest_statement_revenue(inc),
+                                                 float(stored_estimate or revenue_estimate or 0) or None)
             if rev_pr is not None:
                 revenue_actual, period_end = rev_pr, report_dt.date()   # period_end = report date marker (non-NULL keeps the sanitizer happy)
                 print(f"[info] earnings {ticker}: revenue ${rev_pr/1e9:.2f}B taken from the SEC press release (8-K).")
@@ -2180,15 +2260,20 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
         conn_chk = get_conn()
         cur_chk = conn_chk.cursor()
         cur_chk.execute(
-            "SELECT ticker FROM earnings_calendar WHERE report_date BETWEEN %s AND %s AND eps_actual IS NOT NULL",
+            "SELECT ticker, report_date, eps_actual IS NOT NULL, revenue_estimate FROM earnings_calendar "
+            "WHERE report_date BETWEEN %s AND %s",
             (window_start.isoformat(), window_end.isoformat()),
         )
-        already_reported = {row[0] for row in cur_chk.fetchall()}
+        chk_rows = cur_chk.fetchall()
+        already_reported = {row[0] for row in chk_rows if row[2]}
+        # the pre-report revenue estimate, used to sanity-check a press-release figure (v18)
+        stored_rev_est = {(row[0], row[1]): row[3] for row in chk_rows if row[3]}
         cur_chk.close()
         conn_chk.close()
     except Exception as e:
         print(f"[warn] earnings calendar: failed to check already-reported protection list: {e}")
         already_reported = set()
+        stored_rev_est = {}
 
     protected = [r for r in in_window if r[0] in already_reported and r[0] not in top_tickers]
     if protected:
@@ -2206,7 +2291,7 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
     for ticker, mcap, dt_utc in top:
         eps_est, eps_actual, eps_surprise, eps_src = _fetch_eps_result(ticker, dt_utc.date())
         time.sleep(INTER_TICKER_DELAY_SEC)
-        rev_est, rev_actual, rev_period_end = _fetch_revenue_result(ticker, dt_utc)
+        rev_est, rev_actual, rev_period_end = _fetch_revenue_result(ticker, dt_utc, stored_rev_est.get((ticker, dt_utc.date())))
         time.sleep(INTER_TICKER_DELAY_SEC)
         enriched.append((ticker, mcap, dt_utc, eps_est, eps_actual, eps_surprise, rev_est, rev_actual, eps_src, rev_period_end))
 
@@ -2511,8 +2596,24 @@ def refresh_earnings_results():
     start = today - timedelta(days=EARNINGS_CALENDAR_WINDOW_PAST_DAYS)
     conn = get_conn()
     cur = conn.cursor()
+    # v18: re-check press-release revenues against the stored estimate (press-release rows are the ones whose
+    # revenue_period_end is the report date itself). The old, looser check stored Verizon's $23.5B service line and
+    # Blackstone's $7.3B accrued balance; clearing them lets this run fetch the right figure, or leave it empty.
+    lo, hi = REV_ESTIMATE_BAND
     cur.execute(
-        """SELECT ticker, report_date, session, eps_actual, revenue_actual FROM earnings_calendar
+        """UPDATE earnings_calendar SET revenue_actual = NULL, revenue_period_end = NULL, revenue_surprise_pct = NULL
+           WHERE report_date BETWEEN %s AND %s AND revenue_period_end = report_date
+             AND revenue_actual IS NOT NULL AND revenue_estimate > 0
+             AND (revenue_actual / revenue_estimate < %s OR revenue_actual / revenue_estimate > %s)
+           RETURNING ticker""",
+        (start, today, lo, hi),
+    )
+    cleared = [r[0] for r in cur.fetchall()]
+    conn.commit()
+    if cleared:
+        print(f"[info] earnings refresh: cleared {len(cleared)} press-release revenue(s) far from the estimate: {', '.join(cleared)}")
+    cur.execute(
+        """SELECT ticker, report_date, session, eps_actual, revenue_actual, revenue_estimate FROM earnings_calendar
            WHERE report_date BETWEEN %s AND %s AND (eps_actual IS NULL OR revenue_actual IS NULL)
            ORDER BY report_date DESC, market_cap DESC NULLS LAST""",
         (start, today),
@@ -2522,20 +2623,20 @@ def refresh_earnings_results():
     conn.close()
 
     todo = []
-    for ticker, rdate, session, eps_actual, rev_actual in rows:
+    for ticker, rdate, session, eps_actual, rev_actual, rev_est in rows:
         report_dt = datetime(rdate.year, rdate.month, rdate.day, _SESSION_REPORT_HOUR_UTC.get(session or "", 15), 0, tzinfo=timezone.utc)
         if report_dt <= now:
-            todo.append((ticker, rdate, report_dt, eps_actual, rev_actual))
+            todo.append((ticker, rdate, report_dt, eps_actual, rev_actual, rev_est))
     print(f"[info] earnings refresh: {len(todo)} reported name(s) still missing EPS or revenue.")
 
     updates = []
-    for ticker, rdate, report_dt, eps_actual, rev_actual in todo:
+    for ticker, rdate, report_dt, eps_actual, rev_actual, rev_est in todo:
         eps_est = eps_new = eps_sur = eps_src = rev_new = rev_pe = None
         if eps_actual is None:
             eps_est, eps_new, eps_sur, eps_src = _fetch_eps_result(ticker, rdate)
             time.sleep(INTER_TICKER_DELAY_SEC)
         if rev_actual is None:
-            _, rev_new, rev_pe = _fetch_revenue_result(ticker, report_dt)
+            _, rev_new, rev_pe = _fetch_revenue_result(ticker, report_dt, rev_est)
             time.sleep(INTER_TICKER_DELAY_SEC)
         if eps_new is not None or rev_new is not None:
             updates.append((ticker, rdate, eps_est, eps_new, eps_sur, eps_src, rev_new, rev_pe))
