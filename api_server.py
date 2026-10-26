@@ -2165,9 +2165,6 @@ def _setup_horizontal_resistance_breakout(hist: pd.DataFrame) -> Optional[dict]:
         stage = "approaching"
 
     anchor_idx = next(i for i, v in swing_highs if abs(v - level) / level <= 0.02)
-    # v18: the level is the AVERAGE of the cluster of swing highs (same rule as the scanner), so it does not sit on any
-    # one wick — the chart now marks the real highs that make up the level, so it is visible where it was tested.
-    touch_pts = [(i, v) for i, v in swing_highs if abs(v - level) / level <= 0.02]
     return {
         "pattern": "horizontal_resistance_breakout",
         "stage": stage,
@@ -2181,8 +2178,7 @@ def _setup_horizontal_resistance_breakout(hist: pd.DataFrame) -> Optional[dict]:
              "label_he": "התנגדות → הפכה לתמיכה" if stage == "triggered" else "התנגדות אופקית",
              "label_en": "Resistance → now support" if stage == "triggered" else "Horizontal resistance",
              "price": round(level, 2),
-             "from": _fmt_date(dates[anchor_idx]), "to": _fmt_date(dates[-1]),
-             "touches": [[_fmt_date(dates[i]), round(float(v), 2)] for i, v in touch_pts]},
+             "from": _fmt_date(dates[anchor_idx]), "to": _fmt_date(dates[-1])},
         ],
     }
 
@@ -2594,7 +2590,7 @@ def _setup_momentum_surge(hist: pd.DataFrame) -> Optional[dict]:
 
 # Twin of fit_trendline() and its constants in pipeline_a_scanner.py — see the
 # "Trendlines — how a line is chosen" note there. Change both together.
-_TL_SEARCH_DAYS = 150
+_TL_SEARCH_DAYS = 250   # v18: was 150 — a MAXIMUM lookback; the line itself is chosen by touches/fit (KO: Jan->Oct)
 _TL_TOLERANCE = 0.015
 _TL_TOUCH_TOL = 0.01
 _TL_MIN_SPAN_BARS = 15
@@ -2704,6 +2700,42 @@ def _major_support_trendline(window: pd.DataFrame) -> Optional[dict]:
         "points": [[_fmt_date(dates[i0]), round(v0, 2)], [_fmt_date(dates[-1]), round(float(value_today), 2)]],
         "touches": [[_fmt_date(dates[i]), round(float(v), 2)] for i, v in touches],
     }
+
+
+def _snap_horizontal_lines(candidates: list, hist: pd.DataFrame) -> None:
+    """Display-only (v18, owner's request): a horizontal level that is the AVERAGE of several highs/lows (the
+    resistance/support cluster rules, shared with the scanner) does not sit on any one wick, so on the chart the line
+    floated next to the candle it came from. Each horizontal line is moved onto a real wick: the FIRST bar in its span
+    whose high or low is within 0.4% of the level, else the closest wick within 1%. The line then starts at that bar and
+    shows that price; the candidate's key level follows when it was the same number. Detection is not affected."""
+    idx = {_fmt_date(d): k for k, d in enumerate(hist.index)}
+    highs, lows = hist["High"].values, hist["Low"].values
+    for c in candidates:
+        for ln in c.get("lines") or []:
+            if ln.get("type") != "horizontal" or not ln.get("price"):
+                continue
+            k1, k2 = idx.get(ln.get("from")), idx.get(ln.get("to"))
+            if k1 is None or k2 is None:
+                continue
+            p = float(ln["price"])
+            best = None   # (bar, value, rel. distance)
+            for k in range(k1, k2 + 1):
+                for v in (float(highs[k]), float(lows[k])):
+                    dist = abs(v - p) / p
+                    if dist <= 0.004:
+                        best = (k, v, dist)
+                        break
+                    if dist <= 0.01 and (best is None or dist < best[2]):
+                        best = (k, v, dist)
+                if best and best[2] <= 0.004:
+                    break
+            if not best:
+                continue
+            new_p = round(best[1], 2)
+            if abs(float(c.get("key_level") or 0) - p) < 0.011:
+                c["key_level"] = new_p
+            ln["price"] = new_p
+            ln["from"] = _fmt_date(hist.index[best[0]])
 
 
 def _trendline_line_dict(fit: dict, window: pd.DataFrame, label_he: str, label_en: str) -> dict:
@@ -3271,16 +3303,34 @@ def get_technical_setup(ticker: str):
         for idx, o, h, l, c in zip(tail_hist.index, tail_hist["Open"], tail_hist["High"], tail_hist["Low"], tail_hist["Close"])
     ]
 
-    # Main rising trendline for context (same 160 bars the chart shows); skipped if a pattern already draws a trend
-    # line from the same starting point.
     context_lines = []
     try:
-        major = _major_support_trendline(tail_hist)
-        starts = {ln["points"][0][0] for c in candidates for ln in c.get("lines", []) if ln.get("type") == "trend" and ln.get("points")}
-        if major and major["points"][0][0] not in starts:
+        _snap_horizontal_lines(candidates, hist)
+    except Exception as e:
+        print(f"[warn] technical-setup {ticker}: snapping horizontal lines failed: {type(e).__name__}: {e}")
+    try:
+        # v18: the main trendline only when no detected pattern already draws a trendline (KO: the rising-support
+        # pattern already shows the Jan->Oct line, a second "main" line from another low was clutter)
+        has_trendline = any(c.get("pattern") in ("ascending_trendline_support", "descending_trendline_breakout") for c in candidates)
+        major = None if has_trendline else _major_support_trendline(hist.tail(_TL_SEARCH_DAYS))
+        if major:
             context_lines.append(major)
     except Exception as e:
         print(f"[warn] technical-setup {ticker}: main trendline failed: {type(e).__name__}: {e}")
+
+    # The chart covers 160 bars, or more (up to _TL_SEARCH_DAYS + 10) when a drawn line starts earlier — a line whose
+    # start is off the chart used to be silently dropped by the frontend.
+    starts = [ln.get("from") or (ln.get("points") or [[None]])[0][0]
+              for c in candidates for ln in c.get("lines", [])] + [ln["points"][0][0] for ln in context_lines]
+    pos = {_fmt_date(d): k for k, d in enumerate(hist.index)}
+    first = min((pos[s] for s in starts if s in pos), default=len(hist) - 152)
+    n_bars = min(max(160, len(hist) - first + 8), _TL_SEARCH_DAYS + 10)
+    if n_bars != 160:
+        tail_hist = hist.tail(n_bars)
+        price_series = [
+            [_fmt_date(idx), round(float(o), 2), round(float(h), 2), round(float(l), 2), round(float(c), 2)]
+            for idx, o, h, l, c in zip(tail_hist.index, tail_hist["Open"], tail_hist["High"], tail_hist["Low"], tail_hist["Close"])
+        ]
 
     return {
         "ticker": ticker,
@@ -5199,8 +5249,69 @@ def _get_fundamentals_cached(ticker: str) -> dict:
         if (time.time() - cached_ts) < ttl and _is_valid_fundamentals_shape(cached_data):
             return cached_data
     data = _build_fundamentals(ticker)
+    try:
+        _apply_stock_estimates(data, ticker)
+    except Exception as e:
+        print(f"[warn] fundamentals({ticker}): stock estimates not applied: {type(e).__name__}: {e}")
     _fundamentals_cache[ticker] = (time.time(), data)
     return data
+
+
+_ESTIMATES_MAX_AGE_DAYS = 10
+
+
+def _apply_stock_estimates(data: dict, ticker: str) -> None:
+    """Forward P/E for the next twelve months (NTM) from the analyst estimates the scanner stores twice a day
+    (pipeline_a_scanner.save_stock_estimates — Yahoo's .info works there, not here). NTM EPS is the usual blend of the
+    current and next fiscal year by how much of the current fiscal year is still ahead:
+        f = days left in the current fiscal year / 365   (0 once it has ended but is not reported yet)
+        NTM EPS = f * EPS(current FY) + (1 - f) * EPS(next FY)
+    e.g. KO on 26.10.2026: 66 days left -> 0.18*3.31 + 0.82*3.53 = 3.49 -> $92.6 / 3.49 = 26.5. Only when no P/E came
+    from elsewhere; the stored trailing P/E / market cap fill gaps too."""
+    if not isinstance(data, dict) or not data.get("has_fundamentals"):
+        return
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute("SELECT to_regclass('stock_estimates') IS NOT NULL AS ok")
+        if not cur.fetchone()["ok"]:
+            return
+        cur.execute("""SELECT eps_cur_fy, eps_next_fy, fy_end, trailing_pe, market_cap FROM stock_estimates
+                       WHERE ticker = %s AND updated_at > NOW() - make_interval(days => %s)""",
+                    (ticker, _ESTIMATES_MAX_AGE_DAYS))
+        row = cur.fetchone()
+    if not row:
+        return
+    if data.get("market_cap") is None and row["market_cap"]:
+        data["market_cap"] = float(row["market_cap"])
+    if data.get("trailing_pe") is None and row["trailing_pe"]:
+        data["trailing_pe"] = round(float(row["trailing_pe"]), 1)
+    if data.get("forward_pe") is not None:
+        return
+    eps_next = row["eps_next_fy"]
+    eps_cur = row["eps_cur_fy"]
+    if eps_next is None and eps_cur is None:
+        return
+    f = 0.0
+    if row["fy_end"] and eps_cur is not None:
+        f = min(max((row["fy_end"] - date.today()).days, 0), 365) / 365.0
+    if eps_next is None:
+        eps_ntm = float(eps_cur)
+    elif eps_cur is None:
+        eps_ntm = float(eps_next)
+    else:
+        eps_ntm = f * float(eps_cur) + (1 - f) * float(eps_next)
+    price = None
+    shares = data.get("latest_shares_outstanding")
+    if data.get("market_cap") and shares:
+        price = float(data["market_cap"]) / float(shares)
+    if price is None:
+        try:
+            h = yf.Ticker(ticker).history(period="5d")
+            price = float(h["Close"].iloc[-1]) if not h.empty else None
+        except Exception:
+            price = None
+    if price and eps_ntm > 0:
+        data["forward_pe"] = round(price / eps_ntm, 1)
+        data["forward_pe_basis"] = "ntm"
 
 
 @app.get("/api/fundamentals/{ticker}")

@@ -390,7 +390,9 @@ def compute_support_resistance(hist: pd.DataFrame, lookback: int = 120) -> dict:
 # Among all valid lines we prefer the one with the most touches, then the
 # longest span, then the most recent last touch. api_server.py has a twin
 # copy of this function (_fit_trendline) — change both together.
-TRENDLINE_SEARCH_DAYS = 150        # how far back the two anchor points may be
+TRENDLINE_SEARCH_DAYS = 250        # how far back the two anchor points may be (v18: was 150 — only a MAXIMUM; the
+                                   # line is chosen by touches/fit, so it can be short or long. KO's Jan->Oct line,
+                                   # 8 touches incl. the early-October bounce, started before the old 150-bar limit)
 TRENDLINE_TOLERANCE = 0.015        # a wick may pierce the line by at most 1.5%
 TRENDLINE_TOUCH_TOL = 0.01         # a swing point within 1% of the line counts as a touch
 TRENDLINE_MIN_SPAN_BARS = 15       # anchors must be at least this many bars apart
@@ -1433,6 +1435,7 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
     earnings_candidates: List[tuple] = []  # (ticker, market_cap, earnings_timestamp) — piggybacks
                                      # on the .info fetch every ticker already gets above, so the
                                      # weekly earnings calendar costs zero extra yfinance calls.
+    estimate_rows: List[tuple] = []  # analyst EPS estimates per ticker, from the same .info fetch (see save_stock_estimates)
     benchmark_rets = fetch_benchmark_returns()
     rs_raw_by_ticker: Dict[str, float] = {}  # computed for every ticker fetched, used for
                                               # percentile ranking after the full loop below
@@ -1478,6 +1481,9 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
                 _earnings_ts = (info or {}).get("earningsTimestamp")
                 if _earnings_ts:
                     earnings_candidates.append((ticker, _mcap, _earnings_ts))
+                _est = _estimates_row(ticker, info)
+                if _est:
+                    estimate_rows.append(_est)
             except Exception as e:
                 print(f"[warn] change_pct calc failed for {ticker}: {e}")
 
@@ -1743,7 +1749,58 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
 
     upsert_universe_movers(all_changes)
     update_earnings_calendar(earnings_candidates)
+    try:
+        save_stock_estimates(estimate_rows)
+    except Exception as e:
+        print(f"[warn] saving stock estimates failed: {type(e).__name__}: {e}")
     return results
+
+
+# ------------------------------------------------------------------
+# Analyst estimates for the forward (NTM) P/E — v18.
+# Yahoo's .info is blocked from Render, so the API server could never show a forward P/E. Here (GitHub Actions) .info
+# works and is fetched for every ticker anyway, so its estimate fields are stored in stock_estimates and the server
+# computes the NTM P/E from them (api_server._apply_stock_estimates). Checked against Yahoo on 26.10.2026:
+# forwardEps = next fiscal year's consensus ("+1y"), epsCurrentYear = current fiscal year ("0y"),
+# nextFiscalYearEnd = end of the current fiscal year (KO 2026-12-31, AAPL 2026-09-27).
+# ------------------------------------------------------------------
+def _estimates_row(ticker, info):
+    info = info or {}
+    eps_next = info.get("forwardEps")
+    eps_cur = info.get("epsCurrentYear")
+    fy_end_ts = info.get("nextFiscalYearEnd")
+    if eps_next is None and eps_cur is None and info.get("trailingPE") is None:
+        return None
+    try:
+        fy_end = datetime.fromtimestamp(int(fy_end_ts), tz=timezone.utc).date().isoformat() if fy_end_ts else None
+    except Exception:
+        fy_end = None
+    return (ticker, _native(eps_cur), _native(eps_next), fy_end, _native(info.get("trailingPE")), _native(info.get("marketCap")))
+
+
+def save_stock_estimates(rows: List[tuple]):
+    if not rows:
+        print("[info] stock estimates: nothing to save (no .info estimate fields came back).")
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""CREATE TABLE IF NOT EXISTS stock_estimates (
+        ticker TEXT PRIMARY KEY, eps_cur_fy REAL, eps_next_fy REAL, fy_end DATE,
+        trailing_pe REAL, market_cap DOUBLE PRECISION, updated_at TIMESTAMPTZ DEFAULT NOW())""")
+    for ticker, eps_cur, eps_next, fy_end, tpe, mcap in rows:
+        cur.execute(
+            """INSERT INTO stock_estimates (ticker, eps_cur_fy, eps_next_fy, fy_end, trailing_pe, market_cap, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, NOW())
+               ON CONFLICT (ticker) DO UPDATE SET eps_cur_fy = EXCLUDED.eps_cur_fy, eps_next_fy = EXCLUDED.eps_next_fy,
+                   fy_end = EXCLUDED.fy_end, trailing_pe = EXCLUDED.trailing_pe, market_cap = EXCLUDED.market_cap,
+                   updated_at = NOW()""",
+            (ticker, eps_cur, eps_next, fy_end, tpe, mcap),
+        )
+    conn.commit()
+    cur.close()
+    conn.close()
+    with_ntm = sum(1 for r in rows if r[2] is not None)
+    print(f"[info] stock estimates: saved {len(rows)} tickers ({with_ntm} with a next-year EPS estimate).")
 
 
 def upsert_universe_movers(all_changes: List[tuple]):

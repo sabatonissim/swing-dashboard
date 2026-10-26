@@ -4238,14 +4238,8 @@ function buildTechnicalSetupSvg(priceSeries, lines){
       if(i1===undefined || i2===undefined) return '';
       const y = yOf(ln.price);
       entries.push({color:'var(--amber)', kind:'horizontal', name, value:'$'+fmtP(ln.price), note:'', anchorX: xOf(i2), anchorY: y, dim});
-      // the real highs/lows that make up the level (the level itself is their average)
-      const hdots = (ln.touches||[]).map(([d,p]) => {
-        const k = dateIndex[d];
-        if(k===undefined) return '';
-        anyTouches = true;
-        return `<circle cx="${xOf(k).toFixed(1)}" cy="${yOf(p).toFixed(1)}" r="3.2" fill="var(--bg, #0f1216)" stroke="var(--amber)" stroke-opacity="${dim}" stroke-width="1.6"/>`;
-      }).join('');
-      return `<line x1="${xOf(i1).toFixed(1)}" y1="${y.toFixed(1)}" x2="${xOf(i2).toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--amber)" stroke-opacity="${dim}" stroke-width="2" stroke-dasharray="5 3"/>${hdots}`;
+      // no touch dots: the server puts the line on the wick it comes from (_snap_horizontal_lines) and the price is in the legend
+      return `<line x1="${xOf(i1).toFixed(1)}" y1="${y.toFixed(1)}" x2="${xOf(i2).toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--amber)" stroke-opacity="${dim}" stroke-width="2" stroke-dasharray="5 3"/>`;
     }
     const pts = (ln.points||[]).map(([d,p]) => {
       const i2 = dateIndex[d];
@@ -4255,11 +4249,14 @@ function buildTechnicalSetupSvg(priceSeries, lines){
     const first = pts[0], last = pts[pts.length-1];
     if(ln.type === 'trend'){
       const col = ln.style === 'context' ? 'var(--sky)' : 'var(--teal)';   // main trendline (context) gets its own color
-      const dots = (ln.touches||[]).map(([d,p]) => {
+      // at most 4 small touch dots (the first touch + the 3 most recent) so the wicks stay readable
+      const tch = ln.touches || [];
+      const shown = tch.length > 4 ? [tch[0], ...tch.slice(-3)] : tch;
+      const dots = shown.map(([d,p]) => {
         const i2 = dateIndex[d];
         if(i2===undefined) return '';
         anyTouches = true;
-        return `<circle cx="${xOf(i2).toFixed(1)}" cy="${yOf(p).toFixed(1)}" r="3.2" fill="var(--bg, #0f1216)" stroke="${col}" stroke-opacity="${dim}" stroke-width="1.6"/>`;
+        return `<circle cx="${xOf(i2).toFixed(1)}" cy="${yOf(p).toFixed(1)}" r="2.4" fill="none" stroke="${col}" stroke-opacity="${dim}" stroke-width="1.3"/>`;
       }).join('');
       entries.push({color:col, kind:'trend', name, value:'$'+fmtP(last.price),
                     note:(t?'from ':'מ-')+_fmtShortDate(first.date), anchorX: last.x, anchorY: last.y, dim});
