@@ -9,7 +9,8 @@ Order of work (fast and bounded — a hanging source can never stall the run):
   1. ONE request to the BLS public API for all BLS-owned series (CPI, core CPI, PPI, jobs, unemployment, JOLTS).
   2. FRED for everything that is still missing (PCE, GDP, retail, claims, Fed rate), in parallel, one short attempt
      per URL form, hard time limit for the whole step.
-  3. Keyless stand-ins for what FRED did not deliver: NY Fed (Fed rate) and DBnomics (PCE, core PCE, GDP).
+  3. Keyless stand-ins for what FRED did not deliver: NY Fed (Fed rate), DBnomics (PCE, core PCE, GDP), the Labor
+     Department (jobless claims) and the Census release page (retail sales).
 A series that cannot be downloaded keeps its previous stored copy. The run fails (red) only if NOTHING refreshed.
 Needs only the DATABASE_URL secret (FRED_API_KEY / BLS_API_KEY optional).     Manual run: python -u econ_refresh.py
 """
@@ -69,7 +70,7 @@ def fred_download(series):
 #   * New York Fed rates API: the Fed's target range (upper bound) published with every daily EFFR rate = DFEDTARU.
 #   * DBnomics: a public mirror of BEA's NIPA tables (same index base and numbers as FRED). It re-reads BEA once a day
 #     (~01:30 UTC), so a new PCE/GDP "actual" shows up about a day after the release, not within minutes.
-# Retail sales (RSAFS) and jobless claims (ICSA) have no keyless source found yet (Census API now wants a key).
+#   * Labor Department (jobless claims) and the Census release page (retail sales) — see dol_claims / census_retail below.
 # --------------------------------------------------------------------------
 NYFED_EFFR = "https://markets.newyorkfed.org/api/rates/unsecured/effr/search.json?startDate={start}&endDate={end}"
 DBNOMICS = "https://api.db.nomics.world/v22/series/{code}?observations=1&format=json"
@@ -114,6 +115,79 @@ def dbnomics_rows(series):
     return rows
 
 
+# Jobless claims (ICSA): the Labor Department's own weekly-claims report, national, as XML (the form on
+# oui.doleta.gov/unemploy/claims.asp). "SA" = seasonally adjusted initial claims, the figure FRED's ICSA carries; the week
+# date is the Saturday the week ended, like FRED. Weeks not yet published come back as &#160; and are skipped.
+DOL_CLAIMS = "https://oui.doleta.gov/unemploy/wkclaims/report.asp"
+
+
+def dol_claims():
+    import re
+    import requests
+    year = date.today().year
+    r = requests.post(DOL_CLAIMS, data={"level": "us", "final_yr": str(year + 1), "strtdate": str(year - 2),
+                                        "enddate": str(year), "filetype": "xml", "submit": "Submit"},
+                      headers=ec.HTTP_HEADERS_ALT, timeout=30)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code} for oui.doleta.gov")
+    rows = []
+    for wk in re.findall(r"(?s)<week>(.*?)</week>", r.text):
+        m_d = re.search(r"<weekEnded>(\d\d)/(\d\d)/(\d{4})</weekEnded>", wk)
+        block = re.search(r"(?s)<InitialClaims>(.*?)</InitialClaims>", wk)     # not the ContinuedClaims <SA>
+        m_v = re.search(r"<SA>([\d,]+)</SA>", block.group(1)) if block else None
+        if m_d and m_v:
+            rows.append((date(int(m_d.group(3)), int(m_d.group(1)), int(m_d.group(2))), float(m_v.group(1).replace(",", ""))))
+    if not rows:
+        raise RuntimeError("DOL claims report had no seasonally adjusted rows")
+    return sorted(rows)
+
+
+# Retail sales (RSAFS): the Census release page states the newest month in one sentence — "...for September 2026 ... were
+# $745.0 billion, up 0.8 percent ... from the previous month ... The July 2026 to August 2026 percent change was revised
+# from up 1.1 percent ... to up 1.3 percent". The calendar shows month-on-month % changes, so three monthly levels are
+# rebuilt from the level and the two official % changes (the older two levels are DERIVED, only the % changes are
+# official; they reproduce exactly the published figures for "actual" and "previous").
+CENSUS_RETAIL = "https://www.census.gov/retail/sales.html"
+_MONTHS = {m: i for i, m in enumerate(["january", "february", "march", "april", "may", "june", "july", "august",
+                                       "september", "october", "november", "december"], 1)}
+
+
+def _census_pct(phrase):
+    import re
+    if re.match(r"\s*(?:virtually\s+)?unchanged", phrase, re.I):
+        return 0.0
+    m = re.match(r"\s*(up|down)\s+([\d.]+)\s+percent", phrase, re.I)
+    if not m:
+        return None
+    return float(m.group(2)) * (1 if m.group(1).lower() == "up" else -1)
+
+
+def census_retail():
+    import html
+    import re
+    text = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", ec._http_text(CENSUS_RETAIL, timeout=25))))
+    m = re.search(r"retail and food services sales for (\w+) (\d{4}),.{0,200}?were \$([\d,.]+) billion,"
+                  r"((?:\s*(?:virtually\s+)?unchanged|\s*(?:up|down) [\d.]+ percent)).{0,60}?from the previous month", text, re.I)
+    if not m or m.group(1).lower() not in _MONTHS:
+        raise RuntimeError("Census retail page: headline sentence not found")
+    month = date(int(m.group(2)), _MONTHS[m.group(1).lower()], 1)
+    level = float(m.group(3).replace(",", "")) * 1000          # millions of dollars, like FRED's RSAFS
+    pct = _census_pct(m.group(4))
+    if pct is None:
+        raise RuntimeError("Census retail page: monthly change not understood")
+    prev_month = (month.replace(day=1) - timedelta(days=1)).replace(day=1)
+    rows = [(prev_month, level / (1 + pct / 100)), (month, level)]
+    r = re.search(r"percent change was (?:revised|unrevised) from (?:(?:virtually\s+)?unchanged|(?:up|down) [\d.]+ percent)"
+                  r"(?:\s*\([^)]{0,30}\))?(?:\s+to\b((?:\s*(?:virtually\s+)?unchanged|\s*(?:up|down) [\d.]+ percent)))?", text, re.I)
+    if r:
+        prev_pct = _census_pct(r.group(1)) if r.group(1) else _census_pct(re.search(
+            r"from ((?:virtually\s+)?unchanged|(?:up|down) [\d.]+ percent)", r.group(0), re.I).group(1))
+        if prev_pct is not None:
+            older = (prev_month - timedelta(days=1)).replace(day=1)
+            rows.insert(0, (older, rows[0][1] / (1 + prev_pct / 100)))
+    return rows
+
+
 def main():
     series = sorted({v["fred"]["series"] for v in ec.CATALOG.values() if v.get("fred")})
     stored = {}
@@ -147,7 +221,8 @@ def main():
         pool.shutdown(wait=False, cancel_futures=True)
 
     # 3) keyless stand-ins for whatever FRED did not deliver
-    fallbacks = {"DFEDTARU": ("NY Fed", nyfed_target_upper)}
+    fallbacks = {"DFEDTARU": ("NY Fed", nyfed_target_upper), "ICSA": ("DOL", dol_claims),
+                 "RSAFS": ("Census", census_retail)}
     fallbacks.update({s: ("DBnomics (BEA)", lambda s=s: dbnomics_rows(s)) for s in DBNOMICS_SERIES})
     for s, (src, fn) in fallbacks.items():
         if s in series and s not in stored:

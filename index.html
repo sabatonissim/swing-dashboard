@@ -2541,9 +2541,10 @@ function renderMarketTicker(){
     const sign = up ? '+' : '';
     const priceStr = it.price >= 1000 ? Math.round(it.price).toLocaleString(t?'en-US':'he-IL') : it.price.toFixed(2);
     const pointsStr = Math.abs(it.change_points) >= 1000
-      ? Math.round(it.change_points).toLocaleString(t?'en-US':'he-IL')
+      ? Math.round(Math.abs(it.change_points)).toLocaleString(t?'en-US':'he-IL')
       : Math.abs(it.change_points).toFixed(2);
-    return `<span class="ticker-item"><span class="t-name">${name}</span><span class="t-price">${priceStr}</span><span class="t-chg ${up?'up':'down'}">${sign}${pointsStr} (${sign}${it.change_pct.toFixed(2)}%)</span></span>`;
+    // the points are shown without their sign, so a fall needs its own minus (VIX showed "1.61 (-8.28%)")
+    return `<span class="ticker-item"><span class="t-name">${name}</span><span class="t-price">${priceStr}</span><span class="t-chg ${up?'up':'down'}">${up?'+':'-'}${pointsStr} (${sign}${it.change_pct.toFixed(2)}%)</span></span>`;
   };
   const baseRow = lastMarketTicker.map(itemHtml).join('');
 
@@ -3109,7 +3110,7 @@ function renderEconMonth(){
   const data = econMonthCache[econMonth];
   const [y, m] = econMonth.split('-').map(Number);
   const first = new Date(Date.UTC(y, m - 1, 1));
-  const lead = first.getUTCDay();                                  // 0 = Sunday
+  const lead = (first.getUTCDay() + 6) % 7;                        // weeks start on Monday, like the US market week (0 = Monday)
   const dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
   const loc = en ? 'en-US' : 'he-IL';
   const monthName = new Intl.DateTimeFormat(loc, {month:'long', year:'numeric', timeZone:'UTC'}).format(first);
@@ -3138,8 +3139,8 @@ function renderEconMonth(){
       ? `<b>${events.length}</b> market events this month, <b>${highN}</b> of them high-impact. Tap a day for details.`
       : `<b>${events.length}</b> אירועי שוק החודש, <b>${highN}</b> מהם בהשפעה גבוהה. לחץ על יום לפרטים.`}${nextTxt ? '<br>' + nextTxt : ''}</div>`;
 
-  // weekday header (a known Sunday-first week) and day cells
-  const wd = Array.from({length: 7}, (_, i) => new Intl.DateTimeFormat(loc, {weekday: en ? 'short' : 'narrow', timeZone:'UTC'}).format(new Date(Date.UTC(2026, 0, 4 + i))));
+  // weekday header (a known Monday-first week: 5 Jan 2026 is a Monday) and day cells
+  const wd = Array.from({length: 7}, (_, i) => new Intl.DateTimeFormat(loc, {weekday: en ? 'short' : 'narrow', timeZone:'UTC'}).format(new Date(Date.UTC(2026, 0, 5 + i))));
   let cells = '';
   for(let i = 0; i < lead; i++) cells += '<div class="cal-cell empty"></div>';
   for(let d = 1; d <= dim; d++){
@@ -3227,10 +3228,11 @@ function renderEarningsCalendar(items){
       let epsHtml = '';
       if(it.reported && it.eps_actual != null){
         const beat = it.surprise_pct != null && it.surprise_pct >= 0;
-        const color = it.surprise_pct == null ? 'var(--text-dim)' : (beat ? 'var(--green)' : 'var(--red)');
+        const flat = it.surprise_pct != null && Math.abs(it.surprise_pct) < 0.05;   // would print "▲ 0.0%"
+        const color = it.surprise_pct == null || flat ? 'var(--text-dim)' : (beat ? 'var(--green)' : 'var(--red)');
         const arrow = it.surprise_pct == null ? '' : (beat ? '▲' : '▼');
         const estPart = it.eps_estimate != null ? ` (${lang==='en'?'est':'צפי'} $${it.eps_estimate.toFixed(2)})` : '';
-        const surprisePart = it.surprise_pct != null ? ` ${arrow} ${Math.abs(it.surprise_pct).toFixed(1)}%` : '';
+        const surprisePart = it.surprise_pct == null ? '' : flat ? ` ＝ ${lang==='en'?'in line':'בהתאם לצפי'}` : ` ${arrow} ${Math.abs(it.surprise_pct).toFixed(1)}%`;
         epsHtml = `<div class="earnings-cal-eps" style="color:${color}">EPS $${it.eps_actual.toFixed(2)}${estPart}${surprisePart}</div>`;
       }
       let revHtml = '';
@@ -3255,10 +3257,11 @@ function renderEarningsCalendar(items){
       }
       if(it.reported && it.revenue_actual != null){
         const revBeat = it.revenue_surprise_pct != null && it.revenue_surprise_pct >= 0;
-        const revColor = it.revenue_surprise_pct == null ? 'var(--text-dim)' : (revBeat ? 'var(--green)' : 'var(--red)');
+        const revFlat = it.revenue_surprise_pct != null && Math.abs(it.revenue_surprise_pct) < 0.05;
+        const revColor = it.revenue_surprise_pct == null || revFlat ? 'var(--text-dim)' : (revBeat ? 'var(--green)' : 'var(--red)');
         const revArrow = it.revenue_surprise_pct == null ? '' : (revBeat ? '▲' : '▼');
         const revEstPart = it.revenue_estimate != null ? ` (${lang==='en'?'est':'צפי'} $${formatMarketCap(it.revenue_estimate)})` : '';
-        const revSurprisePart = it.revenue_surprise_pct != null ? ` ${revArrow} ${Math.abs(it.revenue_surprise_pct).toFixed(1)}%` : '';
+        const revSurprisePart = it.revenue_surprise_pct == null ? '' : revFlat ? ` ＝ ${lang==='en'?'in line':'בהתאם לצפי'}` : ` ${revArrow} ${Math.abs(it.revenue_surprise_pct).toFixed(1)}%`;
         revHtml = `<div class="earnings-cal-eps" style="color:${revColor}">${lang==='en'?'Rev':'הכנסות'} $${formatMarketCap(it.revenue_actual)}${revEstPart}${revSurprisePart}</div>`;
       }
       return `<div class="earnings-cal-row">
@@ -5196,8 +5199,11 @@ function setConsent(v){ try{ localStorage.setItem('swing_consent', v); if(v!=='y
 function renderConsentBanner(){
   if(consentState()) return;
   const en = lang==='en';
+  const old = document.getElementById('consent-banner');
+  if(old) old.remove();                     // re-rendered on a language switch
   const d = document.createElement('div');
   d.id = 'consent-banner';
+  d.dataset.lang = lang;
   d.setAttribute('role','dialog');
   d.setAttribute('aria-label', en ? 'Privacy and cookies' : 'פרטיות ועוגיות');
   d.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:200;background:var(--panel);border-top:1px solid var(--line);padding:12px 16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;font-size:12.5px;color:var(--text);box-shadow:0 -6px 24px var(--shadow);';
@@ -5871,6 +5877,8 @@ function applyLang(){
   document.getElementById('earnings-cal-title').textContent = t.earnings_cal_title;
   document.getElementById('daily-digest-btn').textContent = t.daily_digest_btn;
   if(lastFearGreedData) renderFearGreed(lastFearGreedData);
+  const cb = document.getElementById('consent-banner');
+  if(cb && cb.dataset.lang !== lang) renderConsentBanner();   // the banner stayed in Hebrew after switching to English
   rerenderDeepDiveForLang();
   if(backtestLastData && document.getElementById('backtest-content')) renderBacktestContent(backtestLastData);
   renderMarketTicker();

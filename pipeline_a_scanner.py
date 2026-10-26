@@ -1570,7 +1570,7 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             pattern_type = "cup_no_handle"
         elif resistance_break:
             trigger_en = f"Breaking above horizontal resistance at ${resistance_break['level']} (tested {resistance_break['touches']}x)"
-            trigger_he = f"פריצת התנגדות אופקית ב-${resistance_break['level']} (נבדקה {resistance_break['touches']} פעמים)"
+            trigger_he = f"פריצת התנגדות אופקית ב-${resistance_break['level']} ({_tested_he(resistance_break['touches'])})"
             tech_score = min(100, 75 + min(resistance_break['touches'] - 2, 4) * 2 + int(vol_pct / 10))
             pattern_type = "horizontal_resistance_breakout"
         elif golden_cross:
@@ -1613,7 +1613,7 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             # validated support/resistance level is considered a
             # stronger signal than an indicator crossover on its own.
             trigger_en = f"Bouncing off horizontal support at ${level_bounce['level']} (tested {level_bounce['touches']}x)"
-            trigger_he = f"התאוששות מרמת תמיכה אופקית ב-${level_bounce['level']} (נבדקה {level_bounce['touches']} פעמים)"
+            trigger_he = f"התאוששות מרמת תמיכה אופקית ב-${level_bounce['level']} ({_tested_he(level_bounce['touches'])})"
             tech_score = min(76, 68 + min(level_bounce['touches'] - 2, 4) * 2)
             pattern_type = "horizontal_level_bounce"
         # Below this point: pure-indicator patterns (MACD crossover,
@@ -1799,6 +1799,11 @@ EARNINGS_CALENDAR_WINDOW_PAST_DAYS = 6
 EARNINGS_CALENDAR_WINDOW_FUTURE_DAYS = 7  # ...through the coming week
 
 
+def _tested_he(n) -> str:
+    """'(נבדקה N פעמים)' with correct Hebrew for one touch ('נבדקה 1 פעמים' read wrong)."""
+    return "נבדקה פעם אחת" if n == 1 else f"נבדקה {n} פעמים"
+
+
 def _earnings_session(dt_utc: datetime) -> str:
     """Before-open / after-close / during-market, based on the Eastern
     Time hour of the reported earnings timestamp (yfinance gives this in
@@ -1937,6 +1942,9 @@ _BAD_BEFORE = re.compile(
     # v18 (26.10.2026, live): one LINE of revenue, not the total — Verizon "Mobility and broadband service revenue of $23.5
     # billion" (total was $34.3B), Blackstone "Net Accrued Performance Revenues of $7.3 billion" (a balance, not revenue)
     r"\bservice|\bsubscription|\bproducts?\b|\bequipment\b|\baccrued\b|\bdeferred\b|\bunearned\b)\W*(?:\w+\W+){0,6}$", re.I)
+# A forward-looking word is cancelled by a past-result verb AFTER it in the same clause — only with a stored estimate (v18)
+_FORWARD_WORD = re.compile(r"expect|anticipat|outlook|guidance|forecast|project|target|predict|estimat", re.I)
+_RESULT_VERB = re.compile(r"\b(?:delivered|reported|posted|generated|achieved|recorded)\b", re.I)
 # ...or the words right after it say "a year ago" / "in the prior-year quarter"
 _BAD_AFTER = re.compile(
     r"^\W{0,3}(?:a\s+year\s+ago|last\s+year|in\s+the\s+(?:year[-\s]ago|prior|same)|(?:in|for)\s+(?:the\s+)?(?:year[-\s]ago|prior[-\s]year|same\s+(?:quarter|period)))", re.I)
@@ -2131,7 +2139,10 @@ def _parse_sentence_revenue(text, reference=None, estimate=None):
             # only the clause the figure sits in counts ("...a year ago, revenue was $2.3 billion" is a new clause)
             before = re.split(r"[;,.!?]\s|\s[-\u2013\u2014]\s|[()]", head[max(0, m.start() - 60):m.start()])[-1]
             after = head[m.end():m.end() + 45]
-            if _BAD_BEFORE.search(before) or _BAD_AFTER.match(after):
+            bad = _BAD_BEFORE.search(before)
+            if bad and estimate and _FORWARD_WORD.match(bad.group(1)) and _RESULT_VERB.search(before[bad.end(1):]):
+                bad = None   # "...EPS GUIDANCE COMPANY DELIVERED RECORD Q3 REVENUE OF $20.1 BILLION" (AmEx headline, no punctuation)
+            if bad or _BAD_AFTER.match(after):
                 continue
             ok = _in_band(val, reference, estimate)
             if ok is False:
