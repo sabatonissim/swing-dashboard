@@ -17,6 +17,10 @@ on:
           - 'false'
           - 'true'
 
+# v18 security: the job only needs to read the code (default token permissions are broader)
+permissions:
+  contents: read
+
 jobs:
   cleanup:
     runs-on: ubuntu-latest

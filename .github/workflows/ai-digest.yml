@@ -15,6 +15,10 @@ on:
           - digest
         default: probe
 
+# v18 security: the job only needs to read the code (default token permissions are broader)
+permissions:
+  contents: read
+
 jobs:
   ai-digest:
     runs-on: ubuntu-latest

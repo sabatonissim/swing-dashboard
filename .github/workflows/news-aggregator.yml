@@ -12,6 +12,10 @@ concurrency:
   group: news-aggregator
   cancel-in-progress: false
 
+# v18 security: the job only needs to read the code (default token permissions are broader)
+permissions:
+  contents: read
+
 jobs:
   run-news-pipeline:
     runs-on: ubuntu-latest

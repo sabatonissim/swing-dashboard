@@ -5,6 +5,10 @@ on:
     - cron: '*/13 * * * *'   # every 13 minutes — comfortably under Render's 15-min sleep timer
   workflow_dispatch: {}
 
+# v18 security: the job only needs to read the code (default token permissions are broader)
+permissions:
+  contents: read
+
 jobs:
   ping:
     runs-on: ubuntu-latest
