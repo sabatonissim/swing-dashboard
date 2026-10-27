@@ -2138,20 +2138,22 @@ def _setup_horizontal_resistance_breakout(hist: pd.DataFrame) -> Optional[dict]:
     if not swing_highs:
         return None
 
-    vals = sorted(v for _, v in swing_highs)
+    pts = sorted(swing_highs, key=lambda p: p[1])
     clusters = []
-    current = [vals[0]]
-    for v in vals[1:]:
-        avg = sum(current) / len(current)
-        if abs(v - avg) / avg <= 0.02:
-            current.append(v)
+    current = [pts[0]]
+    for p in pts[1:]:
+        avg = sum(v for _, v in current) / len(current)
+        if abs(p[1] - avg) / avg <= 0.02:
+            current.append(p)
         else:
             clusters.append(current)
-            current = [v]
+            current = [p]
     clusters.append(current)
-    levels = [(sum(c) / len(c), len(c)) for c in clusters]
+    # (level, touches, bar of the LAST touch, bar of the FIRST touch)
+    levels = [(sum(v for _, v in c) / len(c), len(c), max(i for i, _ in c), min(i for i, _ in c)) for c in clusters]
 
-    today_close = float(window["Close"].iloc[-1])
+    closes = window["Close"].values
+    today_close = float(closes[-1])
 
     # Already-broken levels — the EXACT same rule the scanner uses (see
     # detect_horizontal_resistance_breakout in pipeline_a_scanner.py):
@@ -2163,10 +2165,18 @@ def _setup_horizontal_resistance_breakout(hist: pd.DataFrame) -> Optional[dict]:
     # showed for the same stock.
     MIN_BREAKOUT_PCT = 0.01
     MIN_LEVEL_TOUCHES = 2   # v18: twin of the scanner's MIN_LEVEL_TOUCHES — one lone wick is not a level (ANET)
-    levels = [(lvl, touches) for lvl, touches in levels if touches >= MIN_LEVEL_TOUCHES]
-    broken = [(lvl, touches) for lvl, touches in levels if lvl > 0 and today_close >= lvl * (1 + MIN_BREAKOUT_PCT)]
+    MAX_BREAKOUT_AGE = 20   # display only: a break older than ~a month is history, not a breakout (scanner: today only)
+    levels = [lv for lv in levels if lv[1] >= MIN_LEVEL_TOUCHES]
+    broken = [lv for lv in levels if lv[0] > 0 and today_close >= lv[0] * (1 + MIN_BREAKOUT_PCT)]
+    fresh = False
     if broken:
-        level, touches = max(broken, key=lambda x: x[0])
+        level, touches, last_touch, anchor_idx = max(broken, key=lambda x: x[0])
+        # v18c twin of the scanner's freshness rule (ANET): the breakout is the FIRST close that cleared the level
+        # after its last touch. ANET cleared $171 in early July, ran to $217 and fell back — that is not a breakout.
+        first_break = next(k for k in range(last_touch + 1, len(closes))
+                           if closes[k] >= level * (1 + MIN_BREAKOUT_PCT))
+        fresh = len(closes) - 1 - first_break <= MAX_BREAKOUT_AGE
+    if fresh:
         stage = "triggered"
         distance_pct = (level - today_close) / today_close * 100
     else:
@@ -2174,16 +2184,16 @@ def _setup_horizontal_resistance_breakout(hist: pd.DataFrame) -> Optional[dict]:
         # so a stock that's approaching (but hasn't yet cleared) a level
         # shows up too. The scanner itself only ever fires on the actual
         # breakout day, so it has no equivalent to this "approaching" case.
-        overhead = [(lvl, touches) for lvl, touches in levels if lvl > today_close]
+        overhead = [lv for lv in levels if lv[0] > today_close]
         if not overhead:
             return None
-        level, touches = min(overhead, key=lambda x: x[0])
+        level, touches, _, anchor_idx = min(overhead, key=lambda x: x[0])
         distance_pct = (level - today_close) / today_close * 100
         if distance_pct > 12:
             return None
         stage = "approaching"
 
-    anchor_idx = next(i for i, v in swing_highs if abs(v - level) / level <= 0.02)
+    # anchor_idx = the level's first touch: the line starts on that wick (_snap_horizontal_lines)
     return {
         "pattern": "horizontal_resistance_breakout",
         "stage": stage,
@@ -2300,7 +2310,7 @@ def _setup_horizontal_support_bounce(hist: pd.DataFrame) -> Optional[dict]:
         "target_pct": None,
         "touches": touches,
         "lines": [
-            {"type": "horizontal", "label_he": "תמיכה אופקית", "label_en": "Horizontal support",
+            {"type": "horizontal", "label_he": "תמיכה אופקית", "label_en": "Horizontal support", "wick": "low",
              "price": round(level, 2),
              "from": _fmt_date(dates[anchor_idx]), "to": _fmt_date(dates[-1])},
         ],
@@ -2790,10 +2800,14 @@ def _snap_horizontal_lines(candidates: list, hist: pd.DataFrame) -> None:
             if k1 is None or k2 is None:
                 continue
             p = float(ln["price"])
+            # v18c (owner, KO): the TOP of the wick for a resistance-type line (resistance, neckline, rim, 52-week
+            # high...), the BOTTOM for a support line ("wick": "low"). v18b took whichever end was nearer the average —
+            # KO's 89.65 landed on the low of 29 Jul ($88.64) instead of its high ($90.92).
+            ends = lows if ln.get("wick") == "low" else highs
             # v18b (owner, KO): the line belongs on the wick it STARTS from — the first touch of the level (the end-of-July
             # high, not a later bar that happens to sit near the average). So the start bar's own high/low wins when it
             # is within 2% (the cluster tolerance); the search below is only the fallback.
-            own = min((float(highs[k1]), float(lows[k1])), key=lambda v: abs(v - p))
+            own = float(ends[k1])
             if abs(own - p) / p <= 0.02:
                 new_p = round(own, 2)
                 if abs(float(c.get("key_level") or 0) - p) < 0.011:
@@ -2802,15 +2816,13 @@ def _snap_horizontal_lines(candidates: list, hist: pd.DataFrame) -> None:
                 continue
             best = None   # (bar, value, rel. distance)
             for k in range(k1, k2 + 1):
-                for v in (float(highs[k]), float(lows[k])):
-                    dist = abs(v - p) / p
-                    if dist <= 0.004:
-                        best = (k, v, dist)
-                        break
-                    if dist <= 0.01 and (best is None or dist < best[2]):
-                        best = (k, v, dist)
-                if best and best[2] <= 0.004:
+                v = float(ends[k])
+                dist = abs(v - p) / p
+                if dist <= 0.004:
+                    best = (k, v, dist)
                     break
+                if dist <= 0.01 and (best is None or dist < best[2]):
+                    best = (k, v, dist)
             if not best:
                 continue
             new_p = round(best[1], 2)
@@ -3045,7 +3057,7 @@ def _scanner_rule_level_bounce(hist: pd.DataFrame) -> Optional[dict]:
         "target_pct": None,
         "touches": touches,
         "lines": [
-            {"type": "horizontal", "label_he": "תמיכה אופקית", "label_en": "Horizontal support",
+            {"type": "horizontal", "label_he": "תמיכה אופקית", "label_en": "Horizontal support", "wick": "low",
              "price": round(level, 2),
              "from": _fmt_date(dates[anchor_idx]), "to": _fmt_date(dates[-1])},
         ],

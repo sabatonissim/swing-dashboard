@@ -659,41 +659,43 @@ def detect_horizontal_resistance_breakout(hist: pd.DataFrame, lookback: int = 15
     if not swing_highs:
         return None
 
-    vals = sorted(v for _, v in swing_highs)
+    pts = sorted(swing_highs, key=lambda p: p[1])
     clusters = []
-    current = [vals[0]]
-    for v in vals[1:]:
-        avg = sum(current) / len(current)
-        if abs(v - avg) / avg <= LEVEL_CLUSTER_PCT:
-            current.append(v)
+    current = [pts[0]]
+    for p in pts[1:]:
+        avg = sum(v for _, v in current) / len(current)
+        if abs(p[1] - avg) / avg <= LEVEL_CLUSTER_PCT:
+            current.append(p)
         else:
             clusters.append(current)
-            current = [v]
+            current = [p]
     clusters.append(current)
 
-    levels = [(sum(c) / len(c), len(c)) for c in clusters]
+    # (level, touches, bar of the LAST touch)
+    levels = [(sum(v for _, v in c) / len(c), len(c), max(i for i, _ in c)) for c in clusters]
 
-    today_close = float(window["Close"].iloc[-1])
+    closes = window["Close"].values
+    today_close = float(closes[-1])
     # Only a level BELOW today's close can have just been broken through;
     # among those, the highest one is the most recent/relevant ceiling
     # that was cleared (breaking a lower old level isn't news if a higher
     # one was already broken earlier).
-    broken = [(lvl, touches) for lvl, touches in levels
-              if lvl > 0 and touches >= MIN_LEVEL_TOUCHES and today_close >= lvl * (1 + MIN_BREAKOUT_PCT)]
+    broken = [lv for lv in levels
+              if lv[0] > 0 and lv[1] >= MIN_LEVEL_TOUCHES and today_close >= lv[0] * (1 + MIN_BREAKOUT_PCT)]
     if not broken:
         return None
-    level, touches = max(broken, key=lambda x: x[0])
+    level, touches, last_touch = max(broken, key=lambda x: x[0])
 
     # Freshness check: this must be the level's breakout DAY, not a level
-    # price cleared long ago and has simply stayed above since. Without
-    # this, a stock that broke out weeks/months back and kept climbing
-    # would re-flag the same stale level on every single scan forever.
-    # Yesterday's close must NOT have already cleared it — the cross has
-    # to happen on today's candle.
-    if len(window) >= 2:
-        prev_close = float(window["Close"].iloc[-2])
-        if prev_close >= level * (1 + MIN_BREAKOUT_PCT):
-            return None
+    # price cleared long ago. v18c (owner, ANET 27.10.2026): checking only
+    # yesterday's close was not enough — ANET cleared its June level in
+    # early July, ran to $217, fell back onto the level and bounced, and
+    # the bounce was flagged as a "breakout". Now no close between the
+    # level's last touch and yesterday may have cleared it: today must be
+    # the FIRST break since the level formed. Twin: api_server
+    # _setup_horizontal_resistance_breakout.
+    if any(float(c) >= level * (1 + MIN_BREAKOUT_PCT) for c in closes[last_touch + 1:-1]):
+        return None
 
     return {"level": round(level, 2), "touches": touches, "breakout_pct": round((today_close/level - 1) * 100, 2)}
 
