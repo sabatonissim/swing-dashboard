@@ -739,13 +739,17 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
     #consent-banner{bottom:calc(60px + env(safe-area-inset-bottom)) !important;}
     .status-pill{bottom:calc(72px + env(safe-area-inset-bottom)) !important;}
   }
-  /* Phone: the scanner (the core of the site) right after the key events; the index charts after the lists */
+  /* Phone: key events -> scanner (the core of the site) -> index charts -> news. v19c: the charts used to come after
+     ALL the news (the scanner and the news share .board), so on a phone they were practically never reached —
+     `display:contents` lets the two columns of .board be ordered on their own, with the charts between them. */
   @media(max-width:900px){
     #page-home{display:flex;flex-direction:column;}
     #page-home > .mobile-search{order:1;}
     #page-home > .breaking-bar{order:2;}
-    #page-home > .board{order:3;}
+    #page-home > .board{display:contents;}
+    #page-home > .board > .col.right{order:3;}
     #page-home > .market-charts{order:4;border-top:1px solid var(--line);}
+    #page-home > .board > .col.left{order:5;border-top:1px solid var(--line);}
     .board .col{padding:16px 14px 24px;}
   }
   @media(max-width:480px){
