@@ -2026,8 +2026,9 @@ function switchChart(symbol){
     hide_side_toolbar:true,
     hide_top_toolbar:false,
     allow_symbol_change:false,
-    height:250,
-    width:'100%',
+    // v18c (owner's screenshot): with a fixed height/width the chart kept the size it was built at — after the window
+    // grew it filled only part of its box and its bottom was cut. autosize follows the box (#market-tv-chart = 250px tall).
+    autosize:true,
     save_image:false,
     studies: ["MASimple@tv-basicstudies"],
     studies_overrides: {
