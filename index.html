@@ -717,6 +717,8 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .sector-sel-bar b{color:var(--text);}
   .sector-sel-bar button{background:none;border:1px solid var(--line);color:var(--amber);border-radius:7px;padding:3px 9px;font-size:11.5px;cursor:pointer;font-family:'Heebo',sans-serif;}
   .mover-row.sector-picked .mover-ticker{color:var(--amber);}
+  .mover-row.sector-picked{background:rgba(232,163,61,.08);border-radius:6px;}
+  .mover-row.sector-picked + .mover-row:not(.sector-picked){border-top:1px solid var(--amber-dim);}
   .scan-pattern-filter{display:flex;gap:8px;}                     /* pattern + sector dropdowns side by side */
   .scan-pattern-filter select{flex:1;min-width:0;margin-top:0 !important;}
   html[lang="he"] .scan-pattern-filter{flex-direction:row-reverse;}
@@ -3591,8 +3593,16 @@ function renderSectorChart(data){
       interaction:{ mode:'nearest', intersect:false },
       plugins:{
         // Clicking a legend chip selects that sector for comparison (see toggleSectorSelect above)
+        // v19d (owner): no strikethrough on the others (could not read them) — a selected sector gets a FILLED box and
+        // bright text, the rest keep the empty box they always had
         legend:{ position:'top', onClick:(e, item) => toggleSectorSelect(item.text),
-                 labels:{ boxWidth:10, boxHeight:10, font:{size:10}, color:'#8a93a3', padding:8 } },
+                 labels:{ boxWidth:10, boxHeight:10, font:{size:10}, color:'#8a93a3', padding:8,
+                   generateLabels:(chart) => chart.data.datasets.map((d, i) => {
+                     const on = sectorSelected.has(d.label);
+                     return { text: d.label, datasetIndex: i, hidden: false, lineWidth: 1.5,
+                              strokeStyle: d.borderColor, fillStyle: on ? d.borderColor : 'transparent',
+                              fontColor: on ? getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#eef1f5' : '#8a93a3' };
+                   }) } },
         tooltip:{ callbacks:{ label:(ctx)=>`${ctx.dataset.label}: ${ctx.parsed.y>=0?'+':''}${ctx.parsed.y.toFixed(2)}%` } },
       },
       scales:{
@@ -3627,7 +3637,10 @@ function renderMoversOrSectorList(){
     }
     const sel = sectorSelected.size ? `<div class="sector-sel-bar"><span>${lang==='en'?'Comparing':'בהשוואה'}: <b dir="ltr">${[...sectorSelected].map(escH).join(', ')}</b></span>
         <button onclick="showAllSectors()">${lang==='en'?'Show all':'הצג הכל'}</button></div>` : '';
-    el.innerHTML = sel + table.map(r=>{
+    // v19d (owner): the picked sectors on top, in the order they were clicked; the rest keep the server's order below
+    const picked = [...sectorSelected].map(tk => table.find(r => r.ticker === tk)).filter(Boolean);
+    const rows = picked.concat(table.filter(r => !sectorSelected.has(r.ticker)));
+    el.innerHTML = sel + rows.map(r=>{
       const dayClass = r.change_pct>=0 ? 'up':'down';
       const daySign = r.change_pct>=0 ? '+':'';
       const perClass = r.period_change_pct>=0 ? 'pct-up':'pct-down';
