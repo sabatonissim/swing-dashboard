@@ -901,24 +901,19 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
 </div>
 
 <script>
-// ---- Demo data (shown when API is offline) ----
-const stocks = [
-  {ticker:"IGV", trend:"up", score:82, trigger:"פריצת שיאים יורדים בווליום חזק", trigger_en:"Descending trendline breakout on strong volume", entry:71.4, support:66.2, resistance:[74.9,78.6], summary:"זוהתה פריצה טכנית: נפח גבוה מהממוצע.", summary_en:"Technical breakout detected: volume significantly above 20d average.", changePct:3.8},
-  {ticker:"CRWD", trend:"up", score:76, trigger:"פריצת דגל שורי על נפח גבוה", trigger_en:"Bull flag breakout on high volume", entry:298.1, support:281.0, resistance:[312.0,329.5], summary:"זוהתה פריצה טכנית: נפח גבוה מהממוצע.", summary_en:"Technical breakout detected: volume above average with positive trend.", changePct:5.2},
-  {ticker:"PLTR", trend:"down", score:38, trigger:"כישלון בפריצה, לחץ מכירה", trigger_en:"Failed breakout, selling pressure", entry:24.6, support:22.1, resistance:[26.0,27.4], summary:"נצפית חולשה טכנית: נפח מכירה גבוה מהממוצע.", summary_en:"Technical weakness observed: elevated selling volume.", changePct:-4.1},
-  {ticker:"NVDA", trend:"up", score:88, trigger:"פריצת שיאים יורדים בווליום חזק", trigger_en:"Descending trendline breakout on strong volume", entry:138.2, support:128.0, resistance:[145.0,155.0], summary:"זוהתה פריצה טכנית: נפח גבוה מהממוצע.", summary_en:"Technical breakout detected: volume significantly above 20d average.", changePct:6.7},
-  {ticker:"COIN", trend:"up", score:78, trigger:"פריצת דגל שורי בליווי ווליום", trigger_en:"Bull flag breakout with volume", entry:214.6, support:198.0, resistance:[228.0,241.0], summary:"זוהתה פריצה טכנית: נפח גבוה מהממוצע.", summary_en:"Technical breakout detected: volume above average.", changePct:2.9},
-  {ticker:"SHOP", trend:"up", score:65, trigger:"פריצת שיאים יורדים", trigger_en:"Descending trendline breakout", entry:78.9, support:73.0, resistance:[82.5,87.0], summary:"זוהתה פריצה טכנית: נפח גבוה מהממוצע.", summary_en:"Technical breakout detected: volume above average.", changePct:1.6},
-];
-
-const macro = [
-  {tag:"CPI", impact:"High", text:"מדד ה-CPI בארה״ב עלה ב-2.4%, תואם את התחזיות ומוריד חשש מאינפלציה.", summary_en:"US CPI rose 2.4%, in line with forecasts, easing inflation concerns.", time:"לפני 42 דק׳", source:"Reuters", link:"#", sectors:"טכנולוגיה, נדל״ן"},
-  {tag:"Interest Rate", impact:"Critical", text:"הפד השאיר את הריבית ללא שינוי, אך רמז לאפשרות הפחתה ברבעון הבא.", summary_en:"Fed held rates steady but signaled a possible cut next quarter.", time:"לפני 3 שעות", source:"Bloomberg", link:"#", sectors:"בנקים, סקטור הצריכה"},
-  {tag:"Geo", impact:"Critical", text:"הסלמה בשיט הימי במפרז מעלה חשש לשיבוש באספקת נפט גולמי.", summary_en:"Maritime escalation in key strait raises fears of crude oil supply disruption.", time:"לפני 5 שעות", source:"Reuters", link:"#", sectors:"אנרגיה, תעופה"},
-  {tag:"Employment", impact:"High", text:"דוח המשרות הפתיע לטובה עם 210 אלף משרות מול תחזית 180 אלף.", summary_en:"Jobs report surprised to the upside: 210K vs 180K forecast.", time:"אתמול", source:"Investing.com", link:"#", sectors:"כלל השוק"},
-  {tag:"Trade", impact:"Critical", text:"הודעה על מכסים חדשים על יבוא טכנולוגי מעלה חשש משיבוש שרשראות אספקה.", summary_en:"New tariffs on tech imports announced, raising supply chain disruption fears.", time:"לפני יומיים", source:"Reuters", link:"#", sectors:"טכנולוגיה, שבבים"},
-  {tag:"Inflation", impact:"High", text:"מדד ה-PPI הצביע על התמתנות בלחצי המחירים ברמת הסיטונאות.", summary_en:"PPI data showed easing wholesale price pressures.", time:"לפני יומיים", source:"Bloomberg", link:"#", sectors:"כלל השוק"},
-];
+// ---- Scanner rows / news feed (filled from the API) ----
+// v19: these used to start with made-up demo rows (a fake "CPI rose 2.4%", a fake Fed decision, NVDA at $138...)
+// that were shown for the 10-60s of a Render cold start, or for good when the server was down — fake market news
+// presented as real. Now they start empty and the lists say "loading" / "server unavailable" instead.
+const stocks = [];
+const macro = [];
+let apiLoadState = 'loading';   // 'loading' | 'ok' | 'failed' (set by loadFromApi / startBackgroundRetry)
+function apiWaitMsg(){
+  if(apiLoadState === 'failed') return lang==='en'
+    ? 'The data server is waking up or unavailable — retrying automatically...'
+    : 'שרת הנתונים מתעורר או לא זמין כרגע — מנסים שוב אוטומטית...';
+  return UI[lang].loading;
+}
 
 // Raw data from API — stored separately so we can re-render in any language without re-fetching
 let rawStocks = [];
@@ -1002,7 +997,7 @@ function renderStocks(){
   const visibleIdx = stocks
     .map((s,i)=>i)
     .filter(i => activeScanPattern==='all' || stocks[i].patternType===activeScanPattern);
-  if(!visibleIdx.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${UI[lang].no_stocks}</div>`; return; }
+  if(!visibleIdx.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${!stocks.length && apiLoadState!=='ok' ? apiWaitMsg() : UI[lang].no_stocks}</div>`; return; }
 
   const recent = [], previous = [];
   visibleIdx.forEach(i=>{ (stocks[i].isRecent===false ? previous : recent).push(i); });
@@ -1191,7 +1186,7 @@ function renderMacro(){
     return;
   }
 
-  if(!macro.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${UI[lang].loading}</div>`; return; }
+  if(!macro.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${apiWaitMsg()}</div>`; return; }
   const filtered = selectedCategories.size ? macro.filter(m => selectedCategories.has(m.tag)) : macro;
   if(!filtered.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${t?'No news in the selected categories.':'אין חדשות בקטגוריות שנבחרו.'}</div>`; return; }
   el.innerHTML = filtered.map((m,i)=>`
@@ -1252,7 +1247,7 @@ function renderBreakingNews(){
   // longer turns over every half hour. Before the key list loads (or on an older server) the feed's Critical items.
   const items = keyNews || macro.filter(m => m.impact === 'Critical');
   if(!items.length){
-    el.innerHTML=`<div style="color:var(--text-dim);font-size:13px;padding:4px 0;">${UI[lang].no_breaking}</div>`;
+    el.innerHTML=`<div style="color:var(--text-dim);font-size:13px;padding:4px 0;">${!keyNews && apiLoadState!=='ok' ? apiWaitMsg() : UI[lang].no_breaking}</div>`;
     updateBreakingNav();
     return;
   }
@@ -5602,7 +5597,7 @@ function setStatus(connected, connecting){
   }
   statusEl.textContent = connected
     ? (lang==='en' ? "● Connected to API" : "● מחובר ל-API")
-    : (lang==='en' ? "● Demo data (API unavailable)" : "● נתוני דמו (ה-API לא זמין)");
+    : (lang==='en' ? "● Server unavailable — retrying" : "● השרת לא זמין — מנסים שוב");
   statusEl.style.background = connected?"rgba(62,207,126,.15)":"rgba(232,163,61,.15)";
   statusEl.style.color = connected?"var(--green)":"var(--amber)";
 }
@@ -5792,6 +5787,7 @@ async function loadFromApi(){
     try {
       await tryLoadOnce(15000);
       apiConnected = true;
+      apiLoadState = 'ok';
       setStatus(true);
       applyLang();
       if(bgRetryTimer){ clearInterval(bgRetryTimer); bgRetryTimer = null; }
@@ -5800,9 +5796,10 @@ async function loadFromApi(){
       console.warn(`API attempt ${i+1}/${waits.length} failed:`, e);
     }
   }
-  // All attempts failed - show demo data but keep trying quietly in the
-  // background so the page recovers on its own once the server is up.
+  // All attempts failed - say so (no demo data any more) and keep trying quietly
+  // in the background so the page recovers on its own once the server is up.
   apiConnected = false;
+  if(apiLoadState !== 'ok') apiLoadState = 'failed';
   setStatus(false);
   applyLang();
   startBackgroundRetry();
@@ -5815,6 +5812,7 @@ function startBackgroundRetry(){
     try {
       await tryLoadOnce(15000);
       apiConnected = true;
+      apiLoadState = 'ok';
       setStatus(true);
       applyLang();
       clearInterval(bgRetryTimer);

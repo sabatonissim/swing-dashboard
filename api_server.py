@@ -1197,7 +1197,13 @@ _KEY_MAJOR_OUTLETS = ("reuters", "bloomberg", "cnbc", "wall street journal", "ws
 _KEY_OFFICIAL = ("federal reserve", "bls")
 _KEY_NON_US = re.compile(r"\b(uk|u\.k\.|britain|british|euro ?zone|europe|european|china|chinese|japan|japanese|"
                          r"canada|canadian|australia|australian|germany|german|india|indian|france|french|turkey|"
-                         r"brazil|mexico|korea|swiss|israel|israeli|russia|russian|county|denver)\b", re.I)
+                         r"brazil|mexico|korea|swiss|israel|israeli|russia|russian|county|denver|"
+                         r"new zealand|sweden|swedish|norway|spain|spanish|italy|italian|ireland|irish|scotland|"
+                         r"south africa|argentina|nigeria|pakistan|philippines|indonesia|egypt|kenya|vietnam|"
+                         r"singapore|tokyo|ontario|quebec|loblaw)\b", re.I)
+# v19: "inflation report/data" alone also matched company and foreign reports ("Loblaw October food inflation
+# report" was shown as the key CPI event) — that weaker wording now needs a US / market word next to it.
+_KEY_US_MARKET = r"\b(u\.s\.|us|america|american|fed|treasur\w*|wall street|stocks?|markets?|s&p|nasdaq|dow)\b"
 _KEY_JUNK = re.compile(r"^\s*\d+\s|\b(stocks? to (buy|watch|own)|should you|is it time|smart buy|buy now|"
                        r"dividend stocks?|what to expect|things to watch|how to|here'?s|according to analysts)\b", re.I)
 _KEY_RATE_WORDS = r"\b(rates?|decision|meeting|hikes?|hiked|hiking|cuts?|holds?|pause[sd]?|minutes|statement|chair)\b"
@@ -1207,7 +1213,8 @@ _KEY_GEO_REGIONS = (("mideast", r"\b(iran|iranian|tehran|khamenei|israel|houthis
 # (event key, weight, regex that must match, second regex that must ALSO match or None, US-only data release?)
 _KEY_EVENT_RULES = [
     ("fed", 10, r"\b(fed|federal reserve|fomc|powell|warsh)\b", _KEY_RATE_WORDS, False),
-    ("cpi", 9, r"\b(cpi|consumer price index|consumer prices|inflation (report|data|reading))\b", None, True),
+    ("cpi", 9, r"\b(cpi|consumer price index|consumer prices)\b", None, True),
+    ("cpi", 9, r"\binflation (report|data|reading)\b", _KEY_US_MARKET, True),
     ("jobs", 9, r"\b(nonfarm|non-farm|payrolls?|jobs report|unemployment rate|employment report)\b", None, True),
     ("pce", 8, r"\b(pce|personal consumption expenditures?)\b", None, True),
     ("systemic", 8, r"\b(bank (collapse|failure|run)|debt ceiling|government shutdown|credit downgrade|sovereign default)\b", None, False),
@@ -1311,6 +1318,38 @@ def get_key_news():
     return out
 
 
+# v19 (live feed 27.10.2026): the feed showed "Best Momentum Stocks to Buy", "SMCI earnings expected to grow: should
+# you buy?", "3 Stocks ... to Bet on Right Away" — buy/sell promotion on a site whose content must stay factual — and the
+# same story 2-3 times ("Wall Street drifts as Broadcom..." from 3 outlets, one with "| National News | 2news.com").
+_FEED_PROMO = re.compile(r"\b(stocks? to (buy|watch|own|bet on)|to bet on|should you (buy|sell|invest|bet)|buy now|"
+                         r"is it (time to buy|a buy)|smart buy|buy the dip|"
+                         r"stocks? (for|to) (retirees|beginners))\b"
+                         r"|^\s*\d+\s+[\w\s&'-]{0,40}\bstocks?\b", re.I)
+
+
+def _feed_key(title: str) -> str:
+    """Comparison key of a headline: without the " | Section | Site" / " - Outlet" tail, letters and digits only."""
+    t = re.split(r"\s+[|–—-]\s+", title or "")[0]
+    return re.sub(r"[^a-z0-9]+", "", t.lower())
+
+
+def _feed_clean(rows, seen: set) -> list:
+    """rows without promotional listicles and without repeats of a headline already in `seen` (updated)."""
+    out = []
+    for r in rows:
+        title = r.get("summary_en") or ""
+        if _FEED_PROMO.search(title):
+            continue
+        k = _feed_key(title)
+        if len(k) < 12:            # too short to say two headlines are the same story
+            k = ""
+        if k and k in seen:
+            continue
+        seen.add(k)
+        out.append(r)
+    return out
+
+
 @app.get("/api/macro-news")
 def get_macro_news(limit: int = Query(default=25, le=100)):
     conn = get_conn()
@@ -1349,12 +1388,15 @@ def get_macro_news(limit: int = Query(default=25, le=100)):
         ORDER BY timestamp DESC
         LIMIT %s
         """,
-        (critical_ids, per_category_cap, remaining),
+        (critical_ids, per_category_cap, remaining + 20),   # +20: room for the rows _feed_clean drops
     )
     other_rows = cur.fetchall()
     cur.close()
     conn.close()
 
+    seen: set = set()
+    critical_rows = _feed_clean(critical_rows, seen)
+    other_rows = _feed_clean(other_rows, seen)[:remaining]
     combined = list(critical_rows) + list(other_rows)
     combined.sort(key=lambda r: r["timestamp"], reverse=True)
     out = [{k: v for k, v in dict(r).items() if k != "rn"} for r in combined]
@@ -3571,9 +3613,23 @@ def get_technical_setup(ticker: str):
         # a pattern's horizontal line within 2.5% of a zone is the same area on the chart (v18b, owner: ANET's 175.20 line
         # next to the 179.10-179.80 zone only added noise) — the rectangle replaces it
         for c in candidates:
-            c["lines"] = [ln for ln in c.get("lines", []) if not (
-                ln.get("type") == "horizontal" and ln.get("price")
-                and any(z["lo"] * 0.975 <= float(ln["price"]) <= z["hi"] * 1.025 for z in zones))]
+            kept = []
+            for ln in c.get("lines", []):
+                z = next((z for z in zones if ln.get("type") == "horizontal" and ln.get("price")
+                          and z["lo"] * 0.975 <= float(ln["price"]) <= z["hi"] * 1.025), None)
+                if not z:
+                    kept.append(ln)
+                    continue
+                # v19: the explanation still named only the line's price ("support around $86.07") while the chart
+                # showed the 85.13-85.68 rectangle instead — say which zone on the chart the level belongs to
+                if c.get("pattern") in ("horizontal_support_bounce", "horizontal_resistance_breakout") \
+                        and not c.get("zone_note") and c.get("explanation_he"):
+                    c["zone_note"] = True
+                    # the range inside LRI..PDI isolates: in right-to-left text "$85.13–$85.68" showed reversed
+                    c["explanation_he"] += (f" בגרף הרמה מסומנת כחלק מ{z['label_he']} "
+                                            f"⁦${z['lo']}–${z['hi']}⁩ ({z['touches']} נגיעות).")
+                    c["explanation_en"] += f" On the chart this level is part of the {z['label_en'].lower()} ${z['lo']}–${z['hi']} ({z['touches']} touches)."
+            c["lines"] = kept
     except Exception as e:
         print(f"[warn] technical-setup {ticker}: S/R zones failed: {type(e).__name__}: {e}")
 

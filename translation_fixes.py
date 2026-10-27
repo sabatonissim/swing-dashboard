@@ -26,6 +26,22 @@ EN_REWRITES = [
     (r"\b(?:miss|misses|missed)\s+(estimates|expectations|forecasts)\b", r"came in below \1"),
     (r"\brisk-off\b", "cautious"),
     (r"\brisk-on\b", "risk-seeking"),
+    # v19 (live feed 27.10.2026): each one came out wrong in Hebrew
+    (r"\bstrik(?:e|es|ing)\s+(an?\s+)?deal\b", "signs a deal"),             # "Ripple strikes deal" -> "שביתות Ripple"
+    (r"\bstruck\s+(an?\s+)?deal\b", "signed a deal"),
+    (r"\bbeat[- ]and[- ]raise\b", "better-than-expected results and raised outlook"),  # -> "פעימות והעלאת"
+    (r"\bearnings beat\b", "better-than-expected earnings"),                 # -> "הרווחים מקציפים"
+    (r"\bmidterms\b", "midterm elections"),                                 # -> "בחינות האמצע"
+    (r"\bcrypto\b", "cryptocurrency"),                                      # -> "אנוסים" (!)
+    (r"\bCDs\b", "bank deposits"),                                          # -> "תקליטורים"
+    (r"\bconsumer discretionary\b", "consumer cyclical"),                   # -> "שיקול דעת צרכניות"
+    # only after a market word: "jumped 300 points higher" / "policy drift" must stay as they are
+    (r"\b(wall street|futures|stocks|markets?|s&p 500|nasdaq|dow)\s+(?:point|points|pointing)\s+(higher|lower)\b",
+     r"\1 signal a \2 open"),                                               # "Wall Street points higher" -> "זוכה לנקודות"
+    (r"\b(wall street|futures|stocks|markets?|s&p 500|nasdaq|dow|shares)\s+drift(?:s|ed|ing)?\b",
+     r"\1 trade quietly"),                                                  # "Wall Street drifts" -> "נסחפת"
+    (r"\bon deck\b", "coming up"),                                          # -> "בסיפון"
+    (r"\b(courts?)\s+rul(?:e|es|ed)\b", r"\1 decided"),                     # "Courts Rule" -> "כלל בתי המשפט"
 ]
 
 HE_FIXES = [
@@ -47,6 +63,9 @@ HE_FIXES = [
     ("משכורות שאינן חקלאיות", "משרות מחוץ לחקלאות"),
     ("משכורות חוץ-חקלאיות", "משרות מחוץ לחקלאות"),
     ("השכר הלא-חקלאי", "המשרות מחוץ לחקלאות"),
+    ("אנתרופית", "של אנתרופיק"),                 # "Anthropic spending" -> "הוצאה אנתרופית"
+    ("ניפוח המזון", "אינפלציית המזון"),
+    ("חוזים עתידיים אנוסים", "חוזים עתידיים על קריפטו"),
 ]
 
 # Google sometimes adds vowel points to single words ("לִחיוֹת"). Points and accents only — not the maqaf (U+05BE) or
