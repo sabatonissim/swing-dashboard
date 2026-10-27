@@ -686,6 +686,10 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .breaking-bar-title,.col-title,.market-charts-title,.movers-title{letter-spacing:.4px;text-transform:none;font-size:13px;font-weight:700;color:var(--text);}
   .breaking-bar-title{color:var(--red);}
   .breaking-items{min-height:96px;}
+  /* v19e: Hebrew placeholders ("חיפוש מניה...") were laid out left-to-right (the field is dir=auto and empty) in a code
+     font with no Hebrew letters — the words came out of order and the dots ran into them. Typed tickers stay LTR. */
+  html[lang="he"] input:placeholder-shown{direction:rtl;text-align:right;}
+  input::placeholder{font-family:'Heebo',sans-serif;}
   .install-btn{background:transparent;border:1px solid var(--amber);color:var(--amber);border-radius:8px;padding:6px 11px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Heebo',sans-serif;white-space:nowrap;}
   .install-btn:hover{background:var(--amber);color:var(--on-amber);}
   @media(max-width:600px){ .install-btn{padding:5px 8px;font-size:11px;} }
@@ -730,7 +734,9 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .bottom-nav{display:none;}
   @media(max-width:700px){
     .page-nav{display:none;}
-    .bottom-nav{display:flex;direction:ltr !important;position:fixed;left:0;right:0;bottom:0;z-index:150;
+    /* z-index 45: above the page (sticky header 40) but BELOW the stock drawer (50) and the modals (200) — at 150 it
+       covered the bottom of an opened stock (position calculator buttons...), v19e */
+    .bottom-nav{display:flex;direction:ltr !important;position:fixed;left:0;right:0;bottom:0;z-index:45;
       background:var(--panel);border-top:1px solid var(--line);padding:4px 4px calc(4px + env(safe-area-inset-bottom));}
     html[lang="he"] .bottom-nav{flex-direction:row-reverse;}
     .bottom-nav button{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;background:none;border:none;
@@ -739,6 +745,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
     .bottom-nav svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;}
     body{padding-bottom:calc(64px + env(safe-area-inset-bottom));}
     #consent-banner{bottom:calc(60px + env(safe-area-inset-bottom)) !important;}
+    .drawer{padding-bottom:calc(32px + env(safe-area-inset-bottom));}   /* last buttons clear of the phone's home bar */
     .status-pill{bottom:calc(72px + env(safe-area-inset-bottom)) !important;}
   }
   /* Phone: key events -> scanner (the core of the site) -> index charts -> news. v19c: the charts used to come after
@@ -787,7 +794,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
     </div>
   </div>
   <div class="search-wrap">
-    <input type="text" id="search-input" class="search-input mono" placeholder="חפש טיקר... (למשל AAPL)" />
+    <input type="text" id="search-input" class="search-input mono" placeholder="חיפוש מניה, למשל AAPL" />
     <button class="search-btn" onclick="handleSearch()" id="search-btn-label">חפש</button>
   </div>
   <div style="display:flex;flex-direction:row-reverse;align-items:center;gap:12px;">
@@ -819,7 +826,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
 
 <!-- Mobile Search Bar (visible only on small screens) -->
 <div class="mobile-search">
-  <input type="text" id="search-input-mobile" class="search-input mono" placeholder="חפש טיקר... (למשל AAPL)" />
+  <input type="text" id="search-input-mobile" class="search-input mono" placeholder="חיפוש מניה, למשל AAPL" />
   <button class="search-btn" id="search-btn-mobile" onclick="handleSearchMobile()">חפש</button>
 </div>
 
@@ -885,7 +892,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
       <button class="daily-digest-btn" id="daily-digest-btn" onclick="openDailyDigest()">סיכום יומי</button>
     </div>
     <div class="news-search-wrap">
-      <input type="text" class="news-search-input" id="news-search-input" placeholder="חפש בחדשות..." oninput="setNewsSearch(this.value)">
+      <input type="text" class="news-search-input" id="news-search-input" placeholder="חיפוש בחדשות" oninput="setNewsSearch(this.value)">
       <span class="news-search-icon" id="news-search-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" style="vertical-align:middle"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg></span>
       <button class="news-search-clear" id="news-search-clear" onclick="clearNewsSearch()">✕</button>
     </div>
@@ -981,7 +988,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
 <div id="page-deepdive" style="display:none;">
   <div class="pulse-page-wrap">
     <div class="dd-search-row">
-      <input type="text" id="dd-ticker-input" class="news-search-input" placeholder="הקלד טיקר... (למשל AAPL)" style="max-width:280px;" onkeydown="if(event.key==='Enter') loadDeepDive()">
+      <input type="text" id="dd-ticker-input" class="news-search-input" placeholder="הקלידו טיקר, למשל AAPL" style="max-width:280px;" onkeydown="if(event.key==='Enter') loadDeepDive()">
       <button class="search-btn" id="dd-search-btn" onclick="loadDeepDive()">חפש</button>
     </div>
     <div id="deepdive-content"></div>
@@ -3680,7 +3687,7 @@ function openRiskCalc(prefill){
   const savedEquity = localStorage.getItem('riskCalcEquity') || '';
   const savedRiskPct = localStorage.getItem('riskCalcRiskPct') || '1';
   document.getElementById('risk-calc-modal').innerHTML = `
-    <h3>🧮 ${t?'Position Size Calculator':'מחשבון גודל פוזיציה'}</h3>
+    <h3>${t?'Position Size Calculator':'מחשבון גודל פוזיציה'}</h3>
     <div class="risk-field">
       <label>${t?'Account Equity ($) — enter current total':'שווי התיק הכולל ($) — הזן את השווי הנוכחי'}</label>
       <input type="number" id="rc-equity" value="${savedEquity}" oninput="recalcRisk()" placeholder="10000">
@@ -4020,7 +4027,7 @@ function openDrawer(i){
       </div>
     </div>
     <button class="compare-btn" onclick="openCompare('${s.ticker}')">⇄ ${lang==='en'?'Compare with another stock':'השווה מול מניה אחרת'}</button>
-    <button class="compare-btn" style="--c:var(--amber);" onclick='openRiskCalc(${JSON.stringify({entry:s.entry, stop:s.support, target:(Array.isArray(s.resistance)&&s.resistance.length?s.resistance[0]:null)})})'>🧮 ${lang==='en'?'Position Size Calculator':'מחשבון גודל פוזיציה'}</button>
+    <button class="compare-btn" style="--c:var(--amber);" onclick='openRiskCalc(${JSON.stringify({entry:s.entry, stop:s.support, target:(Array.isArray(s.resistance)&&s.resistance.length?s.resistance[0]:null)})})'>${lang==='en'?'Position Size Calculator':'מחשבון גודל פוזיציה'}</button>
     <button class="compare-btn" onclick="closeDrawer(); setPage('deepdive'); document.getElementById('dd-ticker-input').value='${s.ticker}'; loadDeepDive();">🔎 ${lang==='en'?'Full Stock Analysis':'ניתוח מלא למניה'}</button>
     <div id="compare-section"></div>
   `;
@@ -5089,7 +5096,7 @@ async function showTickerDrawer(ticker){
         <div id="stock-news-list">${lang==='en'?'Loading news...':'טוען חדשות...'}</div>
       </div>
       <button class="compare-btn" onclick="openCompare('${ticker}')">⇄ ${lang==='en'?'Compare with another stock':'השווה מול מניה אחרת'}</button>
-      <button class="compare-btn" style="--c:var(--amber);" onclick='openRiskCalc(${JSON.stringify({entry:d.price, stop:d.week52_low, target:d.week52_high})})'>🧮 ${lang==='en'?'Position Size Calculator':'מחשבון גודל פוזיציה'}</button>
+      <button class="compare-btn" style="--c:var(--amber);" onclick='openRiskCalc(${JSON.stringify({entry:d.price, stop:d.week52_low, target:d.week52_high})})'>${lang==='en'?'Position Size Calculator':'מחשבון גודל פוזיציה'}</button>
       <div id="compare-section"></div>
     `);
     loadStockNews(ticker);
@@ -5148,7 +5155,7 @@ function openCompare(baseTicker){
     </div>
     <div class="cs-input-wrap">
       <span class="cs-input-icon">🔍</span>
-      <input type="text" class="cs-input" id="cs-input" placeholder="${t?'Ticker or company name...':'טיקר או שם חברה...'}" oninput="renderCompareSearchList('${baseTicker}', this.value)" onkeydown="handleCompareSearchKey(event,'${baseTicker}')">
+      <input type="text" class="cs-input" id="cs-input" placeholder="${t?'Ticker or company name':'טיקר או שם חברה'}" oninput="renderCompareSearchList('${baseTicker}', this.value)" onkeydown="handleCompareSearchKey(event,'${baseTicker}')">
     </div>
     <div class="cs-list" id="cs-list"></div>
   `;
@@ -5172,7 +5179,7 @@ function openAddToCompare(){
     </div>
     <div class="cs-input-wrap">
       <span class="cs-input-icon">🔍</span>
-      <input type="text" class="cs-input" id="cs-input" placeholder="${t?'Ticker or company name...':'טיקר או שם חברה...'}" oninput="renderCompareSearchList('${compareTickerList[0]}', this.value)" onkeydown="handleCompareSearchKey(event,'${compareTickerList[0]}')">
+      <input type="text" class="cs-input" id="cs-input" placeholder="${t?'Ticker or company name':'טיקר או שם חברה'}" oninput="renderCompareSearchList('${compareTickerList[0]}', this.value)" onkeydown="handleCompareSearchKey(event,'${compareTickerList[0]}')">
     </div>
     <div class="cs-list" id="cs-list"></div>
   `;
@@ -6069,8 +6076,8 @@ let lang = localStorage.getItem('swing_lang') || 'he';
 const UI = {
   he: {
     sub: 'סורק סווינג וחדשות שוק',
-    search_placeholder: 'חפש טיקר... (למשל AAPL)',
-    news_search_placeholder: 'חפש בחדשות...',
+    search_placeholder: 'חיפוש מניה, למשל AAPL',
+    news_search_placeholder: 'חיפוש בחדשות',
     search_btn: 'חפש',
     breaking_title: 'אירועים מרכזיים',
     scanner_title: 'איתותי הסורק',
@@ -6078,7 +6085,7 @@ const UI = {
     charts_title: 'גרפי מדדים',
     nav_backtest: 'בדיקה היסטורית',
     nav_deepdive: 'ניתוח מניה',
-    dd_placeholder: 'הקלד טיקר... (למשל AAPL)',
+    dd_placeholder: 'הקלידו טיקר, למשל AAPL',
     no_stocks: 'אין מניות מסומנות כרגע — הסורק ירוץ בשעות המסחר הבאות',
     no_breaking: 'אין חדשות קריטיות כרגע',
     loading: 'טוען...',
@@ -6117,8 +6124,8 @@ const UI = {
   },
   en: {
     sub: 'Swing scanner & market news',
-    search_placeholder: 'Search ticker... (e.g. AAPL)',
-    news_search_placeholder: 'Search news...',
+    search_placeholder: 'Search a stock, e.g. AAPL',
+    news_search_placeholder: 'Search news',
     search_btn: 'Search',
     breaking_title: 'Key events',
     scanner_title: 'Scanner signals',
@@ -6126,7 +6133,7 @@ const UI = {
     charts_title: 'Market Charts',
     nav_backtest: 'Backtest',
     nav_deepdive: 'Deep Dive',
-    dd_placeholder: 'Enter ticker... (e.g. AAPL)',
+    dd_placeholder: 'Enter a ticker, e.g. AAPL',
     no_stocks: 'No stocks flagged yet — scanner runs during market hours',
     no_breaking: 'No critical news at this time',
     loading: 'Loading...',
