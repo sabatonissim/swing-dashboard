@@ -71,7 +71,7 @@ GitHub Secrets: `DATABASE_URL`, `LLM_API_KEY`; Variables: `LLM_MODELS` (מומל
 
 ## 6. סטטוס ופתוח (עודכן 26.10.2026 — v18)
 **בוצע היום (פירוט: HISTORY §27):** פענוח הכנסות מהודעות SEC (טבלאות, צפי שמור, VZ/BX תוקנו); מקורות "בפועל" בלי מפתח לכל 6 סדרות FRED; לוח חודשי מיום שני; תיקוני תצוגה; תמונת שיתוף; Deep Dive הדרגתי; EPS/P/E מ-SEC (יחידות); מפסק `.info`; אבטחה (article-preview, escH, permissions); קו מגמה ראשי + הצמדת קווים אופקיים לפתיל; תרגום חדש; יישור שורות עברית לימין; **Forward P/E (NTM)**; קווי מגמה עד 250 נרות (סורק+Deep Dive), גרף שמתארך לפי הקו; **קו מגמה מחמיר (0.5%) + אזורי תמיכה/התנגדות כמלבן** (HISTORY §27.3ה); **קו התנגדות על ראש הפתיל + פריצה רק בפעם הראשונה** (KO/ANET, HISTORY §27.3ט); גרף מדדים `autosize` (§27.3י); **חדשות מרכזיות לפי אירועים + קישור אמיתי לכתבות Google News** (§27.3יא).
-**לבדוק:** בלוג news-aggregator — `article links: decoded N ... failed M` (אם הכל נכשל — גוגל חוסם את GitHub; המצב כמו קודם).
+**לבדוק:** בלוג news-aggregator — `article links: decoded N ... failed M` (v18e תיקן באג קריאה של 800KB — §27.3יא; אם עדיין הכל נכשל — חסימה אמיתית).
 **ממתין לבדיקה אחרי העלאה:** ראה HISTORY §27.4 (רשימת בדיקות מלאה).
 **פתוח:**
 1. Forward P/E יופיע רק אחרי ריצת **סריקה מלאה** (לא quick); לוודא בלוג `stock estimates: saved N`. אם 0 עם צפי — לבדוק שמות שדות `.info` (`forwardEps`, `epsCurrentYear`, `nextFiscalYearEnd`).

@@ -35,9 +35,11 @@ def decode_google_news_url(url: str, timeout: float = 8.0) -> Optional[str]:
         if not m:
             return None
         art_id = m.group(1)
-        req = urllib.request.Request(f"https://news.google.com/articles/{art_id}", headers={"User-Agent": _UA})
+        # v18e: the signature sits at the very END of a large page (/articles/ ~1.07MB, /rss/articles/ ~0.6MB, measured
+        # 27.10.2026) — v18d read only the first 800KB, so every decode failed ("decoded 0, 5 failed" in the log).
+        req = urllib.request.Request(f"https://news.google.com/rss/articles/{art_id}", headers={"User-Agent": _UA})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            page = resp.read(800_000).decode("utf-8", errors="replace")
+            page = resp.read(3_000_000).decode("utf-8", errors="replace")
         sig = re.search(r'data-n-a-sg="([^"]+)"', page)
         ts = re.search(r'data-n-a-ts="(\d+)"', page)
         if not (sig and ts):
