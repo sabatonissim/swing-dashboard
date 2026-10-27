@@ -11,3 +11,4 @@ tzdata
 google-auth<3
 PyJWT<3
 certifi
+pywebpush<3

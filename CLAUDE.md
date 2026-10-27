@@ -35,6 +35,8 @@ Swing Desk — דשבורד מסחר סווינג (סורק תבניות טכנ�
 | `scheduler.py` | Render | מפעיל workflows בשעות ET מדויקות (`GITHUB_DISPATCH_TOKEN`) |
 | **`translation_fixes.py`** | Render + Actions | תיקוני תרגום משותפים. **להעלות לפני/יחד עם `api_server.py`** — בלעדיו השרת לא עולה |
 | **`news_links.py`** | Render + Actions | קישור Google News → כתובת הכתבה האמיתית (`article_url`). **כמו translation_fixes — בלעדיו השרת לא עולה** |
+| **`push_alerts.py`** (v19) | Render + Actions | התראות Push: מנויי מכשירים, התראות מחיר, איתות על מניה מרשימת המעקב. **בלעדיו השרת לא עולה** (כמו translation_fixes) |
+| `sw.js`, `manifest.json`, `icon-192.png`, `icon-512.png`, `icon-maskable-512.png` (v19) | Vercel | אפליקציה להתקנה (PWA) + קבלת התראות. `sw.js` לא שומר במטמון את ה-API, והעמוד "רשת קודם" |
 | `cleanup_stale_signals.py` | Actions (ידני) | תחזוקה |
 | `vercel.json` | Vercel | כותרות אבטחה (CSP מצומצם נאכף; מלא ב-Report-Only) |
 | `favicon.svg`, `favicon-32.png`, `apple-touch-icon.png`, `logo.png`, `og-image.png` | Vercel | לוגו S (לבן על שחור), תמונת שיתוף 1200×630 |
@@ -63,15 +65,16 @@ Swing Desk — דשבורד מסחר סווינג (סורק תבניות טכנ�
 **בדיקות מהמחשב הביתי:** לא להריץ עשרות קריאות API ברצף — Cloudflare של Render חוסם את ה-IP (429 `Cf-Mitigated: challenge`).
 
 ## 4. משתני סביבה (שמות בלבד — הערכים סודיים)
-Render: `DATABASE_URL`, `JWT_SECRET` (≥32), `ALLOWED_ORIGINS`, `GITHUB_DISPATCH_TOKEN`, `ADMIN_TOKEN` (אופציונלי), `GOOGLE_CLIENT_ID` (אופציונלי), `TRUSTED_PROXY_HOPS`, `ENABLE_DOCS`.
-GitHub Secrets: `DATABASE_URL`, `LLM_API_KEY`; Variables: `LLM_MODELS` (מומלץ: `nvidia/nemotron-3.5-lightning-30b-a3b,nvidia/nemotron-3-ultra-550b-a55b` — לבדוק ב-probe), `LLM_BASE_URL`, `DIGEST_TZ`, `AI_DIGEST_MIN_HOURS`. אופציונלי: `FRED_API_KEY`, `BLS_API_KEY` (המשתמש לא נרשם).
+Render: `DATABASE_URL`, `JWT_SECRET` (≥32), `ALLOWED_ORIGINS`, `GITHUB_DISPATCH_TOKEN`, `ADMIN_TOKEN` (אופציונלי), `GOOGLE_CLIENT_ID` (אופציונלי), `TRUSTED_PROXY_HOPS`, `ENABLE_DOCS`, **`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`** (v19 התראות; נוצרו מקומית לקובץ `C:\Users\sabat\נסים\מפתחות-התראות-סודי.txt` — מחוץ לריפו).
+GitHub Secrets: `DATABASE_URL`, `LLM_API_KEY`, **`VAPID_PRIVATE_KEY`** (v19); Variables: `LLM_MODELS` (מומלץ: `nvidia/nemotron-3.5-lightning-30b-a3b,nvidia/nemotron-3-ultra-550b-a55b` — לבדוק ב-probe), `LLM_BASE_URL`, `DIGEST_TZ`, `AI_DIGEST_MIN_HOURS`. אופציונלי: `FRED_API_KEY`, `BLS_API_KEY` (המשתמש לא נרשם).
 
 ## 5. טבלאות עיקריות
-`scanned_stocks` (איתותים + `sim_*` לתיק דמו), `earnings_calendar` (`revenue_period_end = report_date` ⇒ הכנסה מהודעת SEC), `macro_news` (`summary_he/en`, `body_*`, `source_name`), `ai_daily_digests`, `econ_events`, `econ_snapshots` (`series-<id>` + snapshot הלוח), `universe_movers`, `users`, `watchlist` (אישי), `analytics_events`, `scheduler_runs`, **`stock_estimates` (חדש v18)**. פירוט: REFERENCE §5.
+`scanned_stocks` (איתותים + `sim_*` לתיק דמו), `earnings_calendar` (`revenue_period_end = report_date` ⇒ הכנסה מהודעת SEC), `macro_news` (`summary_he/en`, `body_*`, `source_name`), `ai_daily_digests`, `econ_events`, `econ_snapshots` (`series-<id>` + snapshot הלוח), `universe_movers`, `users`, `watchlist` (אישי), `analytics_events`, `scheduler_runs`, **`stock_estimates` (חדש v18)**, **`push_subscriptions`, `price_alerts`, `push_log` (v19)**. פירוט: REFERENCE §5.
 
 ## 6. סטטוס ופתוח (עודכן 27.10.2026 — v19)
 **v19 (27.10, HISTORY §27.3יב):** בלי נתוני דמו מזויפים בטעינה (`apiLoadState`); פיד חדשות בלי כותרות "מניות לקנות" ובלי כפילויות (`_feed_clean`); כלל CPI מחמיר (Loblaw); תיקוני תרגום (crypto→"אנוסים" ועוד); הסבר תמיכה/התנגדות מזכיר את האזור בגרף; תקרות גרסה ב-`requirements.txt`. **כיווני מוצר: HISTORY §27.5.**
 **כלל חדש:** אסור להציג באתר נתונים מומצאים כאילו אמיתיים — במצב טעינה/שגיאה מציגים הודעה, לא דמו.
+**v19b (27.10, HISTORY §27.3יג) — "מוצר":** עיצוב בלי אימוג'י/💡 חוזר, כותרות טבעיות; טלפון: סרגל ניווט תחתון, סורק אחרי האירועים (8 שורות + "הצג הכל"); **PWA** (התקנה, `?ticker=`/`?page=` קישורים); **סינון סקטור** (`scanned_stocks.sector`, ה-API משלים מרשימת S&P); **סיכום יומי קצר** (שורה + מדדים אמיתיים + 3–4 נקודות + "מה בהמשך" מלוח האירועים; פרומפט קצר ב-`ai_digest.py`); **התראות Push** (מחיר + איתות ברשימת מעקב; `push_alerts.py`, `/api/push/*`, `/api/alerts`); כפתור שיתוף בניתוח מניה. עיצוב: לא להחזיר אימוג'י לממשק; הסבר "למה זה חשוב" רק בפתיחת ידיעה.
 **בוצע היום (פירוט: HISTORY §27):** פענוח הכנסות מהודעות SEC (טבלאות, צפי שמור, VZ/BX תוקנו); מקורות "בפועל" בלי מפתח לכל 6 סדרות FRED; לוח חודשי מיום שני; תיקוני תצוגה; תמונת שיתוף; Deep Dive הדרגתי; EPS/P/E מ-SEC (יחידות); מפסק `.info`; אבטחה (article-preview, escH, permissions); קו מגמה ראשי + הצמדת קווים אופקיים לפתיל; תרגום חדש; יישור שורות עברית לימין; **Forward P/E (NTM)**; קווי מגמה עד 250 נרות (סורק+Deep Dive), גרף שמתארך לפי הקו; **קו מגמה מחמיר (0.5%) + אזורי תמיכה/התנגדות כמלבן** (HISTORY §27.3ה); **קו התנגדות על ראש הפתיל + פריצה רק בפעם הראשונה** (KO/ANET, HISTORY §27.3ט); גרף מדדים `autosize` (§27.3י); **חדשות מרכזיות לפי אירועים + קישור אמיתי לכתבות Google News** (§27.3יא).
 **לבדוק:** בלוג news-aggregator — `article links: decoded N ... failed M` (v18e תיקן באג קריאה של 800KB — §27.3יא; אם עדיין הכל נכשל — חסימה אמיתית).
 **ממתין לבדיקה אחרי העלאה:** ראה HISTORY §27.4 (רשימת בדיקות מלאה).

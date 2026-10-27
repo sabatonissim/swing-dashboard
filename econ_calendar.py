@@ -140,7 +140,7 @@ CATALOG = {
         what_he="שיעור המובטלים מכוח העבודה. עלייה באבטלה מסמנת התקררות במשק ומעלה ציפיות להורדת ריבית.",
         affects=["fed", "yields", "usd", "sp500", "consumer"]),
     "gdp": dict(
-        name_en="GDP (q/q, annualized)", name_he="תוצר – GDP (רבעוני, מאוּנְתָּן)",
+        name_en="GDP (q/q, annualized)", name_he="תוצר – GDP (רבעוני, בקצב שנתי)",
         impact="high", time_et="08:30", sched="bea",
         fred=dict(series="A191RL1Q225SBEA", units="lin", fmt="pct1"),
         match=[r"^(Advance |Prelim |Second |Final )?GDP q/q$"],

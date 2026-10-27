@@ -7,6 +7,13 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<!-- v19: installable app (PWA) — manifest + service worker (sw.js) -->
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0f1216">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Swing Desk">
 <meta name="description" content="Swing Desk — דשבורד למסחר סווינג: סורק מניות לפי מבנים טכניים, חדשות מאקרו עם סיכום יומי, יומן כלכלי ומפת חום. מידע בלבד, לא ייעוץ השקעות.">
 <link rel="canonical" href="https://swing-desk-tau.vercel.app/">
 <meta name="robots" content="index, follow">
@@ -507,6 +514,34 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .digest-open-hint{font-size:11px;color:var(--teal);margin-top:3px;}
   .digest-item .macro-tag{display:inline-block;margin-bottom:4px;}
   .digest-empty{color:var(--text-dim);font-size:13px;padding:12px 0;text-align:center;}
+  /* v19 daily summary */
+  .digest-modal{max-width:680px;}
+  .dg-title{font-family:'Frank Ruhl Libre',serif !important;font-size:22px !important;}
+  .dg-meta{font-size:12px;color:var(--text-dim);margin-top:3px;}
+  .dg-lead{font-size:16px;line-height:1.6;font-weight:500;margin:4px 0 14px;}
+  .dg-market{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px;}
+  .dg-chip{display:inline-flex;gap:6px;align-items:center;background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:5px 9px;font-size:12px;}
+  .dg-chip b{font-family:'JetBrains Mono',monospace;font-weight:600;}
+  .dg-h{font-size:13px;font-weight:700;color:var(--text-dim);margin:18px 0 8px;}
+  .dg-topic{display:flex;gap:12px;padding:10px 0;border-bottom:1px solid var(--line);}
+  .dg-topic:last-of-type{border-bottom:none;}
+  .dg-num{flex:none;width:22px;height:22px;border-radius:50%;background:var(--panel-2);border:1px solid var(--line);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;color:var(--amber);}
+  .dg-topic-title{font-weight:700;font-size:14.5px;margin-bottom:2px;}
+  .dg-topic-text{font-size:14px;line-height:1.55;}
+  .dg-src{margin-top:5px;font-size:12px;}
+  .dg-src summary{cursor:pointer;color:var(--teal);list-style:none;display:inline;}
+  .dg-src summary::-webkit-details-marker{display:none;}
+  .dg-src a{display:block;color:var(--text-dim);text-decoration:none;padding:4px 0;line-height:1.4;}
+  .dg-src a:hover{color:var(--text);text-decoration:underline;}
+  .dg-next{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13.5px;cursor:pointer;}
+  .dg-next:last-child{border-bottom:none;}
+  .dg-next .econ-dot{margin:0;flex:none;}
+  .dg-next-name{flex:1;min-width:0;}
+  .dg-next-when{color:var(--text-dim);font-size:12px;white-space:nowrap;}
+  .dg-foot{font-size:11.5px;color:var(--text-dim);margin-top:18px;padding-top:10px;border-top:1px solid var(--line);}
+  .dg-prev{margin-top:14px;}
+  .dg-prev summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--text-dim);padding:6px 0;}
+  @media(max-width:600px){ .digest-overlay{padding:0;align-items:stretch;} .digest-modal{max-height:100vh;border-radius:0;padding:18px 16px calc(18px + env(safe-area-inset-bottom));} }
 
   /* ---- Fundamentals (drawer) ---- */
   .fund-section-title{font-size:11px;letter-spacing:1.5px;color:var(--amber);text-transform:uppercase;margin:18px 0 10px;}
@@ -643,6 +678,72 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
     .cal-nav-title{font-size:16px;}
   }
   .econ-foot{color:var(--text-dim);font-size:10.5px;margin-top:12px;line-height:1.5;}
+
+  /* ---- v19 design pass: calmer, less "template" look ---- */
+  .pulse{animation:none;}                                   /* the blinking red dot read as alarm/clickbait */
+  .breaking-card .b-src{font-size:11px;color:var(--text-dim);margin-top:6px;}
+  .breaking-card .b-text{font-weight:500;}
+  .breaking-bar-title,.col-title,.market-charts-title,.movers-title{letter-spacing:.4px;text-transform:none;font-size:13px;font-weight:700;color:var(--text);}
+  .breaking-bar-title{color:var(--red);}
+  .breaking-items{min-height:96px;}
+  .install-btn{background:transparent;border:1px solid var(--amber);color:var(--amber);border-radius:8px;padding:6px 11px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Heebo',sans-serif;white-space:nowrap;}
+  .install-btn:hover{background:var(--amber);color:var(--on-amber);}
+  @media(max-width:600px){ .install-btn{padding:5px 8px;font-size:11px;} }
+  .install-steps{margin:10px 0 0;padding:0 18px;line-height:1.9;font-size:13.5px;}
+  /* stock analysis: price alert / share */
+  .dd-actions{display:flex;gap:8px;margin:-6px 0 14px;flex-wrap:wrap;}
+  .dd-action-btn{background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px 12px;font-size:12.5px;cursor:pointer;font-family:'Heebo',sans-serif;}
+  .dd-action-btn:hover{border-color:var(--amber);}
+  /* alerts panel */
+  .al-sec{font-size:12px;font-weight:700;color:var(--text-dim);margin:14px 0 6px;}
+  .al-text{font-size:13px;line-height:1.55;margin:4px 0;}
+  .al-text.dim{color:var(--text-dim);font-size:12px;}
+  .al-on{color:var(--green);}
+  .al-row{display:flex;gap:8px;margin-top:6px;}
+  .al-btn{background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:7px 12px;font-size:12.5px;cursor:pointer;font-family:'Heebo',sans-serif;}
+  .al-btn.primary{background:var(--amber);border-color:var(--amber);color:var(--on-amber);font-weight:700;margin-top:6px;}
+  .al-check{display:flex;gap:8px;align-items:flex-start;font-size:13px;margin:10px 0 0;line-height:1.4;cursor:pointer;}
+  .al-form{display:grid;grid-template-columns:1fr auto 1fr auto;gap:6px;align-items:center;}
+  .al-form .search-input{min-width:0;padding:7px 8px;}
+  .al-form .al-btn.primary{margin-top:0;}
+  .al-item{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px;}
+  .al-item.done{opacity:.6;}
+  .al-item .al-when{flex:1;color:var(--text-dim);font-size:11.5px;}
+  .al-x{background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:13px;padding:2px 6px;}
+  .al-x:hover{color:var(--red);}
+  /* installed app (standalone window): no browser bar, so leave room for the phone's status bar */
+  @media (display-mode: standalone){ .top-sticky{padding-top:env(safe-area-inset-top);background:var(--header-a);} }
+  .scan-pattern-filter{display:flex;gap:8px;}                     /* pattern + sector dropdowns side by side */
+  .scan-pattern-filter select{flex:1;min-width:0;margin-top:0 !important;}
+  html[lang="he"] .scan-pattern-filter{flex-direction:row-reverse;}
+  .scan-more-btn{display:block;width:100%;margin:4px 0 8px;padding:10px;border-radius:9px;background:transparent;border:1px solid var(--line);color:var(--text);font-family:'Heebo',sans-serif;font-size:13px;cursor:pointer;}
+  .scan-more-btn:hover{border-color:var(--amber);}
+  @media(max-width:480px){ .stock-row .repeat-badge{display:none;} }   /* phone: one badge less per row (the "N× in 14 days" count) */
+
+  /* ---- Phone: app-style bottom navigation ---- */
+  .bottom-nav{display:none;}
+  @media(max-width:700px){
+    .page-nav{display:none;}
+    .bottom-nav{display:flex;direction:ltr !important;position:fixed;left:0;right:0;bottom:0;z-index:150;
+      background:var(--panel);border-top:1px solid var(--line);padding:4px 4px calc(4px + env(safe-area-inset-bottom));}
+    html[lang="he"] .bottom-nav{flex-direction:row-reverse;}
+    .bottom-nav button{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;background:none;border:none;
+      color:var(--text-dim);font-family:'Heebo',sans-serif;font-size:11px;padding:6px 2px;cursor:pointer;border-radius:8px;}
+    .bottom-nav button.active{color:var(--amber);}
+    .bottom-nav svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;}
+    body{padding-bottom:calc(64px + env(safe-area-inset-bottom));}
+    #consent-banner{bottom:calc(60px + env(safe-area-inset-bottom)) !important;}
+    .status-pill{bottom:calc(72px + env(safe-area-inset-bottom)) !important;}
+  }
+  /* Phone: the scanner (the core of the site) right after the key events; the index charts after the lists */
+  @media(max-width:900px){
+    #page-home{display:flex;flex-direction:column;}
+    #page-home > .mobile-search{order:1;}
+    #page-home > .breaking-bar{order:2;}
+    #page-home > .board{order:3;}
+    #page-home > .market-charts{order:4;border-top:1px solid var(--line);}
+    .board .col{padding:16px 14px 24px;}
+  }
   @media(max-width:480px){
     .econ-grid{grid-template-columns:1fr;}
     .pulse-view-btn{flex:1;padding:8px 10px;}
@@ -672,7 +773,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
     <svg class="logo-s" viewBox="124 34 264 444" role="img" aria-label="Swing Desk"><path fill="currentColor" d="M320 55.15A128.0 128.0 0 1 0 256 294A52.0 52.0 0 1 1 207.14 363.79L192 456.85A128.0 128.0 0 1 0 256 218A52.0 52.0 0 1 1 304.86 148.21Z"/></svg>
     <div>
       <h1>Swing Desk</h1>
-      <div class="sub" id="header-sub">דשבורד מסחר בזמן אמת</div>
+      <div class="sub" id="header-sub">סורק סווינג וחדשות שוק</div>
     </div>
   </div>
   <div class="search-wrap">
@@ -681,6 +782,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   </div>
   <div style="display:flex;flex-direction:row-reverse;align-items:center;gap:12px;">
     <button id="lang-toggle" onclick="toggleLang()" style="background:var(--panel);border:1px solid var(--line);color:var(--text-dim);border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;font-family:'JetBrains Mono',monospace;transition:all .15s;" onmouseover="this.style.borderColor='var(--amber)'" onmouseout="this.style.borderColor='var(--line)'">EN</button>
+    <button id="install-btn" class="install-btn" style="display:none;" onclick="installApp()">התקן אפליקציה</button>
     <div class="clock mono" id="clock"></div>
     <div id="auth-box" style="position:relative;display:flex;align-items:center;min-height:34px;"></div>
   </div>
@@ -713,7 +815,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
 
 <!-- Breaking News Bar -->
 <div class="breaking-bar">
-  <div class="breaking-bar-title"><span class="pulse"></span> חדשות שוברות — קריטי</div>
+  <div class="breaking-bar-title"><span class="pulse"></span> אירועים מרכזיים</div>
   <div class="breaking-wrap">
     <button class="breaking-nav" id="breaking-prev" type="button" aria-label="Scroll left">‹</button>
     <div class="breaking-items" id="breaking-news"></div>
@@ -752,7 +854,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
           <button class="movers-toggle-btn" id="movers-toggle-watchlist" onclick="setMoversPanelMode('watchlist')">רשימת מעקב</button>
         </div>
         <button class="watchlist-add-btn" id="watchlist-add-btn" style="display:none;" onclick="promptAddToWatchlist()" title="הוסף מניה">+</button>
-        <button class="watchlist-add-btn" id="watchlist-setups-btn" style="display:none;font-size:15px;" onclick="openWatchlistSetups()" title="מה מתקרב?">📈</button>
+        <button class="watchlist-add-btn" id="watchlist-setups-btn" style="display:none;" onclick="openWatchlistSetups()" title="מה מתקרב?" aria-label="מה מתקרב?"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle"><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg></button>
       </div>
       <div class="movers-list" id="movers-list"></div>
     </div>
@@ -762,19 +864,19 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
 <!-- Main Board -->
 <div class="board">
   <div class="col right">
-    <div class="col-title"><span class="dot"></span> סורק סווינג — משימות פתוחות</div>
+    <div class="col-title"><span class="dot"></span> איתותי הסורק</div>
     <div class="scan-pattern-filter" id="scan-pattern-filter"></div>
     <div id="stocks"></div>
   </div>
   <div class="divider"></div>
   <div class="col left">
     <div class="col-title-row">
-      <div class="col-title"><span class="dot"></span> מוקד מאקרו וחדשות עולם</div>
-      <button class="daily-digest-btn" id="daily-digest-btn" onclick="openDailyDigest()">📰 סיכום יומי</button>
+      <div class="col-title"><span class="dot"></span> חדשות מאקרו ושווקים</div>
+      <button class="daily-digest-btn" id="daily-digest-btn" onclick="openDailyDigest()">סיכום יומי</button>
     </div>
     <div class="news-search-wrap">
       <input type="text" class="news-search-input" id="news-search-input" placeholder="חפש בחדשות..." oninput="setNewsSearch(this.value)">
-      <span class="news-search-icon" id="news-search-icon">🔍</span>
+      <span class="news-search-icon" id="news-search-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" style="vertical-align:middle"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg></span>
       <button class="news-search-clear" id="news-search-clear" onclick="clearNewsSearch()">✕</button>
     </div>
     <div class="sector-filter" id="sector-filter"></div>
@@ -787,8 +889,8 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
 <div id="page-pulse" style="display:none;">
   <div class="pulse-page-wrap">
     <div class="pulse-view-switch">
-      <button class="pulse-view-btn active" id="pulse-view-btn-overview" onclick="setPulseView('overview')">📊 מצב השוק</button>
-      <button class="pulse-view-btn" id="pulse-view-btn-events" onclick="setPulseView('events')">📅 אירועי שוק</button>
+      <button class="pulse-view-btn active" id="pulse-view-btn-overview" onclick="setPulseView('overview')">מצב השוק</button>
+      <button class="pulse-view-btn" id="pulse-view-btn-events" onclick="setPulseView('events')">אירועי שוק</button>
     </div>
 
     <!-- View 1: Upcoming Market Events (economic calendar) -->
@@ -796,12 +898,12 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
       <div class="econ-box">
         <div class="econ-head">
           <div>
-            <div class="econ-title" id="econ-title">📅 לוח אירועי שוק</div>
+            <div class="econ-title" id="econ-title">לוח אירועי שוק</div>
             <div class="econ-sub" id="econ-sub"></div>
           </div>
           <div class="movers-toggle">
-            <button class="movers-toggle-btn active" id="econ-view-btn-month" onclick="setEconView('month')">🗓 חודשי</button>
-            <button class="movers-toggle-btn" id="econ-view-btn-list" onclick="setEconView('list')">📋 רשימה</button>
+            <button class="movers-toggle-btn active" id="econ-view-btn-month" onclick="setEconView('month')">חודשי</button>
+            <button class="movers-toggle-btn" id="econ-view-btn-list" onclick="setEconView('list')">רשימה</button>
           </div>
         </div>
         <div id="econ-month-wrap"><div class="movers-empty">טוען לוח חודשי…</div></div>
@@ -837,8 +939,8 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
 <div id="page-backtest" style="display:none;">
   <div class="pulse-page-wrap">
     <div class="pulse-view-switch">
-      <button class="pulse-view-btn active" id="bt-view-btn-demo" onclick="setBtView('demo')">💼 תיק דמו</button>
-      <button class="pulse-view-btn" id="bt-view-btn-stats" onclick="setBtView('stats')">📊 סטטיסטיקת איתותים</button>
+      <button class="pulse-view-btn active" id="bt-view-btn-demo" onclick="setBtView('demo')">תיק דמו</button>
+      <button class="pulse-view-btn" id="bt-view-btn-stats" onclick="setBtView('stats')">סטטיסטיקת איתותים</button>
     </div>
 
     <!-- View 1: demo portfolio (the historical test as a paper-trading account) -->
@@ -875,6 +977,14 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
     <div id="deepdive-content"></div>
   </div>
 </div>
+
+<!-- Phone: app-style bottom navigation (the top .page-nav is hidden under 700px). Labels are set in applyLang. -->
+<nav class="bottom-nav" id="bottom-nav" aria-label="ניווט">
+  <button class="active" data-page="home" onclick="setPage('home')"><svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/></svg><span id="bnav-home">בית</span></button>
+  <button data-page="pulse" onclick="setPage('pulse')"><svg viewBox="0 0 24 24"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg><span id="bnav-pulse">השוק</span></button>
+  <button data-page="deepdive" onclick="setPage('deepdive')"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><span id="bnav-deepdive">ניתוח מניה</span></button>
+  <button data-page="backtest" onclick="setPage('backtest')"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg><span id="bnav-backtest">ביצועים</span></button>
+</nav>
 
 <div class="disclaimer-strip" id="disclaimer-strip">
   התוכן להמחשה בלבד ואינו מהווה ייעוץ השקעות או המלצה לביצוע עסקה.
@@ -962,6 +1072,8 @@ function repeatBadgeHtml(count){
 }
 
 let collapsedStockGroups = { recent: false, previous: false };
+let scanShowAll = false;          // phone: the full list only after "show all"
+const SCAN_PHONE_ROWS = 8;
 
 function toggleStockGroup(key){
   collapsedStockGroups[key] = !collapsedStockGroups[key];
@@ -975,15 +1087,16 @@ function renderScanPatternFilter(){
   if(!el) return;
   const present = Array.from(new Set(stocks.map(s => s.patternType).filter(Boolean)));
   if(present.length <= 1){
-    // Not worth a filter control when there's nothing meaningful to filter between.
-    el.innerHTML = '';
+    // Not worth a pattern control when there's nothing meaningful to filter between (the sector one may still be)
+    el.innerHTML = sectorSelectHtml();
     return;
   }
   present.sort((a,b) => patternLabel(a).localeCompare(patternLabel(b), lang==='en'?'en':'he'));
   const allLabel = lang==='en' ? 'All Patterns' : 'כל התבניות';
   const options = [`<option value="all" ${activeScanPattern==='all'?'selected':''}>${allLabel}</option>`]
     .concat(present.map(p => `<option value="${p.replace(/"/g,'&quot;')}" ${activeScanPattern===p?'selected':''}>${patternLabel(p)}</option>`));
-  el.innerHTML = `<select class="backtest-pattern-select" aria-label="${lang==='en'?'Filter by pattern':'סינון לפי תבנית'}" onchange="setScanPatternFilter(this.value)">${options.join('')}</select>`;
+  el.innerHTML = `<select class="backtest-pattern-select" aria-label="${lang==='en'?'Filter by pattern':'סינון לפי תבנית'}" onchange="setScanPatternFilter(this.value)">${options.join('')}</select>`
+    + sectorSelectHtml();
 }
 
 function setScanPatternFilter(p){
@@ -991,16 +1104,37 @@ function setScanPatternFilter(p){
   renderStocks();
 }
 
+// ---- v19: sector filter (GICS sectors; the API fills older rows from the S&P 500 list) ----
+const SECTOR_HE = {
+  'Information Technology':'טכנולוגיה', 'Health Care':'בריאות', 'Financials':'פיננסים', 'Consumer Discretionary':'צריכה מחזורית',
+  'Consumer Staples':'צריכה בסיסית', 'Energy':'אנרגיה', 'Industrials':'תעשייה', 'Materials':'חומרי גלם',
+  'Real Estate':'נדל"ן', 'Communication Services':'תקשורת', 'Utilities':'תשתיות'
+};
+let activeScanSector = 'all';
+function sectorLabel(s){ return lang==='en' ? s : (SECTOR_HE[s] || s); }
+function sectorSelectHtml(){
+  const present = Array.from(new Set(stocks.map(s => s.sector).filter(Boolean)));
+  if(present.length <= 1) return '';
+  present.sort((a,b) => sectorLabel(a).localeCompare(sectorLabel(b), lang==='en'?'en':'he'));
+  const count = sec => stocks.filter(s => s.sector===sec && (activeScanPattern==='all' || s.patternType===activeScanPattern)).length;
+  const opts = [`<option value="all" ${activeScanSector==='all'?'selected':''}>${lang==='en'?'All sectors':'כל הסקטורים'}</option>`]
+    .concat(present.map(p => `<option value="${escH(p)}" ${activeScanSector===p?'selected':''}>${escH(sectorLabel(p))} (${count(p)})</option>`));
+  return `<select class="backtest-pattern-select" style="margin-top:8px;" aria-label="${lang==='en'?'Filter by sector':'סינון לפי סקטור'}" onchange="activeScanSector=this.value;renderStocks();">${opts.join('')}</select>`;
+}
+
 function renderStocks(){
   const el = document.getElementById("stocks");
   renderScanPatternFilter();
   const visibleIdx = stocks
     .map((s,i)=>i)
-    .filter(i => activeScanPattern==='all' || stocks[i].patternType===activeScanPattern);
-  if(!visibleIdx.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${!stocks.length && apiLoadState!=='ok' ? apiWaitMsg() : UI[lang].no_stocks}</div>`; return; }
+    .filter(i => activeScanPattern==='all' || stocks[i].patternType===activeScanPattern)
+    .filter(i => activeScanSector==='all' || stocks[i].sector===activeScanSector);
+  if(!visibleIdx.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${!stocks.length && apiLoadState!=='ok' ? apiWaitMsg() : stocks.length ? (lang==='en' ? 'No signals match this filter.' : 'אין איתותים שמתאימים לסינון הזה.') : UI[lang].no_stocks}</div>`; return; }
 
   const recent = [], previous = [];
   visibleIdx.forEach(i=>{ (stocks[i].isRecent===false ? previous : recent).push(i); });
+  // v19, phone: the list (up to 60 rows) pushed the news ~40 screens down — the first rows and a "show all" button
+  const phoneCut = !scanShowAll && window.matchMedia('(max-width:900px)').matches && (recent.length + previous.length) > SCAN_PHONE_ROWS;
 
   let html = "";
   if(recent.length){
@@ -1009,9 +1143,12 @@ function renderStocks(){
       <span>${UI[lang].recent_stocks_title}</span>
       <span class="group-arrow ${collapsed?'collapsed':''}">▾</span>
     </div>`;
-    if(!collapsed) html += recent.map(i=>stockRowHtml(stocks[i],i)).join("");
+    if(!collapsed) html += (phoneCut ? recent.slice(0, SCAN_PHONE_ROWS) : recent).map(i=>stockRowHtml(stocks[i],i)).join("");
   }
-  if(previous.length){
+  if(phoneCut){
+    const n = recent.length + previous.length;
+    html += `<button class="scan-more-btn" onclick="scanShowAll=true;renderStocks();">${lang==='en' ? `Show all ${n} signals` : `הצג את כל ${n} האיתותים`}</button>`;
+  } else if(previous.length){
     const collapsed = collapsedStockGroups.previous;
     html += `<div class="stock-group-title previous" onclick="toggleStockGroup('previous')">
       <span>${UI[lang].previous_stocks_title}</span>
@@ -1178,7 +1315,6 @@ function renderMacro(){
         <div class="macro-tag ${m.impact==='Critical'?'tag-critical':'tag-high'}">${escH(tagLabel(m.tag))}</div>
         <div>
           <div class="macro-text">${escH(getNewsText(m))}</div>
-          ${hookText(m) ? `<div class="macro-hook">💡 ${escH(hookText(m))}</div>` : ''}
           <div class="macro-time">${m.time}</div>
         </div>
       </div>
@@ -1194,7 +1330,6 @@ function renderMacro(){
       <div class="macro-tag ${m.impact==='Critical'?'tag-critical':'tag-high'}">${escH(tagLabel(m.tag))}</div>
       <div>
         <div class="macro-text">${escH(getNewsText(m))}</div>
-        ${hookText(m) ? `<div class="macro-hook">💡 ${escH(hookText(m))}</div>` : ''}
         <div class="macro-time">${m.time}</div>
       </div>
     </div>
@@ -1256,8 +1391,7 @@ function renderBreakingNews(){
     <div class="breaking-card" onclick="${keyNews ? `openKeyNews(${i})` : `openMacroDrawer(${macro.indexOf(m)})`}">
       <div class="b-tag">${escH(tagLabel(m.tag))}</div>
       <div class="b-text">${escH(getNewsText(m))}</div>
-      ${hookText(m) ? `<div class="b-hook">💡 ${escH(hookText(m))}</div>` : ''}
-      ${m.outlets >= 2 ? `<div class="b-hook" style="opacity:.8;">📰 ${escH(m.outlet_names.slice(0,3).join(', '))}${m.outlets > 3 ? (en ? ` +${m.outlets-3} more` : ` ועוד ${m.outlets-3}`) : ''}</div>` : ''}
+      ${m.outlets >= 2 ? `<div class="b-src">${escH(m.outlet_names.slice(0,3).join(', '))}${m.outlets > 3 ? (en ? ` +${m.outlets-3} more` : ` ועוד ${m.outlets-3}`) : ''}</div>` : ''}
     </div>
   `).join("");
   updateBreakingNav();
@@ -1852,6 +1986,10 @@ function renderDeepDive(quote, sector, signals, news){
         <span style="color:${changeColor};font-family:'JetBrains Mono',monospace;font-size:14px;margin-left:8px;">${quote.change_pct>=0?'+':''}${quote.change_pct}%</span>
       </div>
     </div>
+    <div class="dd-actions">
+      <button class="dd-action-btn" onclick="openAlertsPanel('${escH(quote.ticker)}', ${Number(quote.price)||0})">${t?'Price alert':'התראת מחיר'}</button>
+      <button class="dd-action-btn" onclick="shareStock('${escH(quote.ticker)}')">${t?'Share':'שיתוף'}</button>
+    </div>
 
     <div class="dd-chart-wrap" id="dd-tv-chart"></div>
 
@@ -2044,6 +2182,8 @@ function setPage(page){
   document.getElementById('page-nav-pulse').classList.toggle('active', page==='pulse');
   document.getElementById('page-nav-backtest').classList.toggle('active', page==='backtest');
   document.getElementById('page-nav-deepdive').classList.toggle('active', page==='deepdive');
+  document.querySelectorAll('#bottom-nav [data-page]').forEach(b => b.classList.toggle('active', b.dataset.page===page));
+  window.scrollTo(0, 0);   // phone: a new page starts at its top, not where the previous one was scrolled to
   document.getElementById('page-home').style.display = page==='home' ? '' : 'none';
   document.getElementById('page-pulse').style.display = page==='pulse' ? '' : 'none';
   document.getElementById('page-backtest').style.display = page==='backtest' ? '' : 'none';
@@ -2789,72 +2929,80 @@ async function loadDigestHistory(currentDay){
     if(!days.length) return;
     const card = (d) => {
       const ov = (t ? d.overview_en : (d.overview_he || d.overview_en)) || '';
-      const tops = ((t ? d.topics_en : (d.topics_he && d.topics_he.length ? d.topics_he : d.topics_en)) || []).slice(0,4);
+      // (the topic list under each day is gone: older days kept English topic titles in the Hebrew view)
       return `<div class="digest-item digest-click" onclick="openDailyDigest('${escH(d.day)}')">
-        <div class="macro-text"><b>${escH(fmtDigestDay(d.day))}</b><span class="digest-hot-count">${d.item_count||0} ${t?'headlines':'כתבות'}</span></div>
-        <div class="macro-text" style="margin-top:3px;color:var(--text-dim);">${escH(ov)}</div>
-        ${tops.length ? `<div class="digest-note" style="margin:5px 0 0;">${tops.map(x=>'• '+escH(x)).join(' ')}</div>` : ''}
-        <div class="digest-open-hint">${t?'Open the full day →':'פתח את היום המלא ←'}</div></div>`;
+        <div class="macro-text"><b>${escH(fmtDigestDay(d.day))}</b></div>
+        <div class="macro-text" style="margin-top:3px;color:var(--text-dim);">${escH(ov)}</div></div>`;
     };
-    box.innerHTML = `<div class="digest-section-title">📅 ${t?'Previous days':'ימים קודמים'}</div>` + days.map(card).join('');
+    box.innerHTML = `<details class="dg-prev"><summary>${t?'Previous days':'ימים קודמים'} (${days.length})</summary>${days.map(card).join('')}</details>`;
   } catch(e) { console.error('[digest-history] load failed', e); }
 }
 
 let digestItemList = [];
 function openDigestItem(i){ openMacroDrawerItem(digestItemList[i], true); }
 
-// ---- AI summary (own button): overview + topics with possible impact + takeaways + what to watch ----
-// Text comes from our own backend (ai_digest.py -> /api/daily-digest `ai_summary`); source links come from the
-// news feed — everything is escaped, and only http(s) links are rendered.
-function aiSummaryHtml(ai){
+// ---- Daily summary, v19: short and clear (owner: "not long and complicated") ----
+// 1) the day in one line, 2) real index numbers (not AI), 3) 3-4 points "what moved the market" — one sentence each,
+// sources folded away, 4) "what's next" from the real economic calendar (not AI). The old "possible impact" lines
+// (generic text repeated under every topic), "takeaways" and the per-topic chips ("Rates ↗ Rates ↗ Rates ↗") are gone.
+// Text comes from our own backend (ai_digest.py -> /api/daily-digest `ai_summary`); everything is escaped and only
+// http(s) links are rendered.
+function aiSummaryHtml(ai, opts){
   const t = lang==='en';
-  if(!ai || !ai.topics || !ai.topics.length){
-    return `<div class="digest-section"><div class="digest-section-title">🤖 ${t?'AI summary':'סיכום AI'}</div><div class="digest-empty">${t
-      ? 'No AI summary is available yet. It is generated automatically through the day from the latest headlines.'
-      : 'עדיין אין סיכום AI זמין. הוא נוצר אוטומטית לאורך היום מהכותרות האחרונות.'}</div></div>`;
-  }
+  opts = opts || {};
   const esc = (x) => String(x==null?'':x).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  if(!ai || !ai.topics || !ai.topics.length) return '';
   const pick = (en, he) => esc(t ? en : (he || en));
-  const fmtT = (iso) => iso ? new Date(iso).toLocaleString(t?'en-GB':'he-IL', {hour:'2-digit', minute:'2-digit', day:'2-digit', month:'2-digit'}) : '';
-  const when = fmtT(ai.generated_at);
-  // freshness line: when it was computed, which headlines it covers, how old it is, what arrived since
-  const ageMin = ai.generated_at ? Math.max(0, Math.round((Date.now() - Date.parse(ai.generated_at)) / 60000)) : null;
-  const agoTxt = ageMin==null ? '' : (ageMin < 60 ? (t?`${ageMin} min ago`:`לפני ${ageMin} דק׳`)
-                  : (t?`${Math.floor(ageMin/60)}h ${ageMin%60}m ago`:`לפני ${Math.floor(ageMin/60)} שע׳ ו-${ageMin%60} דק׳`));
-  const stale = ageMin != null && ageMin > 360 && !ai.is_final && ai.is_today !== false;
-  const newer = (ai.new_since != null && ai.new_since > 0) ? (t?` · ${ai.new_since} newer headlines are not included yet`:` · ${ai.new_since} כותרות חדשות יותר עדיין לא נכללו`) : '';
-  const freshHtml = ai.generated_at ? `<div class="digest-note" style="margin:0 0 8px;${stale?'color:var(--amber);':''}">🕒 ${t
-      ? `Computed ${esc(when)} (${agoTxt}). Covers headlines ${ai.covers_from?`from ${esc(fmtT(ai.covers_from))} `:''}up to ${esc(fmtT(ai.covers_to||ai.generated_at))}${newer}.${ai.is_final?' 🏁 Final summary of that day.':(ai.is_today?' Updated through the day as news arrives.':'')}${stale?' It may not reflect the latest news.':''}`
-      : `חושב ב-${esc(when)} (${agoTxt}). מכסה כותרות ${ai.covers_from?`מ-${esc(fmtT(ai.covers_from))} `:''}עד ${esc(fmtT(ai.covers_to||ai.generated_at))}${newer}.${ai.is_final?' 🏁 סיכום סופי של היום.':(ai.is_today?' מתעדכן לאורך היום ככל שנכנסות חדשות.':'')}${stale?' ייתכן שהוא לא משקף את החדשות האחרונות.':''}`}</div>` : '';
-  const topicRow = (tp) => `
-    <div class="digest-item">
-      <div class="macro-text"><b>${pick(tp.title_en, tp.title_he)}</b></div>
-      <div class="macro-text" style="margin-top:3px;">${pick(tp.summary_en, tp.summary_he)}</div>
-      ${tp.impact_en ? `<div class="macro-text" style="margin-top:6px;color:var(--text-dim);"><b>${t?'Possible impact:':'השפעה אפשרית:'}</b> ${pick(tp.impact_en, tp.impact_he)}</div>` : ''}
-      <div class="digest-note" style="margin:6px 0 0;">${(tp.sources||[]).filter(s=>/^https?:\/\//.test(s.url||'')).map(s =>
-        `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer" title="${esc((lang==='en' ? s.title_en : (s.title_he||s.title_en))||'')}" style="color:var(--teal);margin-right:10px;">${esc(tagLabel(s.category)||'source')} ↗</a>`).join('')}</div>
-    </div>`;
-  const list = (en, he) => {
-    const arr = (t ? en : (he && he.length ? he : en)) || [];
-    return arr.map(x => `<div class="macro-text" style="padding:3px 0;">• ${esc(x)}</div>`).join('');
+  const topicRow = (tp, i) => {
+    const src = (tp.sources||[]).filter(s => /^https?:\/\//.test(s.url||'')).slice(0, 5);
+    return `<div class="dg-topic">
+      <div class="dg-num">${i+1}</div>
+      <div style="min-width:0;flex:1;">
+        <div class="dg-topic-title">${pick(tp.title_en, tp.title_he)}</div>
+        <div class="dg-topic-text">${pick(tp.summary_en, tp.summary_he)}</div>
+        ${src.length ? `<details class="dg-src"><summary>${t?`Sources (${src.length})`:`מקורות (${src.length})`}</summary>${src.map(s =>
+          `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc((t ? s.title_en : (s.title_he||s.title_en))||s.url)}</a>`).join('')}</details>` : ''}
+      </div></div>`;
   };
-  const takeaways = list(ai.takeaways_en, ai.takeaways_he);
-  const watch = list(ai.watch_en, ai.watch_he);
   return `
-    <div class="digest-section">
-      <div class="digest-section-title">🤖 ${t?'AI summary — overview':'סיכום AI — סקירה'}</div>
-      ${freshHtml}
-      <div class="macro-text">${pick(ai.overview_en, ai.overview_he)}</div>
-    </div>
-    <div class="digest-section">
-      <div class="digest-section-title">${t?'Main topics and possible impact':'נושאים עיקריים והשפעה אפשרית'}</div>
-      ${ai.topics.map(topicRow).join('')}
-    </div>
-    ${takeaways ? `<div class="digest-section"><div class="digest-section-title">${t?'Takeaways':'מסקנות'}</div>${takeaways}</div>` : ''}
-    ${watch ? `<div class="digest-section"><div class="digest-section-title">${t?'Worth watching':'מה כדאי לעקוב'}</div>${watch}</div>` : ''}
-    <div class="digest-note" style="margin-top:8px;">${t
-      ? `Generated automatically by an AI model from the headlines in this feed${when?` (updated ${when})`:''}. It describes context and possible effects, not predictions or recommendations, and may contain errors — check the sources. Informational only, not investment advice.`
-      : `נוצר אוטומטית על ידי מודל AI מתוך הכותרות בפיד הזה${when?` (עודכן ${when})`:''}. הוא מתאר הקשר והשפעות אפשריות, לא תחזיות או המלצות, ועלול להכיל טעויות — כדאי לבדוק במקורות. למידע בלבד, לא ייעוץ השקעות.`}</div>`;
+    <div class="dg-lead">${pick(ai.overview_en, ai.overview_he)}</div>
+    ${opts.marketHtml || ''}
+    <div class="dg-h">${t?'What moved the market':'מה הזיז את השוק'}</div>
+    ${ai.topics.slice(0, 4).map(topicRow).join('')}`;
+}
+
+// real numbers from the market strip (today only — the strip is live data, not the day being looked at)
+function digestMarketHtml(){
+  if(!Array.isArray(lastMarketTicker) || !lastMarketTicker.length) return '';
+  const t = lang==='en';
+  const items = lastMarketTicker.filter(it => it && typeof it.change_pct === 'number').slice(0, 5);
+  if(!items.length) return '';
+  return `<div class="dg-market">${items.map(it => {
+    const up = it.change_pct >= 0;
+    return `<div class="dg-chip"><span>${escH(t ? it.name_en : it.name_he)}</span><b class="${up?'pct-up':'pct-down'}" dir="ltr">${up?'+':''}${it.change_pct.toFixed(2)}%</b></div>`;
+  }).join('')}</div>`;
+}
+
+// "what's next": the next important events of the economic calendar (real dates), in the viewer's own time zone
+async function digestNextHtml(){
+  const t = lang==='en';
+  let data = lastEconData;
+  if(!data){
+    try { const r = await fetchWithTimeout(`${API_BASE}/api/econ-calendar`, 15000); if(r.ok) data = await r.json(); } catch(e){}
+  }
+  const now = Date.now();
+  const evs = ((data && data.events) || [])
+    .filter(e => e.datetime_utc && Date.parse(e.datetime_utc) > now && (e.impact === 'high' || e.impact === 'medium'))
+    .sort((a,b) => Date.parse(a.datetime_utc) - Date.parse(b.datetime_utc))
+    .slice(0, 4);
+  if(!evs.length) return '';
+  const fmt = (iso) => new Date(iso).toLocaleString(t?'en-GB':'he-IL', {weekday:'short', day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'});
+  return `<div class="dg-h">${t?"What's next":'מה בהמשך'}</div>` + evs.map(e => `
+    <div class="dg-next" onclick="closeDailyDigest(); setPage('pulse'); setPulseView('events');">
+      <span class="econ-dot ${e.impact==='high'?'high':'medium'}"></span>
+      <span class="dg-next-name">${escH(t ? e.name_en : (e.name_he || e.name_en))}</span>
+      <span class="dg-next-when">${escH(fmt(e.datetime_utc))}${e.estimated ? (t?' (est.)':' (משוער)') : ''}</span>
+    </div>`).join('');
 }
 
 function fmtDigestDay(iso){
@@ -2865,7 +3013,6 @@ function fmtDigestDay(iso){
 function renderDailyDigest(data, picked){
   const t = lang==='en';
   const modal = document.getElementById("digest-modal");
-  const critical = data.critical || [];
   const hotTopics = data.hot_topics || [];
 
   // Every story is clickable: it opens the same details drawer as the news feed
@@ -2873,45 +3020,46 @@ function renderDailyDigest(data, picked){
   digestItemList = [];
   const reg = (r) => { digestItemList.push(mapDbRowToMacro(r)); return digestItemList.length - 1; };
 
-  const itemRow = (r) => `
-    <div class="digest-item digest-click" onclick="openDigestItem(${reg(r)})">
-      <div class="macro-tag ${r.impact_level==='Critical'?'tag-critical':'tag-high'}">${escH(tagLabel(r.category_tag))}</div>
-      <div class="macro-text">${escH(t ? (r.summary_en||'') : (r.summary_he||''))}</div>
-      <div class="digest-open-hint">${t?'Open →':'פתח ←'}</div>
-    </div>
-  `;
-
   const hotTopicRow = (h) => `
     <div class="digest-item digest-click" onclick="openDigestItem(${reg(h.representative)})">
-      <div class="macro-tag ${h.representative.impact_level==='Critical'?'tag-critical':'tag-high'}">${escH(tagLabel(h.tag))}<span class="digest-hot-count">🔥 ${h.count} ${t?(h.count===1?'story':'stories'):(h.count===1?'כתבה':'כתבות')}</span></div>
+      <div class="macro-tag ${h.representative.impact_level==='Critical'?'tag-critical':'tag-high'}">${escH(tagLabel(h.tag))}<span class="digest-hot-count">${h.count} ${t?(h.count===1?'story':'stories'):(h.count===1?'כתבה':'כתבות')}</span></div>
       <div class="macro-text">${escH(t ? (h.representative.summary_en||'') : (h.representative.summary_he||''))}</div>
       <div class="digest-open-hint">${t?'Open →':'פתח ←'}</div>
     </div>
   `;
 
+  const ai = data.ai_summary;
+  const hasAi = !!(ai && ai.topics && ai.topics.length);
+  const fmtT = (iso) => iso ? new Date(iso).toLocaleTimeString(t?'en-GB':'he-IL', {hour:'2-digit', minute:'2-digit'}) : '';
+  const meta = [
+    hasAi && ai.generated_at ? (t ? `Updated ${fmtT(ai.generated_at)}` : `עודכן ${fmtT(ai.generated_at)}`) : '',
+    data.total_items ? (t ? `from ${data.total_items} headlines` : `מתוך ${data.total_items} כתבות`) : '',
+    hasAi && ai.is_final ? (t ? 'final' : 'סופי') : '',
+  ].filter(Boolean).join(' · ');
+  // without an AI summary (not generated yet / provider down): the most-covered stories, counted — not written by AI
+  const fallback = hasAi ? '' : `
+    <div class="dg-h">${t?'Most-covered stories':'הנושאים הכי מסוקרים'}</div>
+    ${hotTopics.length ? hotTopics.slice(0, 5).map(hotTopicRow).join('') : `<div class="digest-empty">${t?'Not enough news yet today.':'עדיין אין מספיק חדשות היום.'}</div>`}`;
+
   modal.innerHTML = `
     <div class="drawer-head">
-      <h2>${t?'Daily Digest':'סיכום יומי'} — ${escH(fmtDigestDay(data.day))}${data.is_today?(t?' (today)':' (היום)'):''}</h2>
+      <div>
+        <h2 class="dg-title">${t?'Daily summary':'סיכום יומי'}</h2>
+        <div class="dg-meta">${escH(fmtDigestDay(data.day))}${data.is_today?(t?' (today)':' (היום)'):''}${meta?' · '+escH(meta):''}</div>
+      </div>
       <button class="close-btn" onclick="closeDailyDigest()">✕</button>
     </div>
     <div id="digest-body">
-      ${picked ? `<div class="digest-note" style="margin:0 0 10px;"><a href="#" onclick="openDailyDigest();return false;" style="color:var(--teal);">${t?'← Back to the latest summary':'← חזרה לסיכום האחרון'}</a></div>` : ''}
-      ${aiSummaryHtml(data.ai_summary)}
-      <div class="digest-section" id="digest-history"></div>
-      <div class="digest-section">
-        <div class="digest-section-title">${t?'Most-covered topics of the day':'הנושאים עם הכי הרבה סיקור ביום הזה'}</div>
-        <div class="digest-note">${t
-          ? "Ranked by how many separate articles covered each topic that day — a volume-based proxy for \"buzz\", not an AI-written summary."
-          : 'מדורג לפי כמות הכתבות הנפרדות שסיקרו כל נושא באותו יום — מדד נפח סיקור כתחליף ל"הייפ", לא סיכום שנכתב ע"י AI.'}</div>
-        ${hotTopics.length ? hotTopics.map(hotTopicRow).join('') : `<div class="digest-empty">${t?'Not enough volume yet to rank topics.':'עדיין אין מספיק נפח כדי לדרג נושאים.'}</div>`}
-      </div>
-      <div class="digest-section">
-        <div class="digest-section-title">${t?`Critical (${critical.length})`:`קריטי (${critical.length})`}</div>
-        ${critical.length ? critical.map(itemRow).join('') : `<div class="digest-empty">${t?'No critical news in this window.':'אין חדשות קריטיות בחלון הזמן הזה.'}</div>`}
-      </div>
-      <div class="digest-note" style="margin-top:4px;">${t?`${data.total_items} items on this day in total.`:`סה"כ ${data.total_items} כתבות ביום הזה.`}</div>
+      ${picked ? `<div class="digest-note" style="margin:0 0 10px;"><a href="#" onclick="openDailyDigest();return false;" style="color:var(--teal);">${t?'Back to the latest summary':'חזרה לסיכום האחרון'}</a></div>` : ''}
+      ${hasAi ? aiSummaryHtml(ai, {marketHtml: data.is_today ? digestMarketHtml() : ''}) : (data.is_today ? digestMarketHtml() : '') + fallback}
+      <div id="digest-next"></div>
+      <div class="dg-foot">${t
+        ? 'Written automatically by AI from the day\'s headlines and may contain mistakes. Information only, not investment advice.'
+        : 'נכתב אוטומטית ע"י AI מתוך כותרות היום ועלול לטעות. מידע בלבד, לא ייעוץ השקעות.'}</div>
+      <div id="digest-history"></div>
     </div>
   `;
+  if(data.is_today) digestNextHtml().then(h => { const el = document.getElementById('digest-next'); if(el) el.innerHTML = h; });
 }
 
 
@@ -3090,12 +3238,12 @@ const econShort = e => (ECON_SHORT[e.type] || [e.name_en, e.name_he])[lang==='en
 
 function econSetHeader(){
   const en = lang==='en';
-  document.getElementById('econ-title').textContent = en ? '📅 Market Events Calendar' : '📅 לוח אירועי שוק';
+  document.getElementById('econ-title').textContent = en ? 'Market Events Calendar' : 'לוח אירועי שוק';
   document.getElementById('econ-sub').textContent = en
     ? 'US economic events that can move the market — when, what was expected, and what it affects'
     : 'אירועים כלכליים בארה״ב שיכולים להזיז את השוק — מתי, מה קרה, ומה מושפע';
-  document.getElementById('econ-view-btn-month').textContent = en ? '🗓 Monthly' : '🗓 חודשי';
-  document.getElementById('econ-view-btn-list').textContent = en ? '📋 List' : '📋 רשימה';
+  document.getElementById('econ-view-btn-month').textContent = en ? 'Monthly' : 'חודשי';
+  document.getElementById('econ-view-btn-list').textContent = en ? 'List' : 'רשימה';
 }
 
 function initEconView(){
@@ -3868,7 +4016,7 @@ function openMacroDrawerItem(m, onTop){
       const body = lang==='en' ? m.body_en : m.body_he;
       return body ? `<div class="ai-box"><div class="label">📄 ${lang==='en'?'More from the source':'עוד מהמקור'}</div>${escH(body)}</div>` : '';
     })()}
-    ${hookText(m) ? `<div class="ai-box"><div class="label">💡 ${lang==='en'?'Why this matters':'למה זה חשוב'}</div>${escH(hookText(m))}</div>` : ''}
+    ${hookText(m) ? `<div class="ai-box"><div class="label">${lang==='en'?'Why this matters':'למה זה חשוב'}</div>${escH(hookText(m))}</div>` : ''}
     <div class="ai-box">
       <div class="label">${lang==='en'?'Affected Sectors':'סקטורים מושפעים'}</div>
       ${escH(tagLabel(m.sectors||m.sector)||'—')}
@@ -5486,6 +5634,7 @@ function renderAuthBox(){
           </div>
         </div>
         <div style="padding-top:6px;">
+          <button onclick="closeProfileMenu();openAlertsPanel()" style="${rowBtn}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10 21h4"/></svg>${en?'Alerts':'התראות'}</button>
           <button onclick="closeProfileMenu();openInfoModal()" style="${rowBtn}"><span style="color:var(--amber);font-size:15px;">ⓘ</span>${en?'Data sources & disclosure':'מקורות מידע וגילוי נאות'}</button>
           <button onclick="closeProfileMenu();openLegal('privacy')" style="${rowBtn}">${en?'Privacy policy':'מדיניות פרטיות'}</button>
           <button onclick="closeProfileMenu();openLegal('terms')" style="${rowBtn}">${en?'Terms of use':'תנאי שימוש'}</button>
@@ -5583,6 +5732,7 @@ function signOut(){
 }
 
 const statusEl = document.createElement("div");
+statusEl.className = "status-pill";
 statusEl.style.cssText="position:fixed;bottom:12px;left:16px;font-size:11px;font-family:'JetBrains Mono',monospace;padding:4px 9px;border-radius:6px;z-index:60;";
 document.body.appendChild(statusEl);
 
@@ -5590,16 +5740,17 @@ let lastConnectedState = null;
 function setStatus(connected, connecting){
   lastConnectedState = {connected, connecting};
   if(connecting){
-    statusEl.textContent = lang==='en' ? "● Connecting to server (may be waking up)..." : "● מתחבר לשרת (ייתכן שהתעורר משינה)...";
+    statusEl.style.display = '';
+    statusEl.textContent = lang==='en' ? "● Connecting to the server..." : "● מתחבר לשרת...";
     statusEl.style.background = "rgba(232,163,61,.15)";
     statusEl.style.color = "var(--amber)";
     return;
   }
-  statusEl.textContent = connected
-    ? (lang==='en' ? "● Connected to API" : "● מחובר ל-API")
-    : (lang==='en' ? "● Server unavailable — retrying" : "● השרת לא זמין — מנסים שוב");
-  statusEl.style.background = connected?"rgba(62,207,126,.15)":"rgba(232,163,61,.15)";
-  statusEl.style.color = connected?"var(--green)":"var(--amber)";
+  // v19: a permanent "● Connected to API" badge was a developer's indicator — when all is well nothing is shown
+  statusEl.style.display = connected ? 'none' : '';
+  statusEl.textContent = connected ? '' : (lang==='en' ? "● Server unavailable, retrying" : "● השרת לא זמין, מנסים שוב");
+  statusEl.style.background = "rgba(232,163,61,.15)";
+  statusEl.style.color = "var(--amber)";
 }
 
 const STAGE_HE = {
@@ -5673,6 +5824,7 @@ function mapDbRowToStock(r){
     trigger_he: r.trigger_text_he,
     trigger_en: r.trigger_text_en,
     timestamp: r.timestamp,
+    sector: r.sector || null,
     changePct: (r.change_pct===null||r.change_pct===undefined) ? null : Number(r.change_pct),
     sma50: r.sma50, sma150: r.sma150, sma200: r.sma200,
     trendStage: r.trend_stage,
@@ -5828,13 +5980,13 @@ let lang = localStorage.getItem('swing_lang') || 'he';
 
 const UI = {
   he: {
-    sub: 'דשבורד מסחר בזמן אמת',
+    sub: 'סורק סווינג וחדשות שוק',
     search_placeholder: 'חפש טיקר... (למשל AAPL)',
     news_search_placeholder: 'חפש בחדשות...',
     search_btn: 'חפש',
-    breaking_title: 'חדשות שוברות — קריטי',
-    scanner_title: 'סורק סווינג — משימות פתוחות',
-    macro_title: 'מוקד מאקרו וחדשות עולם',
+    breaking_title: 'אירועים מרכזיים',
+    scanner_title: 'איתותי הסורק',
+    macro_title: 'חדשות מאקרו ושווקים',
     charts_title: 'גרפי מדדים',
     nav_backtest: 'בדיקה היסטורית',
     nav_deepdive: 'ניתוח מניה',
@@ -5868,7 +6020,7 @@ const UI = {
     sector_all: 'הכל',
     earnings_cal_title: 'יומן דוחות השבוע',
     earnings_cal_empty: 'אין דיווחי תוצאות צפויים השבוע בקרב החברות הגדולות שאנחנו עוקבים אחריהן.',
-    daily_digest_btn: '📰 סיכום יומי',
+    daily_digest_btn: 'סיכום יומי',
     session_bmo: 'לפני הפתיחה',
     session_amc: 'אחרי הסגירה',
     session_unknown: 'במהלך המסחר',
@@ -5876,13 +6028,13 @@ const UI = {
     tomorrow_label: 'מחר',
   },
   en: {
-    sub: 'Real-time trading dashboard',
+    sub: 'Swing scanner & market news',
     search_placeholder: 'Search ticker... (e.g. AAPL)',
     news_search_placeholder: 'Search news...',
     search_btn: 'Search',
-    breaking_title: 'Breaking News — Critical',
-    scanner_title: 'Swing Scanner — Open Setups',
-    macro_title: 'Macro & World News Hub',
+    breaking_title: 'Key events',
+    scanner_title: 'Scanner signals',
+    macro_title: 'Macro & markets news',
     charts_title: 'Market Charts',
     nav_backtest: 'Backtest',
     nav_deepdive: 'Deep Dive',
@@ -5916,7 +6068,7 @@ const UI = {
     sector_all: 'All',
     earnings_cal_title: "This Week's Earnings Calendar",
     earnings_cal_empty: 'No earnings reports expected this week among the large-cap names we track.',
-    daily_digest_btn: '📰 Daily Digest',
+    daily_digest_btn: 'Daily Summary',
     session_bmo: 'Before Open',
     session_amc: 'After Close',
     session_unknown: 'During Market',
@@ -5948,6 +6100,11 @@ function applyLang(){
   document.getElementById('page-nav-pulse').textContent = t.nav_pulse;
   document.getElementById('page-nav-backtest').textContent = t.nav_backtest;
   document.getElementById('page-nav-deepdive').textContent = t.nav_deepdive;
+  if(typeof renderInstallBtn === 'function') renderInstallBtn();
+  document.getElementById('bnav-home').textContent = t.nav_home;
+  document.getElementById('bnav-pulse').textContent = lang==='en' ? 'Market' : 'השוק';
+  document.getElementById('bnav-deepdive').textContent = lang==='en' ? 'Analyze' : 'ניתוח מניה';
+  document.getElementById('bnav-backtest').textContent = lang==='en' ? 'Track record' : 'ביצועים';
   document.getElementById('dd-ticker-input').placeholder = t.dd_placeholder;
   document.getElementById('mode-btn-indices').textContent = t.mode_indices;
   document.getElementById('mode-btn-sectors').textContent = t.mode_sectors;
@@ -5967,11 +6124,11 @@ function applyLang(){
   if(backtestLastData && document.getElementById('backtest-content')) renderBacktestContent(backtestLastData);
   renderMarketTicker();
   if(lastEarningsCalItems) renderEarningsCalendar(lastEarningsCalItems);
-  document.getElementById('pulse-view-btn-events').textContent = lang==='en' ? '📅 Market Events' : '📅 אירועי שוק';
-  document.getElementById('pulse-view-btn-overview').textContent = lang==='en' ? '📊 Market Overview' : '📊 מצב השוק';
+  document.getElementById('pulse-view-btn-events').textContent = lang==='en' ? 'Market Events' : 'אירועי שוק';
+  document.getElementById('pulse-view-btn-overview').textContent = lang==='en' ? 'Market Overview' : 'מצב השוק';
   if(econLoaded){ econSetHeader(); renderEconActive(); }
-  document.getElementById('bt-view-btn-demo').textContent = lang==='en' ? '💼 Demo Portfolio' : '💼 תיק דמו';
-  document.getElementById('bt-view-btn-stats').textContent = lang==='en' ? '📊 Signal Statistics' : '📊 סטטיסטיקת איתותים';
+  document.getElementById('bt-view-btn-demo').textContent = lang==='en' ? 'Demo Portfolio' : 'תיק דמו';
+  document.getElementById('bt-view-btn-stats').textContent = lang==='en' ? 'Signal Statistics' : 'סטטיסטיקת איתותים';
   if(demoLoaded){ renderDemoControls(); if(demoData) renderDemoPortfolio(); }
   if(backtestPatternsCache) renderBacktestPatternFilter();
   if(backtestPatternStatsCache) renderBacktestPatternSummary();
@@ -6113,6 +6270,219 @@ window.addEventListener('load', ()=>{
   applyLang();
   setTimeout(()=>switchChart('SPY'), 800);
 });
+
+// ---- v19: installable app (PWA) ----
+// Android / desktop Chrome & Edge fire beforeinstallprompt -> our "Install app" button shows the browser's own dialog.
+// iPhone / iPad (Safari has no such prompt) -> the button explains Share -> "Add to Home Screen".
+// `var` on purpose: applyLang() (which calls renderInstallBtn) may run before this part of the script.
+var _installEvt = null;
+function _isStandalone(){ return window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; }
+function _isIOS(){ return /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); }
+function renderInstallBtn(){
+  const b = document.getElementById('install-btn');
+  if(!b) return;
+  b.style.display = (!_isStandalone() && (_installEvt || _isIOS())) ? '' : 'none';
+  b.textContent = lang==='en' ? 'Install app' : 'התקן אפליקציה';
+}
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); _installEvt = e; renderInstallBtn(); });
+window.addEventListener('appinstalled', () => { _installEvt = null; renderInstallBtn(); });
+async function installApp(){
+  if(_installEvt){
+    _installEvt.prompt();
+    try { await _installEvt.userChoice; } catch(e){}
+    _installEvt = null;
+    renderInstallBtn();
+    return;
+  }
+  const en = lang==='en';
+  document.getElementById('info-modal').innerHTML = `<h3>${en ? 'Install Swing Desk on your iPhone' : 'התקנת Swing Desk באייפון'}</h3>
+    <div style="font-size:13px;color:var(--text-dim);">${en ? 'Two taps, no App Store needed:' : 'שתי לחיצות, בלי App Store:'}</div>
+    <ol class="install-steps">
+      <li>${en ? 'Tap the Share button' : 'לחצו על כפתור השיתוף'} <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-3px"><path d="M12 3v12M7 8l5-5 5 5"/><path d="M5 12v8h14v-8"/></svg> ${en ? 'at the bottom of Safari' : 'בתחתית Safari'}</li>
+      <li>${en ? 'Choose "Add to Home Screen"' : 'בחרו "הוסף למסך הבית"'}</li>
+      <li>${en ? 'Open Swing Desk from the new icon' : 'פתחו את Swing Desk מהאייקון החדש'}</li>
+    </ol>
+    <button class="risk-calc-close" onclick="closeInfoModal()">${en ? 'Close' : 'סגירה'}</button>`;
+  document.getElementById('info-modal-overlay').classList.add('open');
+}
+renderInstallBtn();
+
+// ---- v19: alerts — push notifications on this device + price alerts (server: /api/push/*, /api/alerts) ----
+// Turning notifications on = the browser's permission + a push subscription saved for the signed-in user. Messages
+// are sent by the scanner (new signal on a watchlist stock) and by the quick refresh (price alerts) — push_alerts.py.
+var _pushCfg = null;
+var _alertDraft = null;          // {ticker, price} when opened from a stock's analysis
+function _b64ToU8(s){
+  s = s.replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(s + '='.repeat((4 - s.length % 4) % 4));
+  return Uint8Array.from(raw, c => c.charCodeAt(0));
+}
+async function pushConfig(){
+  if(_pushCfg) return _pushCfg;
+  try { const r = await fetch(`${API_BASE}/api/push/config`); _pushCfg = r.ok ? await r.json() : {enabled:false}; }
+  catch(e){ return {enabled:false}; }     // not cached: the server may just be waking up
+  return _pushCfg;
+}
+function pushSupported(){ return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window; }
+async function currentPushSub(){
+  if(!pushSupported()) return null;
+  try { const reg = await navigator.serviceWorker.getRegistration(); return reg ? await reg.pushManager.getSubscription() : null; }
+  catch(e){ return null; }
+}
+function _alertsNote(msg, bad){
+  const el = document.getElementById('alerts-note');
+  if(el){ el.textContent = msg; el.style.color = bad ? 'var(--red)' : 'var(--teal)'; }
+}
+async function enablePush(){
+  const en = lang==='en';
+  try {
+    const cfg = await pushConfig();
+    if(!cfg.enabled) return _alertsNote(en ? 'Notifications are not set up on the server yet.' : 'ההתראות עוד לא הוגדרו בשרת.', true);
+    const perm = await Notification.requestPermission();
+    if(perm !== 'granted') return _alertsNote(en ? 'Notifications are blocked for this site in the browser settings.' : 'ההתראות חסומות לאתר הזה בהגדרות הדפדפן.', true);
+    const reg = await navigator.serviceWorker.register('/sw.js');
+    await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if(!sub) sub = await reg.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: _b64ToU8(cfg.public_key)});
+    const j = sub.toJSON();
+    const res = await authFetch(`${API_BASE}/api/push/subscribe`, {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth, lang})});
+    if(!res.ok) throw new Error('subscribe ' + res.status);
+    await renderAlertsPanel();
+    _alertsNote(en ? 'Notifications are on for this device.' : 'ההתראות הופעלו במכשיר הזה.');
+  } catch(e){
+    console.error('[push] enable failed', e);
+    _alertsNote(en ? 'Could not turn notifications on. Please try again.' : 'לא הצלחנו להפעיל התראות. נסו שוב.', true);
+  }
+}
+async function disablePush(){
+  const sub = await currentPushSub();
+  if(sub){
+    try { await authFetch(`${API_BASE}/api/push/unsubscribe`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({endpoint: sub.endpoint})}); } catch(e){}
+    try { await sub.unsubscribe(); } catch(e){}
+  }
+  renderAlertsPanel();
+}
+async function testPush(){
+  const en = lang==='en';
+  try {
+    const r = await authFetch(`${API_BASE}/api/push/test`, {method:'POST'});
+    const d = r.ok ? await r.json() : null;
+    _alertsNote(d && d.sent ? (en ? 'Test sent — it should pop up in a few seconds.' : 'נשלחה התראת בדיקה — היא אמורה להופיע תוך כמה שניות.')
+                            : (en ? 'The test could not be delivered.' : 'לא הצלחנו לשלוח התראת בדיקה.'), !(d && d.sent));
+  } catch(e){ _alertsNote(en ? 'The test could not be delivered.' : 'לא הצלחנו לשלוח התראת בדיקה.', true); }
+}
+async function setWatchSignals(on){
+  try { await authFetch(`${API_BASE}/api/alerts/settings`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({watch_signals: !!on})}); } catch(e){}
+}
+async function addPriceAlert(){
+  const en = lang==='en';
+  const tk = canonTicker(document.getElementById('al-ticker').value);
+  const price = parseFloat(document.getElementById('al-price').value);
+  const direction = document.getElementById('al-dir').value;
+  if(!/^[A-Z0-9][A-Z0-9.\-^=]{0,10}$/.test(tk) || !(price > 0))
+    return _alertsNote(en ? 'Enter a ticker and a price.' : 'יש להזין טיקר ומחיר.', true);
+  try {
+    const r = await authFetch(`${API_BASE}/api/alerts`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ticker: tk, direction, price})});
+    if(!r.ok) throw new Error('add ' + r.status);
+    _alertDraft = null;
+    await renderAlertsPanel();
+    _alertsNote(en ? `Alert saved: ${tk} ${direction==='above'?'above':'below'} $${price}` : `ההתראה נשמרה: ${tk} ${direction==='above'?'מעל':'מתחת ל-'}$${price}`);
+  } catch(e){ _alertsNote(en ? 'Could not save the alert.' : 'לא הצלחנו לשמור את ההתראה.', true); }
+}
+async function deletePriceAlert(id){
+  try { await authFetch(`${API_BASE}/api/alerts/${Number(id)}`, {method:'DELETE'}); } catch(e){}
+  renderAlertsPanel();
+}
+function openAlertsPanel(ticker, price){
+  _alertDraft = ticker ? {ticker, price} : null;
+  document.getElementById('info-modal-overlay').classList.add('open');
+  renderAlertsPanel();
+}
+async function renderAlertsPanel(){
+  const en = lang==='en';
+  const box = document.getElementById('info-modal');
+  const close = `<button class="risk-calc-close" onclick="closeInfoModal()">${en?'Close':'סגירה'}</button>`;
+  if(!authToken){
+    box.innerHTML = `<h3>${en?'Alerts':'התראות'}</h3><div class="al-text">${en
+      ? 'Sign in with Google (the person icon at the top) to get a notification when a stock on your watchlist gets a scanner signal, or when a price you set is reached.'
+      : 'התחברו עם Google (סמל האדם למעלה) כדי לקבל התראה כשמניה מרשימת המעקב שלכם מקבלת איתות בסורק, או כשמניה מגיעה למחיר שקבעתם.'}</div>${close}`;
+    return;
+  }
+  box.innerHTML = `<h3>${en?'Alerts':'התראות'}</h3><div class="al-text">${UI[lang].loading}</div>`;
+  const [cfg, sub, data] = await Promise.all([
+    pushConfig(), currentPushSub(),
+    authFetch(`${API_BASE}/api/alerts`).then(r => r.ok ? r.json() : null).catch(() => null),
+  ]);
+  const iosNeedsInstall = _isIOS() && !_isStandalone();
+  let device;
+  if(!cfg.enabled) device = `<div class="al-text">${en?'Notifications are not set up on the server yet.':'ההתראות עוד לא הוגדרו בשרת.'}</div>`;
+  else if(iosNeedsInstall) device = `<div class="al-text">${en
+      ? 'On iPhone, notifications work from the installed app: install Swing Desk first, then open it and turn notifications on there.'
+      : 'באייפון ההתראות עובדות מהאפליקציה המותקנת: קודם מתקינים את Swing Desk, פותחים אותה ומפעילים כאן התראות.'}</div>
+      <button class="al-btn primary" onclick="installApp()">${en?'How to install':'איך מתקינים'}</button>`;
+  else if(!pushSupported()) device = `<div class="al-text">${en?'This browser does not support notifications.':'הדפדפן הזה לא תומך בהתראות.'}</div>`;
+  else if(sub) device = `<div class="al-text"><span class="al-on">●</span> ${en?'Notifications are on for this device.':'ההתראות פועלות במכשיר הזה.'}</div>
+      <div class="al-row"><button class="al-btn" onclick="testPush()">${en?'Send a test':'שלח בדיקה'}</button><button class="al-btn" onclick="disablePush()">${en?'Turn off':'כיבוי'}</button></div>`;
+  else device = `<div class="al-text">${en?'Get a notification on this device, even when the site is closed.':'קבלו התראה במכשיר הזה, גם כשהאתר סגור.'}</div>
+      <button class="al-btn primary" onclick="enablePush()">${en?'Turn on notifications':'הפעלת התראות'}</button>`;
+
+  const alerts = (data && data.alerts) || [];
+  const fmtD = (iso) => new Date(iso).toLocaleString(en?'en-GB':'he-IL', {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'});
+  const row = (a) => `<div class="al-item ${a.triggered_at?'done':''}">
+      <span class="mono"><b>${escH(a.ticker)}</b> ${a.direction==='above'?(en?'above ':'מעל '):(en?'below ':'מתחת ל-')}<span dir="ltr">$${Number(a.price).toLocaleString('en-US',{maximumFractionDigits:2})}</span></span>
+      <span class="al-when">${a.triggered_at ? (en?`reached ${fmtD(a.triggered_at)}`:`הופעלה ${fmtD(a.triggered_at)}`) : ''}</span>
+      <button class="al-x" onclick="deletePriceAlert(${Number(a.id)})" aria-label="${en?'Delete':'מחיקה'}">✕</button></div>`;
+  const d = _alertDraft || {};
+  box.innerHTML = `<h3>${en?'Alerts':'התראות'}</h3>
+    <div class="al-sec">${en?'This device':'המכשיר הזה'}</div>
+    ${device}
+    <label class="al-check"><input type="checkbox" ${data && data.watch_signals ? 'checked' : ''} ${data && data.devices ? '' : 'disabled'} onchange="setWatchSignals(this.checked)">
+      ${en?'A new scanner signal on a stock in my watchlist':'איתות חדש בסורק על מניה מרשימת המעקב שלי'}</label>
+    <div class="al-sec">${en?'Price alerts':'התראות מחיר'}</div>
+    <div class="al-form">
+      <input id="al-ticker" class="search-input mono" placeholder="${en?'Ticker':'טיקר'}" value="${escH(d.ticker||'')}" maxlength="12">
+      <select id="al-dir" class="search-input"><option value="above">${en?'above':'מעל'}</option><option value="below">${en?'below':'מתחת ל-'}</option></select>
+      <input id="al-price" class="search-input mono" type="number" step="0.01" min="0" placeholder="$" value="${d.price ? Number(d.price) : ''}">
+      <button class="al-btn primary" onclick="addPriceAlert()">${en?'Add':'הוספה'}</button>
+    </div>
+    ${alerts.length ? alerts.map(row).join('') : `<div class="al-text dim">${en?'No price alerts yet.':'אין עדיין התראות מחיר.'}</div>`}
+    <div class="al-text dim" style="margin-top:8px;">${en
+      ? 'Prices are checked about every 20 minutes during US market hours (quotes may be delayed up to 15 minutes). Alerts are information only, not a recommendation.'
+      : 'המחירים נבדקים בערך כל 20 דקות בשעות המסחר בארה"ב (המחירים עשויים להתעכב עד 15 דקות). ההתראות הן מידע בלבד, לא המלצה.'}</div>
+    <div id="alerts-note" class="al-text" style="min-height:18px;"></div>
+    ${close}`;
+}
+
+// ---- v19: share a stock's analysis (phone: the system share sheet; computer: copy the link) ----
+async function shareStock(ticker){
+  const en = lang==='en';
+  const url = `${location.origin}/?ticker=${encodeURIComponent(ticker)}`;
+  const text = en ? `${ticker} — technical analysis on Swing Desk` : `${ticker} — ניתוח טכני ב-Swing Desk`;
+  try {
+    if(navigator.share){ await navigator.share({title: `${ticker} · Swing Desk`, text, url}); return; }
+    await navigator.clipboard.writeText(url);
+    alert(en ? 'Link copied.' : 'הקישור הועתק.');
+  } catch(e){ /* the person closed the share sheet */ }
+}
+
+if('serviceWorker' in navigator){
+  window.addEventListener('load', () => { navigator.serviceWorker.register('/sw.js').catch(e => console.warn('[sw] register failed', e)); });
+}
+
+// ---- v19: links into the site — /?ticker=KO opens that stock's analysis, /?page=pulse a page (app shortcuts, alerts, sharing) ----
+(function(){
+  const q = new URLSearchParams(location.search);
+  const tk = canonTicker(q.get('ticker') || '');
+  const page = q.get('page');
+  if(/^[A-Z0-9.\-^=]{1,12}$/.test(tk)){          // a link from outside: ticker characters only
+    document.getElementById('dd-ticker-input').value = tk;
+    setPage('deepdive');
+    loadDeepDive();
+  } else if(['pulse','backtest','deepdive'].includes(page)){
+    setPage(page);
+  }
+})();
 </script>
 </body>
 </html>

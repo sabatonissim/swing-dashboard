@@ -76,20 +76,24 @@ _RULES = """STRICT RULES:
 - "takeaways" are neutral observations about the day's themes (what dominated, what is uncertain, where items disagree). They are not recommendations.
 - "watch" lists up to 3 things worth keeping an eye on, taken from the information (for example an upcoming decision or data release mentioned in it). Use an empty list if there are none.
 - If the information is thin or contradicts itself, say so briefly instead of guessing.
-- Group related items into 3 to 6 topics, most important / most covered first.
+- Group related items into 3 or 4 topics, most important / most covered first. Leave out minor stories.
+- STYLE (v19 — readers want it short and clear, and the text is machine-translated to Hebrew): plain everyday words,
+  one idea per sentence, short sentences, numbers when the items give them. No market jargon ("beat", "guidance",
+  "print", "risk-on", "hawkish", "bid", "rally"): say what happened instead ("results were better than forecast").
+  No filler such as "markets digested", "investors weighed", "mixed picture". Company names exactly as in the items.
 Reply with ONLY a valid JSON object (no markdown, no commentary). Use straight double quotes, no trailing commas, and never put a double quote character inside a text value."""
 
 _SHAPE_FULL = """Exact shape:
-{"overview": "2-3 sentences describing the whole day in markets/macro news, max 350 characters",
- "topics": [{"title": "max 70 characters", "summary": "1-2 sentences, max 280 characters", "impact": "1-2 sentences, max 280 characters", "items": [numbers of the supporting items]}],
- "takeaways": ["max 200 characters each, 2 to 3 entries"],
- "watch": ["max 120 characters each, 0 to 3 entries"]}"""
+{"overview": "the day in ONE or two short sentences, max 220 characters",
+ "topics": [{"title": "max 50 characters", "summary": "ONE sentence: what happened, max 200 characters", "impact": "one short sentence, max 140 characters, or empty", "items": [numbers of the supporting items]}],
+ "takeaways": ["max 150 characters each, 0 to 2 entries"],
+ "watch": ["max 100 characters each, 0 to 3 entries"]}"""
 
 _SHAPE_UPDATE = """Exact shape:
-{"overview": "2-3 sentences describing the WHOLE day so far, max 350 characters",
- "topics": [{"title": "max 70 characters", "summary": "1-2 sentences, max 280 characters", "impact": "1-2 sentences, max 280 characters", "from_topics": [numbers of the current-digest topics this builds on, [] if brand new], "items": [numbers of the NEW items that support it, [] if none]}],
- "takeaways": ["max 200 characters each, 2 to 3 entries"],
- "watch": ["max 120 characters each, 0 to 3 entries"]}"""
+{"overview": "the WHOLE day so far in ONE or two short sentences, max 220 characters",
+ "topics": [{"title": "max 50 characters", "summary": "ONE sentence: what happened, max 200 characters", "impact": "one short sentence, max 140 characters, or empty", "from_topics": [numbers of the current-digest topics this builds on, [] if brand new], "items": [numbers of the NEW items that support it, [] if none]}],
+ "takeaways": ["max 150 characters each, 0 to 2 entries"],
+ "watch": ["max 100 characters each, 0 to 3 entries"]}"""
 
 SYSTEM_FULL = ("You are a neutral news editor for a market-data website. You write a short digest with context of "
                "everything that happened in one day, from the numbered news items you are given.\n" + _RULES + "\n" + _SHAPE_FULL)
@@ -274,7 +278,7 @@ def _build_payload(raw, items, prev, translate_fn, cache_from=None):
     prev_topics = (prev or {}).get("topics") or []
     overview = str(raw.get("overview", "")).strip()
     topics = []
-    for t in (raw.get("topics") or [])[:6]:
+    for t in (raw.get("topics") or [])[:4]:          # v19: 4 at most (was 6) — short and clear
         new_nums = _ints(t.get("items"), 1, len(items))
         old_nums = _ints(t.get("from_topics"), 1, len(prev_topics)) if prev else []
         sources, seen = [], set()

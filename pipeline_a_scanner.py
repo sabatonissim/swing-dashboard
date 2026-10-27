@@ -229,6 +229,7 @@ class ScanResult:
     rs_rating: Optional[int] = None
     pattern_type: Optional[str] = None
     days_to_earnings: Optional[int] = None
+    sector: Optional[str] = None          # v19: Yahoo's sector ("Technology"...) for the site's sector filter
 
 
 # ------------------------------------------------------------------
@@ -1210,6 +1211,7 @@ def init_db():
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sim_exit_days INTEGER;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sim_exit_date DATE;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sim_exit_return REAL;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sector TEXT;")   # v19: sector filter
     cur.execute("""
         CREATE TABLE IF NOT EXISTS universe_movers (
             ticker TEXT PRIMARY KEY,
@@ -1286,8 +1288,8 @@ def upsert_scan_result(conn, result):
             social_volume_spike_pct, ai_summary_he, ai_summary_en,
             market_cap, avg_volume_20d, breakout_volume_pct, exchange,
             change_pct, sma50, sma150, sma200, trend_stage, atr_value, atr_pct,
-            rs_rating, pattern_type, days_to_earnings, timestamp
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            rs_rating, pattern_type, days_to_earnings, sector, timestamp
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             result.ticker, result.trigger_text_he, result.trigger_text_en,
@@ -1297,7 +1299,7 @@ def upsert_scan_result(conn, result):
             _native(result.avg_volume_20d), _native(result.breakout_volume_pct), result.exchange,
             _native(result.change_pct), _native(result.sma50), _native(result.sma150), _native(result.sma200),
             result.trend_stage, _native(result.atr_value), _native(result.atr_pct), _native(result.rs_rating),
-            result.pattern_type, _native(result.days_to_earnings), datetime.now(timezone.utc).isoformat(),
+            result.pattern_type, _native(result.days_to_earnings), result.sector, datetime.now(timezone.utc).isoformat(),
         ),
     )
     conn.commit()
@@ -1728,6 +1730,7 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             atr_pct=atr["atr_pct"] if atr else None,
             pattern_type=pattern_type,
             days_to_earnings=days_to_earnings,
+            sector=(info.get("sector") or None),
         )
         results.append(result)
 
@@ -2781,10 +2784,58 @@ def refresh_movers_only():
     upsert_universe_movers(changes)
 
 
+def check_price_alerts_job():
+    """v19 alerts: the users' price alerts ("KO above $90"), checked on every quick refresh (~20 min in market hours).
+    Latest daily close = the current (15-min delayed) price during the session. Sending: push_alerts.py."""
+    import push_alerts
+    conn = get_conn()
+    try:
+        tickers = push_alerts.open_alert_tickers(conn)
+    finally:
+        conn.close()
+    if not tickers:
+        print("[info] price alerts: none open.")
+        return
+    prices = {}
+    for i in range(0, len(tickers), 100):
+        chunk = tickers[i:i + 100]
+        try:
+            df = yf.download(chunk, period="5d", interval="1d", group_by="ticker",
+                             auto_adjust=False, progress=False, threads=True)
+        except Exception as e:
+            print(f"[warn] price alerts: download failed: {type(e).__name__}: {e}")
+            continue
+        for t in chunk:
+            try:
+                closes = df[t]["Close"].dropna()
+            except Exception:
+                continue
+            if len(closes):
+                prices[t] = round(float(closes.iloc[-1]), 4)
+    conn = get_conn()   # fresh connection after the download (Neon auto-suspend)
+    try:
+        push_alerts.check_price_alerts(conn, prices)
+    finally:
+        conn.close()
+
+
+def notify_new_signals(results):
+    """v19 alerts: a push to everyone who has the ticker in their watchlist and notifications on (once a day per ticker)."""
+    import push_alerts
+    if not push_alerts.ready():
+        print("[info] push: VAPID_PRIVATE_KEY / pywebpush not available — no watchlist notifications sent.")
+        return
+    conn = get_conn()
+    try:
+        push_alerts.notify_watchlist_signals(conn, [(r.ticker, r.trigger_text_he, r.trigger_text_en) for r in results])
+    finally:
+        conn.close()
+
+
 def main():
     import sys
     if "--quick" in sys.argv:
-        for job in (refresh_movers_only, refresh_earnings_results):
+        for job in (refresh_movers_only, refresh_earnings_results, check_price_alerts_job):
             try:
                 job()
             except Exception:
@@ -2852,6 +2903,12 @@ def main():
         raise
     finally:
         conn.close()
+    for job in (lambda: notify_new_signals(results), check_price_alerts_job):   # v19 alerts — never fail the scan
+        try:
+            job()
+        except Exception:
+            print("[warn] alerts step failed:")
+            print(traceback.format_exc())
 
 
 if __name__ == "__main__":

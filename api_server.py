@@ -65,6 +65,7 @@ except Exception as _auth_import_err:  # server still boots; auth endpoints answ
 import econ_calendar  # US economic calendar
 from translation_fixes import prep_en, fix_he   # shared EN->HE translation fixes (also used by pipeline_b)
 from news_links import is_google_news, decode_google_news_url   # v18d: Google News link -> real article (also pipeline_b)
+import push_alerts    # v19: push notifications (watchlist signals, price alerts) — also used by the scanner
 import scheduler      # starts the GitHub Actions workflows at exact ET times (see scheduler.py): providers -> processing -> uniform events (see econ_calendar.py)
 
 DB_URL = os.environ.get("SWING_DB_PATH") or os.environ.get("DATABASE_URL")
@@ -362,6 +363,8 @@ def init_db():
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS days_to_earnings INTEGER;")
     # v18d: real article URL behind a Google News link (filled by the news pipeline / on first preview) — news_links.py
     cur.execute("ALTER TABLE IF EXISTS macro_news ADD COLUMN IF NOT EXISTS article_url TEXT;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sector TEXT;")   # v19 sector filter
+    push_alerts.ensure_tables(cur)                                                     # v19 alerts
     conn.commit()
     cur.close()
     conn.close()
@@ -484,7 +487,12 @@ def auth_export(user_id: int = Depends(current_user_id)):
             raise HTTPException(status_code=401, detail="user not found")
         cur.execute("SELECT ticker, added_at FROM watchlist WHERE user_id = %s ORDER BY added_at", (user_id,))
         wl = [dict(r) for r in cur.fetchall()]
-    return {"user": dict(u), "watchlist": wl,
+        cur.execute("""SELECT ticker, direction, price, created_at, triggered_at, triggered_price FROM price_alerts
+                       WHERE user_id = %s ORDER BY created_at""", (user_id,))
+        alerts = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT created_at, lang, watch_signals FROM push_subscriptions WHERE user_id = %s", (user_id,))
+        devices = [dict(r) for r in cur.fetchall()]
+    return {"user": dict(u), "watchlist": wl, "price_alerts": alerts, "notification_devices": devices,
             "note": "Anonymous usage statistics are currently not linked to your account and are not included."}
 
 
@@ -493,6 +501,8 @@ def auth_delete_me(user_id: int = Depends(current_user_id)):
     """Permanently delete the account and its personal data (privacy: right to erasure)."""
     with db_cursor() as (conn, cur):
         cur.execute("DELETE FROM watchlist WHERE user_id = %s", (user_id,))
+        for table in ("push_subscriptions", "price_alerts", "push_log"):     # v19 alerts (fixed names, not input)
+            cur.execute(f"DELETE FROM {table} WHERE user_id = %s", (user_id,))
         cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
         conn.commit()
     return {"deleted": True}
@@ -551,9 +561,13 @@ def get_stocks(limit: int = Query(default=25, le=100)):
             (limit,),
         )
         rows = cur.fetchall()
+    sp = _sp500_map_nowait()
     result = []
     for r in rows:
         d = dict(r)
+        # v19 sector filter: the scanner saves Yahoo's sector from now on; older rows (and any gap) take the S&P 500
+        # list's GICS sector. One naming for both, so the site's filter has 11 sectors, not two spellings of each.
+        d["sector"] = _norm_sector(d.get("sector") or (sp.get(d.get("ticker")) or {}).get("sector"))
         try:
             d["resistance_targets"] = json.loads(d["resistance_targets"] or "[]")
         except (json.JSONDecodeError, TypeError):
@@ -1693,6 +1707,34 @@ def get_sp500_info_map() -> dict:
     except Exception as e:
         print(f"[warn] failed to fetch S&P 500 sector/name list: {e}")
         return _sp500_info_cache["data"]  # serve last-good if we have it, else empty
+
+
+def _sp500_map_nowait() -> dict:
+    """The S&P 500 map without ever making a request wait for (or retry) the download: /api/stocks is polled by every
+    visitor every 20 seconds. A missing/stale map is refreshed in a background thread, at most one at a time."""
+    c = _sp500_info_cache
+    if (not c["data"] or time.time() - c["ts"] > SP500_INFO_CACHE_TTL) and not c.get("loading") \
+            and time.time() - c.get("tried", 0) > 600:
+        c["loading"], c["tried"] = True, time.time()
+
+        def run():
+            try:
+                get_sp500_info_map()
+            finally:
+                c["loading"] = False
+        threading.Thread(target=run, daemon=True).start()
+    return c["data"]
+
+
+# Yahoo's sector names -> the GICS names of the S&P 500 list (Energy, Industrials, Utilities... are the same in both)
+_SECTOR_NORM = {"Technology": "Information Technology", "Financial Services": "Financials", "Healthcare": "Health Care",
+                "Consumer Cyclical": "Consumer Discretionary", "Consumer Defensive": "Consumer Staples",
+                "Basic Materials": "Materials"}
+
+
+def _norm_sector(s):
+    s = (s or "").strip()
+    return _SECTOR_NORM.get(s, s) or None
 
 
 @app.get("/api/sector-comparison/{ticker}")
@@ -4079,6 +4121,134 @@ def remove_from_watchlist(ticker: str, user_id: int = Depends(current_user_id)):
     cur.close()
     conn.close()
     return {"ticker": ticker, "removed": True}
+
+
+# ------------------------------------------------------------------
+# ALERTS (v19): push notifications per device + price alerts. See push_alerts.py for how messages are sent.
+# Render env: VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY (without them /api/push/config says enabled=false and the site
+# hides the "turn on" button — nothing else changes).
+# ------------------------------------------------------------------
+@app.get("/api/push/config")
+def push_config():
+    return {"enabled": push_alerts.ready() and bool(push_alerts.VAPID_PUBLIC_KEY),
+            "public_key": push_alerts.VAPID_PUBLIC_KEY}
+
+
+class PushSubscription(BaseModel):
+    endpoint: str = Field(max_length=1000)
+    p256dh: str = Field(max_length=200)
+    auth: str = Field(max_length=100)
+    lang: str = Field(default="he", max_length=5)
+    watch_signals: bool = True
+
+
+@app.post("/api/push/subscribe")
+def push_subscribe(body: PushSubscription, user_id: int = Depends(current_user_id)):
+    if not push_alerts.endpoint_ok(body.endpoint):
+        raise HTTPException(status_code=400, detail="unsupported push service")
+    lang = "en" if body.lang == "en" else "he"
+    with db_cursor() as (conn, cur):
+        cur.execute("SELECT COUNT(*) FROM push_subscriptions WHERE user_id = %s AND endpoint <> %s", (user_id, body.endpoint))
+        if cur.fetchone()[0] >= push_alerts.MAX_SUBS_PER_USER:
+            cur.execute("""DELETE FROM push_subscriptions WHERE id = (SELECT id FROM push_subscriptions
+                           WHERE user_id = %s ORDER BY COALESCE(last_ok, created_at) LIMIT 1)""", (user_id,))
+        # the same browser re-subscribing (or a device passed to another account) -> one row, owned by this user
+        cur.execute("""INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, lang, watch_signals)
+                       VALUES (%s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (endpoint) DO UPDATE SET user_id = EXCLUDED.user_id, p256dh = EXCLUDED.p256dh,
+                         auth = EXCLUDED.auth, lang = EXCLUDED.lang, watch_signals = EXCLUDED.watch_signals, fails = 0""",
+                    (user_id, body.endpoint, body.p256dh, body.auth, lang, body.watch_signals))
+        conn.commit()
+    return {"subscribed": True}
+
+
+class PushEndpoint(BaseModel):
+    endpoint: str = Field(max_length=1000)
+
+
+@app.post("/api/push/unsubscribe")
+def push_unsubscribe(body: PushEndpoint, user_id: int = Depends(current_user_id)):
+    with db_cursor() as (conn, cur):
+        cur.execute("DELETE FROM push_subscriptions WHERE endpoint = %s AND user_id = %s", (body.endpoint, user_id))
+        conn.commit()
+    return {"subscribed": False}
+
+
+_push_test_at: dict = {}
+
+
+@app.post("/api/push/test")
+def push_test(user_id: int = Depends(current_user_id)):
+    if not push_alerts.ready():
+        raise HTTPException(status_code=503, detail="alerts are not configured on the server")
+    if time.time() - _push_test_at.get(user_id, 0) < 30:
+        raise HTTPException(status_code=429, detail="wait a few seconds")
+    _push_test_at[user_id] = time.time()
+
+    def payload(lang):
+        return ({"title": "Swing Desk", "body": "Notifications are on for this device.", "url": "/", "tag": "test"}
+                if lang == "en" else
+                {"title": "Swing Desk", "body": "ההתראות פועלות במכשיר הזה.", "url": "/", "tag": "test"})
+    with db_cursor() as (conn, cur):
+        sent = push_alerts.send_to_user(cur, user_id, payload)
+        conn.commit()
+    return {"sent": sent}
+
+
+@app.get("/api/alerts")
+def list_alerts(user_id: int = Depends(current_user_id)):
+    """The user's price alerts (open ones, and those that fired in the last 14 days) + this account's alert settings."""
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute("""SELECT id, ticker, direction, price, created_at, triggered_at, triggered_price FROM price_alerts
+                       WHERE user_id = %s AND (triggered_at IS NULL OR triggered_at > NOW() - INTERVAL '14 days')
+                       ORDER BY triggered_at IS NOT NULL, created_at DESC""", (user_id,))
+        alerts = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT COUNT(*) AS n, BOOL_OR(watch_signals) AS sig FROM push_subscriptions WHERE user_id = %s",
+                    (user_id,))
+        s = cur.fetchone()
+    return {"alerts": alerts, "devices": s["n"] or 0, "watch_signals": bool(s["sig"]) if s["n"] else True}
+
+
+class PriceAlertIn(BaseModel):
+    ticker: str = Field(max_length=12)
+    direction: str = Field(pattern="^(above|below)$")
+    price: float = Field(gt=0, lt=10_000_000)
+
+
+@app.post("/api/alerts")
+def add_alert(body: PriceAlertIn, user_id: int = Depends(current_user_id)):
+    ticker = _canon_ticker(body.ticker)
+    if not ticker or not re.fullmatch(r"[A-Z0-9][A-Z0-9.\-^=]{0,10}", ticker):
+        raise HTTPException(status_code=400, detail="invalid ticker")
+    with db_cursor() as (conn, cur):
+        cur.execute("SELECT COUNT(*) FROM price_alerts WHERE user_id = %s AND triggered_at IS NULL", (user_id,))
+        if cur.fetchone()[0] >= push_alerts.MAX_ALERTS_PER_USER:
+            raise HTTPException(status_code=400, detail=f"up to {push_alerts.MAX_ALERTS_PER_USER} open alerts")
+        cur.execute("INSERT INTO price_alerts (user_id, ticker, direction, price) VALUES (%s, %s, %s, %s) RETURNING id",
+                    (user_id, ticker, body.direction, round(body.price, 4)))
+        new_id = cur.fetchone()[0]
+        conn.commit()
+    return {"id": new_id, "ticker": ticker}
+
+
+@app.delete("/api/alerts/{alert_id}")
+def delete_alert(alert_id: int, user_id: int = Depends(current_user_id)):
+    with db_cursor() as (conn, cur):
+        cur.execute("DELETE FROM price_alerts WHERE id = %s AND user_id = %s", (alert_id, user_id))
+        conn.commit()
+    return {"deleted": True}
+
+
+class AlertSettings(BaseModel):
+    watch_signals: bool
+
+
+@app.post("/api/alerts/settings")
+def alert_settings(body: AlertSettings, user_id: int = Depends(current_user_id)):
+    with db_cursor() as (conn, cur):
+        cur.execute("UPDATE push_subscriptions SET watch_signals = %s WHERE user_id = %s", (body.watch_signals, user_id))
+        conn.commit()
+    return {"watch_signals": body.watch_signals}
 
 
 # ------------------------------------------------------------------
