@@ -50,6 +50,8 @@ Swing Desk — דשבורד מסחר סווינג (סורק תבניות טכנ�
 - כל ווידג'ט שמחזיק נתונים חייב להיות מרונדר מחדש ב-`applyLang()` (בלי לבנות מחדש דברים כבדים — `loadFromApi` קורא לה כל 20 שנ').
 - טקסט על רקע ענבר: `var(--on-amber)`. צבעים רק ממשתני `:root` (כהה) / `:root[data-theme="light"]`.
 - לא לשים `color` inline על `.compare-btn`. SVG של הגרף: `direction:ltr`.
+- **צבעי גרף הניתוח (בקשת המשתמש):** כל מבנה (קווים אופקיים, קווי מגמה, אזורים, כוס/W) = `var(--struct)` צהוב בהיר; ממוצע 150 = `var(--ma150)` כחול TradingView (`#2962ff`) **בכל הגרפים** (גם ב-3 ווידג'טי TradingView); ממוצעים אחרים = `var(--sky)`. בגרף: התבנית הראשית + תבנית נוספת אחת בלבד.
+- גרף TradingView בניתוח מניה: `_ddMountChart` אידמפוטנטי (`data-tv-key`), ResizeObserver, ושומר שבונה מחדש פעם אחת אחרי 8 שנ' אם לא הופיע.
 - Deep Dive נטען בהדרגה (מחיר/גרף קודם; סקטור/מבנה טכני/פונדמנטלס מתמלאים; `_ddLoadId` מבטל תשובות ישנות).
 **תרגום:** Google מתרגם משפט שלם; לפני — `EN_REWRITES`, אחרי — `HE_FIXES` (ב-`translation_fixes.py`). **אסור** להחזיר מסכות placeholder (Google קרא "Q1Q" כרבעון ראשון). תרגום שגוי חדש באתר → להוסיף לרשימות.
 **אבטחה:** SQL רק עם פרמטרים; `/api/article-preview` רק לכתובות שב-`macro_news`; admin עם `X-Admin-Token` (`hmac.compare_digest`); workflows עם `permissions: contents: read`.

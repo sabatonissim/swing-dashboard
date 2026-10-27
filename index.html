@@ -102,6 +102,8 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
     --teal: #35b3a3;
     --teal-dim: #1c4b45;
     --sky: #6fa8ff;              /* main (context) trendline on the stock-analysis chart */
+    --struct: #f3d77a;           /* every support/resistance line, trendline and zone on the analysis chart (owner: one light yellow) */
+    --ma150: #2962ff;            /* 150-day moving average on ALL charts (TradingView's blue) */
     --green: #3ecf7e;
     --red: #ef5b5b;
     --panel-3: #1c1f26;
@@ -126,6 +128,8 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
     --teal: #006b5e;
     --teal-dim: #a9ddd5;
     --sky: #1f5fcf;
+    --struct: #a67c00;
+    --ma150: #2962ff;
     --green: #0a7a3a;
     --red: #c4161c;
     --header-a: #ffffff;
@@ -520,7 +524,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .ts-badge{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:50%;border:1.6px solid;font-size:10px;font-weight:700;flex:none;}
   .ts-lg-val{font-family:'JetBrains Mono',monospace;font-weight:600;}
   .ts-lg-note{color:var(--text-dim);font-size:11px;}
-  .ts-dot{display:inline-block;width:8px;height:8px;border-radius:50%;border:1.6px solid var(--teal);flex:none;margin:0 4px;}
+  .ts-dot{display:inline-block;width:8px;height:8px;border-radius:50%;border:1.6px solid var(--struct);flex:none;margin:0 4px;}
   .fund-card-title{font-size:12px;color:var(--text-dim);margin-bottom:8px;}
   .fund-scroll{overflow-x:auto;direction:ltr;}
   .fund-scroll::-webkit-scrollbar{height:5px;}
@@ -1937,11 +1941,36 @@ function renderDeepDive(quote, sector, signals, news){
 
 // Builds the TradingView chart of the analysis page. A chart created inside a hidden page (display:none) gets a wrong
 // size and stays "stuck" half-drawn, so in that case we wait until the page is shown (setPage calls this again).
-function _ddMountChart(){
+// v18 (owner: "the chart got stuck again while the page was still filling in"): the mount is idempotent (a second call
+// for the same ticker/theme/language — e.g. two queued loadTV callbacks — no longer builds a second widget in the same
+// box), the chart re-measures when its box changes size (sections filling in below), and a watchdog rebuilds it once
+// if no visible iframe appeared after 8 seconds.
+let _ddChartObserver = null;
+function _ddMountChart(force){
   const box = document.getElementById('dd-tv-chart');
   if(!box || !_ddChartTicker) return;
   if(box.offsetWidth === 0){ _ddChartPending = true; return; }
   _ddChartPending = false;
+  const key = _ddChartTicker + '|' + tvTheme() + '|' + lang;
+  if(!force && box.dataset.tvKey === key && box.querySelector('iframe')) return;
+  box.dataset.tvKey = key;
+  box.innerHTML = '';
+  if(_ddChartObserver){ _ddChartObserver.disconnect(); _ddChartObserver = null; }
+  if(window.ResizeObserver){
+    let lastW = box.offsetWidth;
+    _ddChartObserver = new ResizeObserver(() => {
+      const w = box.offsetWidth;
+      if(w > 0 && Math.abs(w - lastW) > 20){ lastW = w; try { window.dispatchEvent(new Event('resize')); } catch(e){} }
+    });
+    _ddChartObserver.observe(box);
+  }
+  setTimeout(() => {
+    const cur = document.getElementById('dd-tv-chart');
+    if(cur !== box || box.dataset.tvKey !== key || force) return;      // page moved on, or this already was the retry
+    if(box.offsetWidth === 0) return;                                  // analysis page hidden now — setPage handles it
+    const f = box.querySelector('iframe');
+    if(!f || f.offsetHeight < 50 || f.offsetWidth < 50){ console.warn('[deep dive] chart did not appear — rebuilding once'); _ddMountChart(true); }
+  }, 8000);
   new TradingView.widget({
     autosize: true, symbol: tvSymbol(_ddChartTicker), interval: 'D',
     timezone: 'Asia/Jerusalem', theme: tvTheme(), style: '1',
@@ -1951,7 +1980,7 @@ function _ddMountChart(){
     studies: ["MASimple@tv-basicstudies"],
     studies_overrides: {
       "Moving Average.length": 150,
-      "Moving Average.plot.color": "#ef5b5b",
+      "Moving Average.plot.color": "#2962ff",
       "Moving Average.plot.linewidth": 2,
     },
   });
@@ -2003,7 +2032,7 @@ function switchChart(symbol){
     studies: ["MASimple@tv-basicstudies"],
     studies_overrides: {
       "Moving Average.length": 150,
-      "Moving Average.plot.color": "#ef5b5b",
+      "Moving Average.plot.color": "#2962ff",
       "Moving Average.plot.linewidth": 2,
     },
   });
@@ -3907,7 +3936,7 @@ function renderTradingViewChart(ticker){
     studies: ["MASimple@tv-basicstudies"],
     studies_overrides: {
       "Moving Average.length": 150,
-      "Moving Average.plot.color": "#ef5b5b",
+      "Moving Average.plot.color": "#2962ff",
       "Moving Average.plot.linewidth": 2,
     },
   });
@@ -4238,7 +4267,7 @@ function buildTechnicalSetupSvg(priceSeries, lines){
     if(ln.type === 'zone'){
       const i1 = dateIndex[ln.from];
       if(i1===undefined) return '';
-      const col = ln.kind === 'resistance' ? 'var(--red)' : 'var(--teal)';
+      const col = 'var(--struct)';   // one colour for all structure (owner); the legend says support / resistance
       const yTop = yOf(ln.hi), yBot = yOf(ln.lo), h = Math.max(3, yBot - yTop), x1 = xOf(i1), x2 = xOf(n-1);
       entries.push({color: col, kind:'zone', name, value:'$'+fmtP(ln.lo)+'–'+fmtP(ln.hi),
                     note: ln.touches ? (t ? `${ln.touches} touches` : `${ln.touches} נגיעות`) : '', anchorX: x2, anchorY: (yTop + yBot) / 2, dim: 1});
@@ -4249,9 +4278,9 @@ function buildTechnicalSetupSvg(priceSeries, lines){
       const i1 = dateIndex[ln.from], i2 = dateIndex[ln.to];
       if(i1===undefined || i2===undefined) return '';
       const y = yOf(ln.price);
-      entries.push({color:'var(--amber)', kind:'horizontal', name, value:'$'+fmtP(ln.price), note:'', anchorX: xOf(i2), anchorY: y, dim});
+      entries.push({color:'var(--struct)', kind:'horizontal', name, value:'$'+fmtP(ln.price), note:'', anchorX: xOf(i2), anchorY: y, dim});
       // no touch dots: the server puts the line on the wick it comes from (_snap_horizontal_lines) and the price is in the legend
-      return `<line x1="${xOf(i1).toFixed(1)}" y1="${y.toFixed(1)}" x2="${xOf(i2).toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--amber)" stroke-opacity="${dim}" stroke-width="2" stroke-dasharray="5 3"/>`;
+      return `<line x1="${xOf(i1).toFixed(1)}" y1="${y.toFixed(1)}" x2="${xOf(i2).toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--struct)" stroke-opacity="${dim}" stroke-width="2" stroke-dasharray="5 3"/>`;
     }
     const pts = (ln.points||[]).map(([d,p]) => {
       const i2 = dateIndex[d];
@@ -4260,7 +4289,9 @@ function buildTechnicalSetupSvg(priceSeries, lines){
     if(pts.length < 2) return '';
     const first = pts[0], last = pts[pts.length-1];
     if(ln.type === 'trend'){
-      const col = ln.style === 'context' ? 'var(--sky)' : 'var(--teal)';   // main trendline (context) gets its own color
+      // colours (owner, v18): the 150-day MA in TradingView blue, other moving averages light blue, every other line light yellow
+      const isMA = /moving average|\bMA\b/i.test(ln.label_en || '');
+      const col = isMA ? (/150/.test(ln.label_en) ? 'var(--ma150)' : 'var(--sky)') : 'var(--struct)';
       // at most 4 small touch dots (the first touch + the 3 most recent) so the wicks stay readable
       const tch = ln.touches || [];
       const shown = tch.length > 4 ? [tch[0], ...tch.slice(-3)] : tch;
@@ -4275,9 +4306,9 @@ function buildTechnicalSetupSvg(priceSeries, lines){
       return `<polyline points="${pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}" fill="none" stroke="${col}" stroke-opacity="${dim}" stroke-width="2"/>${dots}`;
     }
     if(ln.type === 'curve'){
-      entries.push({color:'var(--teal)', kind:'curve', name, value:'',
+      entries.push({color:'var(--struct)', kind:'curve', name, value:'',
                     note:_fmtShortDate(first.date)+' – '+_fmtShortDate(last.date), anchorX: last.x, anchorY: last.y, dim});
-      return `<polyline points="${pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}" fill="none" stroke="var(--teal)" stroke-opacity="${dim}" stroke-width="2" stroke-dasharray="3 3"/>`;
+      return `<polyline points="${pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}" fill="none" stroke="var(--struct)" stroke-opacity="${dim}" stroke-width="2" stroke-dasharray="3 3"/>`;
     }
     return '';
   }).join('');
@@ -4372,7 +4403,7 @@ function renderTechnicalSetup(data, elId){
   const others = data.candidates.slice(1).filter(o =>
     o.stage === 'triggered' || o.stage === 'holding' || Math.abs(o.distance_pct) <= 6
   ).slice(0, 2);
-  const drawCandidates = [c, ...others];
+  const drawCandidates = [c, ...others.slice(0, 1)];   // v18: one extra pattern on the chart (owner: too many lines); all are listed below
   const svg = buildTechnicalSetupSvg(data.price_series, [...drawCandidates.flatMap(dc => dc.lines), ...(data.context_lines || []), ...(data.zones || [])]);
 
   let statsHtml = `
