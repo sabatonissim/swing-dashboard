@@ -636,12 +636,11 @@ def detect_horizontal_resistance_breakout(hist: pd.DataFrame, lookback: int = 15
     through it — the mirror image of detect_horizontal_level_bounce
     above, but for a breakout instead of a bounce.
 
-    A single prior swing high counts too (per the request's GOOGL 2025
-    example — one spike high that later got reclaimed and broken was
-    still a genuinely good signal), not just a level tested 2+ times.
-    More touches still means a stronger, more validated level, so that's
-    reflected in the score upstream rather than used as a hard filter
-    here.
+    v18 (owner, 27.10.2026): a level must have been tested at least
+    MIN_LEVEL_TOUCHES (2) times. A single prior spike high used to count
+    (the old GOOGL 2025 example), but on ANET it produced a "resistance"
+    made of one wick next to real support/resistance zones — noise, not
+    a level. Twin rule in api_server._setup_horizontal_resistance_breakout.
 
     Method: cluster nearby swing highs (within LEVEL_CLUSTER_PCT) to
     group repeat tests of the same level; flag when today's close breaks
@@ -650,6 +649,7 @@ def detect_horizontal_resistance_breakout(hist: pd.DataFrame, lookback: int = 15
     points, not a few cents)."""
     LEVEL_CLUSTER_PCT = 0.02
     MIN_BREAKOUT_PCT = 0.01   # close must clear the level by at least 1%
+    MIN_LEVEL_TOUCHES = 2     # v18: a level = at least two swing highs
 
     window = hist.tail(lookback).reset_index(drop=True)
     if len(window) < 30:
@@ -679,7 +679,7 @@ def detect_horizontal_resistance_breakout(hist: pd.DataFrame, lookback: int = 15
     # that was cleared (breaking a lower old level isn't news if a higher
     # one was already broken earlier).
     broken = [(lvl, touches) for lvl, touches in levels
-              if lvl > 0 and today_close >= lvl * (1 + MIN_BREAKOUT_PCT)]
+              if lvl > 0 and touches >= MIN_LEVEL_TOUCHES and today_close >= lvl * (1 + MIN_BREAKOUT_PCT)]
     if not broken:
         return None
     level, touches = max(broken, key=lambda x: x[0])
@@ -1316,7 +1316,9 @@ def _fetch_ticker_data(ticker: str):
     # slope check — meaning the whole trend-stage feature was silently
     # returning None for every single ticker since it was added. 2y gives
     # enough room for SMA200 and for the RS Rating's 12-month lookback below.
-    hist = tk.history(period="2y", interval="1d")
+    # v18: actual (not dividend-adjusted) prices, like TradingView — levels and trendlines must sit on the wicks the
+    # trader sees (KO: adjusted lows were 0.58% lower before the last dividend, which moved the support zone and the line)
+    hist = tk.history(period="2y", interval="1d", auto_adjust=False)
     info = tk.info
     return hist, info
 
@@ -1355,7 +1357,7 @@ def fetch_benchmark_returns() -> Dict[int, float]:
     ticker's RS score gets compared against. Fetched once per scan run,
     not once per ticker."""
     try:
-        spy_hist = yf.Ticker("SPY").history(period="2y", interval="1d")
+        spy_hist = yf.Ticker("SPY").history(period="2y", interval="1d", auto_adjust=False)   # same basis as the stocks
         closes = spy_hist["Close"]
         rets = {}
         for days in RS_LOOKBACK_WEIGHTS:
@@ -2484,8 +2486,8 @@ def backfill_forward_returns():
                 continue
             try:
                 hist = yf.Ticker(ticker).history(
-                    start=ts.date(), end=ts.date() + timedelta(days=45), interval="1d"
-                )
+                    start=ts.date(), end=ts.date() + timedelta(days=45), interval="1d", auto_adjust=False
+                )   # same price basis as entry_price (v18: the scan stores actual, not dividend-adjusted, prices)
                 closes = hist["Close"]
                 if len(closes) <= horizon:
                     continue
@@ -2609,7 +2611,8 @@ def backfill_sim_outcomes():
         group = by_ticker[ticker]
         first, last = group[0]["timestamp"].date(), group[-1]["timestamp"].date()
         try:
-            hist = yf.Ticker(ticker).history(start=first, end=last + timedelta(days=45), interval="1d")
+            hist = yf.Ticker(ticker).history(start=first, end=last + timedelta(days=45), interval="1d",
+                                             auto_adjust=False)   # same basis as entry_price / stop / target (v18)
             bars_all = [(idx.date(), float(r_["Open"]), float(r_["High"]), float(r_["Low"]), float(r_["Close"]))
                         for idx, r_ in hist.iterrows()]
         except Exception as e:

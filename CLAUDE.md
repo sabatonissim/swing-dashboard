@@ -40,7 +40,7 @@ Swing Desk — דשבורד מסחר סווינג (סורק תבניות טכנ�
 | `docs/REFERENCE.md`, `docs/HISTORY.md` | — | תיעוד מפורט (ראה למעלה) |
 
 ## 3. כללי קוד קריטיים (שבירה = באגים שכבר קרו)
-**סורק ↔ Deep Dive (תאומים):** כל שינוי בגלאי בסורק → אותו שינוי בפונקציה התאומה ב-`api_server.py` (`_scanner_rule_*`, `fit_trendline`↔`_fit_trendline`, `find_cup`↔`_find_cup`, קבועי `TRENDLINE_*`↔`_TL_*`). אחרת הסריקה ו-Deep Dive מציגים תבניות שונות (מקרה KDP). חיפוש קווי מגמה: עד **250** נרות (מקסימום, לא אורך כפוי); **אף שפל לא חוצה את הקו ביותר מ-0.5%** (`TRENDLINE_TOLERANCE`↔`_TL_TOLERANCE`). אזורי תמיכה/התנגדות (`_sr_zones`, מלבן בגרף) — תצוגה בלבד, אין תאום בסורק.
+**סורק ↔ Deep Dive (תאומים):** כל שינוי בגלאי בסורק → אותו שינוי בפונקציה התאומה ב-`api_server.py` (`_scanner_rule_*`, `fit_trendline`↔`_fit_trendline`, `find_cup`↔`_find_cup`, קבועי `TRENDLINE_*`↔`_TL_*`). אחרת הסריקה ו-Deep Dive מציגים תבניות שונות (מקרה KDP). חיפוש קווי מגמה: עד **250** נרות (מקסימום, לא אורך כפוי); **אף שפל לא חוצה את הקו ביותר מ-0.5%** (`TRENDLINE_TOLERANCE`↔`_TL_TOLERANCE`). אזורי תמיכה/התנגדות (`_sr_zones`, מלבן בגרף) — תצוגה בלבד, אין תאום בסורק. **מחירים אמיתיים (`auto_adjust=False`) בסורק וב-Deep Dive** — כמו TradingView; מחירים מתואמי דיבידנד הזיזו פתילים (KO ‎−0.58%). פריצת התנגדות אופקית: רמה = ≥2 שיאים (`MIN_LEVEL_TOUCHES`, תאומים). קו אופקי בגרף יושב על הפתיל של הנגיעה הראשונה; מוסתר אם בטווח 2.5% מאזור.
 **מספר שגוי גרוע מריק:** הכנסות/EPS רק מתקופה מאומתת; הכנסה מהודעת רווחים רק בטווח 0.8–1.25 מהצפי השמור; P/E רק מחישוב אמין. לא להציג רבעון קודם כאילו חדש.
 **Yahoo `.info` חסום מ-Render** (תמיד): מפסק זרם 15 דק' ב-`_get_info_with_retry`. שווי שוק/P/E מ-SEC (מניות × מחיר; P/E = שווי ÷ רווח 4 רבעונים). **Forward P/E (NTM)** מטבלת `stock_estimates` שהסורק ממלא (שם `.info` עובד): `f=ימים שנותרו בשנת הכספים/365`, `NTM EPS = f·EPS(שנה נוכחית)+(1−f)·EPS(הבאה)`.
 **SEC XBRL:** לבחור את יחידת המידה עם הכי הרבה רשומות (לא הראשונה — KO מכיל יחידה ישנה `pure`).
@@ -56,6 +56,8 @@ Swing Desk — דשבורד מסחר סווינג (סורק תבניות טכנ�
 **תרגום:** Google מתרגם משפט שלם; לפני — `EN_REWRITES`, אחרי — `HE_FIXES` (ב-`translation_fixes.py`). **אסור** להחזיר מסכות placeholder (Google קרא "Q1Q" כרבעון ראשון). תרגום שגוי חדש באתר → להוסיף לרשימות.
 **אבטחה:** SQL רק עם פרמטרים; `/api/article-preview` רק לכתובות שב-`macro_news`; admin עם `X-Admin-Token` (`hmac.compare_digest`); workflows עם `permissions: contents: read`.
 **Neon:** לפתוח חיבור DB סמוך לכתיבה (auto-suspend).
+**זיכרון Render (512MB, קרס 26.10):** קובץ companyfacts של SEC = 2–8MB, ~פי 10 בזיכרון. `_get_fundamentals_cached`: single-flight לכל טיקר + עד 2 בניות במקביל (`_FUND_MAX_PARALLEL`) + תקרת קאש. השוואת סקטור **לא** בונה פונדמנטלס לעמיתים (קאש או `stock_estimates`). לא להוסיף מקומות שמריצים `_build_fundamentals` לרשימת מניות.
+**בדיקות מהמחשב הביתי:** לא להריץ עשרות קריאות API ברצף — Cloudflare של Render חוסם את ה-IP (429 `Cf-Mitigated: challenge`).
 
 ## 4. משתני סביבה (שמות בלבד — הערכים סודיים)
 Render: `DATABASE_URL`, `JWT_SECRET` (≥32), `ALLOWED_ORIGINS`, `GITHUB_DISPATCH_TOKEN`, `ADMIN_TOKEN` (אופציונלי), `GOOGLE_CLIENT_ID` (אופציונלי), `TRUSTED_PROXY_HOPS`, `ENABLE_DOCS`.

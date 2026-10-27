@@ -1566,11 +1566,28 @@ def get_sector_comparison(ticker: str, period: str = Query(default="1Y", pattern
         # often-blocked .info — this was the actual reason peer P/E and
         # market cap kept showing "—" even after the main ticker's own
         # numbers were fixed.
+        # v18 memory guard: only the stock itself gets a full SEC build here (shared with /api/fundamentals). Peers use
+        # an already-cached result, else the scanner's stock_estimates row (trailing P/E + market cap from Yahoo, saved
+        # twice a day) — 4 extra SEC builds per page view were what pushed Render past 512 MB.
         try:
-            fund = _get_fundamentals_cached(sym)
-            return {"pe_ratio": fund.get("trailing_pe"), "market_cap": fund.get("market_cap")}
+            if sym == ticker:
+                fund = _get_fundamentals_cached(sym)
+                return {"pe_ratio": fund.get("trailing_pe"), "market_cap": fund.get("market_cap")}
+            cached = _fundamentals_cache.get(sym)
+            if cached and cached[1].get("has_fundamentals"):
+                return {"pe_ratio": cached[1].get("trailing_pe"), "market_cap": cached[1].get("market_cap")}
+            with db_cursor(dict_cursor=True) as (conn, cur):
+                cur.execute("SELECT to_regclass('stock_estimates') IS NOT NULL AS ok")
+                if not cur.fetchone()["ok"]:
+                    return {"pe_ratio": None, "market_cap": None}
+                cur.execute("SELECT trailing_pe, market_cap FROM stock_estimates WHERE ticker = %s", (sym,))
+                row = cur.fetchone()
+            if not row:
+                return {"pe_ratio": None, "market_cap": None}
+            return {"pe_ratio": round(float(row["trailing_pe"]), 1) if row["trailing_pe"] else None,
+                    "market_cap": float(row["market_cap"]) if row["market_cap"] else None}
         except Exception as e:
-            print(f"[warn] sector-comparison: SEC valuation failed for {sym}: {e}")
+            print(f"[warn] sector-comparison: valuation failed for {sym}: {e}")
             return {"pe_ratio": None, "market_cap": None}
 
     etf_return = None
@@ -2145,6 +2162,8 @@ def _setup_horizontal_resistance_breakout(hist: pd.DataFrame) -> Optional[dict]:
     # endpoint's answer consistent with what the daily scan already
     # showed for the same stock.
     MIN_BREAKOUT_PCT = 0.01
+    MIN_LEVEL_TOUCHES = 2   # v18: twin of the scanner's MIN_LEVEL_TOUCHES — one lone wick is not a level (ANET)
+    levels = [(lvl, touches) for lvl, touches in levels if touches >= MIN_LEVEL_TOUCHES]
     broken = [(lvl, touches) for lvl, touches in levels if lvl > 0 and today_close >= lvl * (1 + MIN_BREAKOUT_PCT)]
     if broken:
         level, touches = max(broken, key=lambda x: x[0])
@@ -2771,6 +2790,16 @@ def _snap_horizontal_lines(candidates: list, hist: pd.DataFrame) -> None:
             if k1 is None or k2 is None:
                 continue
             p = float(ln["price"])
+            # v18b (owner, KO): the line belongs on the wick it STARTS from — the first touch of the level (the end-of-July
+            # high, not a later bar that happens to sit near the average). So the start bar's own high/low wins when it
+            # is within 2% (the cluster tolerance); the search below is only the fallback.
+            own = min((float(highs[k1]), float(lows[k1])), key=lambda v: abs(v - p))
+            if abs(own - p) / p <= 0.02:
+                new_p = round(own, 2)
+                if abs(float(c.get("key_level") or 0) - p) < 0.011:
+                    c["key_level"] = new_p
+                ln["price"] = new_p
+                continue
             best = None   # (bar, value, rel. distance)
             for k in range(k1, k2 + 1):
                 for v in (float(highs[k]), float(lows[k])):
@@ -3320,7 +3349,7 @@ def get_technical_setup(ticker: str):
     # 2y, same as the scanner's own fetch, so both run the detectors on
     # identical history (1y used to be one more source of disagreement).
     try:
-        hist = yf.Ticker(ticker).history(period="2y", interval="1d")
+        hist = yf.Ticker(ticker).history(period="2y", interval="1d", auto_adjust=False)   # actual prices, like TradingView (v18)
     except Exception:
         raise HTTPException(status_code=502, detail="שגיאה בשליפת נתוני המניה")
     if hist.empty or len(hist) < 65:
@@ -3373,11 +3402,12 @@ def get_technical_setup(ticker: str):
     zones = []
     try:
         zones = _sr_zones(hist.tail(_TL_SEARCH_DAYS))
-        # a pattern's horizontal line inside (or within 1% of) a zone is the same level — the rectangle replaces it
+        # a pattern's horizontal line within 2.5% of a zone is the same area on the chart (v18b, owner: ANET's 175.20 line
+        # next to the 179.10-179.80 zone only added noise) — the rectangle replaces it
         for c in candidates:
             c["lines"] = [ln for ln in c.get("lines", []) if not (
                 ln.get("type") == "horizontal" and ln.get("price")
-                and any(z["lo"] * 0.99 <= float(ln["price"]) <= z["hi"] * 1.01 for z in zones))]
+                and any(z["lo"] * 0.975 <= float(ln["price"]) <= z["hi"] * 1.025 for z in zones))]
     except Exception as e:
         print(f"[warn] technical-setup {ticker}: S/R zones failed: {type(e).__name__}: {e}")
 
@@ -3424,7 +3454,7 @@ def get_technical_setup(ticker: str):
 
 def _fetch_one_watchlist_setup(ticker: str) -> Optional[dict]:
     try:
-        hist = yf.Ticker(ticker).history(period="2y", interval="1d")
+        hist = yf.Ticker(ticker).history(period="2y", interval="1d", auto_adjust=False)   # actual prices, like TradingView (v18)
     except Exception as e:
         print(f"[warn] watchlist-setups: history fetch failed for {ticker}: {e}")
         return None
@@ -3504,7 +3534,7 @@ def lookup_stock(ticker: str):
     last_err = None
     for attempt in range(2):
         try:
-            hist = tk.history(period="6mo", interval="1d")
+            hist = tk.history(period="6mo", interval="1d", auto_adjust=False)   # actual prices, like TradingView (v18)
             if hist is not None and not hist.empty:
                 break
         except Exception as e:
@@ -3583,7 +3613,7 @@ _PRICE_COMPARE_DAYS = {"1M": 31, "3M": 92, "6M": 183, "1Y": 366}
 
 def _fetch_close_series(ticker: str) -> Optional[pd.Series]:
     try:
-        hist = yf.Ticker(ticker).history(period="2y", interval="1d")
+        hist = yf.Ticker(ticker).history(period="2y", interval="1d", auto_adjust=False)   # actual prices, like TradingView (v18)
     except Exception as e:
         print(f"[warn] price-compare: history failed for {ticker}: {e}")
         return None
@@ -5313,13 +5343,45 @@ def _get_fundamentals_cached(ticker: str) -> dict:
         ttl = FUNDAMENTALS_CACHE_TTL_SEC if cached_data.get("has_fundamentals") else FUNDAMENTALS_NEGATIVE_CACHE_TTL_SEC
         if (time.time() - cached_ts) < ttl and _is_valid_fundamentals_shape(cached_data):
             return cached_data
-    data = _build_fundamentals(ticker)
+
+    # v18 memory guard (Render free = 512 MB; "Ran out of memory" on 26.10.2026): one SEC companyfacts file is 2-8 MB
+    # and ~10x that once parsed, and ONE Deep Dive opened 6 builds at once (/api/fundamentals + sector-comparison for
+    # the stock and 4 peers). Now: a build already running for this ticker is waited for instead of started again
+    # (timed-out requests used to leave their build running while the page's retry started another), and at most
+    # _FUND_MAX_PARALLEL builds run at the same time in the whole server.
+    with _fund_inflight_lock:
+        ev = _fund_inflight.get(ticker)
+        owner = ev is None
+        if owner:
+            ev = _fund_inflight[ticker] = threading.Event()
+    if not owner:
+        ev.wait(timeout=90)
+        done = _fundamentals_cache.get(ticker)
+        if done:
+            return done[1]
+        raise RuntimeError("fundamentals build for this ticker failed in a parallel request")
     try:
-        _apply_stock_estimates(data, ticker)
-    except Exception as e:
-        print(f"[warn] fundamentals({ticker}): stock estimates not applied: {type(e).__name__}: {e}")
-    _fundamentals_cache[ticker] = (time.time(), data)
-    return data
+        with _fund_build_sem:
+            data = _build_fundamentals(ticker)
+        try:
+            _apply_stock_estimates(data, ticker)
+        except Exception as e:
+            print(f"[warn] fundamentals({ticker}): stock estimates not applied: {type(e).__name__}: {e}")
+        if len(_fundamentals_cache) > _FUND_CACHE_MAX:
+            _fundamentals_cache.clear()          # simple bound instead of LRU bookkeeping
+        _fundamentals_cache[ticker] = (time.time(), data)
+        return data
+    finally:
+        with _fund_inflight_lock:
+            _fund_inflight.pop(ticker, None)
+        ev.set()
+
+
+_FUND_MAX_PARALLEL = 2
+_FUND_CACHE_MAX = 300
+_fund_build_sem = threading.BoundedSemaphore(_FUND_MAX_PARALLEL)
+_fund_inflight: dict = {}          # ticker -> threading.Event, set when that build finished
+_fund_inflight_lock = threading.Lock()
 
 
 _ESTIMATES_MAX_AGE_DAYS = 10
