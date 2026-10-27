@@ -32,3 +32,4 @@ jobs:
       - run: python pipeline_a_scanner.py --quick
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}   # v19 price alerts (push notifications)

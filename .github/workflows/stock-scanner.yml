@@ -45,4 +45,5 @@ jobs:
       - name: Run stock scanner
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}   # v19 alerts (push notifications); empty = none sent
         run: python pipeline_a_scanner.py
