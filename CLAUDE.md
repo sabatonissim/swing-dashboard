@@ -34,6 +34,7 @@ Swing Desk — דשבורד מסחר סווינג (סורק תבניות טכנ�
 | `econ_refresh.py` | Actions (`econ-refresh.yml`) | מוריד סדרות "בפועל/קודם" ושומר ב-`econ_snapshots`. FRED לא עונה מאף מקום → BLS API, NY Fed, DBnomics, DOL, Census |
 | `scheduler.py` | Render | מפעיל workflows בשעות ET מדויקות (`GITHUB_DISPATCH_TOKEN`) |
 | **`translation_fixes.py`** | Render + Actions | תיקוני תרגום משותפים. **להעלות לפני/יחד עם `api_server.py`** — בלעדיו השרת לא עולה |
+| **`news_links.py`** | Render + Actions | קישור Google News → כתובת הכתבה האמיתית (`article_url`). **כמו translation_fixes — בלעדיו השרת לא עולה** |
 | `cleanup_stale_signals.py` | Actions (ידני) | תחזוקה |
 | `vercel.json` | Vercel | כותרות אבטחה (CSP מצומצם נאכף; מלא ב-Report-Only) |
 | `favicon.svg`, `favicon-32.png`, `apple-touch-icon.png`, `logo.png`, `og-image.png` | Vercel | לוגו S (לבן על שחור), תמונת שיתוף 1200×630 |
@@ -54,6 +55,7 @@ Swing Desk — דשבורד מסחר סווינג (סורק תבניות טכנ�
 - כל ווידג'ט TradingView עם `autosize:true` (גודל קבוע = גרף חתוך אחרי שינוי גודל חלון, HISTORY §27.3י).
 - גרף TradingView בניתוח מניה: `_ddMountChart` אידמפוטנטי (`data-tv-key`), ResizeObserver, ושומר שבונה מחדש פעם אחת אחרי 8 שנ' אם לא הופיע.
 - Deep Dive נטען בהדרגה (מחיר/גרף קודם; סקטור/מבנה טכני/פונדמנטלס מתמלאים; `_ddLoadId` מבטל תשובות ישנות).
+**חדשות מרכזיות (פס אדום):** רק לפי סוגי אירועים + ≥3 מקורות (אחד מרכזי) או הודעה רשמית — `_KEY_EVENT_RULES` ב-`api_server.py`, `/api/key-news`; "Critical" באתר = שייך לאירוע כזה (לא התווית השמורה). לא לחזור למילים בודדות. HISTORY §27.3יא.
 **תרגום:** Google מתרגם משפט שלם; לפני — `EN_REWRITES`, אחרי — `HE_FIXES` (ב-`translation_fixes.py`). **אסור** להחזיר מסכות placeholder (Google קרא "Q1Q" כרבעון ראשון). תרגום שגוי חדש באתר → להוסיף לרשימות.
 **אבטחה:** SQL רק עם פרמטרים; `/api/article-preview` רק לכתובות שב-`macro_news`; admin עם `X-Admin-Token` (`hmac.compare_digest`); workflows עם `permissions: contents: read`.
 **Neon:** לפתוח חיבור DB סמוך לכתיבה (auto-suspend).
@@ -68,7 +70,8 @@ GitHub Secrets: `DATABASE_URL`, `LLM_API_KEY`; Variables: `LLM_MODELS` (מומל
 `scanned_stocks` (איתותים + `sim_*` לתיק דמו), `earnings_calendar` (`revenue_period_end = report_date` ⇒ הכנסה מהודעת SEC), `macro_news` (`summary_he/en`, `body_*`, `source_name`), `ai_daily_digests`, `econ_events`, `econ_snapshots` (`series-<id>` + snapshot הלוח), `universe_movers`, `users`, `watchlist` (אישי), `analytics_events`, `scheduler_runs`, **`stock_estimates` (חדש v18)**. פירוט: REFERENCE §5.
 
 ## 6. סטטוס ופתוח (עודכן 26.10.2026 — v18)
-**בוצע היום (פירוט: HISTORY §27):** פענוח הכנסות מהודעות SEC (טבלאות, צפי שמור, VZ/BX תוקנו); מקורות "בפועל" בלי מפתח לכל 6 סדרות FRED; לוח חודשי מיום שני; תיקוני תצוגה; תמונת שיתוף; Deep Dive הדרגתי; EPS/P/E מ-SEC (יחידות); מפסק `.info`; אבטחה (article-preview, escH, permissions); קו מגמה ראשי + הצמדת קווים אופקיים לפתיל; תרגום חדש; יישור שורות עברית לימין; **Forward P/E (NTM)**; קווי מגמה עד 250 נרות (סורק+Deep Dive), גרף שמתארך לפי הקו; **קו מגמה מחמיר (0.5%) + אזורי תמיכה/התנגדות כמלבן** (HISTORY §27.3ה); **קו התנגדות על ראש הפתיל + פריצה רק בפעם הראשונה** (KO/ANET, HISTORY §27.3ט).
+**בוצע היום (פירוט: HISTORY §27):** פענוח הכנסות מהודעות SEC (טבלאות, צפי שמור, VZ/BX תוקנו); מקורות "בפועל" בלי מפתח לכל 6 סדרות FRED; לוח חודשי מיום שני; תיקוני תצוגה; תמונת שיתוף; Deep Dive הדרגתי; EPS/P/E מ-SEC (יחידות); מפסק `.info`; אבטחה (article-preview, escH, permissions); קו מגמה ראשי + הצמדת קווים אופקיים לפתיל; תרגום חדש; יישור שורות עברית לימין; **Forward P/E (NTM)**; קווי מגמה עד 250 נרות (סורק+Deep Dive), גרף שמתארך לפי הקו; **קו מגמה מחמיר (0.5%) + אזורי תמיכה/התנגדות כמלבן** (HISTORY §27.3ה); **קו התנגדות על ראש הפתיל + פריצה רק בפעם הראשונה** (KO/ANET, HISTORY §27.3ט); גרף מדדים `autosize` (§27.3י); **חדשות מרכזיות לפי אירועים + קישור אמיתי לכתבות Google News** (§27.3יא).
+**לבדוק:** בלוג news-aggregator — `article links: decoded N ... failed M` (אם הכל נכשל — גוגל חוסם את GitHub; המצב כמו קודם).
 **ממתין לבדיקה אחרי העלאה:** ראה HISTORY §27.4 (רשימת בדיקות מלאה).
 **פתוח:**
 1. Forward P/E יופיע רק אחרי ריצת **סריקה מלאה** (לא quick); לוודא בלוג `stock estimates: saved N`. אם 0 עם צפי — לבדוק שמות שדות `.info` (`forwardEps`, `epsCurrentYear`, `nextFiscalYearEnd`).

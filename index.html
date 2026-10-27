@@ -923,6 +923,8 @@ const macro = [
 // Raw data from API — stored separately so we can re-render in any language without re-fetching
 let rawStocks = [];
 let rawMacro = [];
+let rawKeyNews = null;   // /api/key-news rows (v18d); null = not loaded -> the strip uses the feed's Critical items
+let keyNews = null;      // rawKeyNews mapped for the current language (applyLang)
 
 // ---- Render functions ----
 function scoreClass(s){ return s>=60 ? "score-hi" : "score-mid"; }
@@ -1245,30 +1247,27 @@ function updateBreakingNav(){
 
 function renderBreakingNews(){
   const el = document.getElementById("breaking-news");
-  // Show ONLY items the backend itself classified as Critical (Fed
-  // decisions, wars/sanctions/attacks, recession/bankruptcy signals —
-  // see CRITICAL_KEYWORDS in pipeline_b_news_aggregator.py). Previously
-  // this also re-matched a broad list of category-name substrings
-  // ("Inflation", "Employment", "Trade" etc.) on top of that, which
-  // caught almost every macro category and made this bar functionally
-  // identical to the regular feed. These items still appear in the
-  // regular feed too — this bar is just a highlighted subset, not a
-  // separate pool.
-  const critical = macro.filter(m => m.impact === 'Critical');
-  if(!critical.length){
+  // v18d: one card per MAJOR event from /api/key-news (central-bank decisions, big US data releases, war/attacks
+  // hitting oil or markets... covered by 3+ outlets), ranked by importance over the last 48 hours — so the strip no
+  // longer turns over every half hour. Before the key list loads (or on an older server) the feed's Critical items.
+  const items = keyNews || macro.filter(m => m.impact === 'Critical');
+  if(!items.length){
     el.innerHTML=`<div style="color:var(--text-dim);font-size:13px;padding:4px 0;">${UI[lang].no_breaking}</div>`;
     updateBreakingNav();
     return;
   }
-  el.innerHTML = critical.map((m)=>`
-    <div class="breaking-card" onclick="openMacroDrawer(${macro.indexOf(m)})">
+  const en = lang === 'en';
+  el.innerHTML = items.map((m, i)=>`
+    <div class="breaking-card" onclick="${keyNews ? `openKeyNews(${i})` : `openMacroDrawer(${macro.indexOf(m)})`}">
       <div class="b-tag">${escH(tagLabel(m.tag))}</div>
       <div class="b-text">${escH(getNewsText(m))}</div>
       ${hookText(m) ? `<div class="b-hook">💡 ${escH(hookText(m))}</div>` : ''}
+      ${m.outlets >= 2 ? `<div class="b-hook" style="opacity:.8;">📰 ${escH(m.outlet_names.slice(0,3).join(', '))}${m.outlets > 3 ? (en ? ` +${m.outlets-3} more` : ` ועוד ${m.outlets-3}`) : ''}</div>` : ''}
     </div>
   `).join("");
   updateBreakingNav();
 }
+function openKeyNews(i){ if(keyNews) openMacroDrawerItem(keyNews[i]); }
 
 // ---- Market chart ----
 let currentChartSymbol = 'SPY';
@@ -3904,7 +3903,7 @@ async function loadArticlePreview(m){
     const d = res.ok ? await res.json() : { available:false, reason:'fetch_failed' };
     if(!d.available){
       const why = d.reason === 'aggregator'
-        ? (en ? 'This story comes through Google News, which cannot be previewed here — open the original article below.' : 'הכתבה מגיעה דרך Google News ואי אפשר להציג ממנה תצוגה מקדימה כאן — פתח את הכתבה המקורית למטה.')
+        ? (en ? 'Could not reach the original article address for a preview — open the original article below.' : 'לא הצלחנו להגיע לכתובת הכתבה המקורית לתצוגה מקדימה — פתח את הכתבה המקורית למטה.')
         : (en ? 'The site did not allow a preview — open the original article below.' : 'האתר לא אפשר תצוגה מקדימה — פתח את הכתבה המקורית למטה.');
       el.innerHTML = label + note(why);
       return;
@@ -5745,7 +5744,8 @@ function mapDbRowToMacro(r){
     body_en: r.body_en || '',
     time: new Date(r.timestamp).toLocaleString(lang==='he'?'he-IL':'en-US'),
     source: r.source_name || (function(){ try { const h = new URL(r.source_url).hostname.replace('www.',''); return h==='news.google.com' ? 'Google News' : h; } catch(e){ return ''; } })(),
-    link: r.source_url||'#',
+    link: r.article_url || r.source_url || '#',   // v18d: the publisher's own URL when the news pipeline decoded the Google News link
+    outlets: r.outlets || 0, outlet_names: r.outlet_names || [],
     sectors: r.category_tag || '',  // use tag as sector fallback until API sends sector data
   };
 }
@@ -5772,6 +5772,12 @@ async function tryLoadOnce(timeoutMs){
   const dbMacro = await macroRes.json();
   if(dbStocks.length>0){ rawStocks = dbStocks; }
   if(dbMacro.length>0){ rawMacro = dbMacro; }
+  // v18d: the key-news strip has its own endpoint (one card per major event). Optional: an older server without it
+  // (404) or a slow answer leaves rawKeyNews null and the strip falls back to the Critical items of the feed.
+  try {
+    const kr = await fetchWithTimeout(`${API_BASE}/api/key-news`, timeoutMs);
+    if(kr.ok) rawKeyNews = await kr.json();
+  } catch(e){ /* keep the previous strip */ }
 }
 
 let apiConnected = false;
@@ -5997,6 +6003,7 @@ function applyLang(){
       macro.push(mapDbRowToMacro(r));
     }
   }
+  keyNews = Array.isArray(rawKeyNews) ? rawKeyNews.map(mapDbRowToMacro) : null;
 
   renderStocks();
   renderMoversOrSectorList();

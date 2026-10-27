@@ -64,6 +64,7 @@ except Exception as _auth_import_err:  # server still boots; auth endpoints answ
 
 import econ_calendar  # US economic calendar
 from translation_fixes import prep_en, fix_he   # shared EN->HE translation fixes (also used by pipeline_b)
+from news_links import is_google_news, decode_google_news_url   # v18d: Google News link -> real article (also pipeline_b)
 import scheduler      # starts the GitHub Actions workflows at exact ET times (see scheduler.py): providers -> processing -> uniform events (see econ_calendar.py)
 
 DB_URL = os.environ.get("SWING_DB_PATH") or os.environ.get("DATABASE_URL")
@@ -359,6 +360,8 @@ def init_db():
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS forward_return_10d REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS forward_return_20d REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS days_to_earnings INTEGER;")
+    # v18d: real article URL behind a Google News link (filled by the news pipeline / on first preview) — news_links.py
+    cur.execute("ALTER TABLE IF EXISTS macro_news ADD COLUMN IF NOT EXISTS article_url TEXT;")
     conn.commit()
     cur.close()
     conn.close()
@@ -1113,26 +1116,38 @@ def _clip(text: str, n: int) -> str:
 def article_preview(url: str = Query(..., max_length=2000), lang: str = Query(default="en", pattern="^(en|he)$")):
     """Short, attributed excerpt of a news article for the drawer. Never raises:
     returns {"available": false, "reason": ...} when the page cannot be previewed."""
-    host = (urlparse(url).hostname or "").lower()
-    if host.endswith("news.google.com"):
-        return {"available": False, "reason": "aggregator"}   # JS-only redirect link — open the original instead
     key = (url, lang)
     hit = _preview_cache.get(key)
     if hit and time.time() - hit[0] < _PREVIEW_TTL_SEC:
         return hit[1]
     # v18 security: only articles that are in OUR news table. Before this, anyone could make the server download any
     # public URL (an open fetch proxy; the DNS check before the request also cannot stop DNS-rebinding tricks).
+    row = None
     try:
         with db_cursor() as (conn, cur):
-            cur.execute("SELECT 1 FROM macro_news WHERE source_url = %s LIMIT 1", (url,))
-            known = cur.fetchone() is not None
+            cur.execute("SELECT id, source_url, article_url FROM macro_news WHERE source_url = %s OR article_url = %s LIMIT 1",
+                        (url, url))
+            row = cur.fetchone()
     except Exception as e:
         print(f"[warn] article-preview: news lookup failed: {type(e).__name__}")
-        known = False
-    if not known:
+    if not row:
         return {"available": False, "reason": "unknown_url"}
+    target = url
+    if is_google_news(url):
+        # v18d: a Google News link only opens through JavaScript — use the publisher's URL behind it (saved by the
+        # news pipeline, or decoded now and saved for the next reader). See news_links.py.
+        target = row[2] or decode_google_news_url(url)
+        if not target:
+            return {"available": False, "reason": "aggregator"}
+        try:
+            with db_cursor() as (conn, cur):
+                cur.execute("UPDATE macro_news SET article_url = %s WHERE id = %s AND article_url IS NULL",
+                            (target, row[0]))
+                conn.commit()
+        except Exception as e:
+            print(f"[warn] article-preview: could not save the decoded link: {type(e).__name__}")
     try:
-        final_url, html_text = _fetch_article_html(url)
+        final_url, html_text = _fetch_article_html(target)
         ex = _ArticleExtractor()
         ex.feed(html_text)
         desc = ex.meta.get("og:description") or ex.meta.get("twitter:description") or ex.meta.get("description") or ""
@@ -1163,6 +1178,137 @@ def article_preview(url: str = Query(..., max_length=2000), lang: str = Query(de
         _preview_cache.clear()
     _preview_cache[key] = (time.time(), result)
     return result
+
+
+# ------------------------------------------------------------------
+# KEY NEWS (v18d, owner 27.10.2026): the red strip at the top of the home page. Before, any headline with one loose
+# word ("sanctions", "attack", "rate hike") was "Critical" and the strip showed the newest 3-5 of them, so it changed
+# every half hour and showed things like a utility's "rate hike proposal" or an airline overhaul "amid sanctions".
+# Now a story is key news only when it is one of a short list of market-moving EVENT TYPES (central-bank decisions,
+# the big US data releases, a war/attack hitting oil or markets, trade wars, a big index move, systemic risk), at
+# least 3 different outlets — one of them a major outlet — covered it (or it is the official Fed/BLS release), and
+# it is not a listicle. One card per event, ranked by event weight and coverage (not by arrival time), from the last
+# 48 hours — so an event stays on the strip until it is old or something more important arrives.
+# The rules are pure Python on the stored headlines, so they apply to old rows too (no re-classification run).
+# ------------------------------------------------------------------
+_KEY_MAJOR_OUTLETS = ("reuters", "bloomberg", "cnbc", "wall street journal", "wsj", "associated press", "ap news",
+                      "financial times", "marketwatch", "yahoo finance", "barron", "new york times", "axios",
+                      "fox business", "the economist", "federal reserve", "bls")
+_KEY_OFFICIAL = ("federal reserve", "bls")
+_KEY_NON_US = re.compile(r"\b(uk|u\.k\.|britain|british|euro ?zone|europe|european|china|chinese|japan|japanese|"
+                         r"canada|canadian|australia|australian|germany|german|india|indian|france|french|turkey|"
+                         r"brazil|mexico|korea|swiss|israel|israeli|russia|russian|county|denver)\b", re.I)
+_KEY_JUNK = re.compile(r"^\s*\d+\s|\b(stocks? to (buy|watch|own)|should you|is it time|smart buy|buy now|"
+                       r"dividend stocks?|what to expect|things to watch|how to|here'?s|according to analysts)\b", re.I)
+_KEY_RATE_WORDS = r"\b(rates?|decision|meeting|hikes?|hiked|hiking|cuts?|holds?|pause[sd]?|minutes|statement|chair)\b"
+_KEY_GEO_REGIONS = (("mideast", r"\b(iran|iranian|tehran|khamenei|israel|houthis?|gaza|lebanon|hezbollah|saudi|yemen|hormuz|red sea|middle east|mideast)\b"),
+                    ("russia", r"\b(russia|russian|ukraine|ukrainian|kremlin)\b"),
+                    ("china", r"\b(china|chinese|taiwan|beijing)\b"))
+# (event key, weight, regex that must match, second regex that must ALSO match or None, US-only data release?)
+_KEY_EVENT_RULES = [
+    ("fed", 10, r"\b(fed|federal reserve|fomc|powell|warsh)\b", _KEY_RATE_WORDS, False),
+    ("cpi", 9, r"\b(cpi|consumer price index|consumer prices|inflation (report|data|reading))\b", None, True),
+    ("jobs", 9, r"\b(nonfarm|non-farm|payrolls?|jobs report|unemployment rate|employment report)\b", None, True),
+    ("pce", 8, r"\b(pce|personal consumption expenditures?)\b", None, True),
+    ("systemic", 8, r"\b(bank (collapse|failure|run)|debt ceiling|government shutdown|credit downgrade|sovereign default)\b", None, False),
+    ("ppi", 7, r"\b(ppi|producer prices?|producer price index)\b", None, True),
+    ("gdp", 7, r"\b(gdp|gross domestic product)\b", None, True),
+    ("geo", 7, r"\b(war|attacks?|strikes?|missiles?|drones?|invasion|escalat\w*|ceasefire|blockade)\b",
+     r"\b(oil|crude|brent|wti|markets?|stocks|shipping|strait|energy)\b", False),
+    ("cb-other", 6, r"\b(ecb|european central bank|bank of england|bank of japan|boj|bank of canada|pboc|snb)\b",
+     _KEY_RATE_WORDS, False),
+    ("retail", 6, r"\bretail sales\b", None, True),
+    ("trade", 6, r"\b(tariffs?|trade war|trade deal)\b", None, False),
+    ("market", 6, r"\b(plunge[sd]?|crash(es|ed)?|sell-?off|tumble[sd]?|rout|record high|worst day|best day)\b",
+     r"\b(s&p 500|s&p|dow|nasdaq|wall street)\b", False),
+    ("opec", 6, r"\bopec\+?", None, False),
+    ("claims", 5, r"\b(jobless claims|initial claims)\b", None, True),
+]
+_KEY_WINDOW_H = 48
+_KEY_MAX = 5
+_key_cache = {"at": 0.0, "events": None}
+
+
+def _key_event_of(title: str) -> Optional[tuple]:
+    """(event key, weight, where in the title the event is named) of a headline, or None. The first matching rule
+    wins (rules are ordered by weight)."""
+    if not title or _KEY_JUNK.search(title):
+        return None
+    for key, weight, must, also, us_only in _KEY_EVENT_RULES:
+        hit = re.search(must, title, re.I)
+        if not hit or (also and not re.search(also, title, re.I)):
+            continue
+        if us_only and _KEY_NON_US.search(title):
+            continue
+        if key == "geo":
+            key = next((f"geo-{name}" for name, rx in _KEY_GEO_REGIONS if re.search(rx, title, re.I)), "geo-other")
+        return key, weight, hit.start()
+    return None
+
+
+def _outlet_rank(name: str) -> int:
+    n = (name or "").lower()
+    return next((k for k, o in enumerate(_KEY_MAJOR_OUTLETS) if o in n), len(_KEY_MAJOR_OUTLETS))
+
+
+def _key_events(rows: list, now: Optional[dt] = None, max_events: int = _KEY_MAX) -> list:
+    """rows = macro_news rows (dicts). Returns the qualifying events, most important first:
+    [{"key", "score", "outlets", "outlet_names", "ids", "row" (the headline shown)}]."""
+    now = now or dt.now(timezone.utc)
+    groups: dict = {}
+    for r in rows:
+        ev = _key_event_of(r.get("summary_en") or "")
+        if ev:
+            groups.setdefault(ev[:2], []).append(dict(r, _pos=ev[2]))
+    events = []
+    for (key, weight), items in groups.items():
+        names = {}
+        for r in items:
+            n = (r.get("source_name") or "").strip()
+            if n:
+                names.setdefault(n.lower(), n)
+        def is_official(r):
+            return (r.get("source_name") or "").lower() in _KEY_OFFICIAL   # the Fed / BLS feeds themselves
+        major = [r for r in items if _outlet_rank(r.get("source_name")) < len(_KEY_MAJOR_OUTLETS)]
+        if not any(is_official(r) for r in items) and (len(names) < 3 or not major):
+            continue
+        # the headline shown: the official release if there is one; else a major outlet's headline that is ABOUT the
+        # event (named in its first ~40 characters — not "Futures edge higher ... Fed kicks off meeting"), the more
+        # established outlet first, then the newest
+        rep = sorted(major, key=lambda r: (not is_official(r), r["_pos"] > 40, _outlet_rank(r.get("source_name")),
+                                           -r["timestamp"].timestamp()))[0]
+        rep = {k: v for k, v in rep.items() if k != "_pos"}
+        latest = max(r["timestamp"] for r in items)
+        age_h = max(0.0, (now - latest).total_seconds() / 3600)
+        events.append({"key": key, "score": weight * 10 + min(len(names), 10) * 2 - age_h * 0.25,
+                       "outlets": len(names), "outlet_names": sorted(names.values(), key=_outlet_rank)[:4],
+                       "ids": [r["id"] for r in items], "row": rep})
+    events.sort(key=lambda e: e["score"], reverse=True)
+    return events[:max_events]
+
+
+def _recent_key_events() -> list:
+    """Key events of the last _KEY_WINDOW_H hours, cached for 5 minutes (the strip is polled by every visitor)."""
+    if _key_cache["events"] is not None and time.time() - _key_cache["at"] < 300:
+        return _key_cache["events"]
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute("SELECT * FROM macro_news WHERE timestamp > NOW() - make_interval(hours => %s)", (_KEY_WINDOW_H,))
+        rows = [dict(r) for r in cur.fetchall()]
+    events = _key_events(rows)
+    _key_cache.update(at=time.time(), events=events)
+    return events
+
+
+@app.get("/api/key-news")
+def get_key_news():
+    """The home page's key-news strip: one headline per major event (see the KEY NEWS note above)."""
+    out = []
+    for e in _recent_key_events():
+        row = dict(e["row"])
+        row["impact_level"] = "Critical"
+        row.update(key_event=e["key"], outlets=e["outlets"], outlet_names=e["outlet_names"])
+        out.append(row)
+    return out
 
 
 @app.get("/api/macro-news")
@@ -1211,7 +1357,15 @@ def get_macro_news(limit: int = Query(default=25, le=100)):
 
     combined = list(critical_rows) + list(other_rows)
     combined.sort(key=lambda r: r["timestamp"], reverse=True)
-    return [{k: v for k, v in dict(r).items() if k != "rn"} for r in combined]
+    out = [{k: v for k, v in dict(r).items() if k != "rn"} for r in combined]
+    # v18d: "Critical" on the site = part of a KEY event (see KEY NEWS above), not the old loose keyword label
+    try:
+        key_ids = {i for e in _recent_key_events() for i in e["ids"]}
+        for r in out:
+            r["impact_level"] = "Critical" if r["id"] in key_ids else "High"
+    except Exception as e:
+        print(f"[warn] macro-news: key-event labels skipped: {type(e).__name__}: {e}")
+    return out
 
 
 @app.get("/api/macro-news/search")
@@ -4416,7 +4570,12 @@ def get_daily_digest(day: Optional[str] = Query(default=None, pattern=r"^\d{4}-\
     finally:
         conn.close()
 
-    critical = [r for r in rows if r.get("impact_level") == "Critical"]
+    # v18d: the day's key events (same rules as the home page strip) — one headline per event, not every loose match
+    day_events = _key_events(rows, now=max((r["timestamp"] for r in rows), default=None), max_events=8)
+    key_ids = {i for e in day_events for i in e["ids"]}
+    for r in rows:
+        r["impact_level"] = "Critical" if r["id"] in key_ids else "High"
+    critical = [dict(e["row"], impact_level="Critical") for e in day_events]
     # "Buzz" ranking — NOT AI: which category had the most separate articles that day (Critical first as the
     # representative story, then the most recent).
     tag_groups: dict = {}

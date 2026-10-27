@@ -511,6 +511,8 @@ def init_db():
     cur.execute("ALTER TABLE macro_news ADD COLUMN IF NOT EXISTS body_en TEXT;")
     cur.execute("ALTER TABLE macro_news ADD COLUMN IF NOT EXISTS body_he TEXT;")
     cur.execute("ALTER TABLE macro_news ADD COLUMN IF NOT EXISTS source_name TEXT;")   # real publisher shown on the site (v15)
+    # v18d: the publisher's own URL behind a Google News link (news_links.py). source_url stays the dedupe key.
+    cur.execute("ALTER TABLE macro_news ADD COLUMN IF NOT EXISTS article_url TEXT;")
     conn.commit()
 
     # --- one-time cleanup, required before the UNIQUE constraint below can
@@ -562,7 +564,8 @@ def init_db():
 
 def upsert_macro_news(category_tag: str, summary_he: str,
                       summary_en: str, impact_level: str, source_url: str,
-                      hook_he: str = "", body_en: str = "", body_he: str = "", source_name: str = "") -> bool:
+                      hook_he: str = "", body_en: str = "", body_he: str = "", source_name: str = "",
+                      article_url: str = "") -> bool:
     """Returns True if a new row was inserted, False if this source_url was
     already saved (duplicate story — skipped instead of piling up).
 
@@ -576,12 +579,12 @@ def upsert_macro_news(category_tag: str, summary_he: str,
     try:
         cur.execute(
             """
-            INSERT INTO macro_news (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, body_en, body_he, source_name, timestamp)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO macro_news (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, body_en, body_he, source_name, article_url, timestamp)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (source_url) DO NOTHING
             RETURNING id
             """,
-            (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, body_en, body_he, source_name or None,
+            (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, body_en, body_he, source_name or None, article_url or None,
              datetime.now(timezone.utc).isoformat()),
         )
         inserted = cur.fetchone() is not None
@@ -595,10 +598,10 @@ def upsert_macro_news(category_tag: str, summary_he: str,
         else:
             cur.execute(
                 """
-                INSERT INTO macro_news (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, body_en, body_he, source_name, timestamp)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO macro_news (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, body_en, body_he, source_name, article_url, timestamp)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, body_en, body_he, source_name or None,
+                (category_tag, summary_he, summary_en, impact_level, source_url, hook_he, body_en, body_he, source_name or None, article_url or None,
                  datetime.now(timezone.utc).isoformat()),
             )
             inserted = True
@@ -650,19 +653,93 @@ def retry_failed_translations(max_rows: int = 30):
     print(f"[info] translation retry: fixed {fixed}/{len(stuck)} previously-stuck-in-English headlines.")
 
 
+DECODE_MAX_PER_RUN = 80   # Google News links decoded per run (2 small requests each, spaced) — new items first
+
+
+def _known_urls(links: list) -> set:
+    """source_urls already in macro_news — those items are skipped BEFORE translating/decoding them (every run
+    re-reads the same feeds; before v18d each repeat was translated again and only then dropped by ON CONFLICT)."""
+    if not links:
+        return set()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT source_url FROM macro_news WHERE source_url = ANY(%s)", (list(set(links)),))
+        return {r[0] for r in cur.fetchall()}
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        print(f"[warn] known-url lookup failed (non-fatal, falling back to ON CONFLICT): {e}")
+        return set()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def backfill_article_urls(budget: int) -> int:
+    """Recent Google News rows saved without a real URL (before v18d, or when decoding failed) get one more try."""
+    if budget <= 0:
+        return 0
+    import random, time
+    from news_links import decode_google_news_url
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""SELECT id, source_url FROM macro_news
+                   WHERE timestamp > NOW() - INTERVAL '48 hours' AND article_url IS NULL
+                     AND source_url LIKE 'https://news.google.com/%%'
+                   ORDER BY timestamp DESC LIMIT %s""", (budget,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    done = 0
+    for row_id, url in rows:
+        real = decode_google_news_url(url)
+        time.sleep(random.uniform(0.3, 0.8))
+        if not real:
+            continue
+        conn = get_conn()   # Neon: open right next to the write (auto-suspend)
+        cur = conn.cursor()
+        cur.execute("UPDATE macro_news SET article_url = %s WHERE id = %s", (real, row_id))
+        conn.commit()
+        cur.close()
+        conn.close()
+        done += 1
+    print(f"[info] article links: backfilled {done}/{len(rows)} older Google News rows.")
+    return done
+
+
 def run_pipeline_b():
+    import random, time
+    from news_links import is_google_news, decode_google_news_url
     init_db()
     retry_failed_translations()
     raw_items = fetch_raw_headlines()
     saved = 0
     skipped_dupe = 0
     skipped_no_match = 0
+    known = _known_urls([i["link"] for i in raw_items])
+    decode_budget, decoded, decode_failed = DECODE_MAX_PER_RUN, 0, 0
 
     for item in raw_items:
+        if item["link"] in known:
+            skipped_dupe += 1
+            continue
         classification = item.get("forced") or classify_headline(item["title"], item.get("summary", ""))
         if not classification:
             skipped_no_match += 1
             continue
+        known.add(item["link"])   # the same link can come from two feeds in one run
+
+        article_url = ""
+        if decode_budget > 0 and is_google_news(item["link"]):
+            decode_budget -= 1
+            article_url = decode_google_news_url(item["link"]) or ""
+            time.sleep(random.uniform(0.3, 0.8))
+            if article_url:
+                decoded += 1
+            else:
+                decode_failed += 1
+                if decode_failed >= 5 and not decoded:
+                    decode_budget = 0   # Google refuses this runner — stop asking for this run
 
         tag = classification["tag"]
         impact = classification["impact"]
@@ -675,7 +752,8 @@ def run_pipeline_b():
         body_en = _clean_rss_body(item.get("summary", ""), title)
         body_he = translate_to_hebrew(body_en) if body_en else ""
 
-        was_new = upsert_macro_news(tag, headline_he, summary_en, impact, item["link"], hook_he, body_en, body_he, item.get("publisher", ""))
+        was_new = upsert_macro_news(tag, headline_he, summary_en, impact, item["link"], hook_he, body_en, body_he,
+                                    item.get("publisher", ""), article_url)
         if was_new:
             saved += 1
         else:
@@ -683,6 +761,13 @@ def run_pipeline_b():
 
     print(f"Pipeline B complete. {saved} new high-impact items saved, "
           f"{skipped_dupe} duplicates skipped, {skipped_no_match} not market-relevant.")
+    print(f"[info] article links: decoded {decoded} Google News links, {decode_failed} failed "
+          f"(all failing = Google blocks this runner; the site then keeps the Google link as before).")
+    try:
+        if decoded or not decode_failed:   # don't hammer Google when it is refusing this runner
+            backfill_article_urls(min(40, decode_budget))
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] article link backfill failed (non-fatal): {type(e).__name__}: {e}")
 
     # AI daily digest (optional): only runs when LLM_API_KEY is set, at most every few hours,
     # and can never break this pipeline. See ai_digest.py / llm_provider.py.
