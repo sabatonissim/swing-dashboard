@@ -713,6 +713,10 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .al-x:hover{color:var(--red);}
   /* installed app (standalone window): no browser bar, so leave room for the phone's status bar */
   @media (display-mode: standalone){ .top-sticky{padding-top:env(safe-area-inset-top);background:var(--header-a);} }
+  .sector-sel-bar{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12px;color:var(--text-dim);padding:6px 2px 8px;border-bottom:1px solid var(--line);}
+  .sector-sel-bar b{color:var(--text);}
+  .sector-sel-bar button{background:none;border:1px solid var(--line);color:var(--amber);border-radius:7px;padding:3px 9px;font-size:11.5px;cursor:pointer;font-family:'Heebo',sans-serif;}
+  .mover-row.sector-picked .mover-ticker{color:var(--amber);}
   .scan-pattern-filter{display:flex;gap:8px;}                     /* pattern + sector dropdowns side by side */
   .scan-pattern-filter select{flex:1;min-width:0;margin-top:0 !important;}
   html[lang="he"] .scan-pattern-filter{flex-direction:row-reverse;}
@@ -3543,6 +3547,23 @@ async function loadSectorPerformance(period){
   }
 }
 
+// v19c (owner): clicking a sector chip used to HIDE that line (Chart.js default), so comparing two sectors meant
+// switching off nine. Now the first click shows ONLY that sector, further clicks add/remove sectors to the comparison,
+// and removing the last one brings all of them back. Kept across period switches (1M/3M...).
+const sectorSelected = new Set();
+function toggleSectorSelect(tk){
+  if(sectorSelected.has(tk)) sectorSelected.delete(tk); else sectorSelected.add(tk);
+  if(sectorChartInstance){
+    sectorChartInstance.data.datasets.forEach(d => { d.hidden = sectorSelected.size > 0 && !sectorSelected.has(d.label); });
+    sectorChartInstance.update();
+  }
+  renderMoversOrSectorList();
+}
+function showAllSectors(){
+  sectorSelected.clear();
+  if(sectorChartInstance){ sectorChartInstance.data.datasets.forEach(d => { d.hidden = false; }); sectorChartInstance.update(); }
+  renderMoversOrSectorList();
+}
 function renderSectorChart(data){
   const canvas = document.getElementById('sector-chart-canvas');
   if(!canvas || typeof Chart === 'undefined') return;
@@ -3556,6 +3577,7 @@ function renderSectorChart(data){
     pointRadius: 0,
     tension: .15,
     spanGaps: true,
+    hidden: sectorSelected.size > 0 && !sectorSelected.has(s.ticker),
   }));
   sectorChartInstance = new Chart(canvas, {
     type: 'line',
@@ -3564,9 +3586,9 @@ function renderSectorChart(data){
       responsive:true, maintainAspectRatio:false,
       interaction:{ mode:'nearest', intersect:false },
       plugins:{
-        // Clicking a legend chip hides/shows that sector's line — this is
-        // Chart.js's built-in behavior and mirrors Koyfin's removable tags.
-        legend:{ position:'top', labels:{ boxWidth:10, boxHeight:10, font:{size:10}, color:'#8a93a3', padding:8 } },
+        // Clicking a legend chip selects that sector for comparison (see toggleSectorSelect above)
+        legend:{ position:'top', onClick:(e, item) => toggleSectorSelect(item.text),
+                 labels:{ boxWidth:10, boxHeight:10, font:{size:10}, color:'#8a93a3', padding:8 } },
         tooltip:{ callbacks:{ label:(ctx)=>`${ctx.dataset.label}: ${ctx.parsed.y>=0?'+':''}${ctx.parsed.y.toFixed(2)}%` } },
       },
       scales:{
@@ -3599,13 +3621,15 @@ function renderMoversOrSectorList(){
       el.innerHTML = `<div class="movers-empty">${UI[lang].loading}</div>`;
       return;
     }
-    el.innerHTML = table.map(r=>{
+    const sel = sectorSelected.size ? `<div class="sector-sel-bar"><span>${lang==='en'?'Comparing':'בהשוואה'}: <b dir="ltr">${[...sectorSelected].map(escH).join(', ')}</b></span>
+        <button onclick="showAllSectors()">${lang==='en'?'Show all':'הצג הכל'}</button></div>` : '';
+    el.innerHTML = sel + table.map(r=>{
       const dayClass = r.change_pct>=0 ? 'up':'down';
       const daySign = r.change_pct>=0 ? '+':'';
       const perClass = r.period_change_pct>=0 ? 'pct-up':'pct-down';
       const perSign = r.period_change_pct>=0 ? '+':'';
       return `
-        <div class="mover-row" onclick="showTickerDrawer('${r.ticker}')">
+        <div class="mover-row ${sectorSelected.has(r.ticker)?'sector-picked':''}" onclick="showTickerDrawer('${r.ticker}')">
           <div class="mover-ticker">${r.ticker}</div>
           <div class="mover-trigger">${escH(r.name||'')} · ${sectorPeriod}: <span class="${perClass}">${perSign}${r.period_change_pct.toFixed(1)}%</span></div>
           <div class="mover-pct ${dayClass}">${daySign}${r.change_pct.toFixed(1)}%</div>
@@ -4038,7 +4062,7 @@ async function loadArticlePreview(m){
   if(!el || !m.link || m.link === '#') return;
   const token = ++articlePreviewToken;
   const en = lang === 'en';
-  const label = `<div class="label">📄 ${en?'From the article':'מהכתבה'}</div>`;
+  const label = `<div class="label">${en?'From the article':'מהכתבה'}</div>`;
   const note = txt => `<span style="color:var(--text-dim);font-size:12.5px;">${txt}</span>`;
   try {
     const res = await fetchWithTimeout(`${API_BASE}/api/article-preview?url=${encodeURIComponent(m.link)}&lang=${lang}`, 15000);
@@ -4052,6 +4076,13 @@ async function loadArticlePreview(m){
       return;
     }
     const esc = s => String(s||'').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+    // v19c: the server could not translate (its free translators are sometimes blocked) -> translate in the browser
+    if(!en && !d.translated && (d.description || d.body)){
+      const dt = await translateHeBrowser(d.description);
+      const bt = await translateHeBrowser(d.body);
+      if(token !== articlePreviewToken || !document.getElementById('macro-preview')) return;
+      if((dt && dt !== d.description) || (bt && bt !== d.body)){ d.description = dt || d.description; d.body = bt || d.body; d.translated = true; }
+    }
     el.innerHTML = label +
       (d.description ? `<div style="margin-bottom:8px;">${esc(d.description)}</div>` : '') +
       (d.body ? `<div style="color:var(--text-dim);font-size:13px;line-height:1.6;">${esc(d.body)}</div>` : '') +
@@ -4059,6 +4090,46 @@ async function loadArticlePreview(m){
   } catch(e) {
     if(token !== articlePreviewToken) return;
     el.innerHTML = label + note(en ? 'Could not load a preview — open the original article below.' : 'לא ניתן לטעון תצוגה מקדימה — פתח את הכתבה המקורית למטה.');
+  }
+}
+
+// English -> Hebrew in the visitor's browser (Google's public endpoint, the same one the news pipeline uses), sentence
+// groups under 450 characters. Returns the original text if anything fails — never throws.
+async function translateHeBrowser(text){
+  text = String(text || '').trim();
+  if(!text) return '';
+  const parts = [];
+  let cur = '';
+  for(const s of text.split(/(?<=[.!?])\s+/)){
+    if(cur && (cur.length + s.length + 1) > 450){ parts.push(cur); cur = s; } else cur = (cur ? cur + ' ' : '') + s;
+  }
+  if(cur) parts.push(cur);
+  // two Google endpoints: the first one blocks an address after a burst of requests (tested 27.10), the second kept working
+  const viaGtx = async p => {
+    const r = await fetchWithTimeout('https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=he&dt=t&q=' + encodeURIComponent(p), 8000);
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    return ((await r.json())[0] || []).map(x => x && x[0] || '').join('');
+  };
+  const viaDict = async p => {
+    const r = await fetchWithTimeout('https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=en&tl=he&q=' + encodeURIComponent(p), 8000);
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    let j = await r.json();
+    j = Array.isArray(j) ? j[0] : null;
+    if(Array.isArray(j)) j = j[0];
+    if(typeof j !== 'string' || !j.trim()) throw new Error('empty');
+    return j;
+  };
+  try {
+    const out = [];
+    for(const p of parts){                       // one at a time — a burst is what gets an address blocked
+      let he;
+      try { he = await viaGtx(p); } catch(e){ he = await viaDict(p); }
+      out.push(he);
+    }
+    return out.join(' ').trim() || text;
+  } catch(e){
+    console.warn('[translate] browser translation failed', e);
+    return text;
   }
 }
 

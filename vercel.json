@@ -36,7 +36,7 @@
         },
         {
           "key": "Content-Security-Policy-Report-Only",
-          "value": "default-src 'self'; script-src 'self' 'unsafe-inline' https://s3.tradingview.com https://accounts.google.com https://s.tradingview.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com; font-src https://fonts.gstatic.com; img-src 'self' data: https:; frame-src https://accounts.google.com https://s.tradingview.com https://www.tradingview-widget.com https://*.tradingview.com; connect-src 'self' https://swing-dashboard-3btx.onrender.com https://accounts.google.com https://*.tradingview.com; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+          "value": "default-src 'self'; script-src 'self' 'unsafe-inline' https://s3.tradingview.com https://accounts.google.com https://s.tradingview.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com; font-src https://fonts.gstatic.com; img-src 'self' data: https:; frame-src https://accounts.google.com https://s.tradingview.com https://www.tradingview-widget.com https://*.tradingview.com; connect-src 'self' https://swing-dashboard-3btx.onrender.com https://accounts.google.com https://*.tradingview.com https://translate.googleapis.com https://clients5.google.com; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
         }
       ]
     }

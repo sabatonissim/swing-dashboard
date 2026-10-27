@@ -1172,9 +1172,13 @@ def article_preview(url: str = Query(..., max_length=2000), lang: str = Query(de
         if not desc and not body:
             result = {"available": False, "reason": "no_text"}
         else:
+            translated = False
             if lang == "he":
                 desc_t = _translate_headline_free(desc) if desc else ""
                 body_t = _translate_headline_free(body[:450]) if body else ""
+                # v19c: "translated" only when the text really changed — it used to say true with the English text
+                # (both translators failing from Render), and the site then showed English as "auto-translated".
+                translated = (desc_t != desc) or (body_t != body[:450])
             else:
                 desc_t, body_t = desc, body
             result = {
@@ -1183,10 +1187,13 @@ def article_preview(url: str = Query(..., max_length=2000), lang: str = Query(de
                 "site": ex.meta.get("og:site_name") or (urlparse(final_url).hostname or "").replace("www.", ""),
                 "published": ex.meta.get("article:published_time") or ex.meta.get("og:updated_time") or "",
                 "description": desc_t, "body": body_t,
-                "translated": lang == "he", "url": final_url,
+                "translated": translated, "url": final_url,
             }
+            if lang == "he" and not translated:
+                return result     # not cached: the next reader gets a fresh try at the translation
     except Exception as e:
-        print(f"[info] article preview failed for {host}: {type(e).__name__}: {e}")
+        # (v19c: this line used an undefined name `host`, so any failed page turned into a server error)
+        print(f"[info] article preview failed for {urlparse(target).hostname}: {type(e).__name__}: {e}")
         result = {"available": False, "reason": "fetch_failed"}
     if len(_preview_cache) >= _PREVIEW_CACHE_MAX:
         _preview_cache.clear()
@@ -1544,6 +1551,27 @@ def _translate_headline_free(text: str) -> str:
         print(f"[warn] stock-news translation (Google gtx) failed: {type(e).__name__}: {e}")
 
     if not translated:
+        # v19c: a second Google endpoint (the one the Chrome extension uses) — the article previews stayed in English
+        # because the gtx endpoint AND MyMemory failed from Render's address, while both Google endpoints answered fine
+        # from a browser (checked 27.10.2026).
+        try:
+            resp = requests.get(
+                "https://clients5.google.com/translate_a/t",
+                params={"client": "dict-chrome-ex", "sl": "en", "tl": "he", "q": src},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=5,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            first = data[0] if isinstance(data, list) and data else None
+            if isinstance(first, list):          # some answers are [["text", "lang"]]
+                first = first[0] if first else None
+            if isinstance(first, str) and first.strip():
+                translated = first
+        except Exception as e:
+            print(f"[warn] stock-news translation (Google dict) failed: {type(e).__name__}: {e}")
+
+    if not translated:
         try:
             resp = requests.get(
                 "https://api.mymemory.translated.net/get",
@@ -1559,7 +1587,9 @@ def _translate_headline_free(text: str) -> str:
         except Exception as e:
             print(f"[warn] stock-news translation (MyMemory) failed: {type(e).__name__}: {e}")
 
-    result = fix_he(translated) if translated else text  # fall back to English rather than showing nothing
+    if not translated:
+        return text   # fall back to English rather than showing nothing — and NOT cached, so the next request retries
+    result = fix_he(translated)
     if len(_headline_translation_cache) >= _HEADLINE_CACHE_MAX:
         _headline_translation_cache.clear()  # simple reset instead of LRU bookkeeping for this scale
     _headline_translation_cache[text] = result
