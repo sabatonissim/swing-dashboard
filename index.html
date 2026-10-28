@@ -219,6 +219,14 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .chart-tab:hover:not(.active){border-color:var(--amber-dim);color:var(--text);}
   #market-tv-chart{height:250px;border-radius:10px;overflow:hidden;background:var(--panel);direction:ltr;}
   .sector-chart-wrap{height:250px;border-radius:10px;overflow:hidden;background:var(--panel);border:1px solid var(--line);padding:8px;box-sizing:border-box;}
+  /* v20 (owner: "on the phone the chart is cut, I only see part of it"): TradingView's toolbar, legend and volume take a
+     fixed ~150px, so a 250-340px box left the price area a thin strip. Taller boxes on phones, no inner padding, and a
+     quiet "loading" note behind the chart while tv.js builds it (the box used to sit empty for seconds). */
+  #market-tv-chart,.tv-chart-box,.dd-chart-wrap{position:relative;}
+  #market-tv-chart::before,.tv-chart-box::before,.dd-chart-wrap::before{content:'טוען גרף…';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:12px;pointer-events:none;direction:rtl;}
+  html[lang="en"] #market-tv-chart::before,html[lang="en"] .tv-chart-box::before,html[lang="en"] .dd-chart-wrap::before{content:'Loading chart…';direction:ltr;}
+  @media(min-width:701px){ #market-tv-chart,.sector-chart-wrap{height:300px;} }
+  /* phone heights: see the rule after .tv-chart-box below (it must come after the base rules to win) */
   .pct-up{color:var(--green);}
   .pct-down{color:var(--red);}
 
@@ -325,7 +333,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .dd-news-item .meta{font-size:10.5px;color:var(--text-dim);margin-top:3px;}
   .cs-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}
   .cs-input-wrap{position:relative;margin-bottom:8px;}
-  .cs-input-icon{position:absolute;top:50%;transform:translateY(-50%);left:12px;font-size:13px;color:var(--text-dim);pointer-events:none;}
+  .cs-input-icon{position:absolute;top:50%;transform:translateY(-50%);left:12px;font-size:13px;color:var(--text-dim);pointer-events:none;display:flex;}
   .cs-input{width:100%;background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:10px 12px;padding-left:34px;font-size:14px;outline:none;font-family:'JetBrains Mono',monospace;}
   .cs-input:focus{border-color:var(--teal-dim);}
   .cs-list{max-height:320px;overflow-y:auto;margin-top:6px;}
@@ -391,6 +399,11 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .close-btn{background:none;border:1px solid var(--line);color:var(--text-dim);width:30px;height:30px;border-radius:8px;cursor:pointer;font-size:15px;}
   .close-btn:hover{color:var(--text);}
   .tv-chart-box{height:260px;border-radius:10px;overflow:hidden;margin-bottom:16px;background:var(--panel);direction:ltr;}
+  @media(max-width:700px){
+    #market-tv-chart,.sector-chart-wrap{height:min(440px,62vh);}
+    .tv-chart-box{height:min(460px,64vh);}
+    .dd-chart-wrap{height:min(480px,66vh);padding:0;overflow:hidden;}
+  }
   .news-section{margin-bottom:16px;}
   .news-item{padding:9px 0;border-bottom:1px solid var(--line);}
   .news-item a{color:var(--text);font-size:13px;text-decoration:none;line-height:1.5;display:block;}
@@ -464,16 +477,59 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .heatmap-sector-box{position:absolute;box-sizing:border-box;border:1px solid var(--line);border-radius:3px;overflow:hidden;pointer-events:none;z-index:0;}
   .heatmap-sector-label{position:absolute;box-sizing:border-box;height:20px;line-height:20px;font-size:10.5px;color:var(--text-dim);padding:0 8px;background:var(--panel-2);border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none;z-index:2;direction:ltr;text-align:start;}
   .fg-gauge-box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;text-align:center;}
-  .earnings-cal-day{margin-bottom:16px;}
-  .earnings-cal-day-label{font-size:11px;letter-spacing:1px;color:var(--text-dim);text-transform:uppercase;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--line);}
-  .earnings-cal-row{display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid var(--line);}
-  .earnings-cal-row:last-child{border-bottom:none;}
-  .earnings-cal-ticker-group{display:flex;align-items:center;gap:6px;min-width:80px;flex-shrink:0;}
-  .earnings-cal-ticker{font-family:'JetBrains Mono',monospace;font-weight:700;}
-  .earnings-cal-name{color:var(--text-dim);font-size:12.5px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
-  .earnings-cal-results{display:flex;flex-direction:column;gap:2px;align-items:flex-end;flex-shrink:0;}
-  .earnings-cal-session{font-size:15px;width:22px;text-align:center;flex-shrink:0;line-height:1;}
-  .earnings-cal-eps{font-family:'JetBrains Mono',monospace;font-size:11px;white-space:nowrap;}
+  /* ---- Earnings calendar (v20): one day at a time (day tabs), rows open a detail panel ---- */
+  .earn-days{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;padding-bottom:2px;margin-bottom:12px;}
+  .earn-days::-webkit-scrollbar{display:none;}
+  html[lang="he"] .earn-days{direction:rtl;}          /* Hebrew: days run right-to-left, like a Hebrew calendar */
+  .earn-day{flex:0 0 auto;display:flex;flex-direction:column;align-items:center;gap:1px;min-width:64px;padding:7px 10px;border-radius:9px;border:1px solid var(--line);background:var(--panel);color:var(--text-dim);cursor:pointer;font-family:'Heebo',sans-serif;}
+  .earn-day .d1{font-size:12px;font-weight:600;color:var(--text);}
+  .earn-day .d2{font-size:10.5px;font-family:'JetBrains Mono',monospace;}
+  .earn-day:hover{border-color:var(--line-hover);}
+  .earn-day.active{background:var(--panel-2);border-color:var(--amber);}
+  .earn-day.active .d1{color:var(--amber);}
+  .earn-day.past .d1{color:var(--text-dim);}
+  .earn-list{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;}
+  .earn-session{font-size:11px;font-weight:600;color:var(--text-dim);padding:8px 12px;background:var(--panel-2);border-bottom:1px solid var(--line);}
+  .earn-row{border-bottom:1px solid var(--line);}
+  .earn-row:last-child{border-bottom:none;}
+  .earn-row-main{display:flex;align-items:center;gap:10px;padding:10px 12px;cursor:pointer;}
+  .earn-row-main:hover{background:var(--panel-2);}
+  .earn-row-main:focus-visible{outline:2px solid var(--amber);outline-offset:-2px;}
+  .earn-id{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;}
+  .earn-tk{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:13.5px;}
+  .earn-name{font-size:11.5px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .earn-fig{flex:0 0 96px;display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-family:'JetBrains Mono',monospace;}
+  .earn-fig .k{font-size:9.5px;color:var(--text-dim);font-family:'Heebo',sans-serif;}
+  .earn-fig .v{font-size:12.5px;font-weight:600;}
+  .earn-fig .e{font-size:10px;color:var(--text-dim);}
+  .earn-pct{direction:ltr;unicode-bidi:isolate;display:inline-block;}   /* "+5.7%" stays in that order inside Hebrew text */
+  .earn-chip{direction:ltr;unicode-bidi:isolate;display:inline-block;font-family:'JetBrains Mono',monospace;font-size:10.5px;font-weight:600;padding:1px 6px;border-radius:5px;}
+  .earn-chip.up{background:rgba(62,207,126,.13);color:var(--green);}
+  .earn-chip.down{background:rgba(239,91,91,.13);color:var(--red);}
+  .earn-chip.flat{background:var(--panel-2);color:var(--text-dim);}
+  .earn-chev{flex:0 0 12px;color:var(--text-dim);font-size:12px;transition:transform .15s;text-align:center;}
+  .earn-row.open .earn-chev{transform:rotate(90deg);}
+  .earn-row.open .earn-row-main{background:var(--panel-2);}
+  .earn-detail{padding:4px 12px 14px;background:var(--panel-2);font-size:12.5px;}
+  .earn-dsec{margin-top:12px;}
+  .earn-dsec-t{font-size:11px;font-weight:600;color:var(--text-dim);margin-bottom:6px;}
+  .earn-kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;}
+  .earn-kv > div{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px;}
+  .earn-kv .k{font-size:10.5px;color:var(--text-dim);margin-bottom:2px;}
+  .earn-kv .v{font-family:'JetBrains Mono',monospace;font-size:13.5px;font-weight:600;}
+  .earn-kv .s{font-size:10.5px;color:var(--text-dim);margin-top:2px;font-family:'JetBrains Mono',monospace;}
+  .earn-hist{display:flex;gap:6px;flex-wrap:wrap;}
+  .earn-hist > div{flex:1 1 64px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 8px;text-align:center;}
+  .earn-hist .q{font-size:10px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;}
+  .earn-bars{display:flex;align-items:flex-end;gap:4px;height:56px;padding:0 2px;}
+  .earn-bars > div{flex:1;background:var(--line-hover);border-radius:2px 2px 0 0;min-height:2px;}
+  .earn-bars > div.last{background:var(--amber);}
+  .earn-bars-x{display:flex;justify-content:space-between;font-size:9.5px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;margin-top:3px;}
+  .earn-note{font-size:11px;color:var(--text-dim);line-height:1.5;margin-top:6px;}
+  .earn-actions{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;}
+  .earn-btn{background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:7px 12px;font-size:12.5px;cursor:pointer;font-family:'Heebo',sans-serif;}
+  .earn-btn:hover{border-color:var(--amber);}
+  @media(max-width:480px){ .earn-fig{flex-basis:84px;} .earn-row-main{gap:8px;padding:10px;} }
   .fg-score{font-family:'JetBrains Mono',monospace;font-size:46px;font-weight:700;}
   .fg-rating{font-size:15px;font-weight:700;margin-top:4px;}
   .fg-history-row{display:flex;justify-content:space-between;margin-top:16px;padding-top:14px;border-top:1px solid var(--line);font-size:11.5px;}
@@ -726,6 +782,23 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .scan-pattern-filter{display:flex;gap:8px;}                     /* pattern + sector dropdowns side by side */
   .scan-pattern-filter select{flex:1;min-width:0;margin-top:0 !important;}
   html[lang="he"] .scan-pattern-filter{flex-direction:row-reverse;}
+  /* ---- v20 design pass (owner: "should look like a real, quality app, not an AI page") ----
+     One heading style for every section (no tiny spaced capitals, no coloured bullet dots), section heads on the
+     market page and inside drawers look the same as on the home page. */
+  .breaking-bar-title,.col-title,.market-charts-title,.movers-title,.pulse-section-title,.fund-section-title,.digest-section-title{
+    letter-spacing:0;text-transform:none;font-size:15px;font-weight:700;color:var(--text);}
+  .breaking-bar-title{color:var(--text);}
+  .breaking-bar-title .pulse,.col-title .dot{display:none;}
+  .fund-section-title{margin:22px 0 10px;}
+  .digest-section-title{border-bottom:none;padding-bottom:0;}
+  .econ-day-label{letter-spacing:0;text-transform:none;font-size:12.5px;font-weight:600;}
+  .pulse-section-head{margin-bottom:10px;}
+  .ai-box .label{letter-spacing:0;text-transform:none;font-size:12px;font-weight:600;}
+  .stock-group-title{letter-spacing:0;text-transform:none;font-size:13px;font-weight:600;}
+  .group-arrow{font-size:13px;font-weight:400;color:var(--text-dim);}
+  @media(max-width:600px){
+    .breaking-bar-title,.col-title,.market-charts-title,.movers-title,.pulse-section-title{font-size:14.5px;}
+  }
   .scan-more-btn{display:block;width:100%;margin:4px 0 8px;padding:10px;border-radius:9px;background:transparent;border:1px solid var(--line);color:var(--text);font-family:'Heebo',sans-serif;font-size:13px;cursor:pointer;}
   .scan-more-btn:hover{border-color:var(--amber);}
   @media(max-width:480px){ .stock-row .repeat-badge{display:none;} }   /* phone: one badge less per row (the "N× in 14 days" count) */
@@ -946,7 +1019,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
     <div id="fear-greed-wrap"></div>
 
     <div class="pulse-section-head" style="margin-top:24px;">
-      <div class="pulse-section-title" id="earnings-cal-title">יומן דוחות השבוע</div>
+      <div class="pulse-section-title" id="earnings-cal-title">דוחות רבעוניים</div>
     </div>
     <div id="earnings-cal-wrap"></div>
     </div><!-- /pulse-view-overview -->
@@ -1669,7 +1742,7 @@ function renderBacktestContent(data){
   const medColor = (data.median_return ?? 0) >= 0 ? 'var(--green)' : 'var(--red)';
   const pfTxt = data.profit_factor==null ? '—' : data.profit_factor;
   const thinBanner = sm.thin ? `
-    <div class="bt-warn">⚠️ ${t
+    <div class="bt-warn">${t
       ? `Thin sample: ${data.n} independent signals from only ${sm.distinct_days} scan day${sm.distinct_days===1?'':'s'} (${sm.first_date} → ${sm.last_date}). That is a snapshot of one market stretch, not statistical proof — treat these numbers as a first look, and let the history build up.`
       : `מדגם דל: ${data.n} איתותים בלתי-תלויים מ-${sm.distinct_days} ימי סריקה בלבד (${sm.first_date} ← ${sm.last_date}). זו תמונת מצב של פרק שוק אחד ולא הוכחה סטטיסטית — להתייחס למספרים כמבט ראשוני, ולתת להיסטוריה להצטבר.`}</div>` : '';
   const extremeNote = data.extreme_returns ? `<div style="font-size:11px;color:var(--text-dim);margin:0 2px 10px;">${t
@@ -2095,6 +2168,7 @@ function renderDeepDive(quote, sector, signals, news){
 // box), the chart re-measures when its box changes size (sections filling in below), and a watchdog rebuilds it once
 // if no visible iframe appeared after 8 seconds.
 let _ddChartObserver = null;
+function _tvPhone(){ return window.matchMedia('(max-width:700px)').matches; }   // hoisted: charts may be built early
 function _ddMountChart(force){
   const box = document.getElementById('dd-tv-chart');
   if(!box || !_ddChartTicker) return;
@@ -2126,6 +2200,8 @@ function _ddMountChart(force){
     locale: lang==='en' ? 'en' : 'he_IL',
     toolbar_bg: tvToolbarBg(), hide_top_toolbar: false, hide_legend: false,
     save_image: false, container_id: 'dd-tv-chart',
+    withdateranges: true, hide_side_toolbar: _tvPhone(),   // v20: 1M/3M/1Y… buttons under the chart (easy zoom on a phone)
+    hide_volume: _tvPhone(),                                // v20: on a phone the volume bars squeezed the price area
     studies: ["MASimple@tv-basicstudies"],
     studies_overrides: {
       "Moving Average.length": 150,
@@ -2178,6 +2254,7 @@ function switchChart(symbol){
     // v18c (owner's screenshot): with a fixed height/width the chart kept the size it was built at — after the window
     // grew it filled only part of its box and its bottom was cut. autosize follows the box (#market-tv-chart = 250px tall).
     autosize:true,
+    withdateranges:true, hide_volume:_tvPhone(),   // v20: date-range buttons; no volume bars on a phone (they squeezed the price)
     save_image:false,
     studies: ["MASimple@tv-basicstudies"],
     studies_overrides: {
@@ -2283,7 +2360,7 @@ function renderDemoPortfolio(){
   const usdS = v => v==null ? '—' : `${v>=0?'+':'-'}$${Math.abs(v).toLocaleString(undefined,{maximumFractionDigits:0})}`;
   const pct = v => v==null ? '—' : `${v>=0?'+':''}${v}%`;
   const col = v => v==null ? 'var(--text)' : (v>=0 ? 'var(--green)' : 'var(--red)');
-  const reasonLbl = r => r==='target' ? (en?'🎯 Target':'🎯 יעד') : r==='stop' ? (en?'🛑 Stop':'🛑 סטופ') : r==='time' ? (en?'⏱ 20 days':'⏱ 20 ימים') : (en?'● Open':'● פתוחה');
+  const reasonLbl = r => r==='target' ? (en?'Target':'יעד') : r==='stop' ? (en?'Stop':'סטופ') : r==='time' ? (en?'20 days':'20 ימים') : (en?'Open':'פתוחה');
 
   if(!s.trades_total){
     el.innerHTML = `<div class="bt-warn">${en
@@ -2292,7 +2369,7 @@ function renderDemoPortfolio(){
     return;
   }
 
-  const thin = sm.thin ? `<div class="bt-warn">⚠️ ${en
+  const thin = sm.thin ? `<div class="bt-warn">${en
     ? `Early results: ${s.trades_closed} closed trades from ${sm.scan_days} scan day${sm.scan_days===1?'':'s'} (${sm.first_date} → ${sm.last_date}). Too little to tell skill from luck — the numbers get meaningful as the history builds up.`
     : `תוצאות ראשוניות: ${s.trades_closed} עסקאות סגורות מ-${sm.scan_days} ימי סריקה (${sm.first_date} ← ${sm.last_date}). מעט מדי כדי להבדיל בין כישרון למזל — המספרים הופכים למשמעותיים ככל שההיסטוריה מצטברת.`}</div>` : '';
   const pending = sm.signals_pending_simulation ? `<div style="font-size:11px;color:var(--text-dim);margin:-6px 2px 10px;">${en
@@ -3422,10 +3499,9 @@ function renderEarningsCalendar(items){
     return;
   }
 
-  const todayStr = new Date().toISOString().slice(0,10);
-  const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1);
-  const tomorrowStr = tomorrow.toISOString().slice(0,10);
-  const dayFormatter = new Intl.DateTimeFormat(lang==='en' ? 'en-US' : 'he-IL', { weekday:'long', month:'short', day:'numeric' });
+  const en = lang==='en';
+  const todayStr = _earnLocalDate(0), tomorrowStr = _earnLocalDate(1);
+  const wdFmt = new Intl.DateTimeFormat(en ? 'en-US' : 'he-IL', { weekday:'short' });
 
   const byDay = new Map();
   for(const it of items){
@@ -3433,71 +3509,220 @@ function renderEarningsCalendar(items){
     byDay.get(it.report_date).push(it);
   }
   const days = Array.from(byDay.keys()).sort();
+  // v20 (owner: "too many reports, I have to scroll and search"): one day at a time. Default = today, else the next
+  // day with reports, else the last one; the choice is kept across the 20-second re-renders.
+  if(!_earnDay || !byDay.has(_earnDay)) _earnDay = days.find(d => d >= todayStr) || days[days.length - 1];
 
-  el.innerHTML = days.map(dateStr => {
-    let label;
-    if(dateStr === todayStr) label = t.today_label;
-    else if(dateStr === tomorrowStr) label = t.tomorrow_label;
-    else label = dayFormatter.format(new Date(dateStr + 'T12:00:00'));
-
-    const sessionOrder = { bmo: 0, unknown: 1, amc: 2 };
-    const sortedDay = byDay.get(dateStr).slice().sort((a, b) => (sessionOrder[a.session] ?? 1) - (sessionOrder[b.session] ?? 1));
-    const rows = sortedDay.map(it => {
-      const sessionLabel = it.session==='bmo' ? t.session_bmo : it.session==='amc' ? t.session_amc : t.session_unknown;
-      let epsHtml = '';
-      if(it.reported && it.eps_actual != null){
-        const beat = it.surprise_pct != null && it.surprise_pct >= 0;
-        const flat = it.surprise_pct != null && Math.abs(it.surprise_pct) < 0.05;   // would print "▲ 0.0%"
-        const color = it.surprise_pct == null || flat ? 'var(--text-dim)' : (beat ? 'var(--green)' : 'var(--red)');
-        const arrow = it.surprise_pct == null ? '' : (beat ? '▲' : '▼');
-        const estPart = it.eps_estimate != null ? ` (${lang==='en'?'est':'צפי'} $${it.eps_estimate.toFixed(2)})` : '';
-        const surprisePart = it.surprise_pct == null ? '' : flat ? ` ＝ ${lang==='en'?'in line':'בהתאם לצפי'}` : ` ${arrow} ${Math.abs(it.surprise_pct).toFixed(1)}%`;
-        epsHtml = `<div class="earnings-cal-eps" style="color:${color}">EPS $${it.eps_actual.toFixed(2)}${estPart}${surprisePart}</div>`;
-      }
-      let revHtml = '';
-      const dim = 'var(--text-dim)';
-      const en = lang==='en';
-      const fmtUsd = v => `$${formatMarketCap(v)}`;
-      if(!it.reported){
-        // before the report: show what the market expects (EPS + revenue), if we have it
-        const parts = [];
-        if(it.eps_estimate != null) parts.push(`${en?'EPS est':'צפי EPS'} $${it.eps_estimate.toFixed(2)}`);
-        if(it.revenue_estimate != null) parts.push(`${en?'Rev est':'צפי הכנסות'} ${fmtUsd(it.revenue_estimate)}`);
-        if(parts.length){
-          epsHtml = `<div class="earnings-cal-eps" style="color:${dim}">${parts.join(' · ')}</div>`;
-        } else if(dateStr < todayStr){
-          epsHtml = `<div class="earnings-cal-eps" style="color:${dim}">${en?'awaiting results':'ממתין לתוצאות'}</div>`;
-        }
-      }
-      if(it.reported && it.revenue_actual == null){
-        // EPS is out but the revenue figure is not verified yet (statement lag) — say so instead of leaving a gap
-        const estTxt = it.revenue_estimate != null ? ` (${en?'est':'צפי'} ${fmtUsd(it.revenue_estimate)})` : '';
-        revHtml = `<div class="earnings-cal-eps" style="color:${dim}">${en?'Rev':'הכנסות'}${estTxt} — ${en?'actual pending':'בפועל בעדכון'}</div>`;
-      }
-      if(it.reported && it.revenue_actual != null){
-        const revBeat = it.revenue_surprise_pct != null && it.revenue_surprise_pct >= 0;
-        const revFlat = it.revenue_surprise_pct != null && Math.abs(it.revenue_surprise_pct) < 0.05;
-        const revColor = it.revenue_surprise_pct == null || revFlat ? 'var(--text-dim)' : (revBeat ? 'var(--green)' : 'var(--red)');
-        const revArrow = it.revenue_surprise_pct == null ? '' : (revBeat ? '▲' : '▼');
-        const revEstPart = it.revenue_estimate != null ? ` (${lang==='en'?'est':'צפי'} $${formatMarketCap(it.revenue_estimate)})` : '';
-        const revSurprisePart = it.revenue_surprise_pct == null ? '' : revFlat ? ` ＝ ${lang==='en'?'in line':'בהתאם לצפי'}` : ` ${revArrow} ${Math.abs(it.revenue_surprise_pct).toFixed(1)}%`;
-        revHtml = `<div class="earnings-cal-eps" style="color:${revColor}">${lang==='en'?'Rev':'הכנסות'} $${formatMarketCap(it.revenue_actual)}${revEstPart}${revSurprisePart}</div>`;
-      }
-      return `<div class="earnings-cal-row">
-        <div class="earnings-cal-ticker-group">
-          <div class="earnings-cal-session ${it.session||'unknown'}" title="${sessionLabel}">${it.session==='bmo'?'☀️':it.session==='amc'?'🌙':'—'}</div>
-          <div class="earnings-cal-ticker">${it.ticker}</div>
-        </div>
-        <div class="earnings-cal-name">${escH(it.name || '')}</div>
-        <div class="earnings-cal-results">${epsHtml}${revHtml}</div>
-      </div>`;
-    }).join('');
-
-    return `<div class="earnings-cal-day">
-      <div class="earnings-cal-day-label">${label}</div>
-      ${rows}
-    </div>`;
+  const tabs = days.map(d => {
+    const dt = new Date(d + 'T12:00:00');
+    const d1 = d === todayStr ? t.today_label : d === tomorrowStr ? t.tomorrow_label : wdFmt.format(dt);
+    const d2 = `${dt.getDate()}.${dt.getMonth()+1} · ${byDay.get(d).length}`;
+    return `<button type="button" class="earn-day${d === _earnDay ? ' active' : ''}${d < todayStr ? ' past' : ''}" onclick="selectEarnDay('${d}')" aria-pressed="${d === _earnDay}"><span class="d1">${d1}</span><span class="d2">${d2}</span></button>`;
   }).join('');
+
+  const sessionOrder = { bmo: 0, unknown: 1, amc: 2 };
+  const groups = {};
+  for(const it of byDay.get(_earnDay)) (groups[it.session in sessionOrder ? it.session : 'unknown'] ||= []).push(it);
+  const list = Object.keys(groups).sort((a, b) => sessionOrder[a] - sessionOrder[b]).map(s => {
+    const sLabel = s === 'bmo' ? t.session_bmo : s === 'amc' ? t.session_amc : (en ? 'Time not confirmed' : 'שעה לא ידועה');
+    return `<div class="earn-session">${sLabel}</div>` + groups[s].map(it => _earnRowHtml(it, todayStr)).join('');
+  }).join('');
+
+  // keep the tab strip where the user scrolled it (the calendar is re-rendered by applyLang every 20 s); the first
+  // time it is visible, bring the selected day into view (it can be past the edge on a phone)
+  const oldStrip = el.querySelector('.earn-days');
+  const stripScroll = oldStrip ? oldStrip.scrollLeft : 0;
+  el.innerHTML = `<div class="earn-days">${tabs}</div><div class="earn-list">${list}</div>`;
+  const strip = el.querySelector('.earn-days');
+  strip.scrollLeft = stripScroll;
+  const a = strip.querySelector('.active');
+  if(!_earnStripCentered && a && strip.clientWidth > 0){
+    _earnStripCentered = true;
+    const sr = strip.getBoundingClientRect(), ar = a.getBoundingClientRect();
+    strip.scrollLeft += (ar.left + ar.width / 2) - (sr.left + sr.width / 2);
+  }
+}
+let _earnStripCentered = false;
+
+let _earnDay = null;            // report date shown in the calendar
+let _earnOpen = null;           // "TICKER|date" of the row whose detail panel is open
+const _earnDetail = {};         // ticker -> {fund, fundErr, px, pxErr} (filled on first open, reused on re-render)
+
+function _earnLocalDate(addDays){                     // YYYY-MM-DD in New York (report dates are US market days)
+  const d = new Date(Date.now() + addDays * 86400000);
+  return new Intl.DateTimeFormat('en-CA', { timeZone:'America/New_York' }).format(d);
+}
+
+function selectEarnDay(d){
+  _earnDay = d;
+  _earnOpen = null;
+  if(lastEarningsCalItems) renderEarningsCalendar(lastEarningsCalItems);
+}
+
+function _earnSurpriseChip(pct){
+  if(pct == null) return '';
+  if(Math.abs(pct) < 0.05) return `<span class="earn-chip flat">${lang==='en'?'in line':'בהתאם'}</span>`;
+  return `<span class="earn-chip ${pct > 0 ? 'up' : 'down'}">${pct > 0 ? '+' : '−'}${Math.abs(pct).toFixed(1)}%</span>`;
+}
+
+// One figure column of a calendar row (EPS or revenue): the actual value with its surprise vs the estimate once
+// reported, otherwise the estimate.
+function _earnFigHtml(label, actual, est, pct, fmt, reported){
+  const en = lang==='en';
+  if(reported && actual != null){
+    return `<div class="earn-fig"><span class="k">${label}</span><span class="v">${fmt(actual)}</span>${_earnSurpriseChip(pct) || (est != null ? `<span class="e">${en?'est':'צפי'} ${fmt(est)}</span>` : '')}</div>`;
+  }
+  if(reported){   // EPS is out but this figure is not verified yet (statement lag)
+    return `<div class="earn-fig"><span class="k">${label}</span><span class="v" style="color:var(--text-dim)">—</span><span class="e">${en?'updating':'בעדכון'}</span></div>`;
+  }
+  return `<div class="earn-fig"><span class="k">${en?label+' est':'צפי '+label}</span><span class="v" style="color:var(--text-dim)">${est != null ? fmt(est) : '—'}</span></div>`;
+}
+
+const _earnUsd = v => `$${Number(v).toFixed(2)}`;
+const _earnBig = v => v < 0 ? `−$${formatMarketCap(-v)}` : `$${formatMarketCap(v)}`;
+
+function _earnRowHtml(it, todayStr){
+  const en = lang==='en';
+  const key = `${it.ticker}|${it.report_date}`;
+  const open = _earnOpen === key;
+  return `<div class="earn-row${open ? ' open' : ''}">
+    <div class="earn-row-main" role="button" tabindex="0" aria-expanded="${open}" onclick="toggleEarnDetail('${key}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleEarnDetail('${key}');}">
+      <div class="earn-id"><span class="earn-tk">${escH(it.ticker)}</span><span class="earn-name">${escH(it.name || '')}</span></div>
+      ${_earnFigHtml('EPS', it.eps_actual, it.eps_estimate, it.surprise_pct, _earnUsd, it.reported)}
+      ${_earnFigHtml(en ? 'Revenue' : 'הכנסות', it.revenue_actual, it.revenue_estimate, it.revenue_surprise_pct, _earnBig, it.reported)}
+      <span class="earn-chev">›</span>
+    </div>
+    ${open ? `<div class="earn-detail">${_earnDetailHtml(it, todayStr)}</div>` : ''}
+  </div>`;
+}
+
+function toggleEarnDetail(key){
+  _earnOpen = _earnOpen === key ? null : key;
+  if(lastEarningsCalItems) renderEarningsCalendar(lastEarningsCalItems);
+  if(!_earnOpen) return;
+  const ticker = key.split('|')[0];
+  if(_earnDetail[ticker]) return;                       // already loaded / loading
+  const st = _earnDetail[ticker] = { fund: null, fundErr: false, px: null, pxErr: false };
+  const redraw = () => { if(_earnOpen && _earnOpen.startsWith(ticker + '|') && lastEarningsCalItems) renderEarningsCalendar(lastEarningsCalItems); };
+  // price around the report (stock vs S&P 500) — light, cached on the server
+  fetchWithTimeout(`${API_BASE}/api/price-compare?tickers=${encodeURIComponent(ticker)},SPY&period=1M`, 20000)
+    .then(r => r.ok ? r.json() : Promise.reject()).then(j => { st.px = j; }).catch(() => { st.pxErr = true; }).finally(redraw);
+  // quarterly history (SEC) — the same data the stock analysis page uses; can take a while on a first call
+  fetchFundamentalsData(ticker).then(j => { st.fund = j; }).catch(() => { st.fundErr = true; }).finally(redraw);
+}
+
+// How the stock moved on the first trading day that could react to the report: the report day itself for a
+// before-the-open report, the next trading day for an after-the-close one. Built from price-compare's % series.
+function _earnReaction(it, px){
+  if(!px || !Array.isArray(px.dates) || !Array.isArray(px.series)) return null;
+  const s = px.series.find(x => x.ticker === it.ticker);
+  const m = px.series.find(x => x.ticker === 'SPY');
+  if(!s) return null;
+  const ds = px.dates;
+  const i = it.session === 'amc' ? ds.findIndex(d => d > it.report_date) : ds.indexOf(it.report_date);
+  if(i < 1) return null;                                 // the reaction day has not traded yet
+  const chg = (arr, a, b) => (arr && arr[a] != null && arr[b] != null) ? ((1 + arr[b]/100) / (1 + arr[a]/100) - 1) * 100 : null;
+  const last = ds.length - 1;
+  return { day: chg(s.values, i-1, i), mkt: m ? chg(m.values, i-1, i) : null, since: i < last ? chg(s.values, i-1, last) : null, date: ds[i] };
+}
+
+function _earnPct(v){
+  if(v == null || !isFinite(v)) return '—';
+  return `<span class="earn-pct" style="color:${Math.abs(v) < 0.05 ? 'var(--text-dim)' : v > 0 ? 'var(--green)' : 'var(--red)'}">${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(1)}%</span>`;
+}
+
+function _earnDetailHtml(it, todayStr){
+  const en = lang==='en';
+  const st = _earnDetail[it.ticker] || {};
+  const loadingTxt = `<div class="earn-note">${UI[lang].loading}</div>`;
+  const dt = new Date(it.report_date + 'T12:00:00');
+  const when = new Intl.DateTimeFormat(en ? 'en-US' : 'he-IL', { weekday:'long', day:'numeric', month:'long' }).format(dt);
+  const sess = it.session === 'bmo' ? UI[lang].session_bmo : it.session === 'amc' ? UI[lang].session_amc : (en ? 'time not confirmed' : 'שעה לא ידועה');
+  const out = [];
+
+  // 1. this report
+  const card = (k, v, s) => `<div><div class="k">${k}</div><div class="v">${v}</div>${s ? `<div class="s">${s}</div>` : ''}</div>`;
+  const cards = [];
+  if(it.reported){
+    cards.push(card(en ? 'EPS — actual' : 'EPS בפועל', it.eps_actual != null ? _earnUsd(it.eps_actual) : '—',
+      it.eps_estimate != null ? `${en?'est':'צפי'} ${_earnUsd(it.eps_estimate)} · ${_earnPct(it.surprise_pct)}` : ''));
+    cards.push(card(en ? 'Revenue — actual' : 'הכנסות בפועל', it.revenue_actual != null ? _earnBig(it.revenue_actual) : (en ? 'updating' : 'בעדכון'),
+      it.revenue_estimate != null ? `${en?'est':'צפי'} ${_earnBig(it.revenue_estimate)}${it.revenue_actual != null ? ' · ' + _earnPct(it.revenue_surprise_pct) : ''}` : ''));
+  } else {
+    cards.push(card(en ? 'EPS — estimate' : 'צפי EPS', it.eps_estimate != null ? _earnUsd(it.eps_estimate) : '—'));
+    cards.push(card(en ? 'Revenue — estimate' : 'צפי הכנסות', it.revenue_estimate != null ? _earnBig(it.revenue_estimate) : '—'));
+  }
+  if(it.market_cap) cards.push(card(en ? 'Market cap' : 'שווי שוק', _earnBig(it.market_cap)));
+  out.push(`<div class="earn-dsec"><div class="earn-dsec-t">${when} · ${sess}</div><div class="earn-kv">${cards.join('')}</div></div>`);
+
+  // 2. how the stock reacted (reported only)
+  if(it.reported){
+    let body;
+    if(st.px){
+      const r = _earnReaction(it, st.px);
+      body = r ? `<div class="earn-kv">
+          ${card(en ? 'Reaction day' : 'ביום התגובה', _earnPct(r.day), `S&amp;P 500 ${_earnPct(r.mkt)}`)}
+          ${r.since != null ? card(en ? 'Since the report' : 'מאז הדוח', _earnPct(r.since), en ? 'to the last close' : 'עד הסגירה האחרונה') : ''}
+        </div>`
+        : `<div class="earn-note">${en ? 'The first trading day after the report has not closed yet.' : 'יום המסחר הראשון אחרי הדוח עוד לא נסגר.'}</div>`;
+    } else body = st.pxErr ? `<div class="earn-note">${en ? 'Price data unavailable right now.' : 'נתוני מחיר לא זמינים כרגע.'}</div>` : loadingTxt;
+    out.push(`<div class="earn-dsec"><div class="earn-dsec-t">${en ? 'Stock reaction' : 'תגובת המניה'}</div>${body}</div>`);
+  }
+
+  // 3. track record + growth + valuation (SEC quarterly data)
+  const f = st.fund;
+  if(f && f.has_fundamentals){
+    const n = Array.isArray(f.eps_labels) ? f.eps_labels.length : 0;
+    const hist = [];
+    for(let i = Math.max(0, n - 4); i < n; i++){
+      if(f.eps_actual?.[i] == null) continue;
+      hist.push(`<div><div class="q">${escH(f.eps_labels[i])}</div><div class="mono" style="font-size:12.5px;font-weight:600">${_earnUsd(f.eps_actual[i])}</div>${f.eps_surprise_pct?.[i] != null ? _earnSurpriseChip(f.eps_surprise_pct[i]) : ''}</div>`);
+    }
+    if(hist.length){
+      const withEst = f.eps_surprise_pct ? f.eps_surprise_pct.slice(-4).filter(v => v != null) : [];
+      const beats = withEst.filter(v => v > 0).length;
+      const summary = withEst.length ? `<div class="earn-note">${en ? `Above the estimate in ${beats} of the last ${withEst.length} quarters.` : `מעל הצפי ב-${beats} מתוך ${withEst.length} הרבעונים האחרונים.`}</div>` : '';
+      out.push(`<div class="earn-dsec"><div class="earn-dsec-t">${en ? 'EPS — last quarters vs estimate' : 'EPS ברבעונים האחרונים מול הצפי'}</div><div class="earn-hist">${hist.join('')}</div>${summary}</div>`);
+    }
+
+    const rev = Array.isArray(f.revenue) ? f.revenue : [];
+    const labels = Array.isArray(f.income_labels) ? f.income_labels : [];
+    if(rev.length >= 2 && rev[rev.length-1] != null){
+      const last8 = rev.slice(-8), lab8 = labels.slice(-8);
+      const max = Math.max(...last8.filter(v => v != null && v > 0), 1);
+      const bars = last8.map((v, i) => `<div class="${i === last8.length-1 ? 'last' : ''}" style="height:${v != null && v > 0 ? Math.max(3, v / max * 100) : 0}%" title="${escH(lab8[i] || '')}: ${v != null ? _earnBig(v) : '—'}"></div>`).join('');
+      const L = rev.length - 1;
+      const yoy = (arr) => (arr.length >= 5 && arr[L] != null && arr[L-4] != null && arr[L-4] > 0) ? (arr[L] / arr[L-4] - 1) * 100 : null;
+      const ni = Array.isArray(f.net_income) ? f.net_income : [];
+      const niYoy = (ni.length === rev.length && ni[L] != null && ni[L-4] != null && ni[L-4] > 0 && ni[L] > 0) ? (ni[L] / ni[L-4] - 1) * 100 : null;
+      const qLabel = escH(labels[L] || '');
+      const g = [];
+      g.push(card(en ? 'Revenue' : 'הכנסות', _earnBig(rev[L]), yoy(rev) != null ? `${_earnPct(yoy(rev))} ${en ? 'vs a year ago' : 'מול שנה קודמת'}` : ''));
+      if(ni[L] != null) g.push(card(en ? 'Net income' : 'רווח נקי', _earnBig(ni[L]), niYoy != null ? `${_earnPct(niYoy)} ${en ? 'vs a year ago' : 'מול שנה קודמת'}` : ''));
+      if(f.trailing_pe != null || f.forward_pe != null) g.push(card(en ? 'P/E' : 'מכפיל רווח', f.trailing_pe != null ? Number(f.trailing_pe).toFixed(1) : '—', f.forward_pe != null ? `${en ? 'forward' : 'צפוי'} ${Number(f.forward_pe).toFixed(1)}` : ''));
+      out.push(`<div class="earn-dsec"><div class="earn-dsec-t">${en ? `Quarter ended ${qLabel} (SEC filings)` : `רבעון שהסתיים ב-${qLabel} (דיווחי SEC)`}</div>
+        <div class="earn-kv">${g.join('')}</div>
+        <div class="earn-dsec-t" style="margin-top:12px">${en ? 'Quarterly revenue' : 'הכנסות רבעוניות'}</div>
+        <div class="earn-bars">${bars}</div>
+        <div class="earn-bars-x"><span>${escH(lab8[0] || '')}</span><span>${qLabel}</span></div>
+        ${it.reported && labels[L] && rev[L] != null && it.revenue_actual != null && Math.abs(rev[L] / it.revenue_actual - 1) > 0.02
+          ? `<div class="earn-note">${en ? 'The SEC figures above are from the latest filed quarter — the new report may not be filed yet.' : 'נתוני SEC כאן הם מהרבעון האחרון שהוגש — ייתכן שהדוח החדש עוד לא הוגש.'}</div>` : ''}
+      </div>`);
+    }
+  } else if(st.fundErr || (f && !f.has_fundamentals)){
+    out.push(`<div class="earn-note" style="margin-top:12px">${en ? 'Quarterly history is unavailable for this company right now.' : 'היסטוריה רבעונית לא זמינה כרגע לחברה הזו.'}</div>`);
+  } else {
+    out.push(`<div class="earn-dsec"><div class="earn-dsec-t">${en ? 'Quarterly history' : 'היסטוריה רבעונית'}</div>${loadingTxt}</div>`);
+  }
+
+  out.push(`<div class="earn-actions"><button type="button" class="earn-btn" onclick="openEarnAnalysis('${escH(it.ticker)}')">${en ? 'Full stock analysis' : 'לניתוח המניה המלא'}</button></div>`);
+  return out.join('');
+}
+
+function openEarnAnalysis(ticker){
+  document.getElementById('dd-ticker-input').value = ticker;
+  setPage('deepdive');
+  loadDeepDive();
 }
 
 
@@ -3854,7 +4079,7 @@ function recalcRisk(){
   if(shares<=0){
     warning = `<div class="risk-calc-warning">${t?'Risk amount too small for even 1 share at this stop distance.':'סכום הסיכון קטן מדי אפילו למניה אחת במרחק הסטופ הזה.'}</div>`;
   } else if(pctOfAccount > 25){
-    warning = `<div class="risk-calc-warning">${t?'⚠️ This position would be over 25% of your account — consider a wider stop or smaller risk %.':'⚠️ הפוזיציה הזו תהיה מעל 25% מהתיק — שקול סטופ רחוק יותר או אחוז סיכון נמוך יותר.'}</div>`;
+    warning = `<div class="risk-calc-warning">${t?'This position would be over 25% of your account — consider a wider stop or smaller risk %.':'הפוזיציה הזו תהיה מעל 25% מהתיק — שקול סטופ רחוק יותר או אחוז סיכון נמוך יותר.'}</div>`;
   }
   resultsEl.innerHTML = `
     <div class="risk-result-row"><span>${t?'Risk Amount':'סכום הסיכון'}</span><span class="v">$${riskAmount.toFixed(0)}</span></div>
@@ -4028,7 +4253,7 @@ function openDrawer(i){
     </div>
     <button class="compare-btn" onclick="openCompare('${s.ticker}')">⇄ ${lang==='en'?'Compare with another stock':'השווה מול מניה אחרת'}</button>
     <button class="compare-btn" style="--c:var(--amber);" onclick='openRiskCalc(${JSON.stringify({entry:s.entry, stop:s.support, target:(Array.isArray(s.resistance)&&s.resistance.length?s.resistance[0]:null)})})'>${lang==='en'?'Position Size Calculator':'מחשבון גודל פוזיציה'}</button>
-    <button class="compare-btn" onclick="closeDrawer(); setPage('deepdive'); document.getElementById('dd-ticker-input').value='${s.ticker}'; loadDeepDive();">🔎 ${lang==='en'?'Full Stock Analysis':'ניתוח מלא למניה'}</button>
+    <button class="compare-btn" onclick="closeDrawer(); setPage('deepdive'); document.getElementById('dd-ticker-input').value='${s.ticker}'; loadDeepDive();">${lang==='en'?'Full Stock Analysis':'ניתוח מלא למניה'}</button>
     <div id="compare-section"></div>
   `;
   document.getElementById("overlay").classList.add("open");
@@ -4062,14 +4287,14 @@ function openMacroDrawerItem(m, onTop){
     </div>
     ${(() => {
       const body = lang==='en' ? m.body_en : m.body_he;
-      return body ? `<div class="ai-box"><div class="label">📄 ${lang==='en'?'More from the source':'עוד מהמקור'}</div>${escH(body)}</div>` : '';
+      return body ? `<div class="ai-box"><div class="label">${lang==='en'?'More from the source':'עוד מהמקור'}</div>${escH(body)}</div>` : '';
     })()}
     ${hookText(m) ? `<div class="ai-box"><div class="label">${lang==='en'?'Why this matters':'למה זה חשוב'}</div>${escH(hookText(m))}</div>` : ''}
     <div class="ai-box">
       <div class="label">${lang==='en'?'Affected Sectors':'סקטורים מושפעים'}</div>
       ${escH(tagLabel(m.sectors||m.sector)||'—')}
     </div>
-    ${(m.link && m.link!=='#') ? `<div id="macro-preview" class="ai-box"><div class="label">📄 ${lang==='en'?'From the article':'מהכתבה'}</div><span style="color:var(--text-dim);font-size:12.5px;">${lang==='en'?'Loading a preview from the source…':'טוען תצוגה מקדימה מהמקור…'}</span></div>` : ''}
+    ${(m.link && m.link!=='#') ? `<div id="macro-preview" class="ai-box"><div class="label">${lang==='en'?'From the article':'מהכתבה'}</div><span style="color:var(--text-dim);font-size:12.5px;">${lang==='en'?'Loading a preview from the source…':'טוען תצוגה מקדימה מהמקור…'}</span></div>` : ''}
     <div class="macro-time" style="margin-bottom:14px;">${m.time}</div>
     ${safeUrl(m.link)&&m.link!=='#'?`<button class="deep-btn" data-url="${escH(safeUrl(m.link))}" onclick="window.open(this.dataset.url,'_blank','noopener,noreferrer')">${lang==='en'?'To original article →':'לכתבה המקורית ←'}</button>`:''}
   `;
@@ -4171,6 +4396,7 @@ function renderTradingViewChart(ticker){
     timezone:"Asia/Jerusalem", theme:tvTheme(), style:"1", locale: lang==='en' ? 'en' : 'he_IL',
     toolbar_bg:tvToolbarBg(), hide_top_toolbar:false, hide_legend:false,
     save_image:false, container_id:"tv-chart",
+    withdateranges:true, hide_side_toolbar:_tvPhone(), hide_volume:_tvPhone(),
     studies: ["MASimple@tv-basicstudies"],
     studies_overrides: {
       "Moving Average.length": 150,
@@ -5154,7 +5380,7 @@ function openCompare(baseTicker){
       <button class="close-btn" onclick="closeCompareSearch()">✕</button>
     </div>
     <div class="cs-input-wrap">
-      <span class="cs-input-icon">🔍</span>
+      <span class="cs-input-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></span>
       <input type="text" class="cs-input" id="cs-input" placeholder="${t?'Ticker or company name':'טיקר או שם חברה'}" oninput="renderCompareSearchList('${baseTicker}', this.value)" onkeydown="handleCompareSearchKey(event,'${baseTicker}')">
     </div>
     <div class="cs-list" id="cs-list"></div>
@@ -5178,7 +5404,7 @@ function openAddToCompare(){
       <button class="close-btn" onclick="closeCompareSearch()">✕</button>
     </div>
     <div class="cs-input-wrap">
-      <span class="cs-input-icon">🔍</span>
+      <span class="cs-input-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></span>
       <input type="text" class="cs-input" id="cs-input" placeholder="${t?'Ticker or company name':'טיקר או שם חברה'}" oninput="renderCompareSearchList('${compareTickerList[0]}', this.value)" onkeydown="handleCompareSearchKey(event,'${compareTickerList[0]}')">
     </div>
     <div class="cs-list" id="cs-list"></div>
@@ -5890,7 +6116,7 @@ function renderTrendBlock(s){
     const valueText = s.daysToEarnings<0
       ? (t?`${-s.daysToEarnings}d ago`:`לפני ${-s.daysToEarnings} ימים`)
       : (t?`in ${s.daysToEarnings}d`:`בעוד ${s.daysToEarnings} ימים`);
-    const warn = soon ? ' ⚠️' : '';
+    const warn = '';
     earningsRow = `<div class="trend-ma-row"><span>${label}</span><span style="color:${color};font-weight:${soon?700:400};">${valueText}${warn}</span></div>`;
   }
   return `
@@ -6113,7 +6339,7 @@ const UI = {
     dd_search_btn: 'חפש',
     disclaimer: 'התוכן להמחשה בלבד ואינו מהווה ייעוץ השקעות או המלצה לביצוע עסקה.',
     sector_all: 'הכל',
-    earnings_cal_title: 'יומן דוחות השבוע',
+    earnings_cal_title: 'דוחות רבעוניים',
     earnings_cal_empty: 'אין דיווחי תוצאות צפויים השבוע בקרב החברות הגדולות שאנחנו עוקבים אחריהן.',
     daily_digest_btn: 'סיכום יומי',
     session_bmo: 'לפני הפתיחה',
@@ -6161,7 +6387,7 @@ const UI = {
     dd_search_btn: 'Search',
     disclaimer: 'Content is for illustrative purposes only and does not constitute investment advice or a recommendation to execute any transaction.',
     sector_all: 'All',
-    earnings_cal_title: "This Week's Earnings Calendar",
+    earnings_cal_title: 'Earnings reports',
     earnings_cal_empty: 'No earnings reports expected this week among the large-cap names we track.',
     daily_digest_btn: 'Daily Summary',
     session_bmo: 'Before Open',

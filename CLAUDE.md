@@ -71,7 +71,8 @@ GitHub Secrets: `DATABASE_URL`, `LLM_API_KEY`, **`VAPID_PRIVATE_KEY`** (v19); Va
 ## 5. טבלאות עיקריות
 `scanned_stocks` (איתותים + `sim_*` לתיק דמו), `earnings_calendar` (`revenue_period_end = report_date` ⇒ הכנסה מהודעת SEC), `macro_news` (`summary_he/en`, `body_*`, `source_name`), `ai_daily_digests`, `econ_events`, `econ_snapshots` (`series-<id>` + snapshot הלוח), `universe_movers`, `users`, `watchlist` (אישי), `analytics_events`, `scheduler_runs`, **`stock_estimates` (חדש v18)**, **`push_subscriptions`, `price_alerts`, `push_log` (v19)**. פירוט: REFERENCE §5.
 
-## 6. סטטוס ופתוח (עודכן 27.10.2026 — v19)
+## 6. סטטוס ופתוח (עודכן 28.10.2026 — v20)
+**v20 (28.10, HISTORY §27.3טו, רק `index.html`):** גרפי TradingView בטלפון גבוהים יותר (≤700px), `withdateranges`, בטלפון בלי נפח וסרגל צד (`_tvPhone()`), "טוען גרף…" מאחור; **יומן דוחות = פס ימים** (יום אחד בכל פעם, לפני פתיחה/אחרי סגירה) + **פרטי דוח בלחיצה** (תגובת המניה מול S&P מ-`/api/price-compare`, 4 רבעוני EPS, הכנסות/רווח מול שנה קודמת ומכפיל מ-`/api/fundamentals` — בלי שינוי שרת); כותרות סעיפים אחידות (בלי אותיות רווחות/נקודות צבע), הוסרו אימוג'י צבעוניים אחרונים.
 **v19 (27.10, HISTORY §27.3יב):** בלי נתוני דמו מזויפים בטעינה (`apiLoadState`); פיד חדשות בלי כותרות "מניות לקנות" ובלי כפילויות (`_feed_clean`); כלל CPI מחמיר (Loblaw); תיקוני תרגום (crypto→"אנוסים" ועוד); הסבר תמיכה/התנגדות מזכיר את האזור בגרף; תקרות גרסה ב-`requirements.txt`. **כיווני מוצר: HISTORY §27.5.**
 **v19c (HISTORY §27.3יד):** גרף סקטורים — לחיצה = בחירה להשוואה (לא הסתרה); תקציר כתבה מתורגם (שרת: gtx→dict→MyMemory, כישלון לא נשמר; אחרת תרגום בדפדפן `translateHeBrowser`). Google gtx חוסם כתובת אחרי רצף בקשות — `clients5…dict-chrome-ex` הוא הגיבוי.
 **כלל חדש:** אסור להציג באתר נתונים מומצאים כאילו אמיתיים — במצב טעינה/שגיאה מציגים הודעה, לא דמו.
