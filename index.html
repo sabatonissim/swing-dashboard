@@ -219,14 +219,6 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .chart-tab:hover:not(.active){border-color:var(--amber-dim);color:var(--text);}
   #market-tv-chart{height:250px;border-radius:10px;overflow:hidden;background:var(--panel);direction:ltr;}
   .sector-chart-wrap{height:250px;border-radius:10px;overflow:hidden;background:var(--panel);border:1px solid var(--line);padding:8px;box-sizing:border-box;}
-  /* v20 (owner: "on the phone the chart is cut, I only see part of it"): TradingView's toolbar, legend and volume take a
-     fixed ~150px, so a 250-340px box left the price area a thin strip. Taller boxes on phones, no inner padding, and a
-     quiet "loading" note behind the chart while tv.js builds it (the box used to sit empty for seconds). */
-  #market-tv-chart,.tv-chart-box,.dd-chart-wrap{position:relative;}
-  #market-tv-chart::before,.tv-chart-box::before,.dd-chart-wrap::before{content:'טוען גרף…';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:12px;pointer-events:none;direction:rtl;}
-  html[lang="en"] #market-tv-chart::before,html[lang="en"] .tv-chart-box::before,html[lang="en"] .dd-chart-wrap::before{content:'Loading chart…';direction:ltr;}
-  @media(min-width:701px){ #market-tv-chart,.sector-chart-wrap{height:300px;} }
-  /* phone heights: see the rule after .tv-chart-box below (it must come after the base rules to win) */
   .pct-up{color:var(--green);}
   .pct-down{color:var(--red);}
 
@@ -399,11 +391,6 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .close-btn{background:none;border:1px solid var(--line);color:var(--text-dim);width:30px;height:30px;border-radius:8px;cursor:pointer;font-size:15px;}
   .close-btn:hover{color:var(--text);}
   .tv-chart-box{height:260px;border-radius:10px;overflow:hidden;margin-bottom:16px;background:var(--panel);direction:ltr;}
-  @media(max-width:700px){
-    #market-tv-chart,.sector-chart-wrap{height:min(440px,62vh);}
-    .tv-chart-box{height:min(460px,64vh);}
-    .dd-chart-wrap{height:min(480px,66vh);padding:0;overflow:hidden;}
-  }
   .news-section{margin-bottom:16px;}
   .news-item{padding:9px 0;border-bottom:1px solid var(--line);}
   .news-item a{color:var(--text);font-size:13px;text-decoration:none;line-height:1.5;display:block;}
@@ -2168,7 +2155,6 @@ function renderDeepDive(quote, sector, signals, news){
 // box), the chart re-measures when its box changes size (sections filling in below), and a watchdog rebuilds it once
 // if no visible iframe appeared after 8 seconds.
 let _ddChartObserver = null;
-function _tvPhone(){ return window.matchMedia('(max-width:700px)').matches; }   // hoisted: charts may be built early
 function _ddMountChart(force){
   const box = document.getElementById('dd-tv-chart');
   if(!box || !_ddChartTicker) return;
@@ -2200,8 +2186,6 @@ function _ddMountChart(force){
     locale: lang==='en' ? 'en' : 'he_IL',
     toolbar_bg: tvToolbarBg(), hide_top_toolbar: false, hide_legend: false,
     save_image: false, container_id: 'dd-tv-chart',
-    withdateranges: true, hide_side_toolbar: _tvPhone(),   // v20: 1M/3M/1Y… buttons under the chart (easy zoom on a phone)
-    hide_volume: _tvPhone(),                                // v20: on a phone the volume bars squeezed the price area
     studies: ["MASimple@tv-basicstudies"],
     studies_overrides: {
       "Moving Average.length": 150,
@@ -2254,7 +2238,6 @@ function switchChart(symbol){
     // v18c (owner's screenshot): with a fixed height/width the chart kept the size it was built at — after the window
     // grew it filled only part of its box and its bottom was cut. autosize follows the box (#market-tv-chart = 250px tall).
     autosize:true,
-    withdateranges:true, hide_volume:_tvPhone(),   // v20: date-range buttons; no volume bars on a phone (they squeezed the price)
     save_image:false,
     studies: ["MASimple@tv-basicstudies"],
     studies_overrides: {
@@ -4396,7 +4379,6 @@ function renderTradingViewChart(ticker){
     timezone:"Asia/Jerusalem", theme:tvTheme(), style:"1", locale: lang==='en' ? 'en' : 'he_IL',
     toolbar_bg:tvToolbarBg(), hide_top_toolbar:false, hide_legend:false,
     save_image:false, container_id:"tv-chart",
-    withdateranges:true, hide_side_toolbar:_tvPhone(), hide_volume:_tvPhone(),
     studies: ["MASimple@tv-basicstudies"],
     studies_overrides: {
       "Moving Average.length": 150,
