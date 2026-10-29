@@ -282,6 +282,7 @@ def process_filing(issuer_cik: str, ticker: str, accession: str, filed: str, xml
     doc = parse_form4(r.content)
     url = f"{folder}/{accession}-index.htm"
     stored = 0
+    new_rows = []
     with cursor() as (conn, cur):
         if doc:
             for t in doc["trades"]:
@@ -293,11 +294,51 @@ def process_filing(issuer_cik: str, ticker: str, accession: str, filed: str, xml
                             (accession, t["seq"], ticker, issuer_cik, filed, t["trade_date"], doc["owner_name"],
                              doc["owner_title"], doc["is_director"], doc["is_officer"], doc["is_ten_pct"], t["code"],
                              t["shares"], t["price"], t["value"], t["owned_after"], t["direct"], t["planned"], url))
+                if cur.rowcount == 1:
+                    new_rows.append(t)
                 stored += 1
         cur.execute("INSERT INTO insider_filings_seen (accession, issuer_cik) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                     (accession, issuer_cik))
         conn.commit()
+    if new_rows and filed and filed >= (date.today() - timedelta(days=PUSH_MAX_AGE_DAYS)).isoformat():
+        _queue_push(ticker, accession, doc, new_rows)
     return stored
+
+
+# v22b: new filings of the last few days -> push notification to people who watch the stock (push_alerts.py).
+# Six months of backfill must not ring anyone's phone, hence the age limit.
+PUSH_MAX_AGE_DAYS = 3
+_push_queue: List[dict] = []
+
+
+def _queue_push(ticker: str, accession: str, doc: dict, rows: List[dict]) -> None:
+    for code in ("P", "S"):
+        part = [r for r in rows if r["code"] == code]
+        if not part:
+            continue
+        shares = sum(r["shares"] for r in part)
+        priced = [r for r in part if r["price"]]
+        value = sum(r["shares"] * r["price"] for r in priced)
+        priced_shares = sum(r["shares"] for r in priced)
+        _push_queue.append({
+            "ticker": ticker, "accession": accession, "code": code,
+            "owner_name": doc["owner_name"], "owner_title": doc["owner_title"],
+            "is_director": doc["is_director"], "is_ten_pct": doc["is_ten_pct"],
+            "shares": shares, "value": value or None,
+            "price": (value / priced_shares) if priced_shares else None,
+            "planned": any(r["planned"] for r in part),
+        })
+
+
+def send_pushes() -> None:
+    if not _push_queue:
+        return
+    try:
+        import push_alerts
+        with cursor() as (conn, cur):
+            push_alerts.notify_watchlist_insider(conn, _push_queue)
+    except Exception as e:
+        print(f"[warn] insider push notifications failed: {type(e).__name__}: {e}")
 
 
 def _seen(accessions: List[str]) -> set:
@@ -408,6 +449,7 @@ def main() -> int:
     stats = {"feed_filings": 0, "sweep_filings": 0, "trades": 0, "companies_swept": 0}
     run_recent(univ, deadline, stats)
     run_sweep(univ, deadline, stats)
+    send_pushes()
     with cursor() as (conn, cur):
         cur.execute("SELECT COUNT(*) FROM insider_sweep_state WHERE swept_at IS NOT NULL")
         covered = cur.fetchone()[0]

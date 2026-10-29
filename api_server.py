@@ -4196,12 +4196,14 @@ def push_subscribe(body: PushSubscription, user_id: int = Depends(current_user_i
                            WHERE user_id = %s ORDER BY COALESCE(last_ok, created_at) LIMIT 1)""", (user_id,))
         # the same browser re-subscribing (or a device passed to another account) -> one row, owned by this user
         # v20e: a new device takes the account's economic-events choice (watch_macro is set per account in the panel)
-        cur.execute("""INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, lang, watch_signals, watch_macro)
+        cur.execute("""INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, lang, watch_signals, watch_macro,
+                                                       watch_insider)
                        VALUES (%s, %s, %s, %s, %s, %s,
-                               COALESCE((SELECT BOOL_OR(watch_macro) FROM push_subscriptions WHERE user_id = %s), FALSE))
+                               COALESCE((SELECT BOOL_OR(watch_macro) FROM push_subscriptions WHERE user_id = %s), FALSE),
+                               COALESCE((SELECT BOOL_OR(watch_insider) FROM push_subscriptions WHERE user_id = %s), TRUE))
                        ON CONFLICT (endpoint) DO UPDATE SET user_id = EXCLUDED.user_id, p256dh = EXCLUDED.p256dh,
                          auth = EXCLUDED.auth, lang = EXCLUDED.lang, watch_signals = EXCLUDED.watch_signals, fails = 0""",
-                    (user_id, body.endpoint, body.p256dh, body.auth, lang, body.watch_signals, user_id))
+                    (user_id, body.endpoint, body.p256dh, body.auth, lang, body.watch_signals, user_id, user_id))
         conn.commit()
     return {"subscribed": True}
 
@@ -4247,11 +4249,12 @@ def list_alerts(user_id: int = Depends(current_user_id)):
                        WHERE user_id = %s AND (triggered_at IS NULL OR triggered_at > NOW() - INTERVAL '14 days')
                        ORDER BY triggered_at IS NOT NULL, created_at DESC""", (user_id,))
         alerts = [dict(r) for r in cur.fetchall()]
-        cur.execute("""SELECT COUNT(*) AS n, BOOL_OR(watch_signals) AS sig, BOOL_OR(watch_macro) AS mac
+        cur.execute("""SELECT COUNT(*) AS n, BOOL_OR(watch_signals) AS sig, BOOL_OR(watch_macro) AS mac,
+                              BOOL_OR(COALESCE(watch_insider, TRUE)) AS ins
                        FROM push_subscriptions WHERE user_id = %s""", (user_id,))
         s = cur.fetchone()
     return {"alerts": alerts, "devices": s["n"] or 0, "watch_signals": bool(s["sig"]) if s["n"] else True,
-            "watch_macro": bool(s["mac"])}
+            "watch_macro": bool(s["mac"]), "watch_insider": bool(s["ins"]) if s["n"] else True}
 
 
 class PriceAlertIn(BaseModel):
@@ -4287,6 +4290,7 @@ def delete_alert(alert_id: int, user_id: int = Depends(current_user_id)):
 class AlertSettings(BaseModel):
     watch_signals: Optional[bool] = None
     watch_macro: Optional[bool] = None     # v20e: reminders before major economic releases
+    watch_insider: Optional[bool] = None   # v22b: insider buys/sales of watchlist stocks
 
 
 @app.post("/api/alerts/settings")
@@ -4296,8 +4300,10 @@ def alert_settings(body: AlertSettings, user_id: int = Depends(current_user_id))
             cur.execute("UPDATE push_subscriptions SET watch_signals = %s WHERE user_id = %s", (body.watch_signals, user_id))
         if body.watch_macro is not None:
             cur.execute("UPDATE push_subscriptions SET watch_macro = %s WHERE user_id = %s", (body.watch_macro, user_id))
+        if body.watch_insider is not None:
+            cur.execute("UPDATE push_subscriptions SET watch_insider = %s WHERE user_id = %s", (body.watch_insider, user_id))
         conn.commit()
-    return {"watch_signals": body.watch_signals, "watch_macro": body.watch_macro}
+    return {"watch_signals": body.watch_signals, "watch_macro": body.watch_macro, "watch_insider": body.watch_insider}
 
 
 # v20e: ~40 minutes before a major US economic release, a reminder to everyone who turned that on. Runs inside the

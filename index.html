@@ -7124,6 +7124,9 @@ async function setWatchSignals(on){
 async function setWatchMacro(on){   // v20e
   try { await authFetch(`${API_BASE}/api/alerts/settings`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({watch_macro: !!on})}); } catch(e){}
 }
+async function setWatchInsider(on){   // v22b
+  try { await authFetch(`${API_BASE}/api/alerts/settings`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({watch_insider: !!on})}); } catch(e){}
+}
 async function addPriceAlert(){
   const en = lang==='en';
   const tk = canonTicker(document.getElementById('al-ticker').value);
@@ -7189,6 +7192,9 @@ async function renderAlertsPanel(){
     <label class="al-check"><input type="checkbox" ${data && data.watch_signals ? 'checked' : ''} ${data && data.devices ? '' : 'disabled'} onchange="setWatchSignals(this.checked)">
       <span>${en?'Stocks in my watchlist: a new scanner signal, and earnings reports (a reminder before the report and the results after it)'
                  :'מניות מרשימת המעקב שלי: איתות חדש בסורק, ודוחות רבעוניים (תזכורת לפני הדוח והתוצאות אחריו)'}</span></label>
+    <label class="al-check"><input type="checkbox" ${!data || data.watch_insider !== false ? 'checked' : ''} ${data && data.devices ? '' : 'disabled'} onchange="setWatchInsider(this.checked)">
+      <span>${en?'Stocks in my watchlist: insider trades — an officer, director or 10% owner bought shares in the open market, or sold outside a pre-arranged plan (from $50K, SEC Form 4)'
+                 :'מניות מרשימת המעקב שלי: עסקאות בעלי עניין — מנהל, דירקטור או בעל 10% קנה מניות בשוק, או מכר שלא לפי תוכנית שנקבעה מראש (מ-$50K, דיווח Form 4 ל-SEC)'}</span></label>
     <label class="al-check"><input type="checkbox" ${data && data.watch_macro ? 'checked' : ''} ${data && data.devices ? '' : 'disabled'} onchange="setWatchMacro(this.checked)">
       <span>${en?'Major US economic data (rates, inflation, jobs, GDP) — about 40 minutes before the release'
                  :'נתונים כלכליים חשובים בארה"ב (ריבית, אינפלציה, תעסוקה, תוצר) — כ-40 דקות לפני הפרסום'}</span></label>

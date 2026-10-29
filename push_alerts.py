@@ -6,7 +6,9 @@ What a signed-in user can get, on every device where they turned notifications o
   3. (v20d) earnings of a watchlist stock: a reminder before the report and the reported figures after it
      (pipeline_a_scanner.earnings_alerts_job, quick refresh). Same on/off switch as 1 (watch_signals);
   4. (v20e) ~40 minutes before a major US economic release (rates, inflation, jobs, GDP) — api_server's macro alert
-     thread, from the economic calendar. Its own switch (watch_macro), off until the user turns it on.
+     thread, from the economic calendar. Its own switch (watch_macro), off until the user turns it on;
+  5. (v22b) an insider of a watchlist stock bought, or sold outside a pre-arranged plan, shares in the open market
+     (SEC Form 4, insider_trades.py). Its own switch (watch_insider), on by default.
 Texts are factual ("JCI: new scanner signal — horizontal resistance breakout"), never advice.
 
 Web Push (the standard behind browser notifications) needs no paid service: the browser vendor (Google / Mozilla /
@@ -21,6 +23,7 @@ push service reports as gone (404/410) is deleted.
 """
 import json
 import os
+import re
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -87,6 +90,7 @@ def ensure_tables(cur):
             PRIMARY KEY (user_id, ref)
         );
         ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS watch_macro BOOLEAN DEFAULT FALSE;
+        ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS watch_insider BOOLEAN DEFAULT TRUE;
     """)
 
 
@@ -115,14 +119,16 @@ def _send_one(sub: dict, payload: dict) -> str:
         return "error"
 
 
-def send_to_user(cur, user_id: int, make_payload, only_signals: bool = False, only_macro: bool = False) -> int:
+def send_to_user(cur, user_id: int, make_payload, only_signals: bool = False, only_macro: bool = False,
+                 only_insider: bool = False) -> int:
     """Sends to every device of one user. make_payload(lang) -> {title, body, url, tag}. Returns the number delivered.
-    only_signals / only_macro = only devices with that switch on. The caller commits."""
-    cur.execute("""SELECT id, endpoint, p256dh, auth, lang, watch_signals, COALESCE(watch_macro, FALSE)
+    only_signals / only_macro / only_insider = only devices with that switch on. The caller commits."""
+    cur.execute("""SELECT id, endpoint, p256dh, auth, lang, watch_signals, COALESCE(watch_macro, FALSE),
+                          COALESCE(watch_insider, TRUE)
                    FROM push_subscriptions WHERE user_id = %s""", (user_id,))
     sent = 0
-    for sid, endpoint, p256dh, auth, lang, watch_signals, watch_macro in cur.fetchall():
-        if (only_signals and not watch_signals) or (only_macro and not watch_macro):
+    for sid, endpoint, p256dh, auth, lang, watch_signals, watch_macro, watch_insider in cur.fetchall():
+        if (only_signals and not watch_signals) or (only_macro and not watch_macro) or (only_insider and not watch_insider):
             continue
         res = _send_one({"endpoint": endpoint, "p256dh": p256dh, "auth": auth}, make_payload(lang or "he"))
         if res == "ok":
@@ -255,6 +261,84 @@ def notify_watchlist_earnings(conn, events: list) -> int:
     conn.commit()
     cur.close()
     print(f"[push] watchlist earnings: {len(events)} event(s), {len(pairs)} user/ticker match(es), {sent} delivered")
+    return sent
+
+
+INSIDER_MIN_VALUE = 50_000     # smaller insider trades are not pushed (still shown on the stock page)
+
+_ROLE_HE = [("chief executive", 'מנכ"ל'), ("ceo", 'מנכ"ל'), ("chief financial", 'סמנכ"ל כספים'), ("cfo", 'סמנכ"ל כספים'),
+            ("chief operating", 'סמנכ"ל תפעול'), ("coo", 'סמנכ"ל תפעול'), ("chief technology", 'סמנכ"ל טכנולוגיה'),
+            ("general counsel", "יועץ משפטי"), ("chief legal", "יועץ משפטי"), ("chair", 'יו"ר'),
+            ("executive vice president", "סגן נשיא בכיר"), ("evp", "סגן נשיא בכיר"),
+            ("senior vice president", "סגן נשיא בכיר"), ("svp", "סגן נשיא בכיר"), ("vice president", "סגן נשיא"),
+            ("president", "נשיא")]
+
+
+def _insider_role(tr: dict, en: bool) -> str:
+    title = (tr.get("owner_title") or "").strip()
+    if title:
+        if en:
+            return title
+        low = title.lower()
+        for key, he in _ROLE_HE:
+            if key in low:
+                return he
+        return title
+    if tr.get("is_director"):
+        return "Director" if en else "דירקטור"
+    if tr.get("is_ten_pct"):
+        return "10% owner" if en else "בעל 10%"
+    return "Insider" if en else "בעל עניין"
+
+
+def _insider_payload(tr: dict, lang: str) -> dict:
+    """Factual: who, bought/sold, how many shares, at what price, total. Never advice."""
+    tk, en, buy = tr["ticker"], lang == "en", tr["code"] == "P"
+    role = _insider_role(tr, en)
+    shares = f"{tr['shares']:,.0f}"
+    price = f" (${tr['price']:,.2f} {'avg' if en else 'בממוצע'})" if tr.get("price") else ""
+    v = tr.get("value")
+    value = (f", ${v / 1e3:,.0f}K" if v < 1e6 else f", {_big(v)}") if v else ""
+    name = (tr.get("owner_name") or "").split(";")[0].strip()
+    if en:
+        title = f"{tk}: insider {'buy' if buy else 'sale'}"
+        body = f"{role} {name} {'bought' if buy else 'sold'} {shares} shares in the open market{value}{price}."
+    else:
+        title = f"{tk}: {'קנייה' if buy else 'מכירה'} של בעל עניין"
+        body = f"{role} {name} {'קנה' if buy else 'מכר'} {shares} מניות בשוק{value}{price}."
+    return {"title": title, "body": re.sub(r"\s+", " ", body)[:200], "url": f"/?ticker={tk}", "tag": f"ins-{tk}"}
+
+
+def notify_watchlist_insider(conn, trades: list) -> int:
+    """v22b. trades = new insider rows grouped per filing and direction: {ticker, accession, code 'P'|'S', owner_name,
+    owner_title, is_director, is_ten_pct, shares, price (average), value, planned}. Sent once per (user, filing,
+    direction) to devices with the insider switch on (watch_insider, on by default). Pushed: every open-market buy, and
+    sales that were NOT pre-planned (10b5-1 plan sales are scheduled months ahead and frequent) — each from
+    INSIDER_MIN_VALUE up. Everything is still on the stock page."""
+    if not ready() or not trades:
+        return 0
+    wanted = [t for t in trades if (t.get("value") or 0) >= INSIDER_MIN_VALUE
+              and (t["code"] == "P" or (t["code"] == "S" and not t.get("planned")))]
+    if not wanted:
+        return 0
+    by_ticker = {}
+    for t in wanted:
+        by_ticker.setdefault(t["ticker"], []).append(t)
+    cur = conn.cursor()
+    ensure_tables(cur)
+    cur.execute("""SELECT DISTINCT w.user_id, w.ticker FROM watchlist w
+                   JOIN push_subscriptions p ON p.user_id = w.user_id AND COALESCE(p.watch_insider, TRUE)
+                   WHERE w.ticker = ANY(%s)""", (list(by_ticker),))
+    pairs = cur.fetchall()
+    sent = 0
+    for user_id, tk in pairs:
+        for t in by_ticker.get(tk, []):
+            if not _first_time(cur, user_id, f"ins:{t['accession']}:{t['code']}"):
+                continue
+            sent += send_to_user(cur, user_id, lambda lang, t=t: _insider_payload(t, lang), only_insider=True)
+    conn.commit()
+    cur.close()
+    print(f"[push] watchlist insider trades: {len(wanted)} filing(s) to push, {len(pairs)} user/ticker match(es), {sent} delivered")
     return sent
 
 
