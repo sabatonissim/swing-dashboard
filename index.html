@@ -251,6 +251,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .mover-pct.up{color:var(--green);}
   .mover-pct.down{color:var(--red);}
   .movers-empty{color:var(--text-dim);font-size:12.5px;padding:14px 6px;text-align:center;}
+  .movers-note{color:var(--text-dim);font-size:11px;padding:2px 6px 8px;}
 
   /* ---- Main board ---- */
   .board{display:grid;grid-template-columns:1fr 3px 1fr;height:calc(100vh - 280px);min-height:400px;}
@@ -338,6 +339,9 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .cs-freeform{border-top:1px solid var(--line);margin-top:8px;padding-top:10px;}
   .score-badge{font-family:'JetBrains Mono',monospace;font-weight:600;font-size:13px;padding:4px 9px;border-radius:20px;min-width:36px;text-align:center;}
   .repeat-badge{font-family:'JetBrains Mono',monospace;font-weight:600;font-size:10px;padding:3px 7px;border-radius:20px;background:rgba(232,163,61,.12);color:var(--amber);white-space:nowrap;}
+  /* v20e: a small tag on its own line under the signal text (as a separate column it squeezed the text on a phone) */
+  .earn-soon-badge{display:table;margin-top:4px;font-size:10px;font-weight:600;padding:1px 7px;border-radius:20px;border:1px solid var(--line-hover);color:var(--text);white-space:nowrap;font-family:'Heebo',sans-serif;}
+  html[lang="he"] .earn-soon-badge{margin-left:auto;}
   /* Phone-sized screens: the scanner row (ticker+trend+trigger+badges+
      score) and the 4-up backtest stat row were both tight enough to
      overflow/drift sideways — trim spacing and font size a bit here,
@@ -349,8 +353,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
     .stock-row .trigger{font-size:11.5px;}
     .win-rate-badge{font-size:10px;padding:2px 5px;}
     .score-badge{font-size:11.5px;padding:3px 7px;min-width:30px;}
-    .repeat-badge{font-size:9px;padding:2px 5px;}
-    .bt-stats-row{grid-template-columns:repeat(2,1fr);gap:8px;}
+    .repeat-badge{font-size:9px;padding:2px 5px;}    .bt-stats-row{grid-template-columns:repeat(2,1fr);gap:8px;}
     .bt-stat-card{padding:10px 8px;}
     .bt-stat-card .v{font-size:16px;}
     .bt-stat-card .k{font-size:9.5px;}
@@ -1139,12 +1142,28 @@ function stockRowHtml(s,i){
     <div class="stock-row" onclick="openDrawer(${i})">
       <div class="ticker">${s.ticker}</div>
       <div class="trend ${s.trend}">${s.trend==="up"?"▲":"▼"}</div>
-      <div class="trigger">${lang==='en'?(s.trigger_en||s.trigger||''):(s.trigger||s.trigger_he||'')}</div>
+      <div class="trigger">${lang==='en'?(s.trigger_en||s.trigger||''):(s.trigger||s.trigger_he||'')}${earningsSoonBadgeHtml(s)}</div>
       ${repeatBadgeHtml(s.repeatCount)}
       ${winRateBadgeHtml(s.patternType)}
       <div class="score-badge ${scoreClass(s.score)}">${s.score}</div>
     </div>
   `;
+}
+
+// v20e: a report within the next 7 days is a known swing risk (gap on the report) — shown on the row itself, not only
+// inside the stock drawer. days_to_earnings was counted in UTC calendar days on the day of the scan (scanner
+// compute_days_to_earnings), so the report day = scan day + days, compared with today's UTC date (a report from
+// yesterday evening must not read "today" the next morning — KLAC, 29.10).
+function earningsSoonBadgeHtml(s){
+  if(s.daysToEarnings == null || !s.timestamp) return '';
+  const scan = new Date(s.timestamp), now = new Date();
+  const scanDay = Date.UTC(scan.getUTCFullYear(), scan.getUTCMonth(), scan.getUTCDate());
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const d = Math.round((scanDay + s.daysToEarnings * 86400000 - today) / 86400000);
+  if(d < 0 || d > 7) return '';
+  const en = lang==='en';
+  const label = d === 0 ? (en ? 'Earnings today' : 'דוח היום') : d === 1 ? (en ? 'Earnings tomorrow' : 'דוח מחר') : (en ? `Earnings in ${d}d` : `דוח בעוד ${d} ימים`);
+  return `<span class="earn-soon-badge" title="${en ? 'Quarterly report soon — the price can gap on the report' : 'דוח רבעוני קרוב — המחיר עלול לקפוץ ביום הדוח'}">${label}</span>`;
 }
 
 // Shows how many times this ticker has actually re-qualified in the last
@@ -1272,7 +1291,9 @@ function renderMovers(){
     return;
   }
 
-  el.innerHTML = marketMovers.map((m)=>{
+  const preNote = marketMovers[0].session === 'pre'
+    ? `<div class="movers-note">${lang==='en' ? 'Before the open · change vs. yesterday\'s close · companies above $2B' : 'לפני הפתיחה · שינוי מול סגירת אתמול · חברות מעל 2 מיליארד דולר'}</div>` : '';
+  el.innerHTML = preNote + marketMovers.map((m)=>{
     const pctClass = m.change_pct>=0 ? 'up' : 'down';
     const pctSign = m.change_pct>=0 ? '+' : '';
     return `
@@ -3889,7 +3910,10 @@ function renderMoversOrSectorList(){
     return;
   }
   if(addBtn) addBtn.style.display = 'none';
-  document.getElementById('movers-title').textContent = UI[lang].movers_title;
+  // v20f: before the US open the server sends the biggest pre-market moves (session "pre") instead of yesterday's list
+  const preMarket = marketMovers.length && marketMovers[0].session === 'pre';
+  document.getElementById('movers-title').textContent = preMarket
+    ? (lang==='en' ? 'Top pre-market movers' : 'הכי זזות בפרה-מרקט') : UI[lang].movers_title;
   renderMovers();
 }
 
@@ -6735,6 +6759,9 @@ async function testPush(){
 async function setWatchSignals(on){
   try { await authFetch(`${API_BASE}/api/alerts/settings`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({watch_signals: !!on})}); } catch(e){}
 }
+async function setWatchMacro(on){   // v20e
+  try { await authFetch(`${API_BASE}/api/alerts/settings`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({watch_macro: !!on})}); } catch(e){}
+}
 async function addPriceAlert(){
   const en = lang==='en';
   const tk = canonTicker(document.getElementById('al-ticker').value);
@@ -6800,6 +6827,9 @@ async function renderAlertsPanel(){
     <label class="al-check"><input type="checkbox" ${data && data.watch_signals ? 'checked' : ''} ${data && data.devices ? '' : 'disabled'} onchange="setWatchSignals(this.checked)">
       <span>${en?'Stocks in my watchlist: a new scanner signal, and earnings reports (a reminder before the report and the results after it)'
                  :'מניות מרשימת המעקב שלי: איתות חדש בסורק, ודוחות רבעוניים (תזכורת לפני הדוח והתוצאות אחריו)'}</span></label>
+    <label class="al-check"><input type="checkbox" ${data && data.watch_macro ? 'checked' : ''} ${data && data.devices ? '' : 'disabled'} onchange="setWatchMacro(this.checked)">
+      <span>${en?'Major US economic data (rates, inflation, jobs, GDP) — about 40 minutes before the release'
+                 :'נתונים כלכליים חשובים בארה"ב (ריבית, אינפלציה, תעסוקה, תוצר) — כ-40 דקות לפני הפרסום'}</span></label>
     <div class="al-sec">${en?'Price alerts':'התראות מחיר'}</div>
     <div class="al-form">
       <input id="al-ticker" class="search-input mono" placeholder="${en?'Ticker':'טיקר'}" value="${escH(d.ticker||'')}" maxlength="12">

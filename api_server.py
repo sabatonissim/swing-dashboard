@@ -4193,11 +4193,13 @@ def push_subscribe(body: PushSubscription, user_id: int = Depends(current_user_i
             cur.execute("""DELETE FROM push_subscriptions WHERE id = (SELECT id FROM push_subscriptions
                            WHERE user_id = %s ORDER BY COALESCE(last_ok, created_at) LIMIT 1)""", (user_id,))
         # the same browser re-subscribing (or a device passed to another account) -> one row, owned by this user
-        cur.execute("""INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, lang, watch_signals)
-                       VALUES (%s, %s, %s, %s, %s, %s)
+        # v20e: a new device takes the account's economic-events choice (watch_macro is set per account in the panel)
+        cur.execute("""INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, lang, watch_signals, watch_macro)
+                       VALUES (%s, %s, %s, %s, %s, %s,
+                               COALESCE((SELECT BOOL_OR(watch_macro) FROM push_subscriptions WHERE user_id = %s), FALSE))
                        ON CONFLICT (endpoint) DO UPDATE SET user_id = EXCLUDED.user_id, p256dh = EXCLUDED.p256dh,
                          auth = EXCLUDED.auth, lang = EXCLUDED.lang, watch_signals = EXCLUDED.watch_signals, fails = 0""",
-                    (user_id, body.endpoint, body.p256dh, body.auth, lang, body.watch_signals))
+                    (user_id, body.endpoint, body.p256dh, body.auth, lang, body.watch_signals, user_id))
         conn.commit()
     return {"subscribed": True}
 
@@ -4243,10 +4245,11 @@ def list_alerts(user_id: int = Depends(current_user_id)):
                        WHERE user_id = %s AND (triggered_at IS NULL OR triggered_at > NOW() - INTERVAL '14 days')
                        ORDER BY triggered_at IS NOT NULL, created_at DESC""", (user_id,))
         alerts = [dict(r) for r in cur.fetchall()]
-        cur.execute("SELECT COUNT(*) AS n, BOOL_OR(watch_signals) AS sig FROM push_subscriptions WHERE user_id = %s",
-                    (user_id,))
+        cur.execute("""SELECT COUNT(*) AS n, BOOL_OR(watch_signals) AS sig, BOOL_OR(watch_macro) AS mac
+                       FROM push_subscriptions WHERE user_id = %s""", (user_id,))
         s = cur.fetchone()
-    return {"alerts": alerts, "devices": s["n"] or 0, "watch_signals": bool(s["sig"]) if s["n"] else True}
+    return {"alerts": alerts, "devices": s["n"] or 0, "watch_signals": bool(s["sig"]) if s["n"] else True,
+            "watch_macro": bool(s["mac"])}
 
 
 class PriceAlertIn(BaseModel):
@@ -4280,15 +4283,62 @@ def delete_alert(alert_id: int, user_id: int = Depends(current_user_id)):
 
 
 class AlertSettings(BaseModel):
-    watch_signals: bool
+    watch_signals: Optional[bool] = None
+    watch_macro: Optional[bool] = None     # v20e: reminders before major economic releases
 
 
 @app.post("/api/alerts/settings")
 def alert_settings(body: AlertSettings, user_id: int = Depends(current_user_id)):
     with db_cursor() as (conn, cur):
-        cur.execute("UPDATE push_subscriptions SET watch_signals = %s WHERE user_id = %s", (body.watch_signals, user_id))
+        if body.watch_signals is not None:
+            cur.execute("UPDATE push_subscriptions SET watch_signals = %s WHERE user_id = %s", (body.watch_signals, user_id))
+        if body.watch_macro is not None:
+            cur.execute("UPDATE push_subscriptions SET watch_macro = %s WHERE user_id = %s", (body.watch_macro, user_id))
         conn.commit()
-    return {"watch_signals": body.watch_signals}
+    return {"watch_signals": body.watch_signals, "watch_macro": body.watch_macro}
+
+
+# v20e: ~40 minutes before a major US economic release, a reminder to everyone who turned that on. Runs inside the
+# server (it already keeps itself awake and holds the calendar in memory); the shared calendar cache is used, and
+# push_log makes it send once per release time even with two instances during a deploy.
+MACRO_ALERT_CHECK_SEC = 300
+
+
+def _macro_alert_check():
+    if not push_alerts.ready():
+        return
+    events = (econ_calendar.build_calendar(get_conn) or {}).get("events") or []
+    now = dt.now(timezone.utc)             # (datetime is imported as `dt` in this file)
+    slots = {}
+    for e in events:
+        if e.get("impact") != "high" or e.get("estimated") or e.get("actual") is not None:
+            continue
+        try:
+            when = dt.fromisoformat(str(e.get("datetime_utc", "")).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        mins = (when - now).total_seconds() / 60
+        if 0 < mins <= push_alerts.MACRO_ALERT_MINUTES:
+            slots.setdefault(when, []).append(e)
+    for when, evs in slots.items():
+        conn = get_conn()
+        try:
+            push_alerts.notify_macro_events(conn, when, evs)
+        finally:
+            conn.close()
+
+
+def _macro_alert_loop():
+    time.sleep(60)                         # let the server finish booting and the calendar warm up
+    while True:
+        try:
+            _macro_alert_check()
+        except Exception as e:  # noqa: BLE001 — a failed check must never stop the loop
+            print(f"[macro alerts] check failed: {type(e).__name__}: {e}")
+        time.sleep(MACRO_ALERT_CHECK_SEC)
+
+
+threading.Thread(target=_macro_alert_loop, daemon=True).start()
 
 
 # ------------------------------------------------------------------
@@ -4341,9 +4391,60 @@ def _fetch_market_movers(limit: int = 50) -> List[dict]:
     except Exception as e:
         print(f"[warn] day_losers screen failed: {e}")
 
+    # v20f (owner: "before the open — the pre-market moves; after the open — simply who moves most"): while Yahoo
+    # says the US market is in its pre-market session, the list is the biggest PRE-MARKET moves instead (the regular
+    # day_gainers/losers at that hour are still yesterday's session).
+    state = None
+    for res in (gainers, losers):
+        for q in ((res or {}).get("quotes") or [])[:1]:
+            state = state or q.get("marketState")
+    if state == "PRE":
+        pre = _fetch_premarket_movers(limit, (gainers, losers))
+        if len(pre) >= MOVERS_MIN_QUALITY:
+            return pre
+
     combined = _parse_screen_quotes(gainers) + _parse_screen_quotes(losers)
     combined.sort(key=lambda x: abs(x["change_pct"]), reverse=True)
     return combined[:limit]
+
+
+PREMARKET_MIN_MCAP = 2e9          # pre-market trading is thin: small caps jump on a handful of shares
+PREMARKET_MAX_AGE_SEC = 6 * 3600  # a pre-market quote older than this belongs to an earlier session
+
+
+def _fetch_premarket_movers(limit: int, already: tuple) -> List[dict]:
+    """Biggest pre-market moves (vs yesterday's close) among the stocks in Yahoo's predefined screeners — the 250 most
+    active plus yesterday's gainers/losers (already fetched), ~500 names incl. the ones that reported overnight.
+    Checked 29.10.2026 05:50 ET: 217 of 250 most-active quotes carried pre-market data (FTNT -25%, GOOGL -10%)."""
+    quotes = {}
+    sources = list(already)
+    try:
+        sources.append(yf.screen("most_actives", count=250))
+    except Exception as e:
+        print(f"[warn] most_actives screen failed: {e}")
+    for res in sources:
+        for q in (res or {}).get("quotes") or []:
+            sym = q.get("symbol")
+            if sym and sym not in quotes:
+                quotes[sym] = q
+    now = time.time()
+    out = []
+    for sym, q in quotes.items():
+        pct, price, when = q.get("preMarketChangePercent"), q.get("preMarketPrice"), q.get("preMarketTime")
+        if pct is None or price is None or (q.get("marketCap") or 0) < PREMARKET_MIN_MCAP:
+            continue
+        if when and now - float(when) > PREMARKET_MAX_AGE_SEC:
+            continue
+        out.append({
+            "ticker": sym,
+            "name": q.get("shortName") or q.get("longName") or sym,
+            "price": round(float(price), 2),
+            "change_pct": round(float(pct), 2),
+            "volume": None,
+            "session": "pre",
+        })
+    out.sort(key=lambda x: abs(x["change_pct"]), reverse=True)
+    return out[:limit]
 
 
 MOVERS_MIN_QUALITY = 5  # a fetch returning fewer than this is treated as a degraded/

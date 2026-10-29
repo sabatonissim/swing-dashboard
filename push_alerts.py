@@ -4,7 +4,9 @@ What a signed-in user can get, on every device where they turned notifications o
   1. a NEW scanner signal on a stock in their watchlist (sent by the scanner right after it saves the signals);
   2. a price alert they set ("KO above $90") — checked by the quick refresh (~every 20 minutes in market hours);
   3. (v20d) earnings of a watchlist stock: a reminder before the report and the reported figures after it
-     (pipeline_a_scanner.earnings_alerts_job, quick refresh). Same on/off switch as 1 (watch_signals).
+     (pipeline_a_scanner.earnings_alerts_job, quick refresh). Same on/off switch as 1 (watch_signals);
+  4. (v20e) ~40 minutes before a major US economic release (rates, inflation, jobs, GDP) — api_server's macro alert
+     thread, from the economic calendar. Its own switch (watch_macro), off until the user turns it on.
 Texts are factual ("JCI: new scanner signal — horizontal resistance breakout"), never advice.
 
 Web Push (the standard behind browser notifications) needs no paid service: the browser vendor (Google / Mozilla /
@@ -84,6 +86,7 @@ def ensure_tables(cur):
             sent_at TIMESTAMPTZ DEFAULT NOW(),
             PRIMARY KEY (user_id, ref)
         );
+        ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS watch_macro BOOLEAN DEFAULT FALSE;
     """)
 
 
@@ -112,14 +115,14 @@ def _send_one(sub: dict, payload: dict) -> str:
         return "error"
 
 
-def send_to_user(cur, user_id: int, make_payload, only_signals: bool = False) -> int:
+def send_to_user(cur, user_id: int, make_payload, only_signals: bool = False, only_macro: bool = False) -> int:
     """Sends to every device of one user. make_payload(lang) -> {title, body, url, tag}. Returns the number delivered.
-    The caller commits."""
-    cur.execute("SELECT id, endpoint, p256dh, auth, lang, watch_signals FROM push_subscriptions WHERE user_id = %s",
-                (user_id,))
+    only_signals / only_macro = only devices with that switch on. The caller commits."""
+    cur.execute("""SELECT id, endpoint, p256dh, auth, lang, watch_signals, COALESCE(watch_macro, FALSE)
+                   FROM push_subscriptions WHERE user_id = %s""", (user_id,))
     sent = 0
-    for sid, endpoint, p256dh, auth, lang, watch_signals in cur.fetchall():
-        if only_signals and not watch_signals:
+    for sid, endpoint, p256dh, auth, lang, watch_signals, watch_macro in cur.fetchall():
+        if (only_signals and not watch_signals) or (only_macro and not watch_macro):
             continue
         res = _send_one({"endpoint": endpoint, "p256dh": p256dh, "auth": auth}, make_payload(lang or "he"))
         if res == "ok":
@@ -252,6 +255,43 @@ def notify_watchlist_earnings(conn, events: list) -> int:
     conn.commit()
     cur.close()
     print(f"[push] watchlist earnings: {len(events)} event(s), {len(pairs)} user/ticker match(es), {sent} delivered")
+    return sent
+
+
+MACRO_ALERT_MINUTES = 40       # a major US release this many minutes ahead (or less) triggers the reminder
+
+
+def notify_macro_events(conn, slot_utc: datetime, events: list) -> int:
+    """v20e. One reminder per release time (several releases often share 8:30 ET — GDP + PCE + Core PCE), sent once
+    per user (push_log 'macro:<time>') to devices with the economic-events switch on (watch_macro, off by default).
+    events = calendar rows ({name_he, name_en}) of high-impact releases at slot_utc. Factual: what and when."""
+    if not ready() or not events:
+        return 0
+    from zoneinfo import ZoneInfo
+    mins = max(1, round((slot_utc - datetime.now(timezone.utc)).total_seconds() / 60))
+    t_il = slot_utc.astimezone(ZoneInfo("Asia/Jerusalem")).strftime("%H:%M")
+    t_et = slot_utc.astimezone(ZoneInfo("America/New_York")).strftime("%H:%M")
+    names_he = ", ".join(e.get("name_he") or e.get("name_en") or "" for e in events)
+    names_en = ", ".join(e.get("name_en") or "" for e in events)
+
+    def payload(lang):
+        if lang == "en":
+            return {"title": f"Major US data in {mins} min", "body": f"{t_et} ET: {names_en}"[:200],
+                    "url": "/?page=pulse", "tag": "macro"}
+        return {"title": f"נתון כלכלי חשוב בעוד {mins} דקות", "body": f"{t_il} (שעון ישראל): {names_he}"[:200],
+                "url": "/?page=pulse", "tag": "macro"}
+
+    cur = conn.cursor()
+    ensure_tables(cur)
+    cur.execute("SELECT DISTINCT user_id FROM push_subscriptions WHERE watch_macro")
+    users = [r[0] for r in cur.fetchall()]
+    sent = 0
+    for user_id in users:
+        if _first_time(cur, user_id, f"macro:{slot_utc.strftime('%Y-%m-%dT%H:%MZ')}"):
+            sent += send_to_user(cur, user_id, payload, only_macro=True)
+    conn.commit()
+    cur.close()
+    print(f"[push] macro events at {t_et} ET ({names_en}): {len(users)} user(s), {sent} delivered")
     return sent
 
 
