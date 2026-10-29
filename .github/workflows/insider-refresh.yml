@@ -1,0 +1,30 @@
+name: Insider Trades Refresh
+
+# v22: open-market buys/sells by officers, directors and 10% owners from SEC Form 4 filings -> Postgres
+# (insider_trades). Started by the built-in scheduler on Render (scheduler.py) every 30 minutes on weekdays; the first
+# runs also fill six months of history. Can be run by hand.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "10 */4 * * 1-5"      # backup only — the scheduler normally starts it
+
+# the job only needs to read the code (default token permissions are broader)
+permissions:
+  contents: read
+
+jobs:
+  insider:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    concurrency:
+      group: insider-refresh
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: python -u insider_trades.py
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
