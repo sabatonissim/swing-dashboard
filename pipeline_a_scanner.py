@@ -2819,6 +2819,155 @@ def check_price_alerts_job():
         conn.close()
 
 
+# ------------------------------------------------------------------
+# v20d: earnings alerts for watchlist stocks. On every quick refresh (~20 min): the next report date of each stock that
+# is on the watchlist of someone with notifications on (Yahoo's earnings dates; the large-cap earnings_calendar is
+# preferred when it has the stock — better session time + verified revenue). Two pushes per report and person:
+# a reminder the business day before / the same day before the report, and the reported figures once they exist.
+# Dates are cached in watch_earnings so Yahoo is asked again only every 12 h, or every run while a result is awaited.
+# ------------------------------------------------------------------
+WATCH_EARNINGS_RECHECK_HOURS = 12
+WATCH_EARNINGS_MAX_FETCH = 60          # Yahoo calls per quick run
+WATCH_EARNINGS_RESULT_DAYS = 2         # look for / announce the figures up to this many days after the report date
+
+
+def _next_business_day(d):
+    d = d + timedelta(days=1)
+    while d.weekday() >= 5:
+        d += timedelta(days=1)
+    return d
+
+
+def _fetch_next_earnings(ticker: str, today_et):
+    """(report_date_et, session, eps_estimate, eps_actual, surprise_pct) of the nearest report that is upcoming or at
+    most WATCH_EARNINGS_RESULT_DAYS old; None when Yahoo lists none; "error" when the call failed."""
+    try:
+        df = yf.Ticker(ticker).get_earnings_dates(limit=8)
+    except Exception as e:
+        print(f"[warn] watch earnings: {ticker}: {type(e).__name__}: {e}")
+        return "error"
+    if df is None or df.empty:
+        return None
+    et_zone = ZoneInfo("America/New_York")
+    best = None
+    for ts, row in df.iterrows():
+        try:
+            dt_utc = ts.to_pydatetime().astimezone(timezone.utc)
+        except Exception:
+            continue
+        d_et = dt_utc.astimezone(et_zone).date()
+        if d_et < today_et - timedelta(days=WATCH_EARNINGS_RESULT_DAYS):
+            continue
+        if best is None or d_et < best[0]:
+            best = (d_et, dt_utc, row)
+    if best is None:
+        return None
+    d_et, dt_utc, row = best
+    et_time = dt_utc.astimezone(et_zone)
+    # a bare date (midnight) says nothing about before/after the session
+    session = "unknown" if (et_time.hour == 0 and et_time.minute == 0) else _earnings_session(dt_utc)
+
+    def num(k):
+        v = row.get(k)
+        return _native(v) if v is not None and pd.notna(v) else None
+    return (d_et, session, num("EPS Estimate"), num("Reported EPS"), num("Surprise(%)"))
+
+
+def earnings_alerts_job():
+    import push_alerts
+    if not push_alerts.ready():
+        print("[info] watch earnings: push not configured — skipped.")
+        return
+    now = datetime.now(timezone.utc)
+    today = now.astimezone(ZoneInfo("America/New_York")).date()
+    since = today - timedelta(days=WATCH_EARNINGS_RESULT_DAYS)
+
+    conn = get_conn()
+    try:
+        tickers = push_alerts.watched_tickers(conn)
+        if not tickers:
+            print("[info] watch earnings: no watchlists with notifications on.")
+            return
+        cur = conn.cursor()
+        cur.execute("""CREATE TABLE IF NOT EXISTS watch_earnings (
+                           ticker TEXT PRIMARY KEY, report_date DATE, session TEXT, eps_estimate REAL,
+                           eps_actual REAL, surprise_pct REAL, checked_at TIMESTAMPTZ)""")
+        cur.execute("""SELECT ticker, report_date, session, eps_estimate, eps_actual, surprise_pct, checked_at
+                       FROM watch_earnings WHERE ticker = ANY(%s)""", (tickers,))
+        known = {r[0]: list(r[1:]) for r in cur.fetchall()}   # [report_date, session, est, actual, surprise, checked_at]
+        cur.execute("""SELECT ticker, report_date, session, eps_estimate, eps_actual, surprise_pct,
+                              revenue_estimate, revenue_actual, revenue_surprise_pct
+                       FROM earnings_calendar WHERE ticker = ANY(%s) AND report_date >= %s
+                       ORDER BY report_date ASC""", (tickers, since))
+        cal = {}
+        for r in cur.fetchall():
+            cal.setdefault(r[0], r)                               # the nearest report of each ticker
+        conn.commit()
+        cur.close()
+    finally:
+        conn.close()
+
+    todo = []
+    for tk in tickers:
+        k = known.get(tk)
+        if k is None or k[5] is None or (now - k[5]).total_seconds() > WATCH_EARNINGS_RECHECK_HOURS * 3600:
+            todo.append(tk)
+            continue
+        rdate, session, eps_act = k[0], k[1], k[3]
+        if rdate and eps_act is None and since <= rdate <= today:
+            report_dt = datetime(rdate.year, rdate.month, rdate.day, _SESSION_REPORT_HOUR_UTC.get(session or "", 15), tzinfo=timezone.utc)
+            if report_dt <= now:
+                todo.append(tk)                                   # reported (or about to) — look for the figures
+    fetched = {}
+    for tk in todo[:WATCH_EARNINGS_MAX_FETCH]:
+        r = _fetch_next_earnings(tk, today)
+        time.sleep(INTER_TICKER_DELAY_SEC)
+        if r != "error":
+            fetched[tk] = r
+
+    conn = get_conn()   # fresh connection after the Yahoo calls (Neon auto-suspend)
+    try:
+        cur = conn.cursor()
+        for tk, r in fetched.items():
+            d, sess, est, act, sur = r if r is not None else (None, None, None, None, None)
+            cur.execute("""INSERT INTO watch_earnings (ticker, report_date, session, eps_estimate, eps_actual, surprise_pct, checked_at)
+                           VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                           ON CONFLICT (ticker) DO UPDATE SET report_date = EXCLUDED.report_date, session = EXCLUDED.session,
+                               eps_estimate = EXCLUDED.eps_estimate, eps_actual = EXCLUDED.eps_actual,
+                               surprise_pct = EXCLUDED.surprise_pct, checked_at = NOW()""",
+                        (tk, d, sess, est, act, sur))
+            known[tk] = [d, sess, est, act, sur, now]
+        conn.commit()
+        cur.close()
+
+        events = []
+        for tk in tickers:
+            k, c = known.get(tk), cal.get(tk)
+            info = None
+            if c is not None:
+                info = {"report_date": c[1], "session": c[2], "eps_estimate": c[3], "eps_actual": c[4], "surprise_pct": c[5],
+                        "revenue_estimate": c[6], "revenue_actual": c[7], "revenue_surprise_pct": c[8]}
+                if k and k[0] == c[1]:                            # same report: fill EPS gaps from Yahoo's dates
+                    for i, f in ((2, "eps_estimate"), (3, "eps_actual"), (4, "surprise_pct")):
+                        if info[f] is None:
+                            info[f] = k[i]
+            elif k and k[0]:
+                info = {"report_date": k[0], "session": k[1], "eps_estimate": k[2], "eps_actual": k[3], "surprise_pct": k[4]}
+            if not info or not info["report_date"]:
+                continue
+            rd, sess = info["report_date"], info["session"]
+            report_dt = datetime(rd.year, rd.month, rd.day, _SESSION_REPORT_HOUR_UTC.get(sess or "", 15), tzinfo=timezone.utc)
+            base = dict(info, ticker=tk, is_today=(rd == today), is_next_day=(rd == today + timedelta(days=1)))
+            if info["eps_actual"] is not None and since <= rd <= today:
+                events.append(dict(base, kind="res"))
+            elif info["eps_actual"] is None and now < report_dt and rd in (today, _next_business_day(today)):
+                events.append(dict(base, kind="pre"))
+        print(f"[info] watch earnings: {len(tickers)} watched ticker(s), {len(fetched)} re-read from Yahoo, {len(events)} event(s).")
+        push_alerts.notify_watchlist_earnings(conn, events)
+    finally:
+        conn.close()
+
+
 def notify_new_signals(results):
     """v19 alerts: a push to everyone who has the ticker in their watchlist and notifications on (once a day per ticker)."""
     import push_alerts
@@ -2835,7 +2984,7 @@ def notify_new_signals(results):
 def main():
     import sys
     if "--quick" in sys.argv:
-        for job in (refresh_movers_only, refresh_earnings_results, check_price_alerts_job):
+        for job in (refresh_movers_only, refresh_earnings_results, check_price_alerts_job, earnings_alerts_job):
             try:
                 job()
             except Exception:

@@ -2,7 +2,9 @@
 
 What a signed-in user can get, on every device where they turned notifications on (browser or the installed app):
   1. a NEW scanner signal on a stock in their watchlist (sent by the scanner right after it saves the signals);
-  2. a price alert they set ("KO above $90") — checked by the quick refresh (~every 20 minutes in market hours).
+  2. a price alert they set ("KO above $90") — checked by the quick refresh (~every 20 minutes in market hours);
+  3. (v20d) earnings of a watchlist stock: a reminder before the report and the reported figures after it
+     (pipeline_a_scanner.earnings_alerts_job, quick refresh). Same on/off switch as 1 (watch_signals).
 Texts are factual ("JCI: new scanner signal — horizontal resistance breakout"), never advice.
 
 Web Push (the standard behind browser notifications) needs no paid service: the browser vendor (Google / Mozilla /
@@ -164,6 +166,92 @@ def notify_watchlist_signals(conn, signals: list) -> int:
     conn.commit()
     cur.close()
     print(f"[push] watchlist signals: {len(pairs)} user/ticker match(es), {sent} notification(s) delivered")
+    return sent
+
+
+def watched_tickers(conn) -> list:
+    """Tickers on the watchlist of someone who has a device with watchlist notifications on (v20d)."""
+    cur = conn.cursor()
+    ensure_tables(cur)
+    conn.commit()
+    cur.execute("""SELECT DISTINCT w.ticker FROM watchlist w
+                   JOIN push_subscriptions p ON p.user_id = w.user_id AND p.watch_signals""")
+    out = [r[0] for r in cur.fetchall()]
+    cur.close()
+    return out
+
+
+def _usd(v) -> str:
+    return f"-${abs(v):,.2f}" if v < 0 else f"${v:,.2f}"
+
+
+def _big(v) -> str:
+    a = abs(v)
+    s = f"{a / 1e9:,.2f}B" if a >= 1e9 else f"{a / 1e6:,.1f}M"
+    return ("-$" if v < 0 else "$") + s
+
+
+def _pct(v) -> str:
+    return f"{'+' if v >= 0 else '-'}{abs(v):.1f}%"
+
+
+def _earnings_payload(ev: dict, lang: str) -> dict:
+    """Factual texts only — what was reported vs the estimate, never "buy/sell"."""
+    tk, en = ev["ticker"], lang == "en"
+    url, tag = f"/?ticker={tk}", f"earn-{tk}"
+    if ev["kind"] == "pre":
+        when_en = {"bmo": "before the open", "amc": "after the close"}.get(ev.get("session"), "")
+        when_he = {"bmo": "לפני הפתיחה", "amc": "אחרי הסגירה"}.get(ev.get("session"), "")
+        # a Monday report announced on Friday is "on Mon Nov 02", not "tomorrow"
+        day_en = "today" if ev["is_today"] else "tomorrow" if ev["is_next_day"] else "on " + ev["report_date"].strftime("%a %b %d")
+        day_he = "היום" if ev["is_today"] else "מחר" if ev["is_next_day"] else "ב-" + ev["report_date"].strftime("%d.%m")
+        est = ev.get("eps_estimate")
+        if en:
+            body = f"Reports {day_en} {when_en}".strip() + (f". EPS estimate {_usd(est)}." if est is not None else ".")
+            return {"title": f"{tk}: earnings {day_en}", "body": body, "url": url, "tag": tag}
+        body = f"מדווחת {day_he} {when_he}".strip() + (f". צפי EPS {_usd(est)}." if est is not None else ".")
+        return {"title": f"{tk}: דוח רבעוני {day_he}", "body": body, "url": url, "tag": tag}
+    # kind == "res": the result is out
+    parts_en, parts_he = [], []
+    act, est, sur = ev.get("eps_actual"), ev.get("eps_estimate"), ev.get("surprise_pct")
+    if act is not None:
+        tail = f" ({_pct(sur)})" if sur is not None else ""
+        parts_en.append(f"EPS {_usd(act)}" + (f" vs est. {_usd(est)}" if est is not None else "") + tail)
+        parts_he.append(f"EPS {_usd(act)}" + (f" מול צפי {_usd(est)}" if est is not None else "") + tail)
+    ract, rest, rsur = ev.get("revenue_actual"), ev.get("revenue_estimate"), ev.get("revenue_surprise_pct")
+    if ract is not None:
+        tail = f" ({_pct(rsur)})" if rsur is not None else ""
+        parts_en.append(f"revenue {_big(ract)}" + (f" vs est. {_big(rest)}" if rest is not None else "") + tail)
+        parts_he.append(f"הכנסות {_big(ract)}" + (f" מול צפי {_big(rest)}" if rest is not None else "") + tail)
+    if en:
+        return {"title": f"{tk} reported earnings", "body": "; ".join(parts_en) + ".", "url": url, "tag": tag}
+    return {"title": f"{tk} פרסמה דוח רבעוני", "body": "; ".join(parts_he) + ".", "url": url, "tag": tag}
+
+
+def notify_watchlist_earnings(conn, events: list) -> int:
+    """v20d. events = [{ticker, kind: 'pre'|'res', report_date (date), session, eps_estimate, eps_actual, surprise_pct,
+    revenue_* (optional), is_today, is_next_day}]. 'pre' = a reminder before the report, 'res' = the reported figures.
+    Each (user, ticker, report date, kind) is sent once (push_log); only devices with watchlist notifications on."""
+    if not ready() or not events:
+        return 0
+    cur = conn.cursor()
+    ensure_tables(cur)
+    by_ticker = {}
+    for ev in events:
+        by_ticker.setdefault(ev["ticker"], []).append(ev)
+    cur.execute("""SELECT DISTINCT w.user_id, w.ticker FROM watchlist w
+                   JOIN push_subscriptions p ON p.user_id = w.user_id AND p.watch_signals
+                   WHERE w.ticker = ANY(%s)""", (list(by_ticker),))
+    pairs = cur.fetchall()
+    sent = 0
+    for user_id, tk in pairs:
+        for ev in by_ticker.get(tk, []):
+            if not _first_time(cur, user_id, f"earn-{ev['kind']}:{tk}:{ev['report_date'].isoformat()}"):
+                continue
+            sent += send_to_user(cur, user_id, lambda lang, ev=ev: _earnings_payload(ev, lang), only_signals=True)
+    conn.commit()
+    cur.close()
+    print(f"[push] watchlist earnings: {len(events)} event(s), {len(pairs)} user/ticker match(es), {sent} delivered")
     return sent
 
 

@@ -970,7 +970,12 @@ def get_pattern_stats():
     """Win rate and average forward return per pattern type, from independent
     signals only (same ticker+pattern counted once per holding period) and with
     NaN returns excluded — see the backtest note above for why both matter.
-    Patterns with fewer than 5 independent 10d signals are left out."""
+    Patterns with fewer than 5 independent 10d signals are left out.
+    v20b: answered from memory for 10 minutes — it scans the whole signal history (~2.8 s measured) on every page
+    load, while the underlying returns only change when the scanner runs (twice a day)."""
+    cached = _pattern_stats_cache.get("v")
+    if cached and (time.time() - cached[0]) < PATTERN_STATS_CACHE_TTL_SEC:
+        return cached[1]
     with db_cursor(dict_cursor=True) as (conn, cur):
         cur.execute(
             """
@@ -1007,7 +1012,12 @@ def get_pattern_stats():
             "avg_return_20d": round(sum(r20) / len(r20), 2) if r20 else None,
         })
     out.sort(key=lambda x: x["win_rate_10d"], reverse=True)
+    _pattern_stats_cache["v"] = (time.time(), out)
     return out
+
+
+_pattern_stats_cache = {}                 # "v" -> (timestamp, result)
+PATTERN_STATS_CACHE_TTL_SEC = 600
 
 
 # ------------------------------------------------------------------

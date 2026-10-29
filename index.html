@@ -391,6 +391,13 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .close-btn{background:none;border:1px solid var(--line);color:var(--text-dim);width:30px;height:30px;border-radius:8px;cursor:pointer;font-size:15px;}
   .close-btn:hover{color:var(--text);}
   .tv-chart-box{height:260px;border-radius:10px;overflow:hidden;margin-bottom:16px;background:var(--panel);direction:ltr;}
+  /* v20b (owner: "a bit longer, like the previous update, but a regular chart"): only the box heights change on a
+     phone — volume, 150 MA and toolbars stay exactly as before. Must come after the base rules above. */
+  @media(max-width:700px){
+    #market-tv-chart,.sector-chart-wrap{height:min(420px,60vh);}
+    .tv-chart-box{height:min(440px,62vh);}
+    .dd-chart-wrap{height:min(460px,64vh);padding:4px;}
+  }
   .news-section{margin-bottom:16px;}
   .news-item{padding:9px 0;border-bottom:1px solid var(--line);}
   .news-item a{color:var(--text);font-size:13px;text-decoration:none;line-height:1.5;display:block;}
@@ -1095,6 +1102,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
 const stocks = [];
 const macro = [];
 let apiLoadState = 'loading';   // 'loading' | 'ok' | 'failed' (set by loadFromApi / startBackgroundRetry)
+let snapShownAt = null;         // v20c: time of the saved data on screen (restoreSnapshot); null = live data
 function apiWaitMsg(){
   if(apiLoadState === 'failed') return lang==='en'
     ? 'The data server is waking up or unavailable — retrying automatically...'
@@ -1245,7 +1253,7 @@ async function loadMarketMovers(){
     const res = await fetch(`${API_BASE}/api/market-movers?limit=12`);
     if(!res.ok) throw new Error();
     const data = await res.json();
-    if(Array.isArray(data) && data.length){ marketMovers = data; }
+    if(Array.isArray(data) && data.length){ marketMovers = data; saveSnapshot({ movers: data }); }
   } catch(e){
     console.warn("market movers fetch failed:", e);
   }
@@ -1493,6 +1501,7 @@ async function loadPatternStats(){
     if(!res.ok) throw new Error('bad response');
     const data = await res.json();
     patternStatsCache = {};
+    if(Array.isArray(data)) saveSnapshot({ patternStats: data });
     for(const row of (Array.isArray(data)?data:[])){
       patternStatsCache[row.pattern_type] = row;
     }
@@ -2792,6 +2801,7 @@ async function loadMarketTicker(){
     const data = await res.json();
     if(data && data.items && data.items.length){
       lastMarketTicker = data.items;
+      saveSnapshot({ ticker: data.items });
       renderMarketTicker();
     }
   } catch(e) {
@@ -6044,14 +6054,18 @@ function setStatus(connected, connecting){
   lastConnectedState = {connected, connecting};
   if(connecting){
     statusEl.style.display = '';
-    statusEl.textContent = lang==='en' ? "● Connecting to the server..." : "● מתחבר לשרת...";
+    statusEl.textContent = snapShownAt
+      ? (lang==='en' ? `Showing data from ${snapTimeLabel()} · updating…` : `מוצגים נתונים מ-${snapTimeLabel()} · מתעדכן…`)
+      : (lang==='en' ? "● Connecting to the server..." : "● מתחבר לשרת...");
     statusEl.style.background = "rgba(232,163,61,.15)";
     statusEl.style.color = "var(--amber)";
     return;
   }
   // v19: a permanent "● Connected to API" badge was a developer's indicator — when all is well nothing is shown
   statusEl.style.display = connected ? 'none' : '';
-  statusEl.textContent = connected ? '' : (lang==='en' ? "● Server unavailable, retrying" : "● השרת לא זמין, מנסים שוב");
+  statusEl.textContent = connected ? '' : snapShownAt
+    ? (lang==='en' ? `Server unavailable — showing data from ${snapTimeLabel()}` : `השרת לא זמין — מוצגים נתונים מ-${snapTimeLabel()}`)
+    : (lang==='en' ? "● Server unavailable, retrying" : "● השרת לא זמין, מנסים שוב");
   statusEl.style.background = "rgba(232,163,61,.15)";
   statusEl.style.color = "var(--amber)";
 }
@@ -6213,6 +6227,9 @@ function fetchWithTimeout(url, ms){
 }
 
 async function tryLoadOnce(timeoutMs){
+  // v20b: key-news is requested together with the other two (it used to start only after both answered — measured
+  // ~1.3 s later on an awake server); it is still optional, a failure only keeps the previous strip.
+  const keyP = fetchWithTimeout(`${API_BASE}/api/key-news`, timeoutMs).then(r => r.ok ? r.json() : null).catch(() => null);
   const [stocksRes, macroRes] = await Promise.all([
     fetchWithTimeout(`${API_BASE}/api/stocks?limit=60`, timeoutMs),
     fetchWithTimeout(`${API_BASE}/api/macro-news`, timeoutMs),
@@ -6224,10 +6241,49 @@ async function tryLoadOnce(timeoutMs){
   if(dbMacro.length>0){ rawMacro = dbMacro; }
   // v18d: the key-news strip has its own endpoint (one card per major event). Optional: an older server without it
   // (404) or a slow answer leaves rawKeyNews null and the strip falls back to the Critical items of the feed.
+  const kn = await keyP;
+  if(kn) rawKeyNews = kn;
+  snapShownAt = null;                       // live data is on screen from here on
+  saveSnapshot({ stocks: rawStocks, macro: rawMacro, keyNews: rawKeyNews }, true);
+}
+
+// ---- v20c "instant open" (owner chose it to beat the server's wake-up time) ----
+// The last data this browser received (scanner, news, key events, index strip, movers, pattern stats) is kept in
+// localStorage. On the next visit it is drawn immediately, with a small note saying what time it is from, and it is
+// replaced as soon as the server answers. It is real data that was shown before, labelled with its time — never
+// invented data (see the "no fake data" rule). Older than 4 days (a long weekend) = not shown.
+const SNAP_KEY = 'swing_snapshot_v1';
+const SNAP_MAX_AGE_MS = 4 * 86400000;
+
+function saveSnapshot(fields, isMain){
   try {
-    const kr = await fetchWithTimeout(`${API_BASE}/api/key-news`, timeoutMs);
-    if(kr.ok) rawKeyNews = await kr.json();
-  } catch(e){ /* keep the previous strip */ }
+    const s = JSON.parse(localStorage.getItem(SNAP_KEY) || '{}') || {};
+    Object.assign(s, fields);
+    if(isMain) s.t = Date.now();            // the age that counts is that of the scanner + news
+    localStorage.setItem(SNAP_KEY, JSON.stringify(s));
+  } catch(e){ /* storage full / blocked (private mode) — the page simply waits for the server as before */ }
+}
+
+function restoreSnapshot(){
+  let s = null;
+  try { s = JSON.parse(localStorage.getItem(SNAP_KEY) || 'null'); } catch(e){ return; }
+  if(!s || !s.t || Date.now() - s.t > SNAP_MAX_AGE_MS) return;
+  if(Array.isArray(s.stocks) && s.stocks.length) rawStocks = s.stocks;
+  if(Array.isArray(s.macro) && s.macro.length) rawMacro = s.macro;
+  if(Array.isArray(s.keyNews)) rawKeyNews = s.keyNews;
+  if(Array.isArray(s.patternStats)){ patternStatsCache = {}; for(const r of s.patternStats) patternStatsCache[r.pattern_type] = r; }
+  if(Array.isArray(s.ticker) && s.ticker.length) lastMarketTicker = s.ticker;
+  if(Array.isArray(s.movers) && s.movers.length) marketMovers = s.movers;
+  if(!rawStocks.length && !rawMacro.length) return;
+  snapShownAt = s.t;
+  setStatus(false, true);                   // "showing data from HH:MM · updating…"
+  applyLang();
+}
+
+function snapTimeLabel(){
+  const d = new Date(snapShownAt), sameDay = d.toDateString() === new Date().toDateString();
+  return d.toLocaleString(lang==='en' ? 'en-US' : 'he-IL',
+    sameDay ? { hour:'2-digit', minute:'2-digit' } : { day:'numeric', month:'numeric', hour:'2-digit', minute:'2-digit' });
 }
 
 let apiConnected = false;
@@ -6557,6 +6613,7 @@ const hebDir = (function(){
   return {scan};
 })();
 
+restoreSnapshot();          // v20c: draw the last saved data at once, then refresh from the server
 loadFromApi();
 setInterval(loadFromApi, 20000);
 loadMarketMovers();
@@ -6741,7 +6798,8 @@ async function renderAlertsPanel(){
     <div class="al-sec">${en?'This device':'המכשיר הזה'}</div>
     ${device}
     <label class="al-check"><input type="checkbox" ${data && data.watch_signals ? 'checked' : ''} ${data && data.devices ? '' : 'disabled'} onchange="setWatchSignals(this.checked)">
-      ${en?'A new scanner signal on a stock in my watchlist':'איתות חדש בסורק על מניה מרשימת המעקב שלי'}</label>
+      <span>${en?'Stocks in my watchlist: a new scanner signal, and earnings reports (a reminder before the report and the results after it)'
+                 :'מניות מרשימת המעקב שלי: איתות חדש בסורק, ודוחות רבעוניים (תזכורת לפני הדוח והתוצאות אחריו)'}</span></label>
     <div class="al-sec">${en?'Price alerts':'התראות מחיר'}</div>
     <div class="al-form">
       <input id="al-ticker" class="search-input mono" placeholder="${en?'Ticker':'טיקר'}" value="${escH(d.ticker||'')}" maxlength="12">
