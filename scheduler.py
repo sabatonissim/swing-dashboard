@@ -55,6 +55,11 @@ JOBS = [
     # v21: company fundamentals built in advance (fundamentals.py -> fundamentals_cache), after the evening scan
     # saved the analyst estimates and before the next morning
     dict(name="fundamentals", workflow="fundamentals-refresh.yml", kind="daily", at=(5, 0), weekdays_only=False, grace_min=300),
+    # v22: market breadth (S&P 500 above 50/200-day, new highs/lows) hourly while the market is open + after the close
+    dict(name="breadth",     workflow="market-breadth.yml",  kind="interval", every_min=60, window=(10 * 60, 16 * 60), weekdays_only=True, grace_min=40),
+    dict(name="breadth_eod", workflow="market-breadth.yml",  kind="daily",    at=(16, 25), weekdays_only=True,  grace_min=300),
+    # v22: insider trades (SEC Form 4) every 30 min on weekdays; each run also sweeps part of the companies (backfill)
+    dict(name="insider",     workflow="insider-refresh.yml", kind="interval", every_min=30, window=(6 * 60, 22 * 60), weekdays_only=True, grace_min=25),
 ]
 
 _done = {}        # slot key -> outcome (this process)

@@ -342,6 +342,31 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   /* v20e: a small tag on its own line under the signal text (as a separate column it squeezed the text on a phone) */
   .earn-soon-badge{display:table;margin-top:4px;font-size:10px;font-weight:600;padding:1px 7px;border-radius:20px;border:1px solid var(--line-hover);color:var(--text);white-space:nowrap;font-family:'Heebo',sans-serif;}
   html[lang="he"] .earn-soon-badge{margin-left:auto;}
+  /* v22: insider buying tag on scanner rows, home-page row (market breadth + insider buys) */
+  .insider-badge{display:table;margin-top:4px;font-size:10px;font-weight:600;padding:1px 7px;border-radius:20px;border:1px solid var(--green);color:var(--green);white-space:nowrap;font-family:'Heebo',sans-serif;}
+  html[lang="he"] .insider-badge{margin-left:auto;}
+  .home-extras{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;padding:12px 24px;background:var(--panel-2);border-bottom:1px solid var(--line);}
+  @media(max-width:900px){.home-extras{grid-template-columns:minmax(0,1fr);padding:10px 12px;}}
+  .hx-card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 14px;min-width:0;}
+  .hx-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;}
+  .hx-title{font-size:13px;font-weight:700;color:var(--text);}
+  .hx-chip{font-size:11px;font-weight:600;padding:2px 9px;border-radius:20px;border:1px solid;white-space:nowrap;}
+  .hx-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;}
+  @media(max-width:480px){.hx-stats{grid-template-columns:repeat(2,minmax(0,1fr));}}
+  .hx-stat{background:var(--panel-2);border-radius:8px;padding:6px 8px;min-width:0;}
+  .hx-stat .k{font-size:10.5px;color:var(--text-dim);}
+  .hx-stat .v{font-size:15px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--text);}
+  .hx-stat .s{font-size:10px;color:var(--text-dim);}
+  .hx-note{font-size:10.5px;color:var(--text-dim);margin-top:7px;line-height:1.5;}
+  .hx-link{color:var(--amber);cursor:pointer;text-decoration:underline;}
+  .hx-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:6px 2px;border-bottom:1px solid var(--line);cursor:pointer;font-size:12.5px;}
+  .hx-row:last-child{border-bottom:none;}
+  .hx-row .tk{font-family:'JetBrains Mono',monospace;font-weight:700;min-width:52px;}
+  .hx-row .who{color:var(--text-dim);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .hx-row .val{font-family:'JetBrains Mono',monospace;color:var(--green);white-space:nowrap;}
+  .hx-row .dt{font-size:11px;color:var(--text-dim);white-space:nowrap;}
+  .breadth-chart{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:10px;}
+  .ins-tag{font-size:10px;padding:1px 6px;border-radius:20px;border:1px solid var(--line-hover);color:var(--text-dim);white-space:nowrap;}
   /* Phone-sized screens: the scanner row (ticker+trend+trigger+badges+
      score) and the 4-up backtest stat row were both tight enough to
      overflow/drift sideways — trim spacing and font size a bit here,
@@ -948,6 +973,12 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   </div>
 </div>
 
+<!-- v22: market breadth + insider buys (filled by loadV22Data / renderV22) -->
+<div class="home-extras" id="home-extras">
+  <div class="hx-card" id="hx-breadth"></div>
+  <div class="hx-card" id="hx-insider"></div>
+</div>
+
 <!-- Main Board -->
 <div class="board">
   <div class="col right">
@@ -1001,6 +1032,11 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
 
     <!-- View 2: market overview (what the Market Pulse page showed before) -->
     <div id="pulse-view-overview">
+    <div class="pulse-section-head">
+      <div class="pulse-section-title" id="breadth-title">רוחב השוק</div>
+    </div>
+    <div id="breadth-wrap" style="margin-bottom:24px;"></div>
+
     <div class="pulse-section-head">
       <div class="pulse-section-title" id="heatmap-title">מפת חום</div>
       <div class="movers-toggle">
@@ -1142,7 +1178,7 @@ function stockRowHtml(s,i){
     <div class="stock-row" onclick="openDrawer(${i})">
       <div class="ticker">${s.ticker}</div>
       <div class="trend ${s.trend}">${s.trend==="up"?"▲":"▼"}</div>
-      <div class="trigger">${lang==='en'?(s.trigger_en||s.trigger||''):(s.trigger||s.trigger_he||'')}${earningsSoonBadgeHtml(s)}</div>
+      <div class="trigger">${lang==='en'?(s.trigger_en||s.trigger||''):(s.trigger||s.trigger_he||'')}${earningsSoonBadgeHtml(s)}${insiderBadgeHtml(s)}</div>
       ${repeatBadgeHtml(s.repeatCount)}
       ${winRateBadgeHtml(s.patternType)}
       <div class="score-badge ${scoreClass(s.score)}">${s.score}</div>
@@ -1969,6 +2005,7 @@ async function rerenderDeepDiveForLang(){
     try { renderFundamentals(st.fundData, 'dd-fundamentals-section'); }
     catch(e){ console.error('[fundamentals] re-render failed', e); }
   }
+  renderInsiderSection(st.insider);
 }
 
 async function loadDeepDive(){
@@ -1993,7 +2030,8 @@ async function loadDeepDive(){
   const sectorP = fetchWithTimeout(`${API_BASE}/api/sector-comparison/${ticker}?period=${ddSectorPeriod}`, 30000).then(r => r.ok ? r.json() : Promise.reject());
   const setupP = fetchWithTimeout(`${API_BASE}/api/technical-setup/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject());
   const fundP = fetchFundamentalsData(ticker);
-  [sectorP, setupP, fundP].forEach(p => p.catch(() => {}));   // handled below; avoids "unhandled rejection" noise
+  const insiderP = fetchWithTimeout(`${API_BASE}/api/insider/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject());   // v22
+  [sectorP, setupP, fundP, insiderP].forEach(p => p.catch(() => {}));   // handled below; avoids "unhandled rejection" noise
 
   try {
     const [lookupRes, signalsRes, newsRes] = await Promise.allSettled([
@@ -2036,6 +2074,12 @@ async function loadDeepDive(){
       if(!current()) return;
       st.setupData = setupData;
       renderTechnicalSetup(setupData, 'dd-technical-setup-section');
+    });
+    renderInsiderSection(undefined);   // "loading…"
+    insiderP.then(v => v, () => null).then(d => {
+      if(!current()) return;
+      st.insider = d || {available: false, failed: true};
+      renderInsiderSection(st.insider);
     });
 
     // The lookup endpoint's own market_cap/pe_ratio depend on yfinance's
@@ -2134,6 +2178,8 @@ function renderDeepDive(quote, sector, signals, news){
   html += `<div id="dd-sector-compare-section"></div>`;
 
   html += `<div id="dd-fundamentals-section"></div>`;
+
+  html += `<div id="dd-insider-section"></div>`;
 
   html += `<div class="dd-section-title">${t?'Signal History':'היסטוריית איתותים'}</div>`;
   if(signals && signals.length){
@@ -6332,6 +6378,256 @@ async function tryLoadOnce(timeoutMs){
   saveSnapshot({ stocks: rawStocks, macro: rawMacro, keyNews: rawKeyNews }, true);
 }
 
+// ---- v22: market breadth (S&P 500 participation) + insider trades (SEC Form 4) ----
+// Both are filled by GitHub Actions (market_breadth.py, insider_trades.py); the page only reads /api/market-breadth,
+// /api/insider-buys and /api/insider/{ticker}. `var` on purpose: restoreSnapshot() may run before this block.
+var breadthData = null;
+var insiderBuysData = null;
+var insiderBuyTickers = new Set();
+var v22LoadedAt = 0, v22NextTry = 0, v22Busy = false;
+
+function setInsiderBuys(d){
+  insiderBuysData = d;
+  insiderBuyTickers = new Set((d && d.items || []).map(x => x.ticker));
+}
+
+async function loadV22Data(force){
+  const now = Date.now();
+  if(v22Busy || (!force && (now - v22LoadedAt < 10*60000 || now < v22NextTry))) return;
+  v22Busy = true;
+  try {
+    const [b, ib] = await Promise.allSettled([
+      fetchWithTimeout(`${API_BASE}/api/market-breadth`, 20000).then(r => r.ok ? r.json() : Promise.reject(r.status)),
+      fetchWithTimeout(`${API_BASE}/api/insider-buys?days=30`, 20000).then(r => r.ok ? r.json() : Promise.reject(r.status)),
+    ]);
+    if(b.status === 'fulfilled') breadthData = b.value && b.value.available ? b.value : (breadthData || b.value);
+    if(ib.status === 'fulfilled') setInsiderBuys(ib.value && ib.value.available ? ib.value : (insiderBuysData || ib.value));
+    if(b.status === 'fulfilled' && ib.status === 'fulfilled') v22LoadedAt = Date.now();
+    else v22NextTry = Date.now() + 60000;          // the server may still be waking up — try again in a minute
+    saveSnapshot({breadth: breadthData, insiderBuys: insiderBuysData});
+  } finally {
+    v22Busy = false;
+  }
+  renderV22();
+}
+
+function renderV22(){
+  renderBreadthHome();
+  renderInsiderHome();
+  renderBreadthFull();
+}
+
+function insiderBadgeHtml(s){
+  if(!s || !insiderBuyTickers.has(s.ticker)) return '';
+  const en = lang==='en';
+  return `<span class="insider-badge" title="${en ? 'Insiders bought shares in the open market in the last 30 days (SEC Form 4)' : 'בעלי עניין קנו מניות בשוק ב-30 הימים האחרונים (דיווח Form 4 ל-SEC)'}">${en ? 'Insider buying' : 'קניית בעלי עניין'}</span>`;
+}
+
+var BREADTH_LABELS = {
+  broad:  {he: 'השתתפות רחבה',  en: 'Broad participation',  color: 'var(--green)'},
+  mixed:  {he: 'השתתפות מעורבת', en: 'Mixed participation',  color: 'var(--amber)'},
+  narrow: {he: 'השתתפות חלשה',  en: 'Narrow participation', color: 'var(--red)'},
+};
+
+function breadthChipHtml(d){
+  const l = BREADTH_LABELS[d && d.label];
+  if(!l) return '';
+  const tip = lang==='en' ? 'Share of S&P 500 stocks above their 50-day average: 60% or more = broad, under 40% = narrow'
+                          : 'אחוז מניות S&P 500 מעל ממוצע 50 יום: 60% ומעלה = רחבה, מתחת ל-40% = חלשה';
+  return `<span class="hx-chip" style="color:${l.color};border-color:${l.color}" title="${tip}">${lang==='en' ? l.en : l.he}</span>`;
+}
+
+function _ddmm(iso){
+  if(!iso) return '';
+  const p = String(iso).slice(0,10).split('-');
+  return p.length === 3 ? `${p[2]}.${p[1]}` : iso;
+}
+
+function breadthStatsHtml(d){
+  const en = lang==='en';
+  const wk = (now, before) => {
+    if(now == null || before == null) return '';
+    const diff = Math.round(now - before);
+    return diff === 0 ? (en ? 'same as a week ago' : 'כמו לפני שבוע') : `${diff > 0 ? '+' : ''}${diff} ${en ? 'pts in a week' : "נק' בשבוע"}`;
+  };
+  const stat = (k, v, s) => `<div class="hx-stat"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s || '&nbsp;'}</div></div>`;
+  return `<div class="hx-stats">
+    ${stat(en ? 'Above 50-day avg' : 'מעל ממוצע 50', d.pct50 != null ? Math.round(d.pct50) + '%' : '—', wk(d.pct50, d.pct50_week_ago))}
+    ${stat(en ? 'Above 200-day avg' : 'מעל ממוצע 200', d.pct200 != null ? Math.round(d.pct200) + '%' : '—', wk(d.pct200, d.pct200_week_ago))}
+    ${stat(en ? 'New highs / lows' : 'שיאים / שפלים', `${d.new_highs ?? '—'} / ${d.new_lows ?? '—'}`, en ? '52 weeks' : '52 שבועות')}
+    ${stat(en ? 'Up / down' : 'עולות / יורדות', `${d.advancers ?? '—'} / ${d.decliners ?? '—'}`, (en ? 'on ' : 'ב-') + _ddmm(d.day))}
+  </div>`;
+}
+
+function renderBreadthHome(){
+  const el = document.getElementById('hx-breadth');
+  if(!el) return;
+  const en = lang==='en', d = breadthData;
+  const head = `<div class="hx-head"><span class="hx-title">${en ? 'Market breadth · S&P 500' : 'רוחב השוק · S&P 500'}</span>${d && d.available ? breadthChipHtml(d) : ''}</div>`;
+  if(!d || !d.available){
+    el.innerHTML = head + `<div class="movers-empty">${d ? (en ? 'Breadth data is not available yet.' : 'נתוני רוחב השוק עוד לא זמינים.') : UI[lang].loading}</div>`;
+    return;
+  }
+  el.innerHTML = head + breadthStatsHtml(d) +
+    `<div class="hx-note">${en ? 'How many of the 500 stocks take part in the move.' : 'כמה מ-500 המניות משתתפות בתנועת השוק.'} <span class="hx-link" onclick="openBreadthPage()">${en ? 'Chart and details' : 'גרף ופירוט'}</span></div>`;
+}
+
+function openBreadthPage(){
+  setPage('pulse');
+  setPulseView('overview');
+  const w = document.getElementById('breadth-wrap');
+  if(w) w.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+function breadthChartSvg(hist){
+  const pts = (hist || []).filter(h => h.p50 != null || h.p200 != null);
+  if(pts.length < 2) return '';
+  const W = 600, H = 150, n = pts.length;
+  const x = i => (i / (n - 1)) * W;
+  const y = p => H - (p / 100) * H;
+  const line = key => pts.map((h, i) => h[key] == null ? null : `${x(i).toFixed(1)},${y(h[key]).toFixed(1)}`).filter(Boolean).join(' ');
+  let months = '', lastM = '';
+  pts.forEach((h, i) => {
+    const m = h.d.slice(0, 7);
+    if(m !== lastM && i > 0){ months += `<line x1="${x(i).toFixed(1)}" y1="0" x2="${x(i).toFixed(1)}" y2="${H}" stroke="var(--line)" stroke-width="1"/><text x="${(x(i) + 3).toFixed(1)}" y="${H - 4}" font-size="10" fill="var(--text-dim)">${h.d.slice(5, 7)}/${h.d.slice(2, 4)}</text>`; }
+    lastM = m;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:170px;direction:ltr;display:block" preserveAspectRatio="none" role="img">
+    ${months}
+    <line x1="0" y1="${y(50)}" x2="${W}" y2="${y(50)}" stroke="var(--text-dim)" stroke-dasharray="4 4" stroke-width="1"/>
+    <polyline fill="none" stroke="var(--amber)" stroke-width="2" points="${line('p50')}" vector-effect="non-scaling-stroke"/>
+    <polyline fill="none" stroke="var(--sky)" stroke-width="2" points="${line('p200')}" vector-effect="non-scaling-stroke"/>
+  </svg>`;
+}
+
+function renderBreadthFull(){
+  const el = document.getElementById('breadth-wrap');
+  if(!el) return;
+  const en = lang==='en', d = breadthData;
+  if(!d || !d.available){
+    el.innerHTML = `<div class="movers-empty">${d ? (en ? 'Breadth data is not available yet.' : 'נתוני רוחב השוק עוד לא זמינים.') : UI[lang].loading}</div>`;
+    return;
+  }
+  const legend = `<div class="fund-legend" style="margin:0 0 6px;">
+    <span class="fund-legend-item"><span style="width:12px;height:3px;background:var(--amber);display:inline-block"></span>${en ? '% above 50-day avg' : '% מעל ממוצע 50'}</span>
+    <span class="fund-legend-item"><span style="width:12px;height:3px;background:var(--sky);display:inline-block"></span>${en ? '% above 200-day avg' : '% מעל ממוצע 200'}</span>
+    <span class="fund-legend-item"><span style="width:12px;border-top:1px dashed var(--text-dim);display:inline-block"></span>50%</span></div>`;
+  const upd = d.updated_at ? new Date(d.updated_at).toLocaleString(en ? 'en-US' : 'he-IL', {day:'numeric', month:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
+  el.innerHTML = `<div class="hx-card">
+      <div class="hx-head"><span class="hx-title">S&P 500</span>${breadthChipHtml(d)}</div>
+      ${breadthStatsHtml(d)}
+      <div class="breadth-chart">${legend}${breadthChartSvg(d.history)}</div>
+      <div class="hx-note">${en
+        ? `Above 50/200-day avg: share of the index's stocks that closed above their 50/200-day moving average. New highs/lows: stocks whose price reached the highest/lowest level of the past 52 weeks that day. Label: 60% or more above the 50-day average = broad, 40–60% = mixed, under 40% = narrow — a description, not a recommendation. Today's list of S&P 500 members; during trading hours today's numbers use live prices and update every hour.${upd ? ' Updated ' + upd + '.' : ''}`
+        : `מעל ממוצע 50/200: אחוז מניות המדד שנסגרו מעל הממוצע הנע של 50/200 הימים שלהן. שיאים/שפלים: מניות שהגיעו באותו יום למחיר הגבוה/הנמוך ביותר של 52 השבועות האחרונים. התווית: 60% ומעלה מעל ממוצע 50 = רחבה, 40–60% = מעורבת, מתחת ל-40% = חלשה — תיאור, לא המלצה. לפי רשימת חברות S&P 500 של היום; בשעות המסחר הנתונים של היום לפי מחירים חיים ומתעדכנים כל שעה.${upd ? ' עודכן ' + upd + '.' : ''}`}</div>
+    </div>`;
+}
+
+// Role of an insider in plain words (SEC gives the officer title in English, free text)
+var INSIDER_TITLES_HE = [
+  [/chief executive|\bceo\b/i, 'מנכ"ל'], [/chief financial|\bcfo\b/i, 'סמנכ"ל כספים'], [/chief operating|\bcoo\b/i, 'סמנכ"ל תפעול'],
+  [/chief technology|\bcto\b/i, 'סמנכ"ל טכנולוגיה'], [/chief accounting|principal accounting|controller/i, 'חשב'],
+  [/general counsel|chief legal/i, 'יועץ משפטי'], [/chair/i, 'יו"ר'], [/executive vice president|\bevp\b/i, 'סגן נשיא בכיר'],
+  [/senior vice president|\bsvp\b/i, 'סגן נשיא בכיר'], [/vice president|\bvp\b/i, 'סגן נשיא'], [/president/i, 'נשיא'],
+];
+
+function insiderRoleText(o){
+  const en = lang==='en';
+  const parts = [];
+  if(o && o.title){
+    if(en) parts.push(o.title);
+    else {
+      const hit = INSIDER_TITLES_HE.find(([re]) => re.test(o.title));
+      parts.push(hit ? hit[1] : o.title);
+    }
+  } else if(o && o.officer) parts.push(en ? 'Officer' : 'נושא משרה');
+  if(o && o.director && !(o.title && /director/i.test(o.title))) parts.push(en ? 'Director' : 'דירקטור');
+  if(o && o.ten_pct) parts.push(en ? '10% owner' : 'בעל 10%');
+  return parts.join(' · ') || (en ? 'Insider' : 'בעל עניין');
+}
+
+function renderInsiderHome(){
+  const el = document.getElementById('hx-insider');
+  if(!el) return;
+  const en = lang==='en', d = insiderBuysData;
+  const head = `<div class="hx-head"><span class="hx-title">${en ? 'Insider buying · 30 days' : 'קניות בעלי עניין · 30 יום'}</span><span class="hx-note" style="margin:0">${en ? 'open market, over $100K' : 'בשוק, מעל $100K'}</span></div>`;
+  if(!d || !d.available){
+    el.innerHTML = head + `<div class="movers-empty">${d ? (en ? 'Insider data is still being collected.' : 'נתוני בעלי העניין עוד נאספים.') : UI[lang].loading}</div>`;
+    return;
+  }
+  const items = (d.items || []).slice(0, 6);
+  if(!items.length){
+    el.innerHTML = head + `<div class="movers-empty">${en ? 'No open-market insider purchases over $100K in the last 30 days.' : 'אין קניות של בעלי עניין בשוק מעל $100K ב-30 הימים האחרונים.'}</div>`;
+    return;
+  }
+  el.innerHTML = head + items.map(it => {
+    const first = it.owners && it.owners[0];
+    const more = it.n_owners > 1 ? (en ? ` +${it.n_owners - 1} more` : ` ועוד ${it.n_owners - 1}`) : '';
+    const tk = escH(it.ticker);
+    return `<div class="hx-row" onclick="openTickerAnalysis('${tk}')">
+      <span class="tk">${tk}</span><span class="who">${escH(insiderRoleText(first))}${more}</span>
+      <span class="dt">${_ddmm(it.last_filed)}</span><span class="val">${fmtCompactMoney(it.value)}</span></div>`;
+  }).join('') + `<div class="hx-note">${en ? 'Source: Form 4 filings to the SEC. Facts only, not a recommendation.' : 'מקור: דיווחי Form 4 ל-SEC. מידע עובדתי, לא המלצה.'}</div>`;
+}
+
+function openTickerAnalysis(tk){
+  const inp = document.getElementById('dd-ticker-input');
+  if(!inp) return;
+  inp.value = tk;
+  setPage('deepdive');
+  loadDeepDive();
+}
+
+function renderInsiderSection(d){
+  const el = document.getElementById('dd-insider-section');
+  if(!el) return;
+  const en = lang==='en';
+  const title = `<div class="dd-section-title">${en ? 'Insider trades · 6 months' : 'עסקאות בעלי עניין · 6 חודשים'}</div>`;
+  if(d === undefined){ el.innerHTML = title + `<div class="bt-empty" style="padding:10px 0;">${UI[lang].loading}</div>`; return; }
+  if(!d || !d.available){
+    el.innerHTML = title + `<div class="fund-empty">${d && d.failed ? (en ? 'Could not load insider trades right now.' : 'לא ניתן לטעון עסקאות בעלי עניין כרגע.') : (en ? 'Insider data is not available yet.' : 'נתוני בעלי העניין עוד לא זמינים.')}</div>`;
+    return;
+  }
+  const trades = d.trades || [];
+  if(!trades.length){
+    el.innerHTML = title + `<div class="fund-empty">${d.covered
+      ? (en ? 'No open-market buys or sells by insiders in the last 6 months.' : 'אין קניות או מכירות של בעלי עניין בשוק ב-6 החודשים האחרונים.')
+      : (en ? 'Insider data for this stock is still being collected (S&P 500, Nasdaq 100 and scanner stocks are covered).' : 'הנתונים למניה זו עוד נאספים (מכוסות מניות S&P 500, Nasdaq 100 ומניות מהסורק).')}</div>`;
+    return;
+  }
+  const s = d.summary || {buys:{}, sells:{}};
+  const stat = (k, v, color) => `<div class="fund-stat"><div class="k">${k}</div><div class="v" style="${color ? 'color:' + color : ''}">${v}</div></div>`;
+  const side = x => x && x.n ? `${fmtCompactMoney(x.value)} · ${x.n}` : '—';
+  let html = title + `<div class="fund-stat-row">
+    ${stat(en ? 'Open-market buys' : 'קניות בשוק', side(s.buys), s.buys && s.buys.n ? 'var(--green)' : '')}
+    ${stat(en ? 'Open-market sells' : 'מכירות בשוק', side(s.sells), s.sells && s.sells.n ? 'var(--red)' : '')}
+    ${stat(en ? 'Of the sells: pre-planned' : 'מהמכירות: מתוכננות מראש', s.sells && s.sells.n ? `${s.sells.planned_n} ${en ? 'of' : 'מתוך'} ${s.sells.n}` : '—')}
+  </div>`;
+  const rows = trades.map(tr => {
+    const buy = tr.code === 'P';
+    const action = `<span style="color:${buy ? 'var(--green)' : 'var(--red)'};font-weight:600">${buy ? (en ? 'Buy' : 'קנייה') : (en ? 'Sell' : 'מכירה')}</span>` +
+      (tr.planned ? ` <span class="ins-tag" title="${en ? 'Under a pre-arranged Rule 10b5-1 trading plan' : 'לפי תוכנית מסחר שנקבעה מראש (כלל 10b5-1)'}">${en ? 'planned' : 'מתוכננת'}</span>` : '');
+    const dateTxt = _ddmm(tr.date || tr.filed) + (tr.date_to ? '–' + _ddmm(tr.date_to) : '');
+    const link = safeUrl(tr.url);
+    return `<tr>
+      <td>${dateTxt}</td>
+      <td>${escH(tr.owner || '')}<div style="font-size:10.5px;color:var(--text-dim)">${escH(insiderRoleText(tr))}</div></td>
+      <td>${action}</td>
+      <td class="mono">${Number(tr.shares || 0).toLocaleString('en-US')}</td>
+      <td class="mono">${tr.price != null ? '$' + Number(tr.price).toFixed(2) : '—'}</td>
+      <td class="mono">${tr.value != null ? fmtCompactMoney(tr.value) : '—'}</td>
+      <td>${link ? `<a href="${link}" target="_blank" rel="noopener" style="color:var(--amber)">SEC</a>` : ''}</td>
+    </tr>`;
+  }).join('');
+  html += `<div style="overflow-x:auto;"><table class="bt-signals-table"><thead><tr>
+      <th>${en ? 'Date' : 'תאריך'}</th><th>${en ? 'Who' : 'מי'}</th><th>${en ? 'Action' : 'פעולה'}</th><th>${en ? 'Shares' : 'מניות'}</th>
+      <th>${en ? 'Avg price' : 'מחיר ממוצע'}</th><th>${en ? 'Value' : 'שווי'}</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  html += `<div class="fund-source-note">${en
+    ? `Source: Form 4 filings to the SEC (insiders must report within 2 business days). Only open-market purchases and sales are shown — not stock grants, option exercises or shares withheld for tax. A "planned" sale was set up in advance under a Rule 10b5-1 plan.${d.total_rows > trades.length ? ` Showing the latest ${trades.length} of ${d.total_rows}.` : ''}`
+    : `מקור: דיווחי Form 4 ל-SEC (בעלי עניין חייבים לדווח תוך 2 ימי עסקים). מוצגות רק קניות ומכירות בשוק — לא מענקי מניות, מימוש אופציות או מניות שנמכרו לתשלום מס. מכירה "מתוכננת" נקבעה מראש לפי תוכנית 10b5-1.${d.total_rows > trades.length ? ` מוצגות ${trades.length} האחרונות מתוך ${d.total_rows}.` : ''}`}</div>`;
+  el.innerHTML = html;
+}
+
 // ---- v20c "instant open" (owner chose it to beat the server's wake-up time) ----
 // The last data this browser received (scanner, news, key events, index strip, movers, pattern stats) is kept in
 // localStorage. On the next visit it is drawn immediately, with a small note saying what time it is from, and it is
@@ -6359,6 +6655,8 @@ function restoreSnapshot(){
   if(Array.isArray(s.patternStats)){ patternStatsCache = {}; for(const r of s.patternStats) patternStatsCache[r.pattern_type] = r; }
   if(Array.isArray(s.ticker) && s.ticker.length) lastMarketTicker = s.ticker;
   if(Array.isArray(s.movers) && s.movers.length) marketMovers = s.movers;
+  if(s.breadth && s.breadth.available) breadthData = s.breadth;                       // v22
+  if(s.insiderBuys && s.insiderBuys.available) setInsiderBuys(s.insiderBuys);
   if(!rawStocks.length && !rawMacro.length) return;
   snapShownAt = s.t;
   setStatus(false, true);                   // "showing data from HH:MM · updating…"
@@ -6562,6 +6860,9 @@ function applyLang(){
   document.getElementById('earnings-cal-title').textContent = t.earnings_cal_title;
   document.getElementById('daily-digest-btn').textContent = t.daily_digest_btn;
   if(lastFearGreedData) renderFearGreed(lastFearGreedData);
+  document.getElementById('breadth-title').textContent = lang==='en' ? 'Market breadth' : 'רוחב השוק';
+  renderV22();
+  loadV22Data();          // self-throttled: a real request at most every 10 minutes
   const cb = document.getElementById('consent-banner');
   if(cb && cb.dataset.lang !== lang) renderConsentBanner();   // the banner stayed in Hebrew after switching to English
   rerenderDeepDiveForLang();

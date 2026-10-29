@@ -5326,6 +5326,187 @@ def get_fundamentals(ticker: str):
         executor.shutdown(wait=False)
 
 
+# ------------------------------------------------------------------
+# v22: market breadth (market_breadth.py) and insider trades (insider_trades.py, SEC Form 4). Both tables are
+# filled by GitHub Actions; these endpoints only read them (light SQL, cached 5 minutes).
+# ------------------------------------------------------------------
+_V22_TTL_SEC = 300
+_breadth_cache = {"ts": 0.0, "data": None}
+_insider_buys_cache: dict = {}     # (days, min_value) -> (timestamp, data)
+
+
+def _table_exists(cur, name: str) -> bool:
+    cur.execute("SELECT to_regclass(%s) IS NOT NULL AS ok", (name,))
+    row = cur.fetchone()
+    return bool(row["ok"] if isinstance(row, dict) else row[0])
+
+
+def _pct(a, n):
+    return round(100.0 * a / n, 1) if (a is not None and n) else None
+
+
+def _breadth_label(pct50: Optional[float]) -> Optional[str]:
+    """Factual description, fixed rule (not advice): share of S&P 500 stocks above their 50-day average."""
+    if pct50 is None:
+        return None
+    return "broad" if pct50 >= 60 else ("narrow" if pct50 < 40 else "mixed")
+
+
+@app.get("/api/market-breadth")
+def get_market_breadth():
+    now = time.time()
+    if _breadth_cache["data"] is not None and now - _breadth_cache["ts"] < _V22_TTL_SEC:
+        return _breadth_cache["data"]
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        if not _table_exists(cur, "market_breadth"):
+            return {"available": False}
+        cur.execute("SELECT * FROM market_breadth ORDER BY day DESC LIMIT 140")
+        rows = list(reversed(cur.fetchall()))
+    if not rows:
+        return {"available": False}
+    last = rows[-1]
+    week = rows[-6] if len(rows) >= 6 else None          # 5 trading days earlier
+    pct50 = _pct(last["above50"], last["n50"])
+    data = {
+        "available": True,
+        "day": last["day"].isoformat(),
+        "updated_at": last["updated_at"].isoformat() if last.get("updated_at") else None,
+        "n": last["n"],
+        "pct50": pct50,
+        "pct200": _pct(last["above200"], last["n200"]),
+        "pct50_week_ago": _pct(week["above50"], week["n50"]) if week else None,
+        "pct200_week_ago": _pct(week["above200"], week["n200"]) if week else None,
+        "new_highs": last["new_highs"], "new_lows": last["new_lows"],
+        "advancers": last["advancers"], "decliners": last["decliners"],
+        "label": _breadth_label(pct50),
+        "history": [{"d": r["day"].isoformat(), "p50": _pct(r["above50"], r["n50"]),
+                     "p200": _pct(r["above200"], r["n200"])} for r in rows],
+    }
+    _breadth_cache.update(ts=now, data=data)
+    return data
+
+
+_INSIDER_DAYS = 183
+
+
+def _insider_role(r) -> dict:
+    return {"title": r["owner_title"], "director": bool(r["is_director"]), "officer": bool(r["is_officer"]),
+            "ten_pct": bool(r["is_ten_pct"])}
+
+
+@app.get("/api/insider/{ticker}")
+def get_insider(ticker: str):
+    """Open-market buys (P) and sells (S) by insiders in the last 6 months. One row per filing and direction
+    (a sale filled at 12 prices is one row: total shares, weighted average price)."""
+    ticker = _canon_ticker(ticker)
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        if not _table_exists(cur, "insider_trades"):
+            return {"ticker": ticker, "available": False, "trades": []}
+        cur.execute("""SELECT accession, seq, trade_date, filed_date, owner_name, owner_title, is_director, is_officer,
+                              is_ten_pct, code, shares, price, value, owned_after, planned, url, issuer_cik
+                       FROM insider_trades
+                       WHERE ticker = %s AND COALESCE(trade_date, filed_date) >= CURRENT_DATE - %s
+                       ORDER BY accession, seq""", (ticker, _INSIDER_DAYS))
+        rows = cur.fetchall()
+        covered = False
+        try:
+            cik = (_get_cik_map() or {}).get(ticker) or (_get_cik_map() or {}).get(ticker.replace("-", ""))
+            if cik and _table_exists(cur, "insider_sweep_state"):
+                cur.execute("SELECT swept_at FROM insider_sweep_state WHERE cik = %s", (cik,))
+                st = cur.fetchone()
+                covered = bool(st and st["swept_at"])
+        except Exception as e:
+            print(f"[warn] insider coverage check failed for {ticker}: {e}")
+    groups: dict = {}
+    for r in rows:
+        g = groups.get((r["accession"], r["code"]))
+        if g is None:
+            g = groups[(r["accession"], r["code"])] = {
+                "code": r["code"], "owner": r["owner_name"], **_insider_role(r),
+                "date": r["trade_date"], "date_to": r["trade_date"], "filed": r["filed_date"],
+                "shares": 0.0, "value": 0.0, "priced_shares": 0.0, "owned_after": None,
+                "planned": False, "url": r["url"]}
+        g["shares"] += r["shares"] or 0
+        if r["price"]:
+            g["value"] += (r["shares"] or 0) * r["price"]
+            g["priced_shares"] += r["shares"] or 0
+        if r["trade_date"]:
+            g["date"] = min(g["date"] or r["trade_date"], r["trade_date"])
+            g["date_to"] = max(g["date_to"] or r["trade_date"], r["trade_date"])
+        if r["owned_after"] is not None:
+            g["owned_after"] = r["owned_after"]          # the last line of the filing = holding after it
+        g["planned"] = g["planned"] or bool(r["planned"])
+    trades = []
+    summary = {"buys": {"n": 0, "value": 0.0, "shares": 0.0}, "sells": {"n": 0, "value": 0.0, "shares": 0.0, "planned_n": 0}}
+    for g in groups.values():
+        side = summary["buys"] if g["code"] == "P" else summary["sells"]
+        side["n"] += 1
+        side["value"] += g["value"]
+        side["shares"] += g["shares"]
+        if g["code"] == "S" and g["planned"]:
+            summary["sells"]["planned_n"] += 1
+        price = round(g["value"] / g["priced_shares"], 2) if g["priced_shares"] else None
+        trades.append({
+            "code": g["code"], "owner": g["owner"], "title": g["title"], "director": g["director"],
+            "officer": g["officer"], "ten_pct": g["ten_pct"],
+            "date": g["date"].isoformat() if g["date"] else None,
+            "date_to": g["date_to"].isoformat() if g["date_to"] and g["date_to"] != g["date"] else None,
+            "filed": g["filed"].isoformat() if g["filed"] else None,
+            "shares": round(g["shares"]), "price": price, "value": round(g["value"]) if g["value"] else None,
+            "owned_after": round(g["owned_after"]) if g["owned_after"] is not None else None,
+            "planned": g["planned"], "url": g["url"]})
+    trades.sort(key=lambda t: (t["date"] or t["filed"] or "", t["filed"] or ""), reverse=True)
+    for k in ("buys", "sells"):
+        summary[k]["value"] = round(summary[k]["value"])
+        summary[k]["shares"] = round(summary[k]["shares"])
+    return {"ticker": ticker, "available": True, "covered": covered or bool(rows), "days": _INSIDER_DAYS,
+            "summary": summary, "trades": trades[:40], "total_rows": len(trades)}
+
+
+@app.get("/api/insider-buys")
+def get_insider_buys(days: int = Query(default=30, ge=1, le=90), min_value: float = Query(default=100000, ge=0)):
+    """Open-market insider PURCHASES filed in the last `days`, one row per stock (all insiders together),
+    newest first. Feeds the home-page list and the scanner tag."""
+    key = (days, float(min_value))
+    hit = _insider_buys_cache.get(key)
+    if hit and time.time() - hit[0] < _V22_TTL_SEC:
+        return hit[1]
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        if not _table_exists(cur, "insider_trades"):
+            return {"available": False, "items": []}
+        cur.execute("""SELECT ticker, owner_name, owner_title, is_director, is_officer, is_ten_pct, filed_date,
+                              trade_date, shares, price
+                       FROM insider_trades WHERE code = 'P' AND filed_date >= CURRENT_DATE - %s""", (days,))
+        rows = cur.fetchall()
+    by_ticker: dict = {}
+    for r in rows:
+        g = by_ticker.setdefault(r["ticker"], {"ticker": r["ticker"], "value": 0.0, "shares": 0.0, "owners": {},
+                                               "last_filed": None, "last_trade": None})
+        g["shares"] += r["shares"] or 0
+        if r["price"]:
+            g["value"] += (r["shares"] or 0) * r["price"]
+        name = r["owner_name"] or "?"
+        g["owners"].setdefault(name, {"name": name, **_insider_role(r)})
+        if r["filed_date"] and (g["last_filed"] is None or r["filed_date"] > g["last_filed"]):
+            g["last_filed"] = r["filed_date"]
+        if r["trade_date"] and (g["last_trade"] is None or r["trade_date"] > g["last_trade"]):
+            g["last_trade"] = r["trade_date"]
+    items = []
+    for g in by_ticker.values():
+        if g["value"] < min_value:
+            continue
+        items.append({"ticker": g["ticker"], "value": round(g["value"]), "shares": round(g["shares"]),
+                      "owners": list(g["owners"].values())[:4], "n_owners": len(g["owners"]),
+                      "last_filed": g["last_filed"].isoformat() if g["last_filed"] else None,
+                      "last_trade": g["last_trade"].isoformat() if g["last_trade"] else None})
+    items.sort(key=lambda x: (x["last_filed"] or "", x["value"]), reverse=True)
+    data = {"available": True, "days": days, "items": items[:60]}
+    if len(_insider_buys_cache) > 20:
+        _insider_buys_cache.clear()
+    _insider_buys_cache[key] = (time.time(), data)
+    return data
+
+
 
 
 class TrackEvent(BaseModel):
