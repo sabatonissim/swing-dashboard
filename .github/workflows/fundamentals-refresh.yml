@@ -1,0 +1,27 @@
+name: Fundamentals Refresh
+
+# v21: builds company fundamentals (SEC filings + Yahoo extras) in advance for S&P 500, Nasdaq 100, scanner hits and
+# watchlists, and stores them in Postgres (fundamentals_cache) — so a stock page opens with them at once.
+# Started by the built-in scheduler on Render (scheduler.py) every night; can also be run by hand.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 11 * * *"        # backup only — the scheduler normally starts it
+
+# the job only needs to read the code (default token permissions are broader)
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: python -u fundamentals.py
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
