@@ -11,13 +11,21 @@ Per day, over today's S&P 500 members (survivorship: the list is today's, as on 
 Prices are as traded (auto_adjust=False, like the scanner and TradingView); Yahoo already adjusts for splits.
 Two years of prices are downloaded each run, so the last ~130 days are all recomputed — the history fills in on the
 first run and a missed run heals itself. During market hours today's row uses the live (partial) daily bar.
+
+v23 — market state in one line, same run (each part fails on its own, breadth is saved first):
+  * market_regime: SPY close + its 50/200-day averages and the VIX close (Yahoo, same download style)
+  * treasury_yields: the US Treasury's daily par yield curve (home.treasury.gov CSV, official and keyless), this year
+    and last year, so the site can show today's curve next to a month and a year ago and the 10Y-2Y spread history
 """
 
+import csv
 import io
+import json
 import os
 import sys
 import time
-from typing import List
+from datetime import date, datetime
+from typing import Dict, List
 
 import pandas as pd
 import psycopg2
@@ -122,21 +130,131 @@ def save(rows: pd.DataFrame) -> int:
     return len(rows)
 
 
+def _num(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f and abs(f) != float("inf") else None    # NaN / inf never reach the database
+
+
+def regime_rows() -> pd.DataFrame:
+    """SPY close, its 50/200-day simple averages and the VIX close, one row per day (last HISTORY_DAYS)."""
+    df = yf.download(["SPY", "^VIX"], period="2y", interval="1d", group_by="column", auto_adjust=False,
+                     threads=True, progress=False)
+    if df is None or df.empty:
+        raise RuntimeError("no SPY/VIX data")
+    close = df["Close"]
+    idx = pd.to_datetime(close.index)
+    close.index = (idx.tz_localize(None) if idx.tz is not None else idx).normalize()
+    close = close[~close.index.duplicated(keep="last")].sort_index().apply(pd.to_numeric, errors="coerce")
+    spy = close["SPY"]
+    out = pd.DataFrame({
+        "spy_close": spy,
+        "spy_sma50": spy.rolling(50, min_periods=50).mean(),
+        "spy_sma200": spy.rolling(200, min_periods=200).mean(),
+        "vix": close["^VIX"].ffill(limit=3),     # the VIX can miss a day that SPY has
+    })
+    return out[out["spy_close"].notna()].tail(HISTORY_DAYS)
+
+
+TREASURY_URL = ("https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/"
+                "{y}/all?type=daily_treasury_yield_curve&field_tdr_date_value={y}&page&_format=csv")
+# CSV column -> the label the site shows; the odd maturities (1.5/2/4 months) are left out on purpose
+TREASURY_COLS = {"1 Mo": "1M", "3 Mo": "3M", "6 Mo": "6M", "1 Yr": "1Y", "2 Yr": "2Y", "3 Yr": "3Y", "5 Yr": "5Y",
+                 "7 Yr": "7Y", "10 Yr": "10Y", "20 Yr": "20Y", "30 Yr": "30Y"}
+
+
+def treasury_curves() -> Dict[date, dict]:
+    """{day: {"3M": 4.18, "2Y": 4.67, ...}} for this year and last year (official Treasury par yield curve)."""
+    out: Dict[date, dict] = {}
+    this_year = date.today().year
+    for y in (this_year - 1, this_year):
+        try:
+            resp = requests.get(TREASURY_URL.format(y=y), timeout=30, headers={"User-Agent": "Mozilla/5.0 swing-desk"})
+            resp.raise_for_status()
+        except Exception as e:
+            print(f"[warn] treasury yields {y}: {type(e).__name__}: {e}")
+            continue
+        for row in csv.DictReader(io.StringIO(resp.content.decode("utf-8-sig", errors="replace"))):   # BOM-safe "Date"
+            try:
+                day = datetime.strptime((row.get("Date") or "").strip(), "%m/%d/%Y").date()
+            except ValueError:
+                continue
+            curve = {label: _num(row.get(col)) for col, label in TREASURY_COLS.items()}
+            curve = {k: v for k, v in curve.items() if v is not None}
+            if "10Y" in curve and "2Y" in curve:
+                out[day] = curve
+    return out
+
+
+def save_regime(regime: pd.DataFrame, curves: Dict[date, dict]) -> None:
+    db_url = os.environ.get("DATABASE_URL")
+    conn = psycopg2.connect(db_url)          # opened right before writing (Neon auto-suspend)
+    try:
+        cur = conn.cursor()
+        cur.execute("""CREATE TABLE IF NOT EXISTS market_regime (
+            day DATE PRIMARY KEY, spy_close REAL, spy_sma50 REAL, spy_sma200 REAL, vix REAL,
+            updated_at TIMESTAMPTZ DEFAULT NOW())""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS treasury_yields (
+            day DATE PRIMARY KEY, curve JSONB NOT NULL, updated_at TIMESTAMPTZ DEFAULT NOW())""")
+        for day, r in regime.iterrows():
+            cur.execute("""INSERT INTO market_regime (day, spy_close, spy_sma50, spy_sma200, vix, updated_at)
+                           VALUES (%s,%s,%s,%s,%s,NOW())
+                           ON CONFLICT (day) DO UPDATE SET spy_close=EXCLUDED.spy_close, spy_sma50=EXCLUDED.spy_sma50,
+                               spy_sma200=EXCLUDED.spy_sma200, vix=COALESCE(EXCLUDED.vix, market_regime.vix),
+                               updated_at=NOW()""",
+                        (day.date(), _num(r["spy_close"]), _num(r["spy_sma50"]), _num(r["spy_sma200"]), _num(r["vix"])))
+        for day, curve in curves.items():
+            cur.execute("""INSERT INTO treasury_yields (day, curve, updated_at) VALUES (%s, %s, NOW())
+                           ON CONFLICT (day) DO UPDATE SET curve=EXCLUDED.curve, updated_at=NOW()""",
+                        (day, json.dumps(curve)))
+        conn.commit()
+        cur.close()
+    finally:
+        conn.close()
+
+
 def main() -> int:
     started = time.time()
     tickers = sp500_tickers()
     close, high, low = download(tickers)
     rows = compute(close, high, low)
+    status = 0
     if rows.empty:
         print("market breadth: nothing to store (too few stocks with data)")
-        return 1
-    n = save(rows)
-    last = rows.iloc[-1]
-    print(f"market breadth: saved {n} days, latest {rows.index[-1].date()}: "
-          f"{int(last['above50'])}/{int(last['n50'])} above 50d, {int(last['above200'])}/{int(last['n200'])} above 200d, "
-          f"highs {int(last['new_highs'])} lows {int(last['new_lows'])}, "
-          f"adv {int(last['advancers'])} dec {int(last['decliners'])} ({len(tickers)} tickers, {int(time.time() - started)}s)")
-    return 0
+        status = 1
+    else:
+        n = save(rows)
+        last = rows.iloc[-1]
+        print(f"market breadth: saved {n} days, latest {rows.index[-1].date()}: "
+              f"{int(last['above50'])}/{int(last['n50'])} above 50d, {int(last['above200'])}/{int(last['n200'])} above 200d, "
+              f"highs {int(last['new_highs'])} lows {int(last['new_lows'])}, "
+              f"adv {int(last['advancers'])} dec {int(last['decliners'])} ({len(tickers)} tickers, {int(time.time() - started)}s)")
+    # v23: market state (SPY trend, VIX) + Treasury yield curve — a failure here never loses the breadth above
+    try:
+        regime = regime_rows()
+    except Exception as e:
+        print(f"[warn] market regime: SPY/VIX download failed: {type(e).__name__}: {e}")
+        regime = pd.DataFrame()
+    curves = treasury_curves()
+    if regime.empty and not curves:
+        print("[warn] market regime: nothing to store")
+        return status
+    save_regime(regime, curves)
+    msg = f"market regime: saved {len(regime)} days"
+    if not regime.empty:
+        r = regime.iloc[-1]
+        fmt = lambda v: "—" if _num(v) is None else f"{_num(v):.2f}"
+        msg += (f", latest {regime.index[-1].date()}: SPY {fmt(r['spy_close'])} (50d {fmt(r['spy_sma50'])}, "
+                f"200d {fmt(r['spy_sma200'])}), VIX {fmt(r['vix'])}")
+    if curves:
+        d = max(curves)
+        msg += f"; treasury yields: {len(curves)} days, latest {d}: 2Y {curves[d].get('2Y')} 10Y {curves[d].get('10Y')}"
+    else:
+        msg += "; treasury yields: none"
+    print(msg)
+    return status
 
 
 if __name__ == "__main__":

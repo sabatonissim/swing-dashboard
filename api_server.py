@@ -4197,13 +4197,14 @@ def push_subscribe(body: PushSubscription, user_id: int = Depends(current_user_i
         # the same browser re-subscribing (or a device passed to another account) -> one row, owned by this user
         # v20e: a new device takes the account's economic-events choice (watch_macro is set per account in the panel)
         cur.execute("""INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, lang, watch_signals, watch_macro,
-                                                       watch_insider)
+                                                       watch_insider, watch_morning)
                        VALUES (%s, %s, %s, %s, %s, %s,
                                COALESCE((SELECT BOOL_OR(watch_macro) FROM push_subscriptions WHERE user_id = %s), FALSE),
-                               COALESCE((SELECT BOOL_OR(watch_insider) FROM push_subscriptions WHERE user_id = %s), TRUE))
+                               COALESCE((SELECT BOOL_OR(watch_insider) FROM push_subscriptions WHERE user_id = %s), TRUE),
+                               COALESCE((SELECT BOOL_OR(watch_morning) FROM push_subscriptions WHERE user_id = %s), FALSE))
                        ON CONFLICT (endpoint) DO UPDATE SET user_id = EXCLUDED.user_id, p256dh = EXCLUDED.p256dh,
                          auth = EXCLUDED.auth, lang = EXCLUDED.lang, watch_signals = EXCLUDED.watch_signals, fails = 0""",
-                    (user_id, body.endpoint, body.p256dh, body.auth, lang, body.watch_signals, user_id, user_id))
+                    (user_id, body.endpoint, body.p256dh, body.auth, lang, body.watch_signals, user_id, user_id, user_id))
         conn.commit()
     return {"subscribed": True}
 
@@ -4250,11 +4251,12 @@ def list_alerts(user_id: int = Depends(current_user_id)):
                        ORDER BY triggered_at IS NOT NULL, created_at DESC""", (user_id,))
         alerts = [dict(r) for r in cur.fetchall()]
         cur.execute("""SELECT COUNT(*) AS n, BOOL_OR(watch_signals) AS sig, BOOL_OR(watch_macro) AS mac,
-                              BOOL_OR(COALESCE(watch_insider, TRUE)) AS ins
+                              BOOL_OR(COALESCE(watch_insider, TRUE)) AS ins, BOOL_OR(watch_morning) AS mor
                        FROM push_subscriptions WHERE user_id = %s""", (user_id,))
         s = cur.fetchone()
     return {"alerts": alerts, "devices": s["n"] or 0, "watch_signals": bool(s["sig"]) if s["n"] else True,
-            "watch_macro": bool(s["mac"]), "watch_insider": bool(s["ins"]) if s["n"] else True}
+            "watch_macro": bool(s["mac"]), "watch_insider": bool(s["ins"]) if s["n"] else True,
+            "watch_morning": bool(s["mor"])}
 
 
 class PriceAlertIn(BaseModel):
@@ -4291,11 +4293,14 @@ class AlertSettings(BaseModel):
     watch_signals: Optional[bool] = None
     watch_macro: Optional[bool] = None     # v20e: reminders before major economic releases
     watch_insider: Optional[bool] = None   # v22b: insider buys/sales of watchlist stocks
+    watch_morning: Optional[bool] = None   # v23: morning brief before the US open
 
 
 @app.post("/api/alerts/settings")
 def alert_settings(body: AlertSettings, user_id: int = Depends(current_user_id)):
     with db_cursor() as (conn, cur):
+        if body.watch_morning is not None:
+            cur.execute("UPDATE push_subscriptions SET watch_morning = %s WHERE user_id = %s", (body.watch_morning, user_id))
         if body.watch_signals is not None:
             cur.execute("UPDATE push_subscriptions SET watch_signals = %s WHERE user_id = %s", (body.watch_signals, user_id))
         if body.watch_macro is not None:
@@ -4303,7 +4308,8 @@ def alert_settings(body: AlertSettings, user_id: int = Depends(current_user_id))
         if body.watch_insider is not None:
             cur.execute("UPDATE push_subscriptions SET watch_insider = %s WHERE user_id = %s", (body.watch_insider, user_id))
         conn.commit()
-    return {"watch_signals": body.watch_signals, "watch_macro": body.watch_macro, "watch_insider": body.watch_insider}
+    return {"watch_signals": body.watch_signals, "watch_macro": body.watch_macro, "watch_insider": body.watch_insider,
+            "watch_morning": body.watch_morning}
 
 
 # v20e: ~40 minutes before a major US economic release, a reminder to everyone who turned that on. Runs inside the
@@ -4336,6 +4342,37 @@ def _macro_alert_check():
             conn.close()
 
 
+MORNING_BRIEF_WINDOW_ET = (8 * 60, 9 * 60 + 25)    # from 08:00 ET; a server that woke up late still sends until 09:25
+
+
+def _morning_brief_check():
+    """v23: the morning brief (push_alerts.notify_morning_brief) on weekdays from 08:00 ET. push_log keeps it to once
+    per user per day, so checking every 5 minutes inside the window is safe."""
+    if not push_alerts.ready():
+        return
+    from zoneinfo import ZoneInfo
+    now_et = dt.now(ZoneInfo("America/New_York"))
+    mins = now_et.hour * 60 + now_et.minute
+    if now_et.weekday() >= 5 or not (MORNING_BRIEF_WINDOW_ET[0] <= mins <= MORNING_BRIEF_WINDOW_ET[1]):
+        return
+    today = now_et.date().isoformat()
+    todays = []
+    for e in (econ_calendar.build_calendar(get_conn) or {}).get("events") or []:
+        if e.get("impact") not in ("high", "medium") or e.get("date_et") != today:
+            continue
+        try:
+            when = dt.fromisoformat(str(e.get("datetime_utc", "")).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        todays.append({"name_he": e.get("name_he"), "name_en": e.get("name_en"), "impact": e.get("impact"), "when": when})
+    todays.sort(key=lambda x: (x["impact"] != "high", x["when"]))
+    conn = get_conn()
+    try:
+        push_alerts.notify_morning_brief(conn, now_et.date(), todays)
+    finally:
+        conn.close()
+
+
 def _macro_alert_loop():
     time.sleep(60)                         # let the server finish booting and the calendar warm up
     while True:
@@ -4343,6 +4380,10 @@ def _macro_alert_loop():
             _macro_alert_check()
         except Exception as e:  # noqa: BLE001 — a failed check must never stop the loop
             print(f"[macro alerts] check failed: {type(e).__name__}: {e}")
+        try:
+            _morning_brief_check()
+        except Exception as e:  # noqa: BLE001
+            print(f"[morning brief] check failed: {type(e).__name__}: {e}")
         time.sleep(MACRO_ALERT_CHECK_SEC)
 
 
@@ -5358,18 +5399,107 @@ def _breadth_label(pct50: Optional[float]) -> Optional[str]:
     return "broad" if pct50 >= 60 else ("narrow" if pct50 < 40 else "mixed")
 
 
+def _trend_label(close, sma50, sma200) -> Optional[str]:
+    """v23, fixed rule (a description, not advice): S&P 500 (SPY) above both averages with the 50 above the 200 = up;
+    below both with the 50 under the 200 = down; anything else = mixed."""
+    if close is None or sma50 is None or sma200 is None:
+        return None
+    if close > sma50 and close > sma200 and sma50 > sma200:
+        return "up"
+    if close < sma50 and close < sma200 and sma50 < sma200:
+        return "down"
+    return "mixed"
+
+
+def _vix_label(vix) -> Optional[str]:
+    if vix is None:
+        return None
+    return "calm" if vix < 15 else "normal" if vix < 20 else "elevated" if vix < 30 else "high"
+
+
+def _curve_label(spread) -> Optional[str]:
+    """10Y minus 2Y, percentage points: below 0 = inverted, 0-0.5 = flat, above = normal (upward sloping)."""
+    if spread is None:
+        return None
+    return "inverted" if spread < 0 else "flat" if spread < 0.5 else "normal"
+
+
+def _regime_part(cur) -> Optional[dict]:
+    if not _table_exists(cur, "market_regime"):
+        return None
+    cur.execute("SELECT * FROM market_regime ORDER BY day DESC LIMIT 140")
+    rows = list(reversed(cur.fetchall()))
+    if not rows:
+        return None
+    last = rows[-1]
+    week = rows[-6] if len(rows) >= 6 else None
+    f = lambda v: round(float(v), 2) if v is not None else None
+    close, s50, s200 = f(last["spy_close"]), f(last["spy_sma50"]), f(last["spy_sma200"])
+    vix = f(last["vix"])
+    return {
+        "day": last["day"].isoformat(),
+        "spy_close": close, "spy_sma50": s50, "spy_sma200": s200,
+        "spy_vs50_pct": round(100.0 * (close / s50 - 1), 1) if close and s50 else None,
+        "spy_vs200_pct": round(100.0 * (close / s200 - 1), 1) if close and s200 else None,
+        "trend": _trend_label(close, s50, s200),
+        "vix": vix, "vix_week_ago": f(week["vix"]) if week else None, "vix_label": _vix_label(vix),
+        "vix_history": [{"d": r["day"].isoformat(), "v": f(r["vix"])} for r in rows if r["vix"] is not None],
+    }
+
+
+def _yields_part(cur) -> Optional[dict]:
+    if not _table_exists(cur, "treasury_yields"):
+        return None
+    cur.execute("SELECT day, curve FROM treasury_yields ORDER BY day DESC LIMIT 300")
+    rows = list(reversed(cur.fetchall()))
+    if not rows:
+        return None
+
+    def curve_of(r):
+        c = r["curve"]
+        return json.loads(c) if isinstance(c, str) else (c or {})
+
+    def at_or_before(days_back):
+        target = rows[-1]["day"] - timedelta(days=days_back)
+        older = [r for r in rows if r["day"] <= target]
+        return ({"day": older[-1]["day"].isoformat(), "curve": curve_of(older[-1])} if older else None)
+
+    last = curve_of(rows[-1])
+    spread = lambda c, short: round(c["10Y"] - c[short], 2) if c.get("10Y") is not None and c.get(short) is not None else None
+    hist = []
+    for r in rows[-140:]:
+        c = curve_of(r)
+        hist.append({"d": r["day"].isoformat(), "y10": c.get("10Y"), "y2": c.get("2Y"), "s2": spread(c, "2Y")})
+    s2 = spread(last, "2Y")
+    return {
+        "day": rows[-1]["day"].isoformat(),
+        "curve": last,
+        "month_ago": at_or_before(30),
+        "year_ago": at_or_before(365),
+        "spread_10y_2y": s2, "spread_10y_3m": spread(last, "3M"),
+        "curve_label": _curve_label(s2),
+        "history": hist,
+    }
+
+
 @app.get("/api/market-breadth")
 def get_market_breadth():
     now = time.time()
     if _breadth_cache["data"] is not None and now - _breadth_cache["ts"] < _V22_TTL_SEC:
         return _breadth_cache["data"]
+    regime = yields = None
+    rows = []
     with db_cursor(dict_cursor=True) as (conn, cur):
-        if not _table_exists(cur, "market_breadth"):
-            return {"available": False}
-        cur.execute("SELECT * FROM market_breadth ORDER BY day DESC LIMIT 140")
-        rows = list(reversed(cur.fetchall()))
+        if _table_exists(cur, "market_breadth"):
+            cur.execute("SELECT * FROM market_breadth ORDER BY day DESC LIMIT 140")
+            rows = list(reversed(cur.fetchall()))
+        try:                                   # v23 — a problem here never hides the breadth itself
+            regime = _regime_part(cur)
+            yields = _yields_part(cur)
+        except Exception as e:  # noqa: BLE001
+            print(f"[warn] /api/market-breadth: regime/yields failed: {type(e).__name__}: {e}")
     if not rows:
-        return {"available": False}
+        return {"available": False, "regime": regime, "yields": yields}
     last = rows[-1]
     week = rows[-6] if len(rows) >= 6 else None          # 5 trading days earlier
     pct50 = _pct(last["above50"], last["n50"])
@@ -5387,6 +5517,8 @@ def get_market_breadth():
         "label": _breadth_label(pct50),
         "history": [{"d": r["day"].isoformat(), "p50": _pct(r["above50"], r["n50"]),
                      "p200": _pct(r["above200"], r["n200"])} for r in rows],
+        "regime": regime,
+        "yields": yields,
     }
     _breadth_cache.update(ts=now, data=data)
     return data
@@ -5467,6 +5599,50 @@ def get_insider(ticker: str):
         summary[k]["shares"] = round(summary[k]["shares"])
     return {"ticker": ticker, "available": True, "covered": covered or bool(rows), "days": _INSIDER_DAYS,
             "summary": summary, "trades": trades[:40], "total_rows": len(trades)}
+
+
+_STREET_MIN_ANALYSTS = 3          # a "consensus" of one or two analysts is not shown
+_STREET_MAX_AGE_DAYS = 10
+
+
+@app.get("/api/street/{ticker}")
+def get_street(ticker: str):
+    """v23: analysts' 12-month price targets + short interest, from the scanner's stock_estimates row (Yahoo .info is
+    read in GitHub Actions — it is blocked here). Facts only: the site shows the numbers and their source, no rating.
+    Stocks outside the scanner universe -> available False (the stock page then hides the section)."""
+    ticker = _canon_ticker(ticker)
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        if not _table_exists(cur, "stock_estimates"):
+            return {"ticker": ticker, "available": False}
+        cur.execute("""SELECT column_name FROM information_schema.columns
+                       WHERE table_name = 'stock_estimates' AND column_name = 'target_mean'""")
+        if not cur.fetchone():                     # the scanner with v23 has not run yet
+            return {"ticker": ticker, "available": False}
+        cur.execute("""SELECT target_mean, target_high, target_low, num_analysts, short_pct_float, short_ratio,
+                              shares_short, shares_short_prior, short_date, updated_at
+                       FROM stock_estimates WHERE ticker = %s AND updated_at > NOW() - make_interval(days => %s)""",
+                    (ticker, _STREET_MAX_AGE_DAYS))
+        r = cur.fetchone()
+    if not r:
+        return {"ticker": ticker, "available": False}
+    f = lambda v, d=2: round(float(v), d) if v is not None and float(v) == float(v) else None
+    out = {"ticker": ticker, "available": True, "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+           "targets": None, "short": None}
+    n = r["num_analysts"]
+    if n and n >= _STREET_MIN_ANALYSTS and r["target_mean"] and r["target_mean"] > 0:
+        lo, hi = f(r["target_low"]), f(r["target_high"])
+        out["targets"] = {"mean": f(r["target_mean"]), "high": hi if hi and hi > 0 else None,
+                          "low": lo if lo and lo > 0 else None, "analysts": int(n)}
+    pct = r["short_pct_float"]
+    if pct is not None and 0 <= pct <= 1:          # Yahoo gives a fraction (0.023 = 2.3% of the float)
+        sh, prior = r["shares_short"], r["shares_short_prior"]
+        out["short"] = {"pct_float": f(100 * pct, 2), "days_to_cover": f(r["short_ratio"], 1),
+                        "shares": int(sh) if sh else None,
+                        "change_pct": f(100.0 * (sh / prior - 1), 1) if sh and prior else None,
+                        "date": r["short_date"].isoformat() if r["short_date"] else None}
+    if not out["targets"] and not out["short"]:
+        out["available"] = False
+    return out
 
 
 @app.get("/api/insider-buys")

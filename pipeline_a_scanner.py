@@ -1773,18 +1773,33 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
 # forwardEps = next fiscal year's consensus ("+1y"), epsCurrentYear = current fiscal year ("0y"),
 # nextFiscalYearEnd = end of the current fiscal year (KO 2026-12-31, AAPL 2026-09-27).
 # ------------------------------------------------------------------
+# v23: from the same .info dict — analysts' 12-month price targets and the short interest (Yahoo takes it from the
+# exchanges' twice-a-month short interest report; dateShortInterest = the settlement date it refers to).
+_STREET_FIELDS = ("targetMeanPrice", "targetHighPrice", "targetLowPrice", "numberOfAnalystOpinions",
+                  "shortPercentOfFloat", "shortRatio", "sharesShort", "sharesShortPriorMonth", "dateShortInterest")
+
+
+def _epoch_date(ts):
+    try:
+        return datetime.fromtimestamp(int(ts), tz=timezone.utc).date().isoformat() if ts else None
+    except Exception:
+        return None
+
+
 def _estimates_row(ticker, info):
     info = info or {}
     eps_next = info.get("forwardEps")
     eps_cur = info.get("epsCurrentYear")
     fy_end_ts = info.get("nextFiscalYearEnd")
-    if eps_next is None and eps_cur is None and info.get("trailingPE") is None:
+    if (eps_next is None and eps_cur is None and info.get("trailingPE") is None
+            and all(info.get(k) is None for k in _STREET_FIELDS)):
         return None
-    try:
-        fy_end = datetime.fromtimestamp(int(fy_end_ts), tz=timezone.utc).date().isoformat() if fy_end_ts else None
-    except Exception:
-        fy_end = None
-    return (ticker, _native(eps_cur), _native(eps_next), fy_end, _native(info.get("trailingPE")), _native(info.get("marketCap")))
+    fy_end = _epoch_date(fy_end_ts)
+    num = lambda k: _native(info.get(k)) if isinstance(info.get(k), (int, float, np.generic)) else None
+    return (ticker, _native(eps_cur), _native(eps_next), fy_end, _native(info.get("trailingPE")), _native(info.get("marketCap")),
+            num("targetMeanPrice"), num("targetHighPrice"), num("targetLowPrice"), num("numberOfAnalystOpinions"),
+            num("shortPercentOfFloat"), num("shortRatio"), num("sharesShort"), num("sharesShortPriorMonth"),
+            _epoch_date(info.get("dateShortInterest")))
 
 
 def save_stock_estimates(rows: List[tuple]):
@@ -1796,20 +1811,35 @@ def save_stock_estimates(rows: List[tuple]):
     cur.execute("""CREATE TABLE IF NOT EXISTS stock_estimates (
         ticker TEXT PRIMARY KEY, eps_cur_fy REAL, eps_next_fy REAL, fy_end DATE,
         trailing_pe REAL, market_cap DOUBLE PRECISION, updated_at TIMESTAMPTZ DEFAULT NOW())""")
-    for ticker, eps_cur, eps_next, fy_end, tpe, mcap in rows:
+    for col, typ in (("target_mean", "REAL"), ("target_high", "REAL"), ("target_low", "REAL"), ("num_analysts", "INTEGER"),
+                     ("short_pct_float", "REAL"), ("short_ratio", "REAL"), ("shares_short", "DOUBLE PRECISION"),
+                     ("shares_short_prior", "DOUBLE PRECISION"), ("short_date", "DATE")):
+        cur.execute(f"ALTER TABLE stock_estimates ADD COLUMN IF NOT EXISTS {col} {typ}")   # fixed names, not user input
+    for (ticker, eps_cur, eps_next, fy_end, tpe, mcap, t_mean, t_high, t_low, n_an,
+         s_pct, s_ratio, s_sh, s_prior, s_date) in rows:
         cur.execute(
-            """INSERT INTO stock_estimates (ticker, eps_cur_fy, eps_next_fy, fy_end, trailing_pe, market_cap, updated_at)
-               VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            """INSERT INTO stock_estimates (ticker, eps_cur_fy, eps_next_fy, fy_end, trailing_pe, market_cap,
+                   target_mean, target_high, target_low, num_analysts,
+                   short_pct_float, short_ratio, shares_short, shares_short_prior, short_date, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                ON CONFLICT (ticker) DO UPDATE SET eps_cur_fy = EXCLUDED.eps_cur_fy, eps_next_fy = EXCLUDED.eps_next_fy,
                    fy_end = EXCLUDED.fy_end, trailing_pe = EXCLUDED.trailing_pe, market_cap = EXCLUDED.market_cap,
-                   updated_at = NOW()""",
-            (ticker, eps_cur, eps_next, fy_end, tpe, mcap),
+                   target_mean = EXCLUDED.target_mean, target_high = EXCLUDED.target_high,
+                   target_low = EXCLUDED.target_low, num_analysts = EXCLUDED.num_analysts,
+                   short_pct_float = EXCLUDED.short_pct_float, short_ratio = EXCLUDED.short_ratio,
+                   shares_short = EXCLUDED.shares_short, shares_short_prior = EXCLUDED.shares_short_prior,
+                   short_date = EXCLUDED.short_date, updated_at = NOW()""",
+            (ticker, eps_cur, eps_next, fy_end, tpe, mcap, t_mean, t_high, t_low,
+             int(n_an) if n_an is not None else None, s_pct, s_ratio, s_sh, s_prior, s_date),
         )
     conn.commit()
     cur.close()
     conn.close()
     with_ntm = sum(1 for r in rows if r[2] is not None)
-    print(f"[info] stock estimates: saved {len(rows)} tickers ({with_ntm} with a next-year EPS estimate).")
+    with_tgt = sum(1 for r in rows if r[6] is not None)
+    with_short = sum(1 for r in rows if r[10] is not None)
+    print(f"[info] stock estimates: saved {len(rows)} tickers ({with_ntm} with a next-year EPS estimate, "
+          f"{with_tgt} with a price target, {with_short} with short interest).")
 
 
 def upsert_universe_movers(all_changes: List[tuple]):

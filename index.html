@@ -366,6 +366,17 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .hx-row .val{font-family:'JetBrains Mono',monospace;color:var(--green);white-space:nowrap;}
   .hx-row .dt{font-size:11px;color:var(--text-dim);white-space:nowrap;}
   .breadth-chart{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:10px;}
+  /* v23: market state in one line (home + market page) and the Treasury yield curve */
+  .hx-regime{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;min-width:0;}
+  .hx-regime:empty{display:none;}
+  .rg-label{font-size:12px;font-weight:700;color:var(--text);}
+  .rg-chip{font-size:11.5px;font-weight:600;padding:3px 10px;border-radius:20px;border:1px solid var(--line-hover);color:var(--text);background:var(--panel);white-space:nowrap;cursor:help;}
+  .rg-chip b{font-family:'JetBrains Mono',monospace;font-weight:700;}
+  .rg-more{font-size:11px;color:var(--amber);cursor:pointer;text-decoration:underline;white-space:nowrap;}
+  .rg-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:10px;}
+  @media(max-width:700px){.rg-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
+  .yc-charts{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:10px;margin-top:10px;}
+  @media(max-width:900px){.yc-charts{grid-template-columns:minmax(0,1fr);}}
   .ins-tag{font-size:10px;padding:1px 6px;border-radius:20px;border:1px solid var(--line-hover);color:var(--text-dim);white-space:nowrap;}
   /* Phone-sized screens: the scanner row (ticker+trend+trigger+badges+
      score) and the 4-up backtest stat row were both tight enough to
@@ -804,6 +815,15 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .scan-pattern-filter{display:flex;gap:8px;}                     /* pattern + sector dropdowns side by side */
   .scan-pattern-filter select{flex:1;min-width:0;margin-top:0 !important;}
   html[lang="he"] .scan-pattern-filter{flex-direction:row-reverse;}
+  /* v23: scanner filters (RS, market cap, trend, earnings, volume, today's move, insider buying) + sort */
+  .scan-filter-btn{flex:0 0 auto;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:0 12px;font-size:13px;font-family:'Heebo',sans-serif;cursor:pointer;white-space:nowrap;}
+  .scan-filter-btn.on{border-color:var(--amber);color:var(--amber);}
+  .scan-adv{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;margin:-2px 0 10px;}
+  .scan-adv-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;}
+  .scan-adv-grid label{display:block;font-size:11px;color:var(--text-dim);min-width:0;}
+  .scan-adv-grid select{margin-top:3px;padding:7px 9px;font-size:12.5px;}
+  .scan-adv-foot{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:9px;font-size:12px;color:var(--text-dim);}
+  .scan-adv-foot button{background:none;border:1px solid var(--line);color:var(--amber);border-radius:7px;padding:4px 10px;font-size:12px;cursor:pointer;font-family:'Heebo',sans-serif;}
   /* ---- v20 design pass (owner: "should look like a real, quality app, not an AI page") ----
      One heading style for every section (no tiny spaced capitals, no coloured bullet dots), section heads on the
      market page and inside drawers look the same as on the home page. */
@@ -975,6 +995,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
 
 <!-- v22: market breadth + insider buys (filled by loadV22Data / renderV22) -->
 <div class="home-extras" id="home-extras">
+  <div class="hx-regime" id="hx-regime"></div>
   <div class="hx-card" id="hx-breadth"></div>
   <div class="hx-card" id="hx-insider"></div>
 </div>
@@ -984,6 +1005,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   <div class="col right">
     <div class="col-title"><span class="dot"></span> איתותי הסורק</div>
     <div class="scan-pattern-filter" id="scan-pattern-filter"></div>
+    <div class="scan-adv" id="scan-adv" style="display:none;"></div>
     <div id="stocks"></div>
   </div>
   <div class="divider"></div>
@@ -1032,6 +1054,15 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
 
     <!-- View 2: market overview (what the Market Pulse page showed before) -->
     <div id="pulse-view-overview">
+    <!-- v23: market state in one line + Treasury yield curve (filled by renderRegimeFull / renderYields) -->
+    <div class="pulse-section-head">
+      <div class="pulse-section-title" id="regime-title">מצב השוק</div>
+    </div>
+    <div id="regime-wrap" style="margin-bottom:24px;"></div>
+    <div class="pulse-section-head">
+      <div class="pulse-section-title" id="yields-title">עקום התשואות</div>
+    </div>
+    <div id="yields-wrap" style="margin-bottom:24px;"></div>
     <div class="pulse-section-head">
       <div class="pulse-section-title" id="breadth-title">רוחב השוק</div>
     </div>
@@ -1228,7 +1259,7 @@ function renderScanPatternFilter(){
   const present = Array.from(new Set(stocks.map(s => s.patternType).filter(Boolean)));
   if(present.length <= 1){
     // Not worth a pattern control when there's nothing meaningful to filter between (the sector one may still be)
-    el.innerHTML = sectorSelectHtml();
+    el.innerHTML = sectorSelectHtml() + (stocks.length ? scanFilterBtnHtml() : '');
     return;
   }
   present.sort((a,b) => patternLabel(a).localeCompare(patternLabel(b), lang==='en'?'en':'he'));
@@ -1236,7 +1267,89 @@ function renderScanPatternFilter(){
   const options = [`<option value="all" ${activeScanPattern==='all'?'selected':''}>${allLabel}</option>`]
     .concat(present.map(p => `<option value="${p.replace(/"/g,'&quot;')}" ${activeScanPattern===p?'selected':''}>${patternLabel(p)}</option>`));
   el.innerHTML = `<select class="backtest-pattern-select" aria-label="${lang==='en'?'Filter by pattern':'סינון לפי תבנית'}" onchange="setScanPatternFilter(this.value)">${options.join('')}</select>`
-    + sectorSelectHtml();
+    + sectorSelectHtml() + scanFilterBtnHtml();
+}
+
+// ---- v23: scanner filters + sort. Everything comes from the scan row itself (/api/stocks), nothing extra is fetched.
+// Kept per browser (localStorage); a missing value (e.g. market cap Yahoo did not give) does not pass an active filter.
+var SCAN_FILTER_KEY = 'swing_scan_filters_v1';
+var SCAN_FILTER_DEFAULT = {rs: 0, cap: 0, stage2: false, earn: 'any', vol: 0, move: 'any', insider: false, sort: 'rank'};
+var scanFilters = Object.assign({}, SCAN_FILTER_DEFAULT);
+try { const s = JSON.parse(localStorage.getItem(SCAN_FILTER_KEY) || 'null'); if(s && typeof s === 'object') scanFilters = Object.assign({}, SCAN_FILTER_DEFAULT, s); } catch(e){}
+var scanAdvOpen = false;
+
+function scanFilterCount(){
+  const f = scanFilters;
+  return [f.rs > 0, f.cap > 0, f.stage2, f.earn !== 'any', f.vol > 0, f.move !== 'any', f.insider].filter(Boolean).length;
+}
+function scanFilterBtnHtml(){
+  const n = scanFilterCount(), en = lang==='en';
+  const label = (en ? 'Filters' : 'מסננים') + (n ? ` (${n})` : '') + (scanFilters.sort !== 'rank' ? (en ? ' · sorted' : ' · ממוין') : '');
+  return `<button class="scan-filter-btn ${n || scanFilters.sort !== 'rank' ? 'on' : ''}" onclick="toggleScanAdv()" aria-expanded="${scanAdvOpen}">${label}</button>`;
+}
+function toggleScanAdv(){ scanAdvOpen = !scanAdvOpen; renderStocks(); }
+function setScanFilter(k, v){
+  scanFilters[k] = v;
+  try { localStorage.setItem(SCAN_FILTER_KEY, JSON.stringify(scanFilters)); } catch(e){}
+  renderStocks();
+}
+function resetScanFilters(){
+  scanFilters = Object.assign({}, SCAN_FILTER_DEFAULT);
+  try { localStorage.removeItem(SCAN_FILTER_KEY); } catch(e){}
+  renderStocks();
+}
+function scanPasses(s){
+  const f = scanFilters;
+  if(f.rs > 0 && !(s.rsRating != null && s.rsRating >= f.rs)) return false;
+  if(f.cap > 0 && !(s.marketCap > 0 && s.marketCap >= f.cap)) return false;
+  if(f.stage2 && !(s.trendStage && /^Stage 2/.test(s.trendStage))) return false;
+  const soon = s.daysToEarnings != null && s.daysToEarnings >= 0 && s.daysToEarnings <= 7;
+  if(f.earn === 'none7' && soon) return false;
+  if(f.earn === 'soon7' && !soon) return false;
+  if(f.vol > 0 && !(s.volPct != null && s.volPct >= f.vol)) return false;
+  if(f.move === 'up' && !(s.changePct != null && s.changePct > 0)) return false;
+  if(f.move === 'down' && !(s.changePct != null && s.changePct < 0)) return false;
+  if(f.insider && !insiderBuyTickers.has(s.ticker)) return false;
+  return true;
+}
+var SCAN_SORTS = {
+  rs:     s => s.rsRating,
+  change: s => s.changePct,
+  vol:    s => s.volPct,
+  cap:    s => s.marketCap > 0 ? s.marketCap : null,
+  score:  s => s.score,
+};
+function scanSort(idx){
+  const key = SCAN_SORTS[scanFilters.sort];
+  if(!key) return idx;                    // 'rank' = the list's own order (score blended with the pattern's track record)
+  return idx.slice().sort((a, b) => {
+    const va = key(stocks[a]), vb = key(stocks[b]);
+    if(va == null && vb == null) return a - b;
+    if(va == null) return 1;
+    if(vb == null) return -1;
+    return vb - va || a - b;
+  });
+}
+function renderScanAdv(shown, total){
+  const el = document.getElementById('scan-adv');
+  if(!el) return;
+  if(!scanAdvOpen || !stocks.length){ el.style.display = 'none'; el.innerHTML = ''; return; }
+  const en = lang==='en', f = scanFilters;
+  const sel = (k, label, opts) => `<label>${label}<select class="backtest-pattern-select" onchange="setScanFilter('${k}', ${typeof f[k] === 'number' ? 'Number(this.value)' : typeof f[k] === 'boolean' ? "this.value==='1'" : 'this.value'})">${
+    opts.map(([v, t]) => `<option value="${typeof v === 'boolean' ? (v ? '1' : '0') : v}" ${f[k] === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>`;
+  const any = en ? 'Any' : 'הכל';
+  el.style.display = '';
+  el.innerHTML = `<div class="scan-adv-grid">
+      ${sel('rs', en ? 'RS rating (vs. the market)' : 'דירוג RS (מול השוק)', [[0, any], [70, '70+'], [80, '80+'], [90, '90+']])}
+      ${sel('cap', en ? 'Market cap' : 'שווי שוק', [[0, any], [2e9, en ? 'Over $2B' : 'מעל 2 מיליארד $'], [10e9, en ? 'Over $10B' : 'מעל 10 מיליארד $'], [50e9, en ? 'Over $50B' : 'מעל 50 מיליארד $'], [200e9, en ? 'Over $200B' : 'מעל 200 מיליארד $']])}
+      ${sel('stage2', en ? 'Trend' : 'מגמה', [[false, any], [true, en ? 'Uptrend only (Stage 2)' : 'רק מגמה עולה (שלב 2)']])}
+      ${sel('earn', en ? 'Earnings report' : 'דוח רבעוני', [['any', any], ['none7', en ? 'No report in the next 7 days' : 'בלי דוח ב-7 הימים הקרובים'], ['soon7', en ? 'Report within 7 days' : 'דוח בתוך 7 ימים']])}
+      ${sel('vol', en ? 'Volume on the signal day' : 'מחזור ביום האיתות', [[0, any], [50, en ? '1.5× the 20-day average or more' : 'פי 1.5 מהממוצע ומעלה'], [100, en ? '2× the 20-day average or more' : 'פי 2 מהממוצע ומעלה']])}
+      ${sel('move', en ? 'Change on the signal day' : 'שינוי ביום האיתות', [['any', any], ['up', en ? 'Up' : 'עלתה'], ['down', en ? 'Down' : 'ירדה']])}
+      ${sel('insider', en ? 'Insiders (30 days)' : 'בעלי עניין (30 יום)', [[false, any], [true, en ? 'Insiders bought shares' : 'בעלי עניין קנו מניות']])}
+      ${sel('sort', en ? 'Sort by' : 'מיון לפי', [['rank', en ? 'Default ranking' : 'דירוג רגיל'], ['rs', en ? 'RS rating' : 'דירוג RS'], ['change', en ? 'Change on the signal day' : 'שינוי ביום האיתות'], ['vol', en ? 'Volume vs. average' : 'מחזור מול הממוצע'], ['cap', en ? 'Market cap' : 'שווי שוק'], ['score', en ? 'Signal score' : 'ציון האיתות']])}
+    </div>
+    <div class="scan-adv-foot"><span>${en ? `${shown} of ${total} signals shown` : `מוצגים ${shown} מתוך ${total} איתותים`}</span><button onclick="resetScanFilters()">${en ? 'Clear' : 'ניקוי'}</button></div>`;
 }
 
 function setScanPatternFilter(p){
@@ -1265,10 +1378,12 @@ function sectorSelectHtml(){
 function renderStocks(){
   const el = document.getElementById("stocks");
   renderScanPatternFilter();
-  const visibleIdx = stocks
+  const visibleIdx = scanSort(stocks
     .map((s,i)=>i)
     .filter(i => activeScanPattern==='all' || stocks[i].patternType===activeScanPattern)
-    .filter(i => activeScanSector==='all' || stocks[i].sector===activeScanSector);
+    .filter(i => activeScanSector==='all' || stocks[i].sector===activeScanSector)
+    .filter(i => scanPasses(stocks[i])));                                  // v23 filters
+  renderScanAdv(visibleIdx.length, stocks.length);
   if(!visibleIdx.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${!stocks.length && apiLoadState!=='ok' ? apiWaitMsg() : stocks.length ? (lang==='en' ? 'No signals match this filter.' : 'אין איתותים שמתאימים לסינון הזה.') : UI[lang].no_stocks}</div>`; return; }
 
   const recent = [], previous = [];
@@ -2006,6 +2121,7 @@ async function rerenderDeepDiveForLang(){
     catch(e){ console.error('[fundamentals] re-render failed', e); }
   }
   renderInsiderSection(st.insider);
+  renderStreetSection(st.street, st.quote);     // v23
 }
 
 async function loadDeepDive(){
@@ -2031,7 +2147,8 @@ async function loadDeepDive(){
   const setupP = fetchWithTimeout(`${API_BASE}/api/technical-setup/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject());
   const fundP = fetchFundamentalsData(ticker);
   const insiderP = fetchWithTimeout(`${API_BASE}/api/insider/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject());   // v22
-  [sectorP, setupP, fundP, insiderP].forEach(p => p.catch(() => {}));   // handled below; avoids "unhandled rejection" noise
+  const streetP = fetchWithTimeout(`${API_BASE}/api/street/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject());     // v23
+  [sectorP, setupP, fundP, insiderP, streetP].forEach(p => p.catch(() => {}));   // handled below; avoids "unhandled rejection" noise
 
   try {
     const [lookupRes, signalsRes, newsRes] = await Promise.allSettled([
@@ -2080,6 +2197,11 @@ async function loadDeepDive(){
       if(!current()) return;
       st.insider = d || {available: false, failed: true};
       renderInsiderSection(st.insider);
+    });
+    streetP.then(v => v, () => null).then(d => {     // v23: hidden unless there is something to show
+      if(!current()) return;
+      st.street = d;
+      renderStreetSection(d, quote);
     });
 
     // The lookup endpoint's own market_cap/pe_ratio depend on yfinance's
@@ -2178,6 +2300,8 @@ function renderDeepDive(quote, sector, signals, news){
   html += `<div id="dd-sector-compare-section"></div>`;
 
   html += `<div id="dd-fundamentals-section"></div>`;
+
+  html += `<div id="dd-street-section"></div>`;    // v23: analyst targets + short interest
 
   html += `<div id="dd-insider-section"></div>`;
 
@@ -6281,6 +6405,8 @@ function mapDbRowToStock(r){
     patternType: r.pattern_type,
     daysToEarnings: r.days_to_earnings,
     repeatCount: r.repeat_count_14d || 1,
+    marketCap: r.market_cap,                  // v23 filters (0 = Yahoo gave none)
+    volPct: r.breakout_volume_pct,            // % above the 20-day average volume on the signal day (0 if below)
   };
 }
 
@@ -6412,8 +6538,11 @@ async function loadV22Data(force){
 }
 
 function renderV22(){
+  renderRegimeHome();      // v23
   renderBreadthHome();
   renderInsiderHome();
+  renderRegimeFull();      // v23
+  renderYields();          // v23
   renderBreadthFull();
 }
 
@@ -6523,6 +6652,179 @@ function renderBreadthFull(){
     </div>`;
 }
 
+// ---- v23: market state in one line + Treasury yield curve ----
+// Same response as the breadth (/api/market-breadth: .regime = SPY trend + VIX, .yields = Treasury par yield curve),
+// filled by market_breadth.py. Every label is a fixed rule written next to it — a description, not a recommendation.
+var REGIME_TEXT = {
+  trend: {up: {he: 'מגמה עולה', en: 'uptrend', c: 'var(--green)'}, mixed: {he: 'מגמה מעורבת', en: 'mixed trend', c: 'var(--amber)'},
+          down: {he: 'מגמה יורדת', en: 'downtrend', c: 'var(--red)'}},
+  vix:   {calm: {he: 'תנודתיות נמוכה', en: 'low volatility', c: 'var(--green)'}, normal: {he: 'תנודתיות רגילה', en: 'normal volatility', c: 'var(--text)'},
+          elevated: {he: 'תנודתיות גבוהה', en: 'elevated volatility', c: 'var(--amber)'}, high: {he: 'תנודתיות גבוהה מאוד', en: 'high volatility', c: 'var(--red)'}},
+  curve: {normal: {he: 'עולה', en: 'upward', c: 'var(--green)'}, flat: {he: 'שטוח', en: 'flat', c: 'var(--amber)'},
+          inverted: {he: 'הפוך', en: 'inverted', c: 'var(--red)'}},
+};
+var YC_MATS = ['1M','3M','6M','1Y','2Y','3Y','5Y','7Y','10Y','20Y','30Y'];
+var YC_MATS_HE = {'1M':'חודש','3M':'3 ח׳','6M':'6 ח׳','1Y':'שנה','2Y':'2 ש׳','3Y':'3 ש׳','5Y':'5 ש׳','7Y':'7 ש׳','10Y':'10 ש׳','20Y':'20 ש׳','30Y':'30 ש׳'};
+
+function _sgn(v, digits){ return v == null ? '—' : (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(Number(v)).toFixed(digits == null ? 1 : digits); }
+
+function regimeTips(d){
+  const en = lang==='en', r = d && d.regime, y = d && d.yields;
+  return {
+    trend: r ? (en ? `S&P 500 (SPY) is ${_sgn(r.spy_vs50_pct)}% from its 50-day average and ${_sgn(r.spy_vs200_pct)}% from its 200-day average. Rule: above both, with the 50-day above the 200-day = uptrend; below both, with the 50-day below the 200-day = downtrend; anything else = mixed.`
+                   : `S&P 500 (SPY) נמצא ${_sgn(r.spy_vs50_pct)}% מממוצע 50 יום ו-${_sgn(r.spy_vs200_pct)}% מממוצע 200 יום. הכלל: מעל שניהם וממוצע 50 מעל ממוצע 200 = מגמה עולה; מתחת לשניהם וממוצע 50 מתחת ל-200 = מגמה יורדת; אחרת = מעורבת.`) : '',
+    vix: en ? 'VIX = the volatility the options market expects for the S&P 500 over the next 30 days. Under 15 = low, 15–20 = normal, 20–30 = elevated, 30 and up = high.'
+            : 'VIX = התנודתיות שהאופציות מצפות לה ב-S&P 500 ב-30 הימים הבאים. מתחת ל-15 = נמוכה, 15–20 = רגילה, 20–30 = גבוהה, 30 ומעלה = גבוהה מאוד.',
+    curve: en ? '10-year Treasury yield minus the 2-year yield, in percentage points. Below 0 = inverted (short-term rates above long-term), 0–0.5 = flat, above 0.5 = upward. Source: US Treasury.'
+              : 'התשואה על אג״ח ממשלתי אמריקאי ל-10 שנים פחות התשואה ל-2 שנים, בנקודות אחוז. מתחת ל-0 = הפוך (ריבית קצרה גבוהה מארוכה), 0–0.5 = שטוח, מעל 0.5 = עולה. מקור: משרד האוצר האמריקאי.',
+    breadth: en ? 'Share of S&P 500 stocks above their 50-day average: 60% or more = broad, under 40% = narrow.'
+                : 'אחוז מניות S&P 500 מעל ממוצע 50 יום: 60% ומעלה = רחבה, מתחת ל-40% = חלשה.',
+  };
+}
+
+function regimeChipsHtml(d){
+  const en = lang==='en', out = [];
+  if(!d) return '';
+  const tips = regimeTips(d), r = d.regime, y = d.yields;
+  const chip = (txt, color, tip) => `<span class="rg-chip" style="color:${color};border-color:${color}" title="${escH(tip)}">${txt}</span>`;
+  if(r && REGIME_TEXT.trend[r.trend]){
+    const t = REGIME_TEXT.trend[r.trend];
+    out.push(chip(`S&P 500: ${en ? t.en : t.he}`, t.c, tips.trend));
+  }
+  if(d.available && BREADTH_LABELS[d.label]){
+    const l = BREADTH_LABELS[d.label];
+    out.push(chip(`${en ? l.en : l.he} <b>${Math.round(d.pct50)}%</b>`, l.color, tips.breadth));
+  }
+  if(r && r.vix != null && REGIME_TEXT.vix[r.vix_label]){
+    const v = REGIME_TEXT.vix[r.vix_label];
+    out.push(chip(`VIX <b>${r.vix.toFixed(1)}</b> · ${en ? v.en : v.he}`, v.c, tips.vix));
+  }
+  if(y && y.spread_10y_2y != null && REGIME_TEXT.curve[y.curve_label]){
+    const c = REGIME_TEXT.curve[y.curve_label];
+    out.push(chip(`${en ? 'Yield curve' : 'עקום התשואות'}: ${en ? c.en : c.he} <b dir="ltr">${_sgn(y.spread_10y_2y, 2)}</b>`, c.c, tips.curve));
+  }
+  return out.join('');
+}
+
+function renderRegimeHome(){
+  const el = document.getElementById('hx-regime');
+  if(!el) return;
+  const chips = regimeChipsHtml(breadthData);
+  el.innerHTML = chips ? `<span class="rg-label">${lang==='en' ? 'Market state' : 'מצב השוק'}</span>${chips}<span class="rg-more" onclick="openRegimePage()">${lang==='en' ? 'What it means' : 'מה זה אומר'}</span>` : '';
+}
+
+function openRegimePage(){
+  setPage('pulse');
+  setPulseView('overview');
+  const w = document.getElementById('regime-wrap');
+  if(w) w.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+// A small line chart: series = [{pts: [{d, v}], color, dash}], one shared y axis; `zero` draws the 0 line.
+function miniLineSvg(series, opts){
+  opts = opts || {};
+  const all = [].concat(...series.map(s => s.pts.filter(p => p.v != null)));
+  if(all.length < 2) return '';
+  const W = 600, H = opts.h || 150, padT = 10, padB = 18, padL = 34, padR = opts.xLabels ? 16 : 4;
+  let lo = Math.min(...all.map(p => p.v)), hi = Math.max(...all.map(p => p.v));
+  if(opts.zero){ lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
+  if(hi - lo < 1e-9){ hi += 1; lo -= 1; }
+  const span = hi - lo; lo -= span * 0.08; hi += span * 0.08;
+  const n = series[0].pts.length;
+  const x = i => padL + (i / Math.max(n - 1, 1)) * (W - padL - padR);
+  const y = v => padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB);
+  const step = [0.1, 0.25, 0.5, 1, 2, 5, 10, 20].find(s => (hi - lo) / s <= 5) || 50;
+  let grid = '';
+  for(let t = Math.ceil(lo / step) * step; t <= hi; t += step){
+    grid += `<line x1="${padL}" y1="${y(t).toFixed(1)}" x2="${W}" y2="${y(t).toFixed(1)}" stroke="var(--line)" stroke-width="1"/>`
+          + `<text x="${padL - 4}" y="${(y(t) + 3).toFixed(1)}" font-size="10" fill="var(--text-dim)" text-anchor="end">${+t.toFixed(2)}</text>`;
+  }
+  if(opts.zero) grid += `<line x1="${padL}" y1="${y(0).toFixed(1)}" x2="${W}" y2="${y(0).toFixed(1)}" stroke="var(--text-dim)" stroke-dasharray="4 4" stroke-width="1"/>`;
+  let xl = '';
+  if(opts.xLabels){
+    opts.xLabels.forEach((lab, i) => { if(lab) xl += `<text x="${x(i).toFixed(1)}" y="${H - 4}" font-size="10" fill="var(--text-dim)" text-anchor="middle">${lab}</text>`; });
+  } else {
+    let lastM = '';
+    series[0].pts.forEach((p, i) => {
+      const m = (p.d || '').slice(0, 7);
+      if(m && m !== lastM && i > 0) xl += `<text x="${x(i).toFixed(1)}" y="${H - 4}" font-size="10" fill="var(--text-dim)">${m.slice(5, 7)}/${m.slice(2, 4)}</text>`;
+      lastM = m;
+    });
+  }
+  const lines = series.map(s => {
+    const pts = s.pts.map((p, i) => p.v == null ? null : `${x(i).toFixed(1)},${y(p.v).toFixed(1)}`).filter(Boolean).join(' ');
+    const dots = opts.dots ? s.pts.map((p, i) => p.v == null ? '' : `<circle cx="${x(i).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="2.6" fill="${s.color}"/>`).join('') : '';
+    return `<polyline fill="none" stroke="${s.color}" stroke-width="2" ${s.dash ? 'stroke-dasharray="5 4"' : ''} points="${pts}"/>${dots}`;
+  }).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;direction:ltr;display:block" role="img">${grid}${xl}${lines}</svg>`;
+}
+
+function renderRegimeFull(){
+  const el = document.getElementById('regime-wrap');
+  if(!el) return;
+  const en = lang==='en', d = breadthData;
+  const r = d && d.regime, y = d && d.yields;
+  if(!d || (!r && !y)){
+    el.innerHTML = `<div class="movers-empty">${d ? (en ? 'Market state data is not available yet.' : 'נתוני מצב השוק עוד לא זמינים.') : UI[lang].loading}</div>`;
+    return;
+  }
+  const tips = regimeTips(d);
+  const stat = (k, v, s) => `<div class="hx-stat"><div class="k">${k}</div><div class="v" dir="ltr">${v}</div><div class="s">${s || '&nbsp;'}</div></div>`;
+  const num = s => `<bdi dir="ltr">${s}</bdi>`;      // a signed number inside Hebrew text keeps its sign in front
+  const vixWk = r && r.vix != null && r.vix_week_ago != null ? `${num(_sgn(r.vix - r.vix_week_ago))} ${en ? 'in a week' : 'בשבוע'}` : '';
+  const vixChart = r && r.vix_history && r.vix_history.length > 5
+    ? `<div class="breadth-chart"><div class="fund-legend" style="margin:0 0 6px;"><span class="fund-legend-item"><span style="width:12px;height:3px;background:var(--amber);display:inline-block"></span>VIX</span></div>${miniLineSvg([{pts: r.vix_history, color: 'var(--amber)'}], {h: 130})}</div>` : '';
+  const explain = [r && r.trend ? tips.trend : '', d.available ? tips.breadth : '', r && r.vix != null ? tips.vix : '', y ? tips.curve : '']
+    .filter(Boolean).map(t => `<div style="margin-top:3px;">${escH(t)}</div>`).join('');
+  el.innerHTML = `<div class="hx-card">
+      <div class="hx-regime">${regimeChipsHtml(d)}</div>
+      <div class="rg-grid">
+        ${stat('S&P 500 (SPY)', r && r.spy_close != null ? '$' + r.spy_close.toFixed(2) : '—', r && r.spy_vs200_pct != null ? (en ? `${num(_sgn(r.spy_vs50_pct) + '%')} vs 50d avg · ${num(_sgn(r.spy_vs200_pct) + '%')} vs 200d` : `${num(_sgn(r.spy_vs50_pct) + '%')} מממוצע 50 · ${num(_sgn(r.spy_vs200_pct) + '%')} מממוצע 200`) : '')}
+        ${stat('VIX', r && r.vix != null ? r.vix.toFixed(1) : '—', vixWk)}
+        ${stat(en ? '10Y − 2Y' : '10 ש׳ פחות 2 ש׳', y && y.spread_10y_2y != null ? _sgn(y.spread_10y_2y, 2) : '—', en ? 'percentage points' : 'נקודות אחוז')}
+        ${stat(en ? 'Above 50-day avg' : 'מעל ממוצע 50', d.available && d.pct50 != null ? Math.round(d.pct50) + '%' : '—', en ? 'S&P 500 stocks' : 'ממניות S&P 500')}
+      </div>
+      ${vixChart}
+      <div class="hx-note">${explain}<div style="margin-top:3px;">${en ? 'A description of the market by fixed rules — not a recommendation.' : 'תיאור של השוק לפי כללים קבועים — לא המלצה.'}${r ? (en ? ' Prices as of ' : ' מחירים נכון ל-') + _ddmm(r.day) + '.' : ''}</div></div>
+    </div>`;
+}
+
+function renderYields(){
+  const el = document.getElementById('yields-wrap');
+  if(!el) return;
+  const en = lang==='en', y = breadthData && breadthData.yields;
+  if(!y || !y.curve){
+    el.innerHTML = `<div class="movers-empty">${breadthData ? (en ? 'Yield data is not available yet.' : 'נתוני התשואות עוד לא זמינים.') : UI[lang].loading}</div>`;
+    return;
+  }
+  const mats = YC_MATS.filter(m => y.curve[m] != null);
+  const ser = (c) => mats.map(m => ({v: c && c[m] != null ? c[m] : null}));
+  const series = [{pts: ser(y.curve), color: 'var(--amber)'}];
+  const legend = [`<span class="fund-legend-item"><span style="width:12px;height:3px;background:var(--amber);display:inline-block"></span>${en ? 'Today' : 'היום'} (${_ddmm(y.day)})</span>`];
+  if(y.month_ago){ series.push({pts: ser(y.month_ago.curve), color: 'var(--sky)'}); legend.push(`<span class="fund-legend-item"><span style="width:12px;height:3px;background:var(--sky);display:inline-block"></span>${en ? 'A month ago' : 'לפני חודש'}</span>`); }
+  if(y.year_ago){ series.push({pts: ser(y.year_ago.curve), color: 'var(--text-dim)', dash: true}); legend.push(`<span class="fund-legend-item"><span style="width:12px;border-top:2px dashed var(--text-dim);display:inline-block"></span>${en ? 'A year ago' : 'לפני שנה'}</span>`); }
+  // the chart's own labels stay 1M / 2Y / 10Y in both languages (Hebrew "3 ח׳" flips inside an SVG); the note explains them
+  const curveSvg = miniLineSvg(series, {h: 190, dots: true, xLabels: mats});
+  const spreadSvg = miniLineSvg([{pts: (y.history || []).map(h => ({d: h.d, v: h.s2})), color: 'var(--amber)'}], {h: 190, zero: true});
+  const mo = y.month_ago && y.month_ago.curve;
+  const stat = (m) => {
+    const v = y.curve[m];
+    const ch = mo && mo[m] != null && v != null ? Math.round((v - mo[m]) * 100) : null;
+    const sub = ch == null ? '' : `<bdi dir="ltr">${ch > 0 ? '+' : ch < 0 ? '−' : ''}${Math.abs(ch)}</bdi> ${en ? 'bp in a month' : 'נ״ב בחודש'}`;
+    return `<div class="hx-stat"><div class="k">${en ? m + ' Treasury' : 'אג״ח ' + YC_MATS_HE[m]}</div><div class="v" dir="ltr">${v != null ? v.toFixed(2) + '%' : '—'}</div><div class="s">${sub || '&nbsp;'}</div></div>`;
+  };
+  el.innerHTML = `<div class="hx-card">
+      <div class="rg-grid" style="margin-top:0">${['3M','2Y','10Y','30Y'].map(stat).join('')}</div>
+      <div class="yc-charts">
+        <div class="breadth-chart" style="margin-top:0"><div class="fund-legend" style="margin:0 0 6px;">${legend.join('')}</div>${curveSvg}</div>
+        <div class="breadth-chart" style="margin-top:0"><div class="fund-legend" style="margin:0 0 6px;"><span class="fund-legend-item"><span style="width:12px;height:3px;background:var(--amber);display:inline-block"></span>${en ? '10Y minus 2Y (pct. points)' : '10 שנים פחות 2 שנים (נק׳ אחוז)'}</span></div>${spreadSvg}</div>
+      </div>
+      <div class="hx-note">${en
+        ? 'Yield (%) of US government bonds by time to maturity. When short-term yields are above long-term ones the curve is "inverted" — historically this often came before a slowdown, but not always and with no fixed timing. bp = basis point = 0.01%. Source: US Treasury, daily par yield curve.'
+        : 'התשואה (%) על אג״ח ממשלתי אמריקאי לפי זמן עד הפירעון (M = חודשים, Y = שנים). כשהתשואה הקצרה גבוהה מהארוכה העקום "הפוך" — היסטורית זה הקדים לעיתים קרובות האטה, אבל לא תמיד ובלי תזמון קבוע. נ״ב = נקודת בסיס = 0.01%. מקור: משרד האוצר האמריקאי, עקום התשואות היומי.'}</div>
+    </div>`;
+}
+
 // Role of an insider in plain words (SEC gives the officer title in English, free text)
 var INSIDER_TITLES_HE = [
   [/chief executive|\bceo\b/i, 'מנכ"ל'], [/chief financial|\bcfo\b/i, 'סמנכ"ל כספים'], [/chief operating|\bcoo\b/i, 'סמנכ"ל תפעול'],
@@ -6576,6 +6878,55 @@ function openTickerAnalysis(tk){
   inp.value = tk;
   setPage('deepdive');
   loadDeepDive();
+}
+
+// v23: analysts' 12-month price targets + short interest (/api/street — Yahoo data the scanner saves twice a day).
+// Facts with their source; the distance of the average target from today's price is arithmetic, not a forecast of ours.
+function renderStreetSection(d, quote){
+  const el = document.getElementById('dd-street-section');
+  if(!el) return;
+  if(!d || !d.available){ el.innerHTML = ''; return; }
+  const en = lang==='en', tg = d.targets, sh = d.short;
+  const price = quote && Number(quote.price) > 0 ? Number(quote.price) : null;
+  const stat = (k, v, sub, color) => `<div class="fund-stat"><div class="k">${k}</div><div class="v" style="${color ? 'color:' + color : ''}">${v}</div>${sub ? `<div style="font-size:10.5px;color:var(--text-dim);margin-top:2px;">${sub}</div>` : ''}</div>`;
+  const usd = v => v != null ? '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '—';
+  let html = `<div class="dd-section-title">${en ? 'Analyst targets and short interest' : 'יעדי אנליסטים ושורט'}</div>`;
+  if(tg){
+    const gap = price ? (tg.mean / price - 1) * 100 : null;
+    html += `<div class="fund-stat-row">
+      ${stat(en ? 'Average 12-month target' : 'יעד ממוצע ל-12 חודשים', usd(tg.mean),
+             gap != null ? `<bdi dir="ltr">${_sgn(gap)}%</bdi> ${en ? 'from the current price' : 'מהמחיר הנוכחי'}` : '')}
+      ${stat(en ? 'Target range' : 'טווח היעדים', tg.low != null && tg.high != null ? `${usd(tg.low)} – ${usd(tg.high)}` : '—', en ? 'lowest – highest' : 'הנמוך – הגבוה')}
+      ${stat(en ? 'Analysts' : 'אנליסטים', String(tg.analysts), en ? 'with a price target' : 'שפרסמו יעד מחיר')}
+    </div>`;
+    // where today's price sits inside the target range (a bar, low -> high)
+    if(price && tg.low != null && tg.high != null && tg.high > tg.low){
+      const pos = v => Math.max(0, Math.min(100, (v - tg.low) / (tg.high - tg.low) * 100));
+      html += `<div style="direction:ltr;position:relative;height:26px;margin:8px 4px 2px;">
+        <div style="position:absolute;left:0;right:0;top:11px;height:4px;border-radius:2px;background:var(--line-hover)"></div>
+        <div title="${en ? 'Average target' : 'יעד ממוצע'}" style="position:absolute;left:${pos(tg.mean).toFixed(1)}%;top:5px;width:2px;height:16px;background:var(--sky);transform:translateX(-1px)"></div>
+        <div title="${en ? 'Current price' : 'מחיר נוכחי'}" style="position:absolute;left:${pos(price).toFixed(1)}%;top:7px;width:12px;height:12px;border-radius:50%;background:var(--amber);transform:translateX(-6px)"></div>
+      </div>
+      <div class="fund-legend" style="margin:0 0 6px;">
+        <span class="fund-legend-item"><span style="width:10px;height:10px;border-radius:50%;background:var(--amber);display:inline-block"></span>${en ? 'Current price' : 'מחיר נוכחי'}${price < tg.low ? (en ? ' (below the range)' : ' (מתחת לטווח)') : price > tg.high ? (en ? ' (above the range)' : ' (מעל הטווח)') : ''}</span>
+        <span class="fund-legend-item"><span style="width:2px;height:12px;background:var(--sky);display:inline-block"></span>${en ? 'Average target' : 'יעד ממוצע'}</span></div>`;
+    }
+  }
+  if(sh){
+    const chg = sh.change_pct;
+    html += `<div class="fund-stat-row" style="margin-top:8px;">
+      ${stat(en ? 'Short interest (% of float)' : 'שורט (% מהמניות הצפות)', sh.pct_float != null ? sh.pct_float.toFixed(2) + '%' : '—',
+             sh.date ? (en ? 'as of ' : 'נכון ל-') + _ddmm(sh.date) : '')}
+      ${stat(en ? 'Days to cover' : 'ימים לכיסוי', sh.days_to_cover != null ? sh.days_to_cover.toFixed(1) : '—', en ? 'shorted shares ÷ avg daily volume' : 'מניות בשורט ÷ מחזור יומי ממוצע')}
+      ${stat(en ? 'Change vs. previous report' : 'שינוי מהדיווח הקודם', chg != null ? `<bdi dir="ltr">${_sgn(chg)}%</bdi>` : '—',
+             sh.shares ? formatMarketCap(sh.shares) + (en ? ' shares short' : ' מניות בשורט') : '')}
+    </div>`;
+  }
+  const upd = d.updated_at ? _ddmm(d.updated_at) : '';
+  html += `<div class="fund-source-note">${en
+    ? `Price targets: the 12-month targets published by analysts covering the stock (Yahoo Finance consensus; shown only with 3 or more analysts) — their estimates, not ours, and not a recommendation. Short interest: shares sold short as reported by the exchanges twice a month, so it lags by about two weeks. Updated ${upd}.`
+    : `יעדי מחיר: היעדים ל-12 חודשים שפרסמו האנליסטים שמסקרים את המניה (קונצנזוס לפי Yahoo Finance; מוצג רק כשיש 3 אנליסטים ומעלה) — ההערכות שלהם, לא שלנו, ולא המלצה. שורט: מניות שנמכרו בחסר לפי דיווח הבורסות פעמיים בחודש, ולכן הנתון מאחר בכשבועיים. עודכן ${upd}.`}</div>`;
+  el.innerHTML = html;
 }
 
 function renderInsiderSection(d){
@@ -6861,6 +7212,8 @@ function applyLang(){
   document.getElementById('daily-digest-btn').textContent = t.daily_digest_btn;
   if(lastFearGreedData) renderFearGreed(lastFearGreedData);
   document.getElementById('breadth-title').textContent = lang==='en' ? 'Market breadth' : 'רוחב השוק';
+  document.getElementById('regime-title').textContent = lang==='en' ? 'Market state' : 'מצב השוק';            // v23
+  document.getElementById('yields-title').textContent = lang==='en' ? 'Treasury yield curve' : 'עקום התשואות';
   renderV22();
   loadV22Data();          // self-throttled: a real request at most every 10 minutes
   const cb = document.getElementById('consent-banner');
@@ -7127,6 +7480,9 @@ async function setWatchMacro(on){   // v20e
 async function setWatchInsider(on){   // v22b
   try { await authFetch(`${API_BASE}/api/alerts/settings`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({watch_insider: !!on})}); } catch(e){}
 }
+async function setWatchMorning(on){   // v23
+  try { await authFetch(`${API_BASE}/api/alerts/settings`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({watch_morning: !!on})}); } catch(e){}
+}
 async function addPriceAlert(){
   const en = lang==='en';
   const tk = canonTicker(document.getElementById('al-ticker').value);
@@ -7198,6 +7554,9 @@ async function renderAlertsPanel(){
     <label class="al-check"><input type="checkbox" ${data && data.watch_macro ? 'checked' : ''} ${data && data.devices ? '' : 'disabled'} onchange="setWatchMacro(this.checked)">
       <span>${en?'Major US economic data (rates, inflation, jobs, GDP) — about 40 minutes before the release'
                  :'נתונים כלכליים חשובים בארה"ב (ריבית, אינפלציה, תעסוקה, תוצר) — כ-40 דקות לפני הפרסום'}</span></label>
+    <label class="al-check"><input type="checkbox" ${data && data.watch_morning ? 'checked' : ''} ${data && data.devices ? '' : 'disabled'} onchange="setWatchMorning(this.checked)">
+      <span>${en?'Morning brief (weekdays, 08:00 New York time): today\'s economic data, today\'s earnings reports (your watchlist first) and the last scan\'s signals'
+                 :'תדריך בוקר (בימי מסחר, 08:00 שעון ניו יורק — אחר הצהריים בישראל): הנתונים הכלכליים של היום, הדוחות של היום (קודם מרשימת המעקב שלך) והאיתותים מהסריקה האחרונה'}</span></label>
     <div class="al-sec">${en?'Price alerts':'התראות מחיר'}</div>
     <div class="al-form">
       <input id="al-ticker" class="search-input mono" placeholder="${en?'Ticker':'טיקר'}" value="${escH(d.ticker||'')}" maxlength="12">

@@ -9,6 +9,8 @@ What a signed-in user can get, on every device where they turned notifications o
      thread, from the economic calendar. Its own switch (watch_macro), off until the user turns it on;
   5. (v22b) an insider of a watchlist stock bought, or sold outside a pre-arranged plan, shares in the open market
      (SEC Form 4, insider_trades.py). Its own switch (watch_insider), on by default.
+  6. (v23) a morning brief at 08:00 ET on weekdays: today's economic releases, today's reports (watchlist first) and
+     the last scan's signals — api_server's alert thread. Its own switch (watch_morning), off until turned on.
 Texts are factual ("JCI: new scanner signal — horizontal resistance breakout"), never advice.
 
 Web Push (the standard behind browser notifications) needs no paid service: the browser vendor (Google / Mozilla /
@@ -91,6 +93,7 @@ def ensure_tables(cur):
         );
         ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS watch_macro BOOLEAN DEFAULT FALSE;
         ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS watch_insider BOOLEAN DEFAULT TRUE;
+        ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS watch_morning BOOLEAN DEFAULT FALSE;
     """)
 
 
@@ -120,15 +123,16 @@ def _send_one(sub: dict, payload: dict) -> str:
 
 
 def send_to_user(cur, user_id: int, make_payload, only_signals: bool = False, only_macro: bool = False,
-                 only_insider: bool = False) -> int:
+                 only_insider: bool = False, only_morning: bool = False) -> int:
     """Sends to every device of one user. make_payload(lang) -> {title, body, url, tag}. Returns the number delivered.
-    only_signals / only_macro / only_insider = only devices with that switch on. The caller commits."""
+    only_signals / only_macro / only_insider / only_morning = only devices with that switch on. The caller commits."""
     cur.execute("""SELECT id, endpoint, p256dh, auth, lang, watch_signals, COALESCE(watch_macro, FALSE),
-                          COALESCE(watch_insider, TRUE)
+                          COALESCE(watch_insider, TRUE), COALESCE(watch_morning, FALSE)
                    FROM push_subscriptions WHERE user_id = %s""", (user_id,))
     sent = 0
-    for sid, endpoint, p256dh, auth, lang, watch_signals, watch_macro, watch_insider in cur.fetchall():
-        if (only_signals and not watch_signals) or (only_macro and not watch_macro) or (only_insider and not watch_insider):
+    for sid, endpoint, p256dh, auth, lang, watch_signals, watch_macro, watch_insider, watch_morning in cur.fetchall():
+        if ((only_signals and not watch_signals) or (only_macro and not watch_macro) or (only_insider and not watch_insider)
+                or (only_morning and not watch_morning)):
             continue
         res = _send_one({"endpoint": endpoint, "p256dh": p256dh, "auth": auth}, make_payload(lang or "he"))
         if res == "ok":
@@ -376,6 +380,80 @@ def notify_macro_events(conn, slot_utc: datetime, events: list) -> int:
     conn.commit()
     cur.close()
     print(f"[push] macro events at {t_et} ET ({names_en}): {len(users)} user(s), {sent} delivered")
+    return sent
+
+
+def _morning_payload(lang: str, events: list, earnings: list, n_earnings: int, n_signals: int, watch_signals: list) -> dict:
+    """v23. Factual, short: today's economic releases (Israel time in Hebrew, ET in English), notable reports today
+    (watchlist first), and what the last scan found. Never advice."""
+    from zoneinfo import ZoneInfo
+    en = lang == "en"
+    tz = ZoneInfo("America/New_York" if en else "Asia/Jerusalem")
+    lines = []
+    if events:
+        parts = [f"{e.get('name_en' if en else 'name_he') or e.get('name_en') or ''} {e['when'].astimezone(tz).strftime('%H:%M')}"
+                 for e in events[:3]]
+        more = len(events) - 3
+        lines.append(("Today: " if en else "היום: ") + ", ".join(parts)
+                     + (f" +{more}" if more > 0 else "") + (" ET" if en else ""))
+    else:
+        lines.append("No major US economic data today." if en else "אין היום נתונים כלכליים חשובים בארה\"ב.")
+    if earnings:
+        when = {"bmo": ("before the open", "לפני הפתיחה"), "amc": ("after the close", "אחרי הסגירה")}
+        parts = []
+        for tk, session, mine in earnings[:4]:
+            w = when.get(session)
+            parts.append(tk + (f" ({w[0] if en else w[1]})" if mine and w else ""))
+        more = n_earnings - len(parts)
+        lines.append(("Reports: " if en else "דוחות: ") + ", ".join(parts) + (f" +{more}" if more > 0 else ""))
+    sig = (f"Last scan: {n_signals} signal{'s' if n_signals != 1 else ''}" if en else f"הסריקה האחרונה: {n_signals} איתותים")
+    if watch_signals:
+        sig += (" — watchlist: " if en else " — מרשימת המעקב: ") + ", ".join(watch_signals[:4])
+    lines.append(sig)
+    return {"title": "Morning brief" if en else "תדריך בוקר", "body": "\n".join(lines)[:300], "url": "/", "tag": "morning"}
+
+
+def notify_morning_brief(conn, day, events: list) -> int:
+    """v23. Once per user per (ET) day (push_log 'morning:<date>'), to devices with the morning-brief switch on
+    (watch_morning, off until the user turns it on). events = today's high/medium US releases [{name_he, name_en,
+    impact, when (aware datetime)}], high first. Sent by api_server's alert thread before the US open."""
+    if not ready():
+        return 0
+    cur = conn.cursor()
+    ensure_tables(cur)
+    conn.commit()
+    cur.execute("SELECT DISTINCT user_id FROM push_subscriptions WHERE watch_morning")
+    users = [r[0] for r in cur.fetchall()]
+    if not users:
+        cur.close()
+        return 0
+    # shared for everyone: today's reports (largest companies first) and how many signals the last scan saved
+    cur.execute("""SELECT ticker, session FROM earnings_calendar WHERE report_date = %s
+                   ORDER BY market_cap DESC NULLS LAST""", (day,))
+    reports = cur.fetchall()
+    # "the last scan" = rows within 2 hours of the newest one (scans are 6+ hours apart; on a Monday it is Friday's)
+    last_scan = "timestamp > (SELECT MAX(timestamp) FROM scanned_stocks) - INTERVAL '2 hours'"
+    cur.execute(f"SELECT COUNT(DISTINCT ticker) FROM scanned_stocks WHERE {last_scan}")
+    n_signals = cur.fetchone()[0] or 0
+    sent = 0
+    for user_id in users:
+        if not _first_time(cur, user_id, f"morning:{day.isoformat()}"):
+            continue
+        cur.execute("SELECT ticker FROM watchlist WHERE user_id = %s", (user_id,))
+        watch = {r[0] for r in cur.fetchall()}
+        mine = [(tk, s, True) for tk, s in reports if tk in watch]
+        others = [(tk, s, False) for tk, s in reports if tk not in watch]
+        earnings = (mine + others)[:4]
+        watch_sig = []
+        if watch:
+            cur.execute(f"""SELECT DISTINCT ticker FROM scanned_stocks
+                            WHERE ticker = ANY(%s) AND {last_scan} ORDER BY ticker""", (list(watch),))
+            watch_sig = [r[0] for r in cur.fetchall()]
+        sent += send_to_user(cur, user_id, lambda lang, e=earnings, w=watch_sig:
+                             _morning_payload(lang, events, e, len(reports), n_signals, w), only_morning=True)
+    conn.commit()
+    cur.close()
+    print(f"[push] morning brief {day}: {len(users)} user(s), {len(events)} event(s), {len(reports)} report(s), {sent} delivered")
     return sent
 
 
