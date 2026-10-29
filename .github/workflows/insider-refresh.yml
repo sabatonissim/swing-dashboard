@@ -28,3 +28,4 @@ jobs:
       - run: python -u insider_trades.py
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}   # v22b: push notifications for watchlist stocks
