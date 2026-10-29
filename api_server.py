@@ -66,6 +66,7 @@ import econ_calendar  # US economic calendar
 from translation_fixes import prep_en, fix_he   # shared EN->HE translation fixes (also used by pipeline_b)
 from news_links import is_google_news, decode_google_news_url   # v18d: Google News link -> real article (also pipeline_b)
 import push_alerts    # v19: push notifications (watchlist signals, price alerts) — also used by the scanner
+import fundamentals as fundlib   # v21: SEC fundamentals build + stored copies (also the nightly warm-up job)
 import scheduler      # starts the GitHub Actions workflows at exact ET times (see scheduler.py): providers -> processing -> uniform events (see econ_calendar.py)
 
 DB_URL = os.environ.get("SWING_DB_PATH") or os.environ.get("DATABASE_URL")
@@ -365,6 +366,7 @@ def init_db():
     cur.execute("ALTER TABLE IF EXISTS macro_news ADD COLUMN IF NOT EXISTS article_url TEXT;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sector TEXT;")   # v19 sector filter
     push_alerts.ensure_tables(cur)                                                     # v19 alerts
+    fundlib.ensure_table(cur)                                                          # v21 stored fundamentals
     conn.commit()
     cur.close()
     conn.close()
@@ -1851,9 +1853,9 @@ def get_sector_comparison(ticker: str, period: str = Query(default="1Y", pattern
             if sym == ticker:
                 fund = _get_fundamentals_cached(sym)
                 return {"pe_ratio": fund.get("trailing_pe"), "market_cap": fund.get("market_cap")}
-            cached = _fundamentals_cache.get(sym)
-            if cached and cached[1].get("has_fundamentals"):
-                return {"pe_ratio": cached[1].get("trailing_pe"), "market_cap": cached[1].get("market_cap")}
+            stored = _fund_peek(sym)      # v21: memory or the stored copy (the nightly job covers S&P 500)
+            if stored:
+                return {"pe_ratio": stored.get("trailing_pe"), "market_cap": stored.get("market_cap")}
             with db_cursor(dict_cursor=True) as (conn, cur):
                 cur.execute("SELECT to_regclass('stock_estimates') IS NOT NULL AS ok")
                 if not cur.fetchone()["ok"]:
@@ -3879,9 +3881,9 @@ def lookup_stock(ticker: str):
     # endpoint doesn't trigger a fresh fundamentals computation itself,
     # to avoid slowing down a simple quote lookup).
     if market_cap is None or pe_ratio is None:
-        cached_fund = _fundamentals_cache.get(ticker)
-        if cached_fund:
-            _, fund_data = cached_fund
+        fund_data = _fund_peek(ticker)     # v21: also the stored copy, at this quote's price
+        if fund_data:
+            fund_data = fundlib.rescale_to_price(fund_data, price)
             if market_cap is None:
                 market_cap = fund_data.get("market_cap")
             if pe_ratio is None:
@@ -5108,760 +5110,44 @@ def _get_cik_map() -> dict:
     raise last_error
 
 
-def _sec_company_facts(cik10: str) -> Optional[dict]:
-    last_error = None
-    for attempt in range(3):
-        try:
-            resp = requests.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik10}.json",
-                                 headers=SEC_HEADERS, timeout=15)
-            if resp.status_code == 200:
-                return resp.json()
-            # IMPORTANT: log the actual status code — this was previously
-            # swallowed entirely, so a 403/429/5xx from SEC was
-            # indistinguishable from "this company just has no data".
-            print(f"[warn] SEC companyfacts CIK{cik10} attempt {attempt+1}/3: HTTP {resp.status_code}")
-            if resp.status_code == 404:
-                return None  # genuinely no such CIK — retrying won't help
-            last_error = f"HTTP {resp.status_code}"
-        except Exception as e:
-            last_error = e
-            print(f"[warn] SEC companyfacts CIK{cik10} attempt {attempt+1}/3 failed: {type(e).__name__}: {e}")
-        if attempt < 2:
-            time.sleep(1.5 * (attempt + 1))
-    print(f"[warn] SEC companyfacts CIK{cik10}: all 3 attempts failed, last error: {last_error}")
-    return None
+# v21: the SEC/Yahoo build itself lives in fundamentals.py (shared with the nightly warm-up job,
+# fundamentals-refresh.yml — fixed revenue tags, cash-flow quarters and P/E there, HISTORY §27.3טז).
+# Here only the caches around it, so a stock page does not wait for a 2-8 MB SEC download:
+#   memory (15 min) -> Postgres fundamentals_cache (filled by the warm-up job or an earlier visit; served at once,
+#   rebuilt in the background when older than _FUND_DB_STALE_SEC) -> a live build (single-flight, max 2 at once).
+# A stored copy's market cap / P/E are re-scaled to the current price on the way out.
 
-
-def _sec_quarterly_series(facts_usgaap: dict, tag_candidates: List[str], instant: bool) -> dict:
-    """Returns {end_date_str: value}, merged across ALL of the given XBRL
-    tag candidates — not just the first one with any data. Companies
-    routinely switch which tag they report a concept under across fiscal
-    years (XBRL taxonomy updates), so restricting to a single tag left
-    real gaps in the timeline where a company happened to use a
-    different (but equally valid) tag for that period.
-
-    Flow measures (revenue, net income, EPS, cash flow) prefer a clean
-    single-quarter entry (~75-105 day span). Where that doesn't exist —
-    very common for cash-flow-statement items, which many companies only
-    disclose as cumulative year-to-date in interim filings — the discrete
-    quarter is DERIVED from consecutive YTD deltas sharing the same
-    fiscal-year start (e.g. Q4 = full-year total − 9-month YTD). Without
-    this, those quarters would just be empty gaps in every chart.
-
-    Instant measures (cash, debt, shares) are point-in-time balance-sheet
-    snapshots, kept as-is."""
-    out = {}
-    raw_all = []  # every valid flow-measure entry (any span), for YTD-delta derivation
-
-    for tag in tag_candidates:
-        node = facts_usgaap.get(tag)
-        if not node:
-            continue
-        units = node.get("units", {})
-        # The unit with the MOST entries, not simply the first one: Coca-Cola's EarningsPerShareDiluted lists an old
-        # mis-tagged unit "pure" (4 rows, 2008-09) before "USD/shares" (213 rows to 2026), so the EPS history stopped in
-        # 2009 and the P/E came back empty (KO, KMB, PEP) or wrong (HSY 84.4 instead of ~23).
-        unit_key = max(units, key=lambda k: len(units[k] or []), default=None)
-        if not unit_key:
-            continue
-        for e in units[unit_key]:
-            if e.get("form") not in ("10-Q", "10-K"):
-                continue
-            end, val = e.get("end"), e.get("val")
-            if end is None or val is None:
-                continue
-            if instant:
-                out.setdefault(end, val)  # keep the first tag's value if two tags both cover this date
-            else:
-                start = e.get("start")
-                if not start:
-                    continue
-                try:
-                    span_days = (date.fromisoformat(end) - date.fromisoformat(start)).days
-                except Exception:
-                    continue
-                raw_all.append({"start": start, "end": end, "val": val})
-                if 75 <= span_days <= 105:
-                    out.setdefault(end, val)
-
-    if instant or not raw_all:
-        return out
-
-    # Derive quarters that only exist as YTD-cumulative figures: group by
-    # fiscal-year start, sort by end date, and take consecutive deltas.
-    # IMPORTANT: the group includes every entry sharing that start —
-    # including ones already accepted directly above (e.g. Q1, which is
-    # both a discrete quarter AND the first YTD data point) — so it can
-    # serve as the anchor value the next delta is computed against.
-    by_start: dict = {}
-    for e in raw_all:
-        by_start.setdefault(e["start"], []).append(e)
-
-    for start, group in by_start.items():
-        group_sorted = sorted(group, key=lambda e: e["end"])
-        prev_val = 0.0
-        try:
-            prev_end_date = date.fromisoformat(start)
-        except Exception:
-            continue
-        for e in group_sorted:
-            try:
-                end_date = date.fromisoformat(e["end"])
-            except Exception:
-                continue
-            gap_days = (end_date - prev_end_date).days
-            # Only accept as a genuine single-quarter delta — not a jump
-            # spanning a missing quarter in between.
-            if e["end"] not in out and 60 <= gap_days <= 115:
-                out.setdefault(e["end"], e["val"] - prev_val)
-            prev_val = e["val"]
-            prev_end_date = end_date
-
-    return out
-
-
-def _sec_cumulative_to_quarterly(facts_usgaap: dict, tag_candidates: List[str]) -> dict:
-    """For cash-flow-statement items (operating cash flow, capex, etc.),
-    which SEC/GAAP convention always reports as FISCAL-YEAR-TO-DATE
-    CUMULATIVE figures in 10-Q filings — never a standalone single
-    quarter — unlike revenue/net income/EPS, which companies do report
-    standalone. Using the same ~90-day span filter as
-    _sec_quarterly_series only catches Q1 (which happens to be
-    standalone already) and discards Q2/Q3/Q4 entirely, which is why
-    FCF charts were coming out almost empty. This derives the real
-    standalone quarter value by subtracting the prior cumulative period
-    within the same fiscal year, using SEC's own 'fy'/'fp' fields."""
-    merged = {}
-    for tag in tag_candidates:
-        node = facts_usgaap.get(tag)
-        if not node:
-            continue
-        units = node.get("units", {})
-        # The unit with the MOST entries, not simply the first one: Coca-Cola's EarningsPerShareDiluted lists an old
-        # mis-tagged unit "pure" (4 rows, 2008-09) before "USD/shares" (213 rows to 2026), so the EPS history stopped in
-        # 2009 and the P/E came back empty (KO, KMB, PEP) or wrong (HSY 84.4 instead of ~23).
-        unit_key = max(units, key=lambda k: len(units[k] or []), default=None)
-        if not unit_key:
-            continue
-
-        by_fy = {}
-        for e in units[unit_key]:
-            if e.get("form") not in ("10-Q", "10-K"):
-                continue
-            fy, fp, end, val = e.get("fy"), e.get("fp"), e.get("end"), e.get("val")
-            if not (fy and fp and end is not None and val is not None):
-                continue
-            by_fy.setdefault(fy, {})[fp] = (end, val)  # later filings overwrite (restatements)
-
-        for fy, periods in by_fy.items():
-            q1, q2, q3, fyend = periods.get("Q1"), periods.get("Q2"), periods.get("Q3"), periods.get("FY")
-            if q1:
-                merged.setdefault(q1[0], q1[1])
-            if q1 and q2:
-                merged.setdefault(q2[0], q2[1] - q1[1])
-            if q2 and q3:
-                merged.setdefault(q3[0], q3[1] - q2[1])
-            if q3 and fyend:
-                merged.setdefault(fyend[0], fyend[1] - q3[1])
-    return merged
-
-
-def _compute_pe_band_sec(ticker: str, dates_sorted: List[str], diluted_eps: List[Optional[float]]):
-    """Weekly P/E band: yfinance .history() (reliable) for price, matched
-    against SEC's trailing-twelve-month diluted EPS via merge_asof."""
-    try:
-        pairs = [(d, v) for d, v in zip(dates_sorted, diluted_eps) if v is not None]
-        if len(pairs) < 4:
-            return None
-        eps_series = pd.Series([p[1] for p in pairs], index=pd.to_datetime([p[0] for p in pairs])).sort_index()
-        ttm_eps = eps_series.rolling(4).sum().dropna()
-        if ttm_eps.empty:
-            return None
-
-        hist = yf.Ticker(ticker).history(period="5y", interval="1wk")
-        if hist.empty:
-            return None
-
-        ttm_df = pd.DataFrame({
-            "date": pd.to_datetime(ttm_eps.index).tz_localize(None).astype("datetime64[ns]"),
-            "ttm_eps": ttm_eps.values,
-        }).sort_values("date")
-
-        hist2 = hist.reset_index()
-        date_col = "Date" if "Date" in hist2.columns else hist2.columns[0]
-        # IMPORTANT: pandas can parse dates at different internal resolutions
-        # (datetime64[s] vs [us] vs [ns]) depending on the source — SEC's
-        # ISO date strings vs yfinance's DatetimeIndex commonly disagree.
-        # merge_asof requires the merge key dtype to match EXACTLY, so both
-        # sides are forced to the same resolution here.
-        hist2["date"] = pd.to_datetime(hist2[date_col]).dt.tz_localize(None).astype("datetime64[ns]")
-        hist2 = hist2.sort_values("date")
-
-        merged = pd.merge_asof(hist2, ttm_df, on="date", direction="backward")
-        merged["pe"] = merged["Close"] / merged["ttm_eps"]
-        merged = merged[(merged["ttm_eps"] > 0) & merged["pe"].notna() & (merged["pe"] < 500) & (merged["pe"] > 0)]
-        if merged.empty:
-            return None
-
-        mean = float(merged["pe"].mean())
-        std = float(merged["pe"].std() or 0)
-        return {
-            "dates": merged["date"].dt.strftime("%Y-%m-%d").tolist(),
-            "values": merged["pe"].round(2).tolist(),
-            "mean": round(mean, 1),
-            "std1_upper": round(mean + std, 1),
-            "std1_lower": round(max(mean - std, 0), 1),
-            "current": round(float(merged["pe"].iloc[-1]), 1),
-        }
-    except Exception as e:
-        print(f"[warn] P/E band calc failed for {ticker}: {e}")
-        return None
-
-
-def _json_safe(obj):
-    """Recursively replaces NaN/Infinity/-Infinity with None. Python's
-    default JSON encoder serializes these as literal, non-standard
-    tokens (NaN, Infinity) — valid Python but NOT valid JSON. A browser's
-    fetch().json() throws a SyntaxError on them, which looks exactly like
-    'the request failed' even though the server actually returned 200 OK.
-    Any division here (margins, P/E ratios, etc.) can produce one of
-    these from an unusual data point, so this is applied as a final
-    safety net right before any computed dict leaves the server."""
-    if isinstance(obj, float):
-        return None if (math.isnan(obj) or math.isinf(obj)) else obj
-    if isinstance(obj, dict):
-        return {k: _json_safe(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_json_safe(v) for v in obj]
-    return obj
-
-
-# ------------------------------------------------------------------
-# Fundamentals fallback for foreign filers (ADRs such as TSM, NVO, ASML)
-# ------------------------------------------------------------------
-# SEC's companyfacts only gives us quarterly numbers for companies that file
-# 10-Q/10-K. Foreign private issuers file an annual 20-F (or 40-F) plus
-# unstructured 6-K press releases — no quarterly XBRL, and often in a local
-# currency (TSMC reports in NT$). So for them the SEC path came back empty and
-# the page showed "no fundamentals", only the chart.
-# Fallback: Yahoo's quarterly statements via yfinance, converted to USD at the
-# exchange rate of each quarter-end so the existing charts (all labelled $)
-# stay truthful. NOT shown for these companies, on purpose:
-#  * the EPS history and the P/E band — an ADR is a fixed ratio of ordinary
-#    shares (TSM: 1 ADR = 5 shares) and we don't know the ratio, so any
-#    per-share number computed from the local-currency statements would be
-#    wrong by that factor;
-#  * share count (same reason).
-# Trailing P/E is computed as market cap ÷ LTM net income, which is
-# independent of the ADR ratio.
-
-def _yf_row(df, names: List[str]) -> dict:
-    """{date: float} for the first row name that exists with data."""
-    if df is None or getattr(df, "empty", True):
-        return {}
-    for name in names:
-        if name in df.index:
-            out = {}
-            for col, v in df.loc[name].items():
-                try:
-                    d = pd.Timestamp(col).strftime("%Y-%m-%d")
-                    if pd.notna(v):
-                        out[d] = float(v)
-                except Exception:
-                    continue
-            if out:
-                return out
-    return {}
-
-
-def _sec_reporting_currency(combined: dict) -> Optional[str]:
-    """The currency SEC's own XBRL units use for this company's revenue/profit
-    (e.g. 'TWD' for TSMC) — the most reliable source, since Yahoo's .info is
-    often blocked from this server."""
-    for tag in ("Revenues", "Revenue", "RevenueFromContractWithCustomerExcludingAssessedTax",
-                "ProfitLoss", "NetIncomeLoss", "ProfitLossAttributableToOwnersOfParent"):
-        node = (combined or {}).get(tag)
-        if not node:
-            continue
-        for unit in node.get("units", {}):
-            if re.fullmatch(r"[A-Z]{3}", unit):
-                return unit
-    return None
-
-
-def _fx_to_usd_series(cur: str) -> Optional[pd.Series]:
-    """Daily 'USD per 1 unit of cur'. None if it can't be obtained — callers
-    must then return NO data rather than wrongly-scaled numbers."""
-    for sym, invert in ((f"{cur}USD=X", False), (f"USD{cur}=X", True)):
-        try:
-            h = yf.Ticker(sym).history(period="5y", interval="1d")
-            if h is None or h.empty:
-                continue
-            ser = h["Close"].astype(float)
-            ser.index = pd.to_datetime(ser.index).tz_localize(None).normalize()
-            ser = ser[~ser.index.duplicated(keep="last")].sort_index()
-            ser = ser[ser > 0]
-            if ser.empty:
-                continue
-            return (1.0 / ser) if invert else ser
-        except Exception as e:
-            print(f"[info] fx {sym} failed: {e}")
-    return None
-
-
-def _build_fundamentals_yf(ticker: str, cik10: Optional[str], sec_currency: Optional[str]) -> Optional[dict]:
-    tk = yf.Ticker(ticker)
-
-    def grab(*attrs):
-        for a in attrs:
-            try:
-                df = getattr(tk, a)
-                if df is not None and not df.empty:
-                    return df
-            except Exception as e:
-                print(f"[info] fundamentals({ticker}): yfinance {a} failed: {e}")
-        return None
-
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        f_inc = ex.submit(grab, "quarterly_income_stmt", "quarterly_financials")
-        f_cf = ex.submit(grab, "quarterly_cashflow", "quarterly_cash_flow")
-        f_bs = ex.submit(grab, "quarterly_balance_sheet")
-        f_info = ex.submit(lambda: (_get_info_with_retry(tk, ticker, "fundamentals-yf") or {}))
-        inc, cf, bs = f_inc.result(), f_cf.result(), f_bs.result()
-        try:
-            info = f_info.result()
-        except Exception as e:
-            print(f"[info] fundamentals({ticker}): yfinance info unavailable (non-fatal): {e}")
-            info = {}
-    if inc is None:
-        return None
-
-    revenue_s = _yf_row(inc, ["Total Revenue", "Operating Revenue", "Revenue"])
-    ni_s = _yf_row(inc, ["Net Income", "Net Income Common Stockholders",
-                         "Net Income From Continuing Operation Net Minority Interest"])
-    gross_s = _yf_row(inc, ["Gross Profit"])
-    if not revenue_s and not ni_s:
-        return None
-    ocf_s = _yf_row(cf, ["Operating Cash Flow", "Cash Flow From Continuing Operating Activities"])
-    fcf_s = _yf_row(cf, ["Free Cash Flow"])
-    if not fcf_s and ocf_s:
-        capex_s = _yf_row(cf, ["Capital Expenditure", "Purchase Of PPE"])
-        fcf_s = {d: v + capex_s[d] for d, v in ocf_s.items() if d in capex_s}  # capex is reported negative
-    cash_s = _yf_row(bs, ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"])
-    debt_s = _yf_row(bs, ["Long Term Debt", "Total Debt", "Long Term Debt And Capital Lease Obligation"])
-
-    cur = (sec_currency or info.get("financialCurrency") or "").upper() or None
-    if not cur:
-        print(f"[info] fundamentals({ticker}): reporting currency unknown — refusing to show possibly mis-scaled numbers")
-        return None
-    fx = None
-    if cur != "USD":
-        fx = _fx_to_usd_series(cur)
-        if fx is None:
-            print(f"[info] fundamentals({ticker}): no {cur}->USD rate — refusing to show unconverted numbers")
-            return None
-
-    def usd(series: dict) -> dict:
-        if fx is None:
-            return dict(series)
-        out = {}
-        for d, v in series.items():
-            try:
-                rate = fx.asof(pd.Timestamp(d))
-                if pd.isna(rate):
-                    rate = fx.iloc[0]
-                out[d] = v * float(rate)
-            except Exception:
-                continue
-        return out
-
-    revenue_s, ni_s, gross_s, fcf_s, cash_s, debt_s = (usd(x) for x in (revenue_s, ni_s, gross_s, fcf_s, cash_s, debt_s))
-
-    income_dates = sorted(set(revenue_s) | set(ni_s) | set(fcf_s))[-32:]
-    fmt = lambda d: dt.strptime(d, "%Y-%m-%d").strftime("%b %Y")
-    income_labels = [fmt(d) for d in income_dates]
-    rnd = lambda x: round(float(x), 2) if x is not None else None
-    revenue = [rnd(revenue_s.get(d)) for d in income_dates]
-    net_income = [rnd(ni_s.get(d)) for d in income_dates]
-    fcf = [rnd(fcf_s.get(d)) for d in income_dates]
-
-    margin_dates = sorted(d for d in gross_s if revenue_s.get(d))[-32:]
-    margin_labels = [fmt(d) for d in margin_dates]
-    gross_margin_pct = [round(gross_s[d] / revenue_s[d] * 100, 4) for d in margin_dates]
-
-    if debt_s:
-        nd = {d: debt_s[d] - cash_s[d] for d in debt_s if d in cash_s}
-    else:
-        nd = {d: -v for d, v in cash_s.items()}
-    nd_dates = sorted(nd)[-32:]
-    debt_labels = [fmt(d) for d in nd_dates]
-    net_debt = [round(float(nd[d]), 4) for d in nd_dates]
-
-    # analyst EPS vs estimate: already on the ADR/USD basis Yahoo reports it in
-    eps_labels, eps_actual, eps_estimate, eps_surprise_pct = [], [], [], []
-    try:
-        ed = tk.get_earnings_dates(limit=12)
-        if ed is not None and not ed.empty:
-            ed = ed.dropna(subset=["Reported EPS"]).sort_index()
-            for idx, row in ed.iterrows():
-                eps_labels.append(idx.strftime("%b %Y"))
-                eps_actual.append(round(float(row.get("Reported EPS")), 2) if pd.notna(row.get("Reported EPS")) else None)
-                eps_estimate.append(round(float(row.get("EPS Estimate")), 2) if pd.notna(row.get("EPS Estimate")) else None)
-                sp = row.get("Surprise(%)")
-                eps_surprise_pct.append(round(float(sp), 1) if pd.notna(sp) else None)
-    except Exception as e:
-        print(f"[info] fundamentals({ticker}): yfinance analyst EPS estimates unavailable (non-fatal): {e}")
-
-    market_cap = info.get("marketCap")
-    if not market_cap:
-        try:
-            market_cap = tk.fast_info.get("market_cap") or tk.fast_info["marketCap"]
-        except Exception:
-            market_cap = None
-
-    ltm = lambda vals: round(sum(vals[-4:]), 2) if len(vals) >= 4 and all(v is not None for v in vals[-4:]) else None
-    revenue_ltm, net_income_ltm, fcf_ltm = ltm(revenue), ltm(net_income), ltm(fcf)
-
-    trailing_pe = info.get("trailingPE")
-    if trailing_pe is None and market_cap and net_income_ltm and net_income_ltm > 0:
-        trailing_pe = round(float(market_cap) / net_income_ltm, 1)  # ADR-ratio independent
-    forward_pe = info.get("forwardPE")
-
-    return _json_safe({
-        "ticker": ticker,
-        "has_fundamentals": True,
-        "data_source": "yfinance",
-        "reporting_currency": cur,
-        "fx_converted": cur != "USD",
-        "cik": cik10,
-        "income_labels": income_labels,
-        "revenue": revenue, "net_income": net_income, "fcf": fcf,
-        "revenue_ltm": revenue_ltm, "net_income_ltm": net_income_ltm, "fcf_ltm": fcf_ltm,
-        "margin_labels": margin_labels, "gross_margin_pct": gross_margin_pct,
-        "debt_labels": debt_labels, "net_debt": net_debt,
-        "latest_shares_outstanding": None,
-        "market_cap": market_cap,
-        "diluted_eps_labels": [], "diluted_eps": [],
-        "eps_labels": eps_labels, "eps_actual": eps_actual,
-        "eps_estimate": eps_estimate, "eps_surprise_pct": eps_surprise_pct,
-        "pe_band": None,
-        "trailing_pe": trailing_pe, "forward_pe": forward_pe,
-    })
-
-
-def _fundamentals_fallback(ticker: str, cik10: Optional[str], combined: Optional[dict]) -> dict:
-    """Used wherever the SEC path has nothing: try Yahoo's statements; if that
-    also yields nothing it is the same 'no fundamentals' answer as before."""
-    try:
-        res = _build_fundamentals_yf(ticker, cik10, _sec_reporting_currency(combined or {}))
-    except Exception as e:
-        print(f"[warn] fundamentals({ticker}): yfinance fallback failed: {type(e).__name__}: {e}")
-        res = None
-    if res:
-        print(f"[info] fundamentals({ticker}): served from yfinance fallback ({res.get('reporting_currency')})")
-        return res
-    return {"ticker": ticker, "has_fundamentals": False}
+def _fund_info_getter(tk, ticker: str) -> dict:
+    return _get_info_with_retry(tk, ticker, "fundamentals")   # skipped while .info is blocked (circuit breaker)
 
 
 def _build_fundamentals(ticker: str) -> dict:
     ticker = _canon_ticker(ticker)
-
     try:
         cik_map = _get_cik_map()
     except Exception as e:
         print(f"[warn] fundamentals({ticker}): SEC ticker->CIK map fetch failed: {e}")
         cik_map = {}
-
-    # SEC's own ticker file has no separator for dual-class shares (e.g.
-    # Berkshire Hathaway Class B is "BRKB" there), while the market
-    # convention we receive the ticker in typically uses a dash or dot
-    # ("BRK-B" / "BRK.B"). Without this fallback, every dual-class-share
-    # company would silently miss its SEC filing and get told it's
-    # "probably an ETF" — it just isn't, the direct lookup only failed on
-    # punctuation.
-    cik10 = cik_map.get(ticker) or cik_map.get(ticker.replace("-", "").replace(".", ""))
-
-    if not cik10:
-        print(f"[info] fundamentals({ticker}): no SEC CIK match")
-        return _fundamentals_fallback(ticker, None, None)
-
+    data = fundlib.build_fundamentals(ticker, cik_map, info_getter=_fund_info_getter)
+    if not cik_map:
+        data["sec_unavailable"] = True          # without the map every stock looks like "no SEC data"
     try:
-        facts = _sec_company_facts(cik10)
+        fundlib.apply_stock_estimates(data, ticker, db_cursor)
     except Exception as e:
-        print(f"[warn] fundamentals({ticker}): SEC companyfacts fetch failed: {e}")
-        facts = None
-
-    usgaap = (facts or {}).get("facts", {}).get("us-gaap", {})
-    deifacts = (facts or {}).get("facts", {}).get("dei", {})
-    # Foreign private issuers commonly file under IFRS instead of US-GAAP
-    # (their XBRL facts live under "ifrs-full", not "us-gaap") — without
-    # this fallback, every such company (plenty of large, perfectly real
-    # stocks) came back with NO usable tags at all and got the same
-    # "likely an ETF/index" treatment as an actual ETF. Merging the two
-    # taxonomies together, and adding the equivalent IFRS tag names to
-    # every candidate list below, means the same extraction logic just
-    # works for both without needing a second code path.
-    ifrsfacts = (facts or {}).get("facts", {}).get("ifrs-full", {})
-    combined = {**ifrsfacts, **usgaap}
-    if not combined:
-        print(f"[warn] fundamentals({ticker}): SEC companyfacts had no us-gaap or ifrs-full data")
-        return _fundamentals_fallback(ticker, cik10, None)
-
-    revenue_s = _sec_quarterly_series(combined, ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet", "Revenue"], instant=False)
-    ni_s      = _sec_quarterly_series(combined, ["NetIncomeLoss", "ProfitLoss"], instant=False)
-    gross_s   = _sec_quarterly_series(combined, ["GrossProfit"], instant=False)
-    eps_s     = _sec_quarterly_series(combined, ["EarningsPerShareDiluted", "EarningsPerShareBasic", "DilutedEarningsLossPerShare", "BasicEarningsLossPerShare"], instant=False)
-    ocf_s     = _sec_cumulative_to_quarterly(combined, ["NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations", "CashFlowsFromUsedInOperatingActivities"])
-    capex_s   = _sec_cumulative_to_quarterly(combined, [
-        "PaymentsToAcquirePropertyPlantAndEquipment",
-        "PaymentsForCapitalImprovements",
-        # Some large filers (this was confirmed missing FCF entirely for
-        # at least one megacap) use one of these instead — expanding the
-        # candidate list rather than assuming the two original tags cover
-        # everyone.
-        "PaymentsToAcquireProductiveAssets",
-        "PaymentsForProceedsFromProductiveAssets",
-        "PaymentsToAcquireMachineryAndEquipment",
-        "PaymentsToAcquireOtherPropertyPlantAndEquipment",
-        "PurchaseOfPropertyPlantAndEquipment",  # IFRS naming
-    ])
-    cash_s    = _sec_quarterly_series(combined, ["CashAndCashEquivalentsAtCarryingValue", "CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations", "CashAndCashEquivalents"], instant=True)
-    debt_s    = _sec_quarterly_series(combined, ["LongTermDebtNoncurrent", "LongTermDebt", "DebtLongtermAndShorttermCombinedAmount", "NoncurrentBorrowings", "Borrowings"], instant=True)
-    shares_s  = _sec_quarterly_series(combined, ["CommonStockSharesOutstanding"], instant=True)
-    # dei:EntityCommonStockSharesOutstanding is the cover-page tag nearly
-    # every filer reports (it's required on every 10-Q/10-K cover page),
-    # unlike the us-gaap tag above which plenty of companies simply don't
-    # use. Missing this was the main reason market cap came back blank —
-    # merge it in as a fallback for any date the us-gaap tag doesn't have.
-    shares_dei_s = _sec_quarterly_series(deifacts, ["EntityCommonStockSharesOutstanding"], instant=True)
-    for d, v in shares_dei_s.items():
-        shares_s.setdefault(d, v)
-
-    if not revenue_s and not ni_s:
-        print(f"[info] fundamentals({ticker}): SEC facts had no usable quarterly (10-Q/10-K) revenue/net-income — "
-              f"typical for foreign filers (20-F/6-K); trying yfinance statements")
-        return _fundamentals_fallback(ticker, cik10, combined)
-
-    def _nearest(series: dict, target: str, tolerance_days: int = 6):
-        """Finds the value in `series` whose date is within `tolerance_days`
-        of `target`, preferring an exact match. Handles the common case
-        where a balance-sheet or cash-flow figure was filed a few days
-        off from the matching income-statement quarter-end."""
-        if target in series:
-            return series[target]
-        try:
-            t = date.fromisoformat(target)
-        except Exception:
-            return None
-        best_val, best_diff = None, tolerance_days + 1
-        for d_str, v in series.items():
-            try:
-                d = date.fromisoformat(d_str)
-            except Exception:
-                continue
-            diff = abs((d - t).days)
-            if diff <= tolerance_days and diff < best_diff:
-                best_val, best_diff = v, diff
-        return best_val
-
-    def _nearest_pair(series_a: dict, series_b: dict, tolerance_days: int = 6):
-        """Pairs up two series by nearest matching date (within tolerance),
-        returning {date: (val_a, val_b)} using series_a's dates as anchors.
-        Used for ratios/differences that need two series at once (margin
-        needs gross+revenue; net debt needs debt+cash)."""
-        out = {}
-        for d, va in series_a.items():
-            vb = _nearest(series_b, d, tolerance_days)
-            if vb is not None:
-                out[d] = (va, vb)
-        return out
-
-    def to_chart(date_value_pairs):
-        """Sorts a {date: value} dict by date (cap to the most recent 32
-        points) and returns (labels, values) ready for the frontend."""
-        items = sorted(date_value_pairs.items())[-32:]
-        labels = [dt.strptime(d, "%Y-%m-%d").strftime("%b %Y") for d, _ in items]
-        values = [round(float(v), 4) if v is not None else None for d, v in items]
-        return labels, values
-
-    # Revenue / Net Income / FCF: each chart card gets its OWN compact
-    # date axis (its own series' union only) instead of being forced onto
-    # one shared axis padded with dates that only exist for unrelated
-    # balance-sheet metrics — that shared-axis design was the cause of
-    # the many empty/blank columns in the chart.
-    fcf_s = {}
-    for d, ov in ocf_s.items():
-        cv = _nearest(capex_s, d)
-        if cv is not None:
-            fcf_s[d] = ov - cv
-    if ocf_s and not fcf_s:
-        # OCF exists but nothing matched our CapEx tag list — most likely
-        # this filer uses a CapEx tag we don't check for yet. Logging the
-        # actual candidate tags found in their us-gaap facts makes that
-        # diagnosable instead of a silent "FCF just isn't there".
-        capex_like_tags = [k for k in combined if "Payments" in k and ("Property" in k or "Capital" in k or "Productive" in k or "Equipment" in k)]
-        print(f"[warn] fundamentals({ticker}): OCF present but no CapEx match — candidate tags on file: {capex_like_tags}")
-
-    income_dates = sorted(set(revenue_s) | set(ni_s) | set(fcf_s))[-32:]
-    income_labels = [dt.strptime(d, "%Y-%m-%d").strftime("%b %Y") for d in income_dates]
-    revenue    = [round(float(v), 2) if (v := _nearest(revenue_s, d)) is not None else None for d in income_dates]
-    net_income = [round(float(v), 2) if (v := _nearest(ni_s, d)) is not None else None for d in income_dates]
-    fcf        = [round(float(v), 2) if (v := _nearest(fcf_s, d)) is not None else None for d in income_dates]
-
-    margin_pairs = _nearest_pair(gross_s, revenue_s)
-    margin_ratio = {d: (g / r * 100) for d, (g, r) in margin_pairs.items() if r}
-    margin_labels, gross_margin_pct = to_chart(margin_ratio)
-
-    # Net debt = debt - cash. A company with little/no long-term debt (SHOP,
-    # many high-growth tech names) often has NO debt tag at all in its SEC
-    # filings — not a zero value, just nothing filed, because there's
-    # nothing to report on that line. Previously this meant debt_s was
-    # empty, _nearest_pair had nothing to anchor on, and the whole net-debt
-    # chart came back blank even though the company clearly does report
-    # (cash figures were right there). Now: if debt data exists, pair it
-    # with cash as before; if it's missing entirely, treat debt as 0 and
-    # chart net debt directly from the cash series (net cash position).
-    if debt_s:
-        debt_pairs = _nearest_pair(debt_s, cash_s)
-        net_debt_map = {d: (dv - cv) for d, (dv, cv) in debt_pairs.items()}
-    elif cash_s:
-        net_debt_map = {d: -cv for d, cv in cash_s.items()}
-    else:
-        net_debt_map = {}
-    debt_labels, net_debt = to_chart(net_debt_map)
-
-    eps_dates = sorted(eps_s)[-32:]
-    diluted_eps_labels = [dt.strptime(d, "%Y-%m-%d").strftime("%b %Y") for d in eps_dates]
-    diluted_eps = [round(float(v), 4) if (v := eps_s.get(d)) is not None else None for d in eps_dates]
-
-    latest_shares = None
-    if shares_s:
-        latest_date = max(shares_s)
-        latest_shares = round(float(shares_s[latest_date]), 0)
-
-    pe_band = _compute_pe_band_sec(ticker, eps_dates, diluted_eps)
-
-    # Analyst EPS estimates: SEC doesn't have these. Best-effort bonus via
-    # yfinance — if this (Yahoo quoteSummary-based) call is unavailable,
-    # we simply skip the "vs estimate" comparison rather than fail anything.
-    eps_labels, eps_actual, eps_estimate, eps_surprise_pct = [], [], [], []
-    try:
-        edates = yf.Ticker(ticker).get_earnings_dates(limit=12)
-        if edates is not None and not edates.empty:
-            edates = edates.dropna(subset=["Reported EPS"]).sort_index()
-            for idx, row in edates.iterrows():
-                eps_labels.append(idx.strftime("%b %Y"))
-                eps_actual.append(round(float(row.get("Reported EPS")), 2) if pd.notna(row.get("Reported EPS")) else None)
-                eps_estimate.append(round(float(row.get("EPS Estimate")), 2) if pd.notna(row.get("EPS Estimate")) else None)
-                surprise = row.get("Surprise(%)")
-                eps_surprise_pct.append(round(float(surprise), 1) if pd.notna(surprise) else None)
-    except Exception as e:
-        print(f"[info] fundamentals({ticker}): yfinance analyst EPS estimates unavailable (non-fatal): {e}")
-
-    trailing_pe = forward_pe = None
-    info = {}
-    try:
-        info = _get_info_with_retry(yf.Ticker(ticker), ticker, "fundamentals") or {}   # skipped while .info is blocked
-        trailing_pe = info.get("trailingPE")
-        forward_pe = info.get("forwardPE")
-    except Exception as e:
-        print(f"[info] fundamentals({ticker}): yfinance trailing/forward P/E unavailable (non-fatal): {e}")
-    # yfinance's .info endpoint is the one most often blocked from this
-    # deployment's IP — trailing_pe frequently came back None even though
-    # we already compute a reliable trailing P/E ourselves for the P/E
-    # band chart (SEC EPS ÷ reliable .history() price). Use that as the
-    # fallback instead of leaving the stat blank. Forward P/E has no
-    # SEC-based equivalent (it's an analyst estimate) so it stays
-    # yfinance-only and can legitimately be unavailable.
-    if trailing_pe is None and pe_band and pe_band.get("current"):
-        trailing_pe = pe_band["current"]
-
-    # Market cap: shares outstanding (SEC, reliable) × latest close price
-    # (.history(), reliable) — computed rather than pulled from .info
-    # directly, since .info is the piece that's most often blocked from
-    # this deployment. .info's marketCap is only a fallback if we can't
-    # compute it ourselves (e.g. shares_outstanding wasn't tagged in SEC's
-    # filings for this company).
-    market_cap = None
-    if latest_shares:
-        try:
-            price_hist = yf.Ticker(ticker).history(period="5d")
-            if not price_hist.empty:
-                last_price = float(price_hist["Close"].iloc[-1])
-                market_cap = round(last_price * latest_shares, 0)
-        except Exception as e:
-            print(f"[info] fundamentals({ticker}): could not compute market cap from price×shares: {e}")
-    if market_cap is None:
-        market_cap = info.get("marketCap")
-
-    # revenue/net_income/fcf above are per-QUARTER values — Koyfin (and
-    # most terminals) show trailing-twelve-month rolling sums instead,
-    # which look completely different in scale for a fast-growing company
-    # (one quarter vs four summed) and were the actual source of an
-    # apparent "the numbers don't match Koyfin" — they weren't wrong,
-    # they were answering a different question. Surfacing the LTM sum
-    # explicitly (only when 4 consecutive recent quarters are present)
-    # lets the header stat be compared apples-to-apples against Koyfin's
-    # own LTM figures.
-    def _ltm_sum(values):
-        recent = [v for v in values[-4:] if v is not None]
-        return round(sum(recent), 2) if len(recent) == 4 else None
-
-    revenue_ltm = _ltm_sum(revenue)
-    net_income_ltm = _ltm_sum(net_income)
-    fcf_ltm = _ltm_sum(fcf)
-
-    # v18: when .info is blocked (almost always from Render), prefer market cap ÷ last-4-quarters net income over the
-    # P/E-band value: it needs no per-share EPS history (which can be mis-tagged in SEC data) and matches the ADR path.
-    if info.get("trailingPE") is None and market_cap and net_income_ltm and net_income_ltm > 0:
-        trailing_pe = round(float(market_cap) / net_income_ltm, 1)
-
-    return _json_safe({
-        "ticker": ticker,
-        "has_fundamentals": True,
-        "data_source": "sec_edgar",
-        "cik": cik10,
-        "income_labels": income_labels,
-        "revenue": revenue,
-        "net_income": net_income,
-        "fcf": fcf,
-        "revenue_ltm": revenue_ltm,
-        "net_income_ltm": net_income_ltm,
-        "fcf_ltm": fcf_ltm,
-        "margin_labels": margin_labels,
-        "gross_margin_pct": gross_margin_pct,
-        "debt_labels": debt_labels,
-        "net_debt": net_debt,
-        "latest_shares_outstanding": latest_shares,
-        "market_cap": market_cap,
-        "diluted_eps_labels": diluted_eps_labels,
-        "diluted_eps": diluted_eps,
-        "eps_labels": eps_labels,
-        "eps_actual": eps_actual,
-        "eps_estimate": eps_estimate,
-        "eps_surprise_pct": eps_surprise_pct,
-        "pe_band": pe_band,
-        "trailing_pe": trailing_pe,
-        "forward_pe": forward_pe,
-    })
+        print(f"[warn] fundamentals({ticker}): stock estimates not applied: {type(e).__name__}: {e}")
+    return data
 
 
 _fundamentals_cache = {}  # ticker -> (timestamp, data)
-FUNDAMENTALS_CACHE_TTL_SEC = 900          # 15 min for a SUCCESSFUL result - fundamentals
-                                           # change slowly, and this avoids hammering SEC
-                                           # every time a stock drawer reopens
-FUNDAMENTALS_NEGATIVE_CACHE_TTL_SEC = 45   # a "no data" result gets a much shorter life —
-                                           # this is usually a transient hiccup (rate limit,
-                                           # brief network blip), not a permanent fact about
-                                           # the ticker, so it should self-heal quickly
-                                           # instead of blocking retries for 15 minutes
+FUNDAMENTALS_CACHE_TTL_SEC = 900           # memory copy of a good result (the stored copy behind it lives longer)
+FUNDAMENTALS_NEGATIVE_CACHE_TTL_SEC = 45   # a "no data" result is usually a passing hiccup — retry soon
+_FUND_DB_STALE_SEC = 12 * 3600             # stored copy older than this: served, and rebuilt in the background
+_FUND_DB_MAX_AGE_SEC = 10 * 86400          # older than this: rebuilt first (still the fallback if that fails)
+_FUND_PRICE_TTL_SEC = 300
 
 
 def _is_valid_fundamentals_shape(data: dict) -> bool:
-    """Guards the cache against ever serving a malformed/incomplete response
-    (e.g. from an older code version, or a partial result from some edge
-    case) for the full 15-minute TTL. If it doesn't look structurally
-    sound, treat it as a cache miss and recompute fresh."""
+    """Never serve a malformed/partial result from a cache; treat it as a miss."""
     if not isinstance(data, dict):
         return False
     if not data.get("has_fundamentals"):
@@ -5869,24 +5155,51 @@ def _is_valid_fundamentals_shape(data: dict) -> bool:
     return isinstance(data.get("income_labels"), list)
 
 
-def _get_fundamentals_cached(ticker: str) -> dict:
-    """Shared cache-or-compute path for SEC-based fundamentals (market cap,
-    trailing P/E, etc.) — factored out of the /api/fundamentals endpoint so
-    sector-comparison peer valuations can use the same reliable numbers
-    instead of falling back to yfinance's often-blocked .info."""
-    ticker = _canon_ticker(ticker)
-    cached = _fundamentals_cache.get(ticker)
-    if cached:
-        cached_ts, cached_data = cached
-        ttl = FUNDAMENTALS_CACHE_TTL_SEC if cached_data.get("has_fundamentals") else FUNDAMENTALS_NEGATIVE_CACHE_TTL_SEC
-        if (time.time() - cached_ts) < ttl and _is_valid_fundamentals_shape(cached_data):
-            return cached_data
+def _fund_mem_put(ticker: str, data: dict) -> None:
+    if len(_fundamentals_cache) > _FUND_CACHE_MAX:
+        _fundamentals_cache.clear()          # simple bound instead of LRU bookkeeping
+    _fundamentals_cache[ticker] = (time.time(), data)
 
-    # v18 memory guard (Render free = 512 MB; "Ran out of memory" on 26.10.2026): one SEC companyfacts file is 2-8 MB
-    # and ~10x that once parsed, and ONE Deep Dive opened 6 builds at once (/api/fundamentals + sector-comparison for
-    # the stock and 4 peers). Now: a build already running for this ticker is waited for instead of started again
-    # (timed-out requests used to leave their build running while the page's retry started another), and at most
-    # _FUND_MAX_PARALLEL builds run at the same time in the whole server.
+
+def _fund_db_load(ticker: str):
+    try:
+        with db_cursor(dict_cursor=True) as (conn, cur):
+            data, age = fundlib.db_load(cur, ticker)
+        if data is not None and _is_valid_fundamentals_shape(data) and data.get("has_fundamentals"):
+            return data, age
+    except Exception as e:
+        print(f"[warn] fundamentals_cache read failed for {ticker}: {type(e).__name__}: {e}")
+    return None, None
+
+
+def _fund_db_save(ticker: str, data: dict) -> None:
+    try:
+        with db_cursor() as (conn, cur):
+            fundlib.db_save(cur, ticker, data)
+            conn.commit()
+    except Exception as e:
+        print(f"[warn] fundamentals_cache write failed for {ticker}: {type(e).__name__}: {e}")
+
+
+def _fund_build_store(ticker: str, old: Optional[dict]) -> dict:
+    """Build (at most _FUND_MAX_PARALLEL at once in the whole server), store, memory-cache. A failed or empty
+    build never replaces a good stored copy — that copy is served instead."""
+    with _fund_build_sem:
+        data = _build_fundamentals(ticker)
+    if old is not None and (data.get("sec_unavailable") or not data.get("has_fundamentals")):
+        print(f"[info] fundamentals({ticker}): new build empty/partial — keeping the stored copy")
+        _fund_mem_put(ticker, old)
+        return old
+    fundlib.carry_over_extras(data, old)
+    fundlib.finalize(data)
+    _fund_db_save(ticker, data)
+    _fund_mem_put(ticker, data)
+    return data
+
+
+def _fund_build_now(ticker: str, old: Optional[dict]) -> dict:
+    # v18 memory guard (Render free = 512 MB; "Ran out of memory" on 26.10.2026): a build already running for this
+    # ticker is waited for instead of started again.
     with _fund_inflight_lock:
         ev = _fund_inflight.get(ticker)
         owner = ev is None
@@ -5897,22 +5210,96 @@ def _get_fundamentals_cached(ticker: str) -> dict:
         done = _fundamentals_cache.get(ticker)
         if done:
             return done[1]
+        if old is not None:
+            return old
         raise RuntimeError("fundamentals build for this ticker failed in a parallel request")
     try:
-        with _fund_build_sem:
-            data = _build_fundamentals(ticker)
-        try:
-            _apply_stock_estimates(data, ticker)
-        except Exception as e:
-            print(f"[warn] fundamentals({ticker}): stock estimates not applied: {type(e).__name__}: {e}")
-        if len(_fundamentals_cache) > _FUND_CACHE_MAX:
-            _fundamentals_cache.clear()          # simple bound instead of LRU bookkeeping
-        _fundamentals_cache[ticker] = (time.time(), data)
-        return data
+        return _fund_build_store(ticker, old)
+    except Exception as e:
+        if old is None:
+            raise
+        print(f"[warn] fundamentals({ticker}): rebuild failed ({type(e).__name__}: {e}) — serving the stored copy")
+        _fund_mem_put(ticker, old)
+        return old
     finally:
         with _fund_inflight_lock:
             _fund_inflight.pop(ticker, None)
         ev.set()
+
+
+def _fund_refresh_background(ticker: str, old: dict) -> None:
+    with _fund_inflight_lock:
+        if ticker in _fund_inflight:
+            return
+        ev = _fund_inflight[ticker] = threading.Event()
+
+    def run():
+        try:
+            _fund_build_store(ticker, old)
+        except Exception as e:
+            print(f"[warn] fundamentals({ticker}): background refresh failed: {type(e).__name__}: {e}")
+        finally:
+            with _fund_inflight_lock:
+                _fund_inflight.pop(ticker, None)
+            ev.set()
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _get_fundamentals_base(ticker: str) -> dict:
+    cached = _fundamentals_cache.get(ticker)
+    if cached:
+        cached_ts, cached_data = cached
+        ttl = FUNDAMENTALS_CACHE_TTL_SEC if cached_data.get("has_fundamentals") else FUNDAMENTALS_NEGATIVE_CACHE_TTL_SEC
+        if (time.time() - cached_ts) < ttl and _is_valid_fundamentals_shape(cached_data):
+            return cached_data
+    old, age = _fund_db_load(ticker)
+    if old is not None and age < _FUND_DB_MAX_AGE_SEC:
+        _fund_mem_put(ticker, old)
+        if age > _FUND_DB_STALE_SEC:
+            _fund_refresh_background(ticker, old)
+        return old
+    return _fund_build_now(ticker, old)
+
+
+def _fund_live_price(ticker: str) -> Optional[float]:
+    hit = _fund_price_cache.get(ticker)
+    if hit and time.time() - hit[0] < _FUND_PRICE_TTL_SEC:
+        return hit[1]
+    ex = ThreadPoolExecutor(max_workers=1)
+    try:
+        price = ex.submit(fundlib.last_price, ticker).result(timeout=4)
+    except Exception:
+        price = None
+    finally:
+        ex.shutdown(wait=False)
+    if len(_fund_price_cache) > 2000:
+        _fund_price_cache.clear()
+    _fund_price_cache[ticker] = (time.time(), price)
+    return price
+
+
+def _get_fundamentals_cached(ticker: str) -> dict:
+    """Fundamentals for one ticker (memory -> stored copy -> build), market cap / P/E at the current price.
+    Shared by /api/fundamentals and the sector comparison's own-stock valuation."""
+    ticker = _canon_ticker(ticker)
+    data = _get_fundamentals_base(ticker)
+    if not data.get("has_fundamentals") or not data.get("price_at_build"):
+        return data
+    if time.time() - float(data.get("built_ts") or 0) < _FUND_PRICE_TTL_SEC:
+        return data
+    return fundlib.rescale_to_price(data, _fund_live_price(ticker))
+
+
+def _fund_peek(ticker: str) -> Optional[dict]:
+    """A good copy from memory or the database — never starts a build (quote lookup and peer valuations must
+    stay fast; v18: 4 extra SEC builds per page view were what pushed Render past 512 MB)."""
+    ticker = _canon_ticker(ticker)
+    cached = _fundamentals_cache.get(ticker)
+    if cached and cached[1].get("has_fundamentals"):
+        return cached[1]
+    data, _ = _fund_db_load(ticker)
+    return data
 
 
 _FUND_MAX_PARALLEL = 2
@@ -5920,63 +5307,7 @@ _FUND_CACHE_MAX = 300
 _fund_build_sem = threading.BoundedSemaphore(_FUND_MAX_PARALLEL)
 _fund_inflight: dict = {}          # ticker -> threading.Event, set when that build finished
 _fund_inflight_lock = threading.Lock()
-
-
-_ESTIMATES_MAX_AGE_DAYS = 10
-
-
-def _apply_stock_estimates(data: dict, ticker: str) -> None:
-    """Forward P/E for the next twelve months (NTM) from the analyst estimates the scanner stores twice a day
-    (pipeline_a_scanner.save_stock_estimates — Yahoo's .info works there, not here). NTM EPS is the usual blend of the
-    current and next fiscal year by how much of the current fiscal year is still ahead:
-        f = days left in the current fiscal year / 365   (0 once it has ended but is not reported yet)
-        NTM EPS = f * EPS(current FY) + (1 - f) * EPS(next FY)
-    e.g. KO on 26.10.2026: 66 days left -> 0.18*3.31 + 0.82*3.53 = 3.49 -> $92.6 / 3.49 = 26.5. Only when no P/E came
-    from elsewhere; the stored trailing P/E / market cap fill gaps too."""
-    if not isinstance(data, dict) or not data.get("has_fundamentals"):
-        return
-    with db_cursor(dict_cursor=True) as (conn, cur):
-        cur.execute("SELECT to_regclass('stock_estimates') IS NOT NULL AS ok")
-        if not cur.fetchone()["ok"]:
-            return
-        cur.execute("""SELECT eps_cur_fy, eps_next_fy, fy_end, trailing_pe, market_cap FROM stock_estimates
-                       WHERE ticker = %s AND updated_at > NOW() - make_interval(days => %s)""",
-                    (ticker, _ESTIMATES_MAX_AGE_DAYS))
-        row = cur.fetchone()
-    if not row:
-        return
-    if data.get("market_cap") is None and row["market_cap"]:
-        data["market_cap"] = float(row["market_cap"])
-    if data.get("trailing_pe") is None and row["trailing_pe"]:
-        data["trailing_pe"] = round(float(row["trailing_pe"]), 1)
-    if data.get("forward_pe") is not None:
-        return
-    eps_next = row["eps_next_fy"]
-    eps_cur = row["eps_cur_fy"]
-    if eps_next is None and eps_cur is None:
-        return
-    f = 0.0
-    if row["fy_end"] and eps_cur is not None:
-        f = min(max((row["fy_end"] - date.today()).days, 0), 365) / 365.0
-    if eps_next is None:
-        eps_ntm = float(eps_cur)
-    elif eps_cur is None:
-        eps_ntm = float(eps_next)
-    else:
-        eps_ntm = f * float(eps_cur) + (1 - f) * float(eps_next)
-    price = None
-    shares = data.get("latest_shares_outstanding")
-    if data.get("market_cap") and shares:
-        price = float(data["market_cap"]) / float(shares)
-    if price is None:
-        try:
-            h = yf.Ticker(ticker).history(period="5d")
-            price = float(h["Close"].iloc[-1]) if not h.empty else None
-        except Exception:
-            price = None
-    if price and eps_ntm > 0:
-        data["forward_pe"] = round(price / eps_ntm, 1)
-        data["forward_pe_basis"] = "ntm"
+_fund_price_cache: dict = {}       # ticker -> (timestamp, last close or None)
 
 
 @app.get("/api/fundamentals/{ticker}")

@@ -2042,11 +2042,13 @@ async function loadDeepDive(){
     // often-blocked .info — fundamentals computes both more reliably from
     // SEC data. Prefer that for the header stat cards whenever it's there.
     const applyFund = (fundData) => {
-      if(quote.market_cap == null && fundData.market_cap != null){
+      if((quote.market_cap == null || quote._mcapFromFund) && fundData.market_cap != null){
         quote.market_cap = fundData.market_cap;
+        quote._mcapFromFund = true;     // a newer fundamentals answer may update it again
         const mc = document.getElementById('dd-mcap-val');
         if(mc) mc.textContent = formatMarketCap(quote.market_cap);
       }
+      quote.pe_nm = fundData.trailing_pe_nm || null;
       if(quote.pe_ratio == null && fundData.trailing_pe != null) quote.pe_ratio = fundData.trailing_pe;
       // Keep NTM (forward) and LTM (trailing) separately so the header
       // P/E stat can default to NTM with a toggle to LTM, instead of
@@ -2058,6 +2060,12 @@ async function loadDeepDive(){
       st.fundData = fundData;
       renderDeepDivePeCard();
     };
+    // v21: the last copy saved in this browser is drawn at once; the server's answer replaces it when it arrives
+    const localFund = fundLocalGet(ticker);
+    if(localFund){
+      try { applyFund(localFund); renderFundamentals(localFund, 'dd-fundamentals-section'); }
+      catch(e){ console.warn('[fundamentals] local copy render failed', e); }
+    }
     fundP.then(fundData => {
       if(!current()) return;
       applyFund(fundData);
@@ -3713,7 +3721,7 @@ function _earnDetailHtml(it, todayStr){
       const g = [];
       g.push(card(en ? 'Revenue' : 'הכנסות', _earnBig(rev[L]), yoy(rev) != null ? `${_earnPct(yoy(rev))} ${en ? 'vs a year ago' : 'מול שנה קודמת'}` : ''));
       if(ni[L] != null) g.push(card(en ? 'Net income' : 'רווח נקי', _earnBig(ni[L]), niYoy != null ? `${_earnPct(niYoy)} ${en ? 'vs a year ago' : 'מול שנה קודמת'}` : ''));
-      if(f.trailing_pe != null || f.forward_pe != null) g.push(card(en ? 'P/E' : 'מכפיל רווח', f.trailing_pe != null ? Number(f.trailing_pe).toFixed(1) : '—', f.forward_pe != null ? `${en ? 'forward' : 'צפוי'} ${Number(f.forward_pe).toFixed(1)}` : ''));
+      if(f.trailing_pe != null || f.forward_pe != null || f.trailing_pe_nm) g.push(card(en ? 'P/E' : 'מכפיל רווח', fundPeText(f), f.forward_pe != null ? `${en ? 'forward' : 'צפוי'} ${Number(f.forward_pe).toFixed(1)}` : ''));
       out.push(`<div class="earn-dsec"><div class="earn-dsec-t">${en ? `Quarter ended ${qLabel} (SEC filings)` : `רבעון שהסתיים ב-${qLabel} (דיווחי SEC)`}</div>
         <div class="earn-kv">${g.join('')}</div>
         <div class="earn-dsec-t" style="margin-top:12px">${en ? 'Quarterly revenue' : 'הכנסות רבעוניות'}</div>
@@ -5054,7 +5062,7 @@ function renderDeepDivePeCard(){
   const t = lang === 'en';
   const q = _dd_lastQuote;
   const ntm = q.pe_ratio_ntm != null ? Number(q.pe_ratio_ntm).toFixed(1) : '—';
-  const ltm = q.pe_ratio_ltm != null ? Number(q.pe_ratio_ltm).toFixed(1) : '—';
+  const ltm = q.pe_ratio_ltm != null ? Number(q.pe_ratio_ltm).toFixed(1) : fundPeText({trailing_pe_nm: q.pe_nm});
   card.innerHTML = `
     <div class="k">P/E (NTM / LTM)</div>
     <div class="v" style="font-size:15px;">${ntm} <span style="color:var(--text-dim);font-weight:400;">/</span> ${ltm}</div>
@@ -5069,6 +5077,32 @@ function renderDeepDivePeCard(){
 // was almost always still empty at that point (fundamentals used to load
 // as a separate, later call) — so the header kept showing "—" even
 // though the fundamentals card further down the page had the real number.
+// v21: the last good answer per ticker is kept in this browser (25 tickers). It is drawn at once while the server
+// answers, and if the server fails it stays on screen with its date instead of "could not load".
+const FUND_LOCAL_KEY = 'swing_fund_v2_';
+const FUND_LOCAL_MAX = 25;
+function fundLocalGet(ticker){
+  try {
+    const raw = localStorage.getItem(FUND_LOCAL_KEY + ticker);
+    if(!raw) return null;
+    const v = JSON.parse(raw);
+    if(!v || !v.data || !v.data.has_fundamentals || Date.now() - v.ts > 30*86400000) return null;
+    return v.data;
+  } catch(e){ return null; }
+}
+function fundLocalPut(ticker, data){
+  if(!data || !data.has_fundamentals || data._stale_local) return;
+  try {
+    const idxKey = FUND_LOCAL_KEY + 'index';
+    let idx = JSON.parse(localStorage.getItem(idxKey) || '[]').filter(x => x !== ticker);
+    idx.unshift(ticker);
+    idx.slice(FUND_LOCAL_MAX).forEach(old => localStorage.removeItem(FUND_LOCAL_KEY + old));
+    idx = idx.slice(0, FUND_LOCAL_MAX);
+    localStorage.setItem(FUND_LOCAL_KEY + ticker, JSON.stringify({ts: Date.now(), data}));
+    localStorage.setItem(idxKey, JSON.stringify(idx));
+  } catch(e){ /* storage full or blocked — the site works without it */ }
+}
+
 async function fetchFundamentalsData(ticker){
   const waits = [0, 6000];
   let lastErr;
@@ -5077,13 +5111,26 @@ async function fetchFundamentalsData(ticker){
     try {
       const res = await fetchWithTimeout(`${API_BASE}/api/fundamentals/${ticker}`, 25000);
       if(!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
+      const data = await res.json();
+      fundLocalPut(ticker, data);
+      return data;
     } catch(e) {
       lastErr = e;
       console.warn(`[fundamentals] attempt ${i+1}/${waits.length} failed for`, ticker, e);
     }
   }
+  const local = fundLocalGet(ticker);
+  if(local) return Object.assign({}, local, {_stale_local: true});
   throw lastErr;
+}
+
+// "Loss" / "N/M" instead of a misleading P/E (server sets trailing_pe_nm, v21)
+function fundPeText(data){
+  if(data && data.trailing_pe != null) return Number(data.trailing_pe).toFixed(1);
+  const t = lang === 'en';
+  if(data && data.trailing_pe_nm === 'loss') return t ? 'Loss' : 'הפסד';
+  if(data && data.trailing_pe_nm === 'high') return t ? 'N/M' : 'לא משמעותי';
+  return '—';
 }
 
 async function loadFundamentals(ticker, containerId){
@@ -5091,11 +5138,17 @@ async function loadFundamentals(ticker, containerId){
   const el = document.getElementById(containerId);
   if(!el) return null;
   const t = lang==='en';
-  el.innerHTML = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div><div class="fund-empty">${t?'Loading fundamentals...':'טוען נתונים פונדמנטליים...'}</div>`;
+  const local = fundLocalGet(ticker);
+  if(local){
+    try { renderFundamentals(local, containerId); } catch(e){ console.warn('[fundamentals] local copy render failed', e); }
+  } else {
+    el.innerHTML = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div><div class="fund-empty">${t?'Loading fundamentals...':'טוען נתונים פונדמנטליים...'}</div>`;
+  }
   let data;
   try {
     data = await fetchFundamentalsData(ticker);
   } catch(e) {
+    if(local) return local;
     el.innerHTML = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div><div class="fund-empty">${t?'Could not load fundamentals right now.':'לא ניתן לטעון נתונים פונדמנטליים כרגע.'}</div>`;
     return null;
   }
@@ -5146,7 +5199,7 @@ function renderFundamentals(data, containerId){
   const latestShares = data.latest_shares_outstanding;
   html += `<div class="fund-stat-row">
     <div class="fund-stat"><div class="k">${t?'Shares Outstanding':'מניות במחזור'}${fundInfoIcon('shares')}</div><div class="v">${latestShares?(latestShares/1e9).toFixed(2)+'B':'—'}</div></div>
-    <div class="fund-stat"><div class="k">${t?'Trailing P/E (LTM)':'מכפיל P/E נוכחי (LTM)'}${fundInfoIcon('pe')}</div><div class="v">${data.trailing_pe?data.trailing_pe.toFixed(1):'—'}</div></div>
+    <div class="fund-stat"><div class="k">${t?'Trailing P/E (LTM)':'מכפיל P/E נוכחי (LTM)'}${fundInfoIcon('pe')}</div><div class="v">${fundPeText(data)}</div></div>
     <div class="fund-stat"><div class="k">${t?'Forward P/E (NTM)':'מכפיל P/E צפוי (NTM)'}</div><div class="v">${data.forward_pe?data.forward_pe.toFixed(1):'—'}</div></div>
   </div>`;
 
@@ -5164,6 +5217,14 @@ function renderFundamentals(data, containerId){
     ? `All figures come straight from the company's official <b>SEC filings</b> (10-Q/10-K) via SEC EDGAR — the same numbers reported to regulators, not analyst-adjusted. Trailing/Forward P/E and analyst EPS estimates come from Yahoo Finance as a supplementary source.${secLink?` <a href="${secLink}" target="_blank" rel="noopener">View the raw filings on SEC.gov →</a>`:''}`
     : `כל הנתונים מגיעים ישירות מ<b>הדוחות הרשמיים לרשות ניירות ערך האמריקאית (SEC)</b> — 10-Q/10-K — דרך SEC EDGAR, אותם מספרים בדיוק שהחברה מדווחת לרגולטור, לא מספרים מעובדים ע"י אנליסטים. מכפילי P/E ותחזיות אנליסטים מגיעים כמקור משלים מ-Yahoo Finance.${secLink?` <a href="${secLink}" target="_blank" rel="noopener">לצפייה בדוחות הגולמיים ב-SEC.gov ←</a>`:''}`
   }</div>`;
+  // v21: when these numbers were computed (stored copies), and a clear note when the server could not be reached
+  const builtAt = data.built_at ? new Date(data.built_at) : null;
+  if(data._stale_local || (builtAt && !isNaN(builtAt))){
+    const when = builtAt && !isNaN(builtAt) ? builtAt.toLocaleString(t?'en-US':'he-IL', {day:'numeric', month:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
+    html += `<div class="fund-source-note" style="margin-top:-4px;">${data._stale_local
+      ? (t ? `The server did not answer — showing the last numbers saved in this browser${when?` (computed ${when})`:''}.` : `השרת לא ענה — מוצגים הנתונים האחרונים שנשמרו בדפדפן${when?` (חושבו ב-${when})`:''}.`)
+      : (t ? `Computed ${when}; market cap and P/E at the latest price.` : `חושב ב-${when}; שווי שוק ומכפיל לפי המחיר האחרון.`)}</div>`;
+  }
 
   html += `<div class="fund-grid">`;
   if(data.eps_labels && data.eps_labels.length){

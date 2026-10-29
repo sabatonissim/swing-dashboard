@@ -52,6 +52,9 @@ JOBS = [
     # Kept sparse on purpose: the keyless BLS API allows 25 requests/day per IP.
     dict(name="econ",       workflow="econ-refresh.yml",    kind="interval", every_min=30, window=(8 * 60, 10 * 60 + 30), weekdays_only=True,  grace_min=35),
     dict(name="econ_eve",   workflow="econ-refresh.yml",    kind="daily",    at=(18, 30), weekdays_only=False, grace_min=300),
+    # v21: company fundamentals built in advance (fundamentals.py -> fundamentals_cache), after the evening scan
+    # saved the analyst estimates and before the next morning
+    dict(name="fundamentals", workflow="fundamentals-refresh.yml", kind="daily", at=(5, 0), weekdays_only=False, grace_min=300),
 ]
 
 _done = {}        # slot key -> outcome (this process)
