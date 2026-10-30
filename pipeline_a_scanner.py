@@ -1447,6 +1447,7 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
     benchmark_rets = fetch_benchmark_returns()
     rs_raw_by_ticker: Dict[str, float] = {}  # computed for every ticker fetched, used for
                                               # percentile ranking after the full loop below
+    leader_rows: Dict[str, dict] = {}        # v25: every liquid stock's leadership data (see save_stock_leaders)
 
     for ticker in universe:
         try:
@@ -1523,6 +1524,27 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         trend = compute_trend_structure(hist)
         atr = compute_atr(hist)
         days_to_earnings = compute_days_to_earnings(info)
+
+        # v25: leadership data for EVERY liquid stock (not only pattern matches) -> stock_leaders, the site's
+        # "leading stocks" table. Same hist/info already fetched — no extra Yahoo calls.
+        if rs_raw is not None:
+            try:
+                _c = float(hist["Close"].iloc[-1])
+                _hi = float(hist["High"].tail(252).max())
+                _ago = lambda n: float(hist["Close"].iloc[-1 - n]) if len(hist) > n else None
+                _c21, _c63 = _ago(21), _ago(63)
+                leader_rows[ticker] = {
+                    "name": (info or {}).get("shortName") or (info or {}).get("longName"),
+                    "sector": (info or {}).get("sector"),
+                    "close": _c,
+                    "pct_from_high": (_c / _hi - 1) * 100 if _hi > 0 else None,
+                    "chg_1m": (_c / _c21 - 1) * 100 if _c21 else None,
+                    "chg_3m": (_c / _c63 - 1) * 100 if _c63 else None,
+                    "stage": trend["stage"] if trend else None,
+                    "market_cap": (info or {}).get("marketCap"),
+                }
+            except Exception as e:
+                print(f"[warn] leader row failed for {ticker}: {e}")
 
         # Volume confirmation gate: a genuine breakout should show real
         # buying volume behind it. Without this, "breakout" patterns were
@@ -1762,7 +1784,47 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         save_stock_estimates(estimate_rows)
     except Exception as e:
         print(f"[warn] saving stock estimates failed: {type(e).__name__}: {e}")
+    try:
+        save_stock_leaders(leader_rows, rs_ratings)
+    except Exception as e:
+        print(f"[warn] saving stock leaders failed: {type(e).__name__}: {e}")
     return results
+
+
+def save_stock_leaders(rows: Dict[str, dict], rs_ratings: Dict[str, int]):
+    """v25: one row per liquid stock of this scan — RS rating, trend stage, distance from the 52-week high, 1/3-month
+    change. The API's "leading stocks" table reads it (rows older than 3 days are ignored, so a stock that dropped
+    out of the universe disappears by itself)."""
+    if not rows:
+        print("[info] stock leaders: nothing to save.")
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""CREATE TABLE IF NOT EXISTS stock_leaders (
+        ticker TEXT PRIMARY KEY, name TEXT, sector TEXT, close REAL, pct_from_high REAL, chg_1m REAL, chg_3m REAL,
+        stage TEXT, rs_rating INTEGER, market_cap DOUBLE PRECISION, updated_at TIMESTAMPTZ DEFAULT NOW())""")
+    n = 0
+    for tk, r in rows.items():
+        rating = rs_ratings.get(tk)
+        if rating is None:
+            continue
+        cur.execute(
+            """INSERT INTO stock_leaders (ticker, name, sector, close, pct_from_high, chg_1m, chg_3m, stage, rs_rating,
+                                          market_cap, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+               ON CONFLICT (ticker) DO UPDATE SET name = EXCLUDED.name, sector = EXCLUDED.sector, close = EXCLUDED.close,
+                   pct_from_high = EXCLUDED.pct_from_high, chg_1m = EXCLUDED.chg_1m, chg_3m = EXCLUDED.chg_3m,
+                   stage = EXCLUDED.stage, rs_rating = EXCLUDED.rs_rating, market_cap = EXCLUDED.market_cap,
+                   updated_at = NOW()""",
+            (tk, r.get("name"), r.get("sector"), _native(r.get("close")), _native(r.get("pct_from_high")),
+             _native(r.get("chg_1m")), _native(r.get("chg_3m")), r.get("stage"), int(rating),
+             _native(r.get("market_cap"))),
+        )
+        n += 1
+    conn.commit()
+    cur.close()
+    conn.close()
+    print(f"[info] stock leaders: saved {n} stocks.")
 
 
 # ------------------------------------------------------------------
@@ -1776,7 +1838,8 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
 # v23: from the same .info dict — analysts' 12-month price targets and the short interest (Yahoo takes it from the
 # exchanges' twice-a-month short interest report; dateShortInterest = the settlement date it refers to).
 _STREET_FIELDS = ("targetMeanPrice", "targetHighPrice", "targetLowPrice", "numberOfAnalystOpinions",
-                  "shortPercentOfFloat", "shortRatio", "sharesShort", "sharesShortPriorMonth", "dateShortInterest")
+                  "shortPercentOfFloat", "shortRatio", "sharesShort", "sharesShortPriorMonth", "dateShortInterest",
+                  "exDividendDate", "dividendRate", "lastDividendValue")   # v25: dividends calendar
 
 
 def _epoch_date(ts):
@@ -1799,7 +1862,8 @@ def _estimates_row(ticker, info):
     return (ticker, _native(eps_cur), _native(eps_next), fy_end, _native(info.get("trailingPE")), _native(info.get("marketCap")),
             num("targetMeanPrice"), num("targetHighPrice"), num("targetLowPrice"), num("numberOfAnalystOpinions"),
             num("shortPercentOfFloat"), num("shortRatio"), num("sharesShort"), num("sharesShortPriorMonth"),
-            _epoch_date(info.get("dateShortInterest")))
+            _epoch_date(info.get("dateShortInterest")),
+            _epoch_date(info.get("exDividendDate")), num("dividendRate"), num("lastDividendValue"))
 
 
 def save_stock_estimates(rows: List[tuple]):
@@ -1813,24 +1877,27 @@ def save_stock_estimates(rows: List[tuple]):
         trailing_pe REAL, market_cap DOUBLE PRECISION, updated_at TIMESTAMPTZ DEFAULT NOW())""")
     for col, typ in (("target_mean", "REAL"), ("target_high", "REAL"), ("target_low", "REAL"), ("num_analysts", "INTEGER"),
                      ("short_pct_float", "REAL"), ("short_ratio", "REAL"), ("shares_short", "DOUBLE PRECISION"),
-                     ("shares_short_prior", "DOUBLE PRECISION"), ("short_date", "DATE")):
+                     ("shares_short_prior", "DOUBLE PRECISION"), ("short_date", "DATE"),
+                     ("ex_div_date", "DATE"), ("div_rate", "REAL"), ("last_div", "REAL")):      # v25 dividends
         cur.execute(f"ALTER TABLE stock_estimates ADD COLUMN IF NOT EXISTS {col} {typ}")   # fixed names, not user input
     for (ticker, eps_cur, eps_next, fy_end, tpe, mcap, t_mean, t_high, t_low, n_an,
-         s_pct, s_ratio, s_sh, s_prior, s_date) in rows:
+         s_pct, s_ratio, s_sh, s_prior, s_date, ex_div, div_rate, last_div) in rows:
         cur.execute(
             """INSERT INTO stock_estimates (ticker, eps_cur_fy, eps_next_fy, fy_end, trailing_pe, market_cap,
                    target_mean, target_high, target_low, num_analysts,
-                   short_pct_float, short_ratio, shares_short, shares_short_prior, short_date, updated_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                   short_pct_float, short_ratio, shares_short, shares_short_prior, short_date,
+                   ex_div_date, div_rate, last_div, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                ON CONFLICT (ticker) DO UPDATE SET eps_cur_fy = EXCLUDED.eps_cur_fy, eps_next_fy = EXCLUDED.eps_next_fy,
                    fy_end = EXCLUDED.fy_end, trailing_pe = EXCLUDED.trailing_pe, market_cap = EXCLUDED.market_cap,
                    target_mean = EXCLUDED.target_mean, target_high = EXCLUDED.target_high,
                    target_low = EXCLUDED.target_low, num_analysts = EXCLUDED.num_analysts,
                    short_pct_float = EXCLUDED.short_pct_float, short_ratio = EXCLUDED.short_ratio,
                    shares_short = EXCLUDED.shares_short, shares_short_prior = EXCLUDED.shares_short_prior,
-                   short_date = EXCLUDED.short_date, updated_at = NOW()""",
+                   short_date = EXCLUDED.short_date, ex_div_date = EXCLUDED.ex_div_date, div_rate = EXCLUDED.div_rate,
+                   last_div = EXCLUDED.last_div, updated_at = NOW()""",
             (ticker, eps_cur, eps_next, fy_end, tpe, mcap, t_mean, t_high, t_low,
-             int(n_an) if n_an is not None else None, s_pct, s_ratio, s_sh, s_prior, s_date),
+             int(n_an) if n_an is not None else None, s_pct, s_ratio, s_sh, s_prior, s_date, ex_div, div_rate, last_div),
         )
     conn.commit()
     cur.close()

@@ -60,6 +60,10 @@ JOBS = [
     dict(name="breadth_eod", workflow="market-breadth.yml",  kind="daily",    at=(16, 25), weekdays_only=True,  grace_min=300),
     # v22: insider trades (SEC Form 4) every 30 min on weekdays; each run also sweeps part of the companies (backfill)
     dict(name="insider",     workflow="insider-refresh.yml", kind="interval", every_min=30, window=(6 * 60, 22 * 60), weekdays_only=True, grace_min=25),
+    # v25: AI summary per stock, after the evening scan (16:10) has saved the day's signals and leaders
+    dict(name="ai_notes",    workflow="ai-stock-notes.yml",  kind="daily",    at=(17, 30), weekdays_only=True,  grace_min=240),
+    # v25: big-fund 13F holdings — a quick check every morning; funds are re-read only after a new quarterly filing
+    dict(name="funds",       workflow="fund-holdings.yml",   kind="daily",    at=(6, 15),  weekdays_only=True,  grace_min=300),
 ]
 
 _done = {}        # slot key -> outcome (this process)

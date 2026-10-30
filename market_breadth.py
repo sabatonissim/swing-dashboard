@@ -22,6 +22,7 @@ import csv
 import io
 import json
 import os
+import re
 import sys
 import time
 from datetime import date, datetime
@@ -223,6 +224,72 @@ def save_regime(regime: pd.DataFrame, curves: Dict[date, dict]) -> None:
         conn.close()
 
 
+IPO_URL = "https://api.nasdaq.com/api/ipo/calendar?date={ym}"
+_SPAC_RE = re.compile(r"acquisition|spac\b|blank check", re.I)
+
+
+def fetch_ipos() -> List[dict]:
+    """v25: Nasdaq's public IPO calendar (no key) for this month and next — upcoming (expected pricing date) and
+    recently priced deals. SPACs / blank-check units are left out (they are not operating companies)."""
+    out, seen = [], set()
+    today = date.today()
+    nxt_y, nxt_m = (today.year + 1, 1) if today.month == 12 else (today.year, today.month + 1)
+    months = [today.strftime("%Y-%m"), f"{nxt_y}-{nxt_m:02d}"]
+    for ym in months:
+        try:
+            r = requests.get(IPO_URL.format(ym=ym), timeout=20,
+                             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept": "application/json"})
+            r.raise_for_status()
+            data = (r.json() or {}).get("data") or {}
+        except Exception as e:
+            print(f"[warn] ipo calendar {ym}: {type(e).__name__}: {e}")
+            continue
+        groups = [("upcoming", ((data.get("upcoming") or {}).get("upcomingTable") or {}).get("rows") or [], "expectedPriceDate"),
+                  ("priced", (data.get("priced") or {}).get("rows") or [], "pricedDate")]
+        for status, rows, date_key in groups:
+            for row in rows:
+                name, tk = (row.get("companyName") or "").strip(), (row.get("proposedTickerSymbol") or "").strip().upper()
+                if not name or _SPAC_RE.search(name) or (tk.endswith("U") and len(tk) == 5):
+                    continue
+                try:
+                    d = datetime.strptime((row.get(date_key) or "").strip(), "%m/%d/%Y").date()
+                except ValueError:
+                    continue
+                key = (row.get("dealID") or name, status)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({"deal_id": str(row.get("dealID") or name)[:60], "ticker": tk[:12] or None, "name": name[:120],
+                            "exchange": (row.get("proposedExchange") or "")[:40], "price": (row.get("proposedSharePrice") or "")[:20],
+                            "shares": (row.get("sharesOffered") or "")[:20], "value": (row.get("dollarValueOfSharesOffered") or "")[:24],
+                            "status": status, "day": d})
+    return out
+
+
+def save_ipos(ipos: List[dict]) -> None:
+    conn = psycopg2.connect(os.environ.get("DATABASE_URL"))
+    try:
+        cur = conn.cursor()
+        cur.execute("""CREATE TABLE IF NOT EXISTS ipo_calendar (
+            deal_id TEXT PRIMARY KEY, ticker TEXT, name TEXT, exchange TEXT, price TEXT, shares TEXT, value TEXT,
+            status TEXT, day DATE, updated_at TIMESTAMPTZ DEFAULT NOW())""")
+        for x in ipos:     # a deal moves from "upcoming" to "priced": the newer status replaces the row
+            cur.execute("""INSERT INTO ipo_calendar (deal_id, ticker, name, exchange, price, shares, value, status, day, updated_at)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                           ON CONFLICT (deal_id) DO UPDATE SET ticker=EXCLUDED.ticker, name=EXCLUDED.name,
+                               exchange=EXCLUDED.exchange, price=EXCLUDED.price, shares=EXCLUDED.shares, value=EXCLUDED.value,
+                               status=CASE WHEN ipo_calendar.status = 'priced' THEN 'priced' ELSE EXCLUDED.status END,
+                               day=CASE WHEN ipo_calendar.status = 'priced' AND EXCLUDED.status <> 'priced'
+                                        THEN ipo_calendar.day ELSE EXCLUDED.day END,
+                               updated_at=NOW()""",
+                        (x["deal_id"], x["ticker"], x["name"], x["exchange"], x["price"], x["shares"], x["value"],
+                         x["status"], x["day"]))
+        conn.commit()
+        cur.close()
+    finally:
+        conn.close()
+
+
 def main() -> int:
     started = time.time()
     tickers = sp500_tickers()
@@ -239,6 +306,14 @@ def main() -> int:
               f"{int(last['above50'])}/{int(last['n50'])} above 50d, {int(last['above200'])}/{int(last['n200'])} above 200d, "
               f"highs {int(last['new_highs'])} lows {int(last['new_lows'])}, "
               f"adv {int(last['advancers'])} dec {int(last['decliners'])} ({len(tickers)} tickers, {int(time.time() - started)}s)")
+    # v25: IPO calendar (Nasdaq) — on its own, a failure only prints a warning
+    try:
+        ipos = fetch_ipos()
+        if ipos:
+            save_ipos(ipos)
+        print(f"ipo calendar: saved {len(ipos)} deal(s)")
+    except Exception as e:
+        print(f"[warn] ipo calendar failed: {type(e).__name__}: {e}")
     # v23: market state (SPY trend, VIX) + Treasury yield curve — a failure here never loses the breadth above
     try:
         regime = regime_rows()

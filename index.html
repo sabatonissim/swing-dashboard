@@ -1080,6 +1080,10 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
     </div>
     <div id="yields-wrap" style="margin-bottom:24px;"></div>
     <div class="pulse-section-head">
+      <div class="pulse-section-title" id="leaders-title">מניות מובילות</div>
+    </div>
+    <div id="leaders-wrap" style="margin-bottom:24px;"></div>
+    <div class="pulse-section-head">
       <div class="pulse-section-title" id="breadth-title">רוחב השוק</div>
     </div>
     <div id="breadth-wrap" style="margin-bottom:24px;"></div>
@@ -1102,6 +1106,16 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
       <div class="pulse-section-title" id="earnings-cal-title">דוחות רבעוניים</div>
     </div>
     <div id="earnings-cal-wrap"></div>
+    <!-- v25: dividends + IPOs (filled by renderCorpCalendar) -->
+    <div class="pulse-section-head" style="margin-top:24px;">
+      <div class="pulse-section-title" id="corp-cal-title">דיבידנדים והנפקות</div>
+    </div>
+    <div class="yc-charts" id="corp-cal-wrap" style="margin-top:0"></div>
+    <!-- v25: what well-known funds hold (13F) — filled by renderFunds -->
+    <div class="pulse-section-head" style="margin-top:24px;">
+      <div class="pulse-section-title" id="funds-title">מה מחזיקות הקרנות הגדולות</div>
+    </div>
+    <div id="funds-wrap"></div>
     </div><!-- /pulse-view-overview -->
   </div>
 </div>
@@ -2150,6 +2164,8 @@ async function rerenderDeepDiveForLang(){
   }
   renderInsiderSection(st.insider);
   renderStreetSection(st.street, st.quote);     // v23
+  renderAiNote(st.aiNote);                      // v25
+  renderDdFunds();                              // v25
 }
 
 async function loadDeepDive(){
@@ -2167,6 +2183,7 @@ async function loadDeepDive(){
   _ddRenderedKey = null;
   const loadId = ++_ddLoadId;
   el.innerHTML = `<div class="bt-empty">${UI[lang].loading}</div>`;
+  setStockAddress(ticker);      // v25: /stock/KO in the address bar, title and canonical link
 
   // The slow parts (sector comparison, technical setup and above all the SEC fundamentals — a first call can take 30s+ or
   // time out and be retried) used to hold the WHOLE page on "Loading...". Now they are started together but not awaited:
@@ -2176,7 +2193,8 @@ async function loadDeepDive(){
   const fundP = fetchFundamentalsData(ticker);
   const insiderP = fetchWithTimeout(`${API_BASE}/api/insider/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject());   // v22
   const streetP = fetchWithTimeout(`${API_BASE}/api/street/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject());     // v23
-  [sectorP, setupP, fundP, insiderP, streetP].forEach(p => p.catch(() => {}));   // handled below; avoids "unhandled rejection" noise
+  const aiNoteP = fetchWithTimeout(`${API_BASE}/api/ai-note/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject());   // v25
+  [sectorP, setupP, fundP, insiderP, streetP, aiNoteP].forEach(p => p.catch(() => {}));   // handled below; avoids "unhandled rejection" noise
 
   try {
     const [lookupRes, signalsRes, newsRes] = await Promise.allSettled([
@@ -2231,6 +2249,13 @@ async function loadDeepDive(){
       st.street = d;
       renderStreetSection(d, quote);
     });
+    aiNoteP.then(v => v, () => null).then(d => {     // v25: hidden unless a note exists
+      if(!current()) return;
+      st.aiNote = d;
+      renderAiNote(d);
+    });
+    _ddFundsData = null;
+    loadDdFunds(quote.ticker);                        // v25: hidden unless a tracked fund holds it
 
     // The lookup endpoint's own market_cap/pe_ratio depend on yfinance's
     // often-blocked .info — fundamentals computes both more reliably from
@@ -2312,6 +2337,8 @@ function renderDeepDive(quote, sector, signals, news){
     </div>
   `;
 
+  html += `<div id="dd-ai-note"></div>`;             // v25: AI summary (when one exists)
+
   html += `<div id="dd-technical-setup-section"></div>`;
 
   if(quote.sector || quote.sub_industry || quote.description){
@@ -2331,6 +2358,8 @@ function renderDeepDive(quote, sector, signals, news){
   html += `<div id="dd-fundamentals-section"></div>`;
 
   html += `<div id="dd-street-section"></div>`;    // v23: analyst targets + short interest
+
+  html += `<div id="dd-funds-section"></div>`;     // v25: well-known funds holding it (13F)
 
   html += `<div id="dd-insider-section"></div>`;
 
@@ -2489,6 +2518,28 @@ function switchChart(symbol){
 let currentPage = 'home';
 let pulseLoaded = false;
 
+// v25: every stock has a permanent address, /stock/KO (vercel.json serves index.html there). While a stock's analysis is
+// open the address bar, the tab title and the canonical link name that stock (sharing, bookmarks, search engines);
+// leaving the page restores the home address. Only on the real site (a file:// preview has no paths to rewrite).
+const _baseTitle = document.title;
+const _baseCanonical = 'https://swing-desk-tau.vercel.app/';
+function setStockAddress(ticker){
+  if(!/^https?:$/.test(location.protocol)) return;
+  const canon = document.querySelector('link[rel="canonical"]');
+  try {
+    if(ticker){
+      const path = '/stock/' + encodeURIComponent(ticker);
+      if(location.pathname !== path) history.replaceState(null, '', path);
+      document.title = `${ticker} — ${typeof lang !== 'undefined' && lang === 'en' ? 'stock analysis' : 'ניתוח מניה'} · Swing Desk`;
+      if(canon) canon.href = _baseCanonical.replace(/\/$/, '') + path;
+    } else if(location.pathname.startsWith('/stock/')){
+      history.replaceState(null, '', '/');
+      document.title = _baseTitle;
+      if(canon) canon.href = _baseCanonical;
+    }
+  } catch(e){ /* history API refused — the page itself still works */ }
+}
+
 function setPage(page){
   if(currentPage === page) return;
   currentPage = page;
@@ -2505,6 +2556,7 @@ function setPage(page){
   document.getElementById('page-deepdive').style.display = page==='deepdive' ? '' : 'none';
   document.getElementById('page-portfolio').style.display = page==='portfolio' ? '' : 'none';
   if(page === 'portfolio') ensurePortfolioLoaded();       // v24
+  if(page !== 'deepdive') setStockAddress(null);           // v25: leaving the stock page -> back to the plain address
   if(page === 'pulse') ensurePulseViewLoaded();
   if(page === 'backtest') ensureBtViewLoaded();
   if(page === 'deepdive' && _ddChartPending){ requestAnimationFrame(() => { if(typeof TradingView !== 'undefined') _ddMountChart(); else loadTV(_ddMountChart); }); }
@@ -2688,6 +2740,9 @@ function ensurePulseViewLoaded(){   // each view loads its data only the first t
     loadHeatmap(heatmapIndex);
     loadFearGreed();
     loadEarningsCalendar();
+    loadLeaders();          // v25
+    loadCorpCalendar();     // v25
+    loadFunds();            // v25
   }
 }
 
@@ -4460,6 +4515,7 @@ function openDrawer(i){
       <div style="font-weight:600;margin-bottom:6px;">${triggerText}</div>
       ${s.summary||s.ai_summary_he||(lang==='en'?'A technical breakout was detected on above-average volume.':'זוהתה פריצה טכנית עם נפח גבוה מהממוצע.')}
       ${renderPatternStatsBlurb(s.patternType)}
+      <div id="signal-context"></div>
     </div>
     <div id="fundamentals-section"></div>
     <div class="gauge-wrap">
@@ -4481,9 +4537,11 @@ function openDrawer(i){
     <button class="compare-btn" onclick="openCompare('${s.ticker}')">⇄ ${lang==='en'?'Compare with another stock':'השווה מול מניה אחרת'}</button>
     <button class="compare-btn" style="--c:var(--amber);" onclick='openRiskCalc(${JSON.stringify({entry:s.entry, stop:s.support, target:(Array.isArray(s.resistance)&&s.resistance.length?s.resistance[0]:null)})})'>${lang==='en'?'Position Size Calculator':'מחשבון גודל פוזיציה'}</button>
     <button class="compare-btn" onclick="closeDrawer(); setPage('deepdive'); document.getElementById('dd-ticker-input').value='${s.ticker}'; loadDeepDive();">${lang==='en'?'Full Stock Analysis':'ניתוח מלא למניה'}</button>
+    <button class="compare-btn" onclick='closeDrawer(); openTradeForm(${JSON.stringify({ticker:s.ticker, entry_price:s.entry||null, stop:s.support||null, target:(Array.isArray(s.resistance)&&s.resistance.length?s.resistance[0]:null), setup:s.patternType?patternLabel(s.patternType):null}).replace(/'/g,"&#39;")})'>${lang==='en'?'Log a trade':'רישום עסקה'}</button>
     <div id="compare-section"></div>
   `;
   document.getElementById("overlay").classList.add("open");
+  loadSignalContext(s);      // v25
   renderTradingViewChart(s.ticker);
   loadStockNews(s.ticker);
   loadFundamentals(s.ticker);
@@ -7238,6 +7296,223 @@ function renderYields(){
     </div>`;
 }
 
+// ---- v25: leading stocks (/api/leaders, written by every full scan) ----
+var leadersData = null, leadersSector = 'all', leadersShowAll = false;
+
+async function loadLeaders(){
+  try {
+    const r = await fetchWithTimeout(`${API_BASE}/api/leaders`, 25000);
+    leadersData = r.ok ? await r.json() : {available: false};
+  } catch(e){ leadersData = {available: false, failed: true}; }
+  renderLeaders();
+}
+
+function renderLeaders(){
+  const el = document.getElementById('leaders-wrap');
+  if(!el || typeof lang === 'undefined') return;
+  const en = lang==='en', d = leadersData;
+  if(!d){ el.innerHTML = `<div class="movers-empty">${UI[lang].loading}</div>`; return; }
+  if(!d.available){ el.innerHTML = `<div class="movers-empty">${en ? 'The leading-stocks table fills after the next full scan.' : 'טבלת המניות המובילות תתמלא אחרי הסריקה המלאה הבאה.'}</div>`; return; }
+  const sectors = d.sectors || [];
+  const chip = (key, label, on) => `<span class="rg-chip" style="cursor:pointer;${on ? 'color:var(--amber);border-color:var(--amber)' : ''}" onclick="leadersSector=${JSON.stringify(key).replace(/"/g, '&quot;')};leadersShowAll=false;renderLeaders()">${label}</span>`;
+  const top = sectors.slice(0, 3).map(s => escH(sectorLabel(s.sector))).join(', ');
+  const chips = `<div class="hx-regime" style="margin-bottom:8px">${chip('all', en ? 'All sectors' : 'כל הסקטורים', leadersSector === 'all')}${
+    sectors.map(s => chip(s.sector, `${escH(sectorLabel(s.sector))} <b>${s.avg_rs}</b>`, leadersSector === s.sector)).join('')}</div>`;
+  const list = (d.leaders || []).filter(x => leadersSector === 'all' || x.sector === leadersSector);
+  const shown = leadersShowAll ? list : list.slice(0, 15);
+  const pct = v => v == null ? '—' : `<span class="${_pfCls(v)}">${_pfPct(v)}</span>`;
+  const rows = shown.map((x, i) => {
+    const tk = escH(x.ticker);
+    return `<tr>
+      <td class="mono">${i + 1}</td>
+      <td><span class="pf-tk" onclick="openTickerAnalysis('${tk}')">${tk}</span><div class="pf-sub" style="max-width:170px;overflow:hidden;text-overflow:ellipsis">${escH(x.name || '')}</div></td>
+      <td>${escH(sectorLabel(x.sector || '')) || '—'}</td>
+      <td class="mono"><b>${x.rs}</b></td>
+      <td class="mono">${x.from_high != null ? _pfPct(x.from_high) : '—'}</td>
+      <td class="mono">${pct(x.chg_1m)}</td>
+      <td class="mono">${pct(x.chg_3m)}</td>
+    </tr>`;
+  }).join('');
+  const head = en ? ['#', 'Stock', 'Sector', 'RS', 'From 52w high', '1 month', '3 months'] : ['#', 'מניה', 'סקטור', 'RS', 'מהשיא השנתי', 'חודש', '3 חודשים'];
+  const upd = d.updated_at ? new Date(d.updated_at).toLocaleString(en ? 'en-US' : 'he-IL', {day:'numeric', month:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
+  el.innerHTML = `<div class="hx-card">
+      ${top ? `<div class="hx-note" style="margin:0 0 8px">${en ? 'Strongest sectors by average RS: ' : 'הסקטורים החזקים לפי RS ממוצע: '}<b style="color:var(--text)">${top}</b></div>` : ''}
+      ${chips}
+      ${list.length ? `<div style="overflow-x:auto;"><table class="bt-signals-table pf-table"><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`
+                    : `<div class="movers-empty">${en ? 'No stock in this sector meets the rule right now.' : 'אין כרגע מניה בסקטור הזה שעומדת בכלל.'}</div>`}
+      ${list.length > shown.length ? `<button class="scan-more-btn" onclick="leadersShowAll=true;renderLeaders()">${en ? `Show all ${list.length}` : `הצג את כל ${list.length}`}</button>` : ''}
+      <div class="hx-note">${en
+        ? `Rule: RS rating 80 or more (stronger than at least 80% of the ${d.universe} scanned stocks over the past year) and a Stage 2 uptrend, sorted by RS. The number next to a sector = its stocks' average RS. A ranking of past performance — not a recommendation, and a strong stock can fall. Updated ${upd}.`
+        : `הכלל: דירוג RS של 80 ומעלה (חזקה מלפחות 80% מ-${d.universe} המניות שנסרקו בשנה האחרונה) ומגמה עולה (שלב 2), ממוינות לפי RS. המספר ליד סקטור = ה-RS הממוצע של המניות בו. דירוג של ביצועי עבר — לא המלצה, ומניה חזקה יכולה גם לרדת. עודכן ${upd}.`}</div>
+    </div>`;
+}
+
+// ---- v25: dividends (ex-dates of the scanned stocks) + IPO calendar (/api/corporate-calendar) ----
+var corpData = null;
+
+async function loadCorpCalendar(){
+  try {
+    const r = await fetchWithTimeout(`${API_BASE}/api/corporate-calendar`, 30000);
+    corpData = r.ok ? await r.json() : {dividends: [], ipos: [], failed: true};
+  } catch(e){ corpData = {dividends: [], ipos: [], failed: true}; }
+  renderCorpCalendar();
+}
+
+function renderCorpCalendar(){
+  const el = document.getElementById('corp-cal-wrap');
+  if(!el || typeof lang === 'undefined') return;
+  const en = lang==='en', d = corpData;
+  if(!d){ el.innerHTML = `<div class="movers-empty">${UI[lang].loading}</div>`; return; }
+  const usd = v => v == null ? '—' : '$' + Number(v).toLocaleString('en-US', {maximumFractionDigits: 4});
+  const divRows = (d.dividends || []).slice(0, 25).map(x => {
+    const tk = escH(x.ticker);
+    return `<div class="hx-row" onclick="openTickerAnalysis('${tk}')"><span class="tk">${tk}</span>
+      <span class="who">${escH(x.name || '')}</span>
+      <span class="dt">${_ddmm(x.ex_date)}</span>
+      <span class="val" style="color:var(--text)">${usd(x.amount)}${x.yield_pct != null ? ` <span class="pf-sub">${x.yield_pct}%</span>` : ''}</span></div>`;
+  }).join('');
+  const ipoRows = (d.ipos || []).slice(0, 25).map(x => {
+    const up = x.status === 'upcoming';
+    return `<div class="hx-row" style="cursor:default"><span class="tk">${escH(x.ticker || '—')}</span>
+      <span class="who" title="${escH(x.exchange || '')}">${escH(x.name || '')}</span>
+      <span class="dt">${_ddmm(x.day)}</span>
+      <span class="val" style="color:${up ? 'var(--amber)' : 'var(--text)'}">${up ? (en ? 'expected ' : 'צפוי ') : ''}$${escH(x.price || '—')}</span></div>`;
+  }).join('');
+  el.innerHTML = `<div class="hx-card">
+      <div class="hx-head"><span class="hx-title">${en ? 'Ex-dividend dates · 30 days' : 'תאריכי אקס-דיבידנד · 30 יום'}</span></div>
+      ${divRows || `<div class="movers-empty">${en ? 'No ex-dividend dates in the next 30 days yet (filled by the full scan).' : 'אין עדיין תאריכי אקס ב-30 הימים הקרובים (מתמלא בסריקה המלאה).'}</div>`}
+      <div class="hx-note">${en
+        ? 'To get a dividend you must own the stock before the ex-date. Amount = the last declared payment; the % = annual dividend ÷ price. Source: Yahoo Finance.'
+        : 'כדי לקבל דיבידנד צריך להחזיק במניה לפני יום האקס. הסכום = התשלום האחרון שהוכרז; האחוז = הדיבידנד השנתי ÷ המחיר. מקור: Yahoo Finance.'}</div>
+    </div>
+    <div class="hx-card">
+      <div class="hx-head"><span class="hx-title">${en ? 'IPOs · recent and upcoming' : 'הנפקות · אחרונות וקרובות'}</span></div>
+      ${ipoRows || `<div class="movers-empty">${en ? 'The IPO calendar is not available right now.' : 'לוח ההנפקות לא זמין כרגע.'}</div>`}
+      <div class="hx-note">${en
+        ? 'Amber = expected pricing date and price range; the rest were priced at that price. SPACs are left out. Source: Nasdaq.'
+        : 'בענבר = תאריך התמחור הצפוי וטווח המחיר; השאר כבר תומחרו במחיר הזה. בלי חברות SPAC. מקור: Nasdaq.'}</div>
+    </div>`;
+}
+
+// ---- v25: big funds' 13F holdings (/api/funds) ----
+var fundsData = null, fundsPick = 'most';
+var FUND_CHANGE = {new: {he: 'חדשה', en: 'new', c: 'var(--green)'}, added: {he: 'הגדילה', en: 'added', c: 'var(--green)'},
+                   reduced: {he: 'הקטינה', en: 'reduced', c: 'var(--red)'}, same: {he: 'ללא שינוי', en: 'unchanged', c: 'var(--text-dim)'},
+                   sold: {he: 'מכרה הכל', en: 'sold out', c: 'var(--red)'}};
+
+async function loadFunds(){
+  try {
+    const r = await fetchWithTimeout(`${API_BASE}/api/funds`, 25000);
+    fundsData = r.ok ? await r.json() : {available: false};
+  } catch(e){ fundsData = {available: false}; }
+  renderFunds();
+}
+
+function fundChangeHtml(h){
+  const c = FUND_CHANGE[h.change];
+  if(!c) return '';
+  const en = lang==='en';
+  const pct = (h.change === 'added' || h.change === 'reduced') && h.shares_chg_pct != null ? ` <bdi dir="ltr">${_pfPct(h.shares_chg_pct)}</bdi>` : '';
+  return `<span style="color:${c.c};font-size:11.5px;white-space:nowrap">${en ? c.en : c.he}${pct}</span>`;
+}
+
+function renderFunds(){
+  const el = document.getElementById('funds-wrap');
+  if(!el || typeof lang === 'undefined') return;
+  const en = lang==='en', d = fundsData;
+  if(!d){ el.innerHTML = `<div class="movers-empty">${UI[lang].loading}</div>`; return; }
+  if(!d.available){ el.innerHTML = `<div class="movers-empty">${en ? 'Fund holdings are not available yet.' : 'נתוני הקרנות עוד לא זמינים.'}</div>`; return; }
+  const chip = (key, label) => `<span class="rg-chip" style="cursor:pointer;${fundsPick === key ? 'color:var(--amber);border-color:var(--amber)' : ''}" onclick="fundsPick='${key}';renderFunds()">${label}</span>`;
+  const chips = `<div class="hx-regime" style="margin-bottom:8px">${(d.most_bought || []).length ? chip('most', en ? 'Bought by several funds' : 'נקנו ע"י כמה קרנות') : ''}${
+    d.funds.map(f => chip(f.cik, escH(f.fund))).join('')}</div>`;
+  let body = '';
+  const fund = d.funds.find(f => f.cik === fundsPick);
+  if(fundsPick === 'most' && (d.most_bought || []).length){
+    body = d.most_bought.map(b => {
+      const tk = escH(b.ticker);
+      return `<div class="hx-row" onclick="openTickerAnalysis('${tk}')"><span class="tk">${tk}</span>
+        <span class="who" title="${escH(b.funds.join(', '))}">${escH(b.funds.join(', '))}</span>
+        <span class="val">${b.funds.length} ${en ? 'funds' : 'קרנות'}</span></div>`;
+    }).join('');
+    body += `<div class="hx-note">${en ? 'Stocks that two or more of the tracked funds opened or added to in their latest filing.' : 'מניות ששתיים או יותר מהקרנות פתחו בהן פוזיציה או הגדילו אותה בדיווח האחרון.'}</div>`;
+  } else {
+    const f = fund || d.funds[0];
+    if(!fund) fundsPick = f.cik;
+    const rows = f.holdings.map(h => {
+      const tk = h.ticker ? escH(h.ticker) : '';
+      return `<tr>
+        <td class="mono">${h.rank ?? '—'}</td>
+        <td>${tk ? `<span class="pf-tk" onclick="openTickerAnalysis('${tk}')">${tk}</span>` : '—'}<div class="pf-sub" style="max-width:180px;overflow:hidden;text-overflow:ellipsis">${escH(h.name || '')}</div></td>
+        <td class="mono">${h.change === 'sold' ? '—' : (h.pct != null ? h.pct.toFixed(1) + '%' : '—')}</td>
+        <td class="mono">${h.change === 'sold' ? '—' : fmtCompactMoney(h.value)}</td>
+        <td>${fundChangeHtml(h)}</td>
+      </tr>`;
+    }).join('');
+    const head = en ? ['#', 'Stock', 'Of portfolio', 'Value', 'Vs. previous quarter'] : ['#', 'מניה', 'מהתיק', 'שווי', 'מול הרבעון הקודם'];
+    body = `<div class="pf-sub" style="margin-bottom:6px">${escH(f.manager || '')} · ${en ? 'as of' : 'נכון ל-'} ${_ddmm(f.period)}.${f.period ? f.period.slice(2, 4) : ''} · ${en ? 'filed' : 'דווח'} ${_ddmm(f.filed)} · ${f.n_positions} ${en ? 'positions' : 'פוזיציות'} · ${fmtCompactMoney(f.total_value)}</div>
+      <div style="overflow-x:auto;"><table class="bt-signals-table pf-table"><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+  el.innerHTML = `<div class="hx-card">${chips}${body}
+    <div class="hx-note">${en
+      ? 'From the funds\' quarterly 13F filings to the SEC: US stock positions at the end of the quarter, filed up to 45 days later — so they can be months old and the fund may have changed them since. Options and short positions are not included. Top 40 positions by value. Facts, not a recommendation.'
+      : 'מתוך דיווחי 13F הרבעוניים של הקרנות ל-SEC: הפוזיציות במניות אמריקאיות בסוף הרבעון, שמדווחות עד 45 יום אחריו — ולכן הן יכולות להיות בנות כמה חודשים, והקרן אולי כבר שינתה אותן. לא כולל אופציות ושורט. 40 הפוזיציות הגדולות לפי שווי. מידע עובדתי, לא המלצה.'}</div></div>`;
+}
+
+async function loadDdFunds(ticker){
+  const el = document.getElementById('dd-funds-section');
+  if(!el) return;
+  let d = null;
+  try { const r = await fetchWithTimeout(`${API_BASE}/api/funds/stock/${encodeURIComponent(ticker)}`, 20000); if(r.ok) d = await r.json(); } catch(e){}
+  const box = document.getElementById('dd-funds-section');
+  if(!box || !d || !d.available || d.ticker !== canonTicker(ticker)) { if(box) box.innerHTML = ''; return; }
+  _ddFundsData = d;
+  renderDdFunds();
+}
+var _ddFundsData = null;
+function renderDdFunds(){
+  const el = document.getElementById('dd-funds-section'), d = _ddFundsData;
+  if(!el || !d || !_ddState || !_ddState.quote || d.ticker !== _ddState.quote.ticker){ if(el) el.innerHTML = ''; return; }
+  const en = lang==='en';
+  el.innerHTML = `<div class="dd-section-title">${en ? 'Well-known funds' : 'קרנות מוכרות'}</div>` + d.holders.map(h =>
+    `<div class="hx-row" style="cursor:default"><span class="who" style="color:var(--text)">${escH(h.fund)} <span class="pf-sub">${escH(h.manager || '')}</span></span>
+      <span class="dt">${h.change === 'sold' ? '' : (h.pct != null ? h.pct.toFixed(1) + (en ? '% of portfolio' : '% מהתיק') : '')}</span>
+      ${fundChangeHtml(h)}</div>`).join('') +
+    `<div class="fund-source-note">${en ? '13F filings to the SEC (end of quarter, filed up to 45 days later). Among each fund\'s top 40 positions.' : 'דיווחי 13F ל-SEC (סוף רבעון, מדווח עד 45 יום אחריו). מתוך 40 הפוזיציות הגדולות של כל קרן.'}</div>`;
+}
+
+// ---- v25: "what happened before" for a scanner signal (/api/signal-context) ----
+async function loadSignalContext(s){
+  const el = document.getElementById('signal-context');
+  if(!el || !s || !s.patternType) return;
+  let d = null;
+  try {
+    const r = await fetchWithTimeout(`${API_BASE}/api/signal-context?ticker=${encodeURIComponent(s.ticker)}&pattern=${encodeURIComponent(s.patternType)}`, 20000);
+    if(r.ok) d = await r.json();
+  } catch(e){}
+  const box = document.getElementById('signal-context');
+  if(!box || !d || box.closest('#drawer') === null) return;
+  const en = lang==='en';
+  const cell = (label, x, isTicker) => {
+    if(!x || !x.n) return `<div class="hx-stat"><div class="k">${label}</div><div class="v" style="font-size:13px">—</div><div class="s">${en ? 'no past cases' : 'אין מקרים קודמים'}</div></div>`;
+    if(!x.enough && !isTicker) return `<div class="hx-stat"><div class="k">${label}</div><div class="v" style="font-size:13px">${x.n} ${en ? 'cases' : 'מקרים'}</div><div class="s">${en ? 'too few to judge' : 'מעט מדי כדי להסיק'}</div></div>`;
+    const main = isTicker && !x.enough ? `${Math.round(x.n * x.win_rate / 100)} ${en ? 'of' : 'מתוך'} ${x.n}` : `${x.win_rate}%`;
+    const sub = `${en ? 'avg' : 'ממוצע'} <bdi dir="ltr">${_pfPct(x.avg)}</bdi>` + (x.spy_avg != null ? ` · S&P <bdi dir="ltr">${_pfPct(x.spy_avg)}</bdi>` : '');
+    return `<div class="hx-stat"><div class="k">${label}</div><div class="v">${main}</div><div class="s">${sub}</div></div>`;
+  };
+  box.innerHTML = `<div style="margin-top:10px">
+      <div style="font-size:12px;font-weight:700;margin-bottom:6px">${en ? 'What happened before — 10 trading days later' : 'מה קרה בעבר — אחרי 10 ימי מסחר'}</div>
+      <div class="rg-grid" style="margin-top:0">
+        ${cell(en ? 'This pattern, all stocks' : 'התבנית, בכל הסורק', d.pattern_all)}
+        ${cell(en ? 'When the S&P 500 was in an uptrend' : 'כשה-S&P 500 היה במגמה עולה', d.pattern_uptrend)}
+        ${cell(en ? 'On stocks with RS 80+' : 'במניות עם RS מעל 80', d.pattern_rs80)}
+        ${cell(en ? `Earlier ${escH(d.ticker)} signals` : `איתותים קודמים ב-${escH(d.ticker)}`, d.ticker_all, true)}
+      </div>
+      <div class="hx-note">${en
+        ? 'The big number = the share of past signals that were higher 10 trading days later; "S&P" = the index over the same days. Each stock and pattern is counted once per 10 days. Past results of our own signals — they do not promise the future.'
+        : 'המספר הגדול = אחוז האיתותים הקודמים שהיו גבוהים יותר אחרי 10 ימי מסחר; "S&P" = המדד באותם ימים. כל מניה ותבנית נספרות פעם אחת ל-10 ימים. תוצאות עבר של האיתותים שלנו — לא מבטיחות את העתיד.'}</div>
+    </div>`;
+}
+
 // Role of an insider in plain words (SEC gives the officer title in English, free text)
 var INSIDER_TITLES_HE = [
   [/chief executive|\bceo\b/i, 'מנכ"ל'], [/chief financial|\bcfo\b/i, 'סמנכ"ל כספים'], [/chief operating|\bcoo\b/i, 'סמנכ"ל תפעול'],
@@ -7291,6 +7566,22 @@ function openTickerAnalysis(tk){
   inp.value = tk;
   setPage('deepdive');
   loadDeepDive();
+}
+
+// v25: the AI summary written once a day from the facts on this page (ai_stock_notes.py). Clearly labelled as AI.
+function renderAiNote(d){
+  const el = document.getElementById('dd-ai-note');
+  if(!el) return;
+  if(!d || !d.available){ el.innerHTML = ''; return; }
+  const en = lang==='en';
+  const when = d.created_at ? new Date(d.created_at).toLocaleString(en ? 'en-US' : 'he-IL', {day:'numeric', month:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
+  el.innerHTML = `<div class="ai-box" style="margin-top:12px">
+      <div class="label">${en ? 'AI summary' : 'סיכום AI'}</div>
+      <div style="font-size:13.5px;line-height:1.7">${escH(en ? d.en : d.he)}</div>
+      <div class="fund-source-note" style="margin-top:6px">${en
+        ? `Written automatically by AI from the data on this page (${when}). It can be wrong — check the numbers below. A description, not a recommendation.`
+        : `נכתב אוטומטית על ידי AI מהנתונים שבעמוד הזה (${when}). עלול לטעות — כדאי לבדוק מול הנתונים למטה. תיאור, לא המלצה.`}</div>
+    </div>`;
 }
 
 // v23: analysts' 12-month price targets + short interest (/api/street — Yahoo data the scanner saves twice a day).
@@ -7632,6 +7923,12 @@ function applyLang(){
   document.getElementById('breadth-title').textContent = lang==='en' ? 'Market breadth' : 'רוחב השוק';
   document.getElementById('regime-title').textContent = lang==='en' ? 'Market state' : 'מצב השוק';            // v23
   document.getElementById('yields-title').textContent = lang==='en' ? 'Treasury yield curve' : 'עקום התשואות';
+  document.getElementById('leaders-title').textContent = lang==='en' ? 'Leading stocks' : 'מניות מובילות';    // v25
+  document.getElementById('corp-cal-title').textContent = lang==='en' ? 'Dividends and IPOs' : 'דיבידנדים והנפקות';
+  document.getElementById('funds-title').textContent = lang==='en' ? 'What the big funds hold' : 'מה מחזיקות הקרנות הגדולות';
+  renderLeaders();
+  renderCorpCalendar();
+  renderFunds();
   renderV22();
   loadV22Data();          // self-throttled: a real request at most every 10 minutes
   const cb = document.getElementById('consent-banner');
@@ -7993,7 +8290,7 @@ async function renderAlertsPanel(){
 // ---- v19: share a stock's analysis (phone: the system share sheet; computer: copy the link) ----
 async function shareStock(ticker){
   const en = lang==='en';
-  const url = `${location.origin}/?ticker=${encodeURIComponent(ticker)}`;
+  const url = `${location.origin}/stock/${encodeURIComponent(ticker)}`;     // v25: the stock's permanent address
   const text = en ? `${ticker} — technical analysis on Swing Desk` : `${ticker} — ניתוח טכני ב-Swing Desk`;
   try {
     if(navigator.share){ await navigator.share({title: `${ticker} · Swing Desk`, text, url}); return; }
@@ -8009,7 +8306,10 @@ if('serviceWorker' in navigator){
 // ---- v19: links into the site — /?ticker=KO opens that stock's analysis, /?page=pulse a page (app shortcuts, alerts, sharing) ----
 (function(){
   const q = new URLSearchParams(location.search);
-  const tk = canonTicker(q.get('ticker') || '');
+  const m = location.pathname.match(/^\/stock\/([^\/?#]{1,16})\/?$/);       // v25: /stock/KO (vercel.json rewrite)
+  let fromPath = '';
+  try { fromPath = m ? decodeURIComponent(m[1]) : ''; } catch(e){}
+  const tk = canonTicker(fromPath || q.get('ticker') || '');
   const page = q.get('page');
   if(/^[A-Z0-9.\-^=]{1,12}$/.test(tk)){          // a link from outside: ticker characters only
     document.getElementById('dd-ticker-input').value = tk;

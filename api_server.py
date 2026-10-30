@@ -5807,6 +5807,252 @@ def get_street(ticker: str):
     return out
 
 
+_corp_cache = {"ts": 0.0, "data": None}
+_ipo_live_cache = {"ts": 0.0, "rows": None}
+
+
+@app.get("/api/corporate-calendar")
+def get_corporate_calendar():
+    """v25: upcoming ex-dividend dates of the scanned stocks (Yahoo data the scanner stores) and the IPO calendar
+    (ipo_calendar, filled by market_breadth.py; if that table is still empty, Nasdaq's calendar is read here once
+    every 6 hours). Facts only."""
+    now = time.time()
+    if _corp_cache["data"] is not None and now - _corp_cache["ts"] < 600:
+        return _corp_cache["data"]
+    divs, ipos = [], []
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        if _table_exists(cur, "stock_estimates"):
+            cur.execute("""SELECT column_name FROM information_schema.columns
+                           WHERE table_name = 'stock_estimates' AND column_name = 'ex_div_date'""")
+            if cur.fetchone():
+                leaders = _table_exists(cur, "stock_leaders")
+                cur.execute(f"""SELECT e.ticker, e.ex_div_date, e.div_rate, e.last_div, e.market_cap
+                                       {', l.name, l.close' if leaders else ', NULL AS name, NULL AS close'}
+                                FROM stock_estimates e {'LEFT JOIN stock_leaders l ON l.ticker = e.ticker' if leaders else ''}
+                                WHERE e.ex_div_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 30
+                                  AND e.updated_at > NOW() - INTERVAL '10 days'
+                                ORDER BY e.ex_div_date, e.market_cap DESC NULLS LAST LIMIT 120""")
+                for r in cur.fetchall():
+                    yld = round(100 * r["div_rate"] / r["close"], 2) if r["div_rate"] and r["close"] else None
+                    divs.append({"ticker": r["ticker"], "name": r["name"], "ex_date": r["ex_div_date"].isoformat(),
+                                 "amount": round(float(r["last_div"]), 4) if r["last_div"] else None,
+                                 "annual": round(float(r["div_rate"]), 4) if r["div_rate"] else None,
+                                 "yield_pct": yld if yld is not None and 0 < yld < 25 else None})
+        if _table_exists(cur, "ipo_calendar"):
+            cur.execute("""SELECT ticker, name, exchange, price, shares, value, status, day FROM ipo_calendar
+                           WHERE day BETWEEN CURRENT_DATE - 21 AND CURRENT_DATE + 30 ORDER BY day DESC""")
+            ipos = [dict(r, day=r["day"].isoformat()) for r in cur.fetchall()]
+    if not ipos:
+        if _ipo_live_cache["rows"] is None or now - _ipo_live_cache["ts"] > 6 * 3600:
+            try:
+                import market_breadth                     # same parser as the Actions job
+                _ipo_live_cache["rows"] = [dict(x, day=x["day"].isoformat()) for x in market_breadth.fetch_ipos()]
+            except Exception as e:  # noqa: BLE001
+                print(f"[warn] ipo calendar live fetch failed: {type(e).__name__}: {e}")
+                _ipo_live_cache["rows"] = []
+            _ipo_live_cache["ts"] = now
+        ipos = sorted((x for x in _ipo_live_cache["rows"]), key=lambda x: x["day"], reverse=True)
+    data = {"dividends": divs, "ipos": ipos}
+    _corp_cache.update(ts=now, data=data)
+    return data
+
+
+_funds_cache = {"ts": 0.0, "data": None}
+
+
+@app.get("/api/funds")
+def get_funds():
+    """v25: well-known funds' top holdings from their latest 13F (fund_holdings.py), with the change vs the quarter
+    before, and the stocks most funds added to (new + added) this round. Cached 30 minutes."""
+    now = time.time()
+    if _funds_cache["data"] is not None and now - _funds_cache["ts"] < 1800:
+        return _funds_cache["data"]
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        if not _table_exists(cur, "fund_filings") or not _table_exists(cur, "fund_holdings"):
+            return {"available": False}
+        cur.execute("SELECT cik, fund, manager, period, filed, total_value, n_positions FROM fund_filings ORDER BY total_value DESC")
+        funds = cur.fetchall()
+        cur.execute("""SELECT cik, ticker, name, rank, shares, value, pct, prev_shares, change FROM fund_holdings
+                       ORDER BY cik, rank NULLS LAST""")
+        rows = cur.fetchall()
+    if not funds:
+        return {"available": False}
+    by_fund: dict = {}
+    buys: dict = {}
+    for r in rows:
+        by_fund.setdefault(r["cik"], []).append({
+            "ticker": r["ticker"], "name": r["name"], "rank": r["rank"], "value": r["value"], "pct": r["pct"],
+            "change": r["change"],
+            "shares_chg_pct": round(100 * (r["shares"] / r["prev_shares"] - 1), 1) if r["prev_shares"] and r["shares"] else None})
+        if r["change"] in ("new", "added") and r["ticker"]:
+            buys.setdefault(r["ticker"], {"ticker": r["ticker"], "name": r["name"], "funds": []})["funds"].append(r["cik"])
+    names = {f["cik"]: f["fund"] for f in funds}
+    most = sorted(buys.values(), key=lambda b: -len(b["funds"]))[:15]
+    for b in most:
+        b["funds"] = [names.get(c, c) for c in b["funds"]]
+    data = {"available": True,
+            "funds": [{"cik": f["cik"], "fund": f["fund"], "manager": f["manager"],
+                       "period": f["period"].isoformat() if f["period"] else None,
+                       "filed": f["filed"].isoformat() if f["filed"] else None,
+                       "total_value": f["total_value"], "n_positions": f["n_positions"],
+                       "holdings": by_fund.get(f["cik"], [])} for f in funds],
+            "most_bought": [b for b in most if len(b["funds"]) >= 2]}
+    _funds_cache.update(ts=now, data=data)
+    return data
+
+
+@app.get("/api/funds/stock/{ticker}")
+def get_funds_for_stock(ticker: str):
+    """v25: which of the tracked funds hold this stock among their top positions (or just sold it)."""
+    ticker = _canon_ticker(ticker)
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        if not _table_exists(cur, "fund_holdings"):
+            return {"ticker": ticker, "available": False}
+        cur.execute("""SELECT f.fund, f.manager, f.period, h.rank, h.value, h.pct, h.change, h.shares, h.prev_shares
+                       FROM fund_holdings h JOIN fund_filings f ON f.cik = h.cik
+                       WHERE h.ticker = %s ORDER BY h.value DESC""", (ticker,))
+        rows = cur.fetchall()
+    if not rows:
+        return {"ticker": ticker, "available": False}
+    return {"ticker": ticker, "available": True, "holders": [
+        {"fund": r["fund"], "manager": r["manager"], "period": r["period"].isoformat() if r["period"] else None,
+         "rank": r["rank"], "value": r["value"], "pct": r["pct"], "change": r["change"],
+         "shares_chg_pct": round(100 * (r["shares"] / r["prev_shares"] - 1), 1) if r["prev_shares"] and r["shares"] else None}
+        for r in rows]}
+
+
+@app.get("/api/ai-note/{ticker}")
+def get_ai_note(ticker: str):
+    """v25: the AI summary of a stock written by ai_stock_notes.py (GitHub Actions, once a day) — at most 4 days old.
+    Stocks without one -> available False (the stock page hides the section)."""
+    ticker = _canon_ticker(ticker)
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        if not _table_exists(cur, "ai_stock_notes"):
+            return {"ticker": ticker, "available": False}
+        cur.execute("""SELECT note_he, note_en, created_at FROM ai_stock_notes
+                       WHERE ticker = %s AND created_at > NOW() - INTERVAL '4 days'""", (ticker,))
+        r = cur.fetchone()
+    if not r:
+        return {"ticker": ticker, "available": False}
+    return {"ticker": ticker, "available": True, "he": r["note_he"], "en": r["note_en"],
+            "created_at": r["created_at"].isoformat()}
+
+
+# ------------------------------------------------------------------
+# v25: LEADING STOCKS (stock_leaders, written by every full scan) + "WHAT HAPPENED BEFORE" for a signal.
+# Both describe facts (rankings, past results of our own signals) — no recommendation.
+# ------------------------------------------------------------------
+_leaders_cache = {"ts": 0.0, "data": None}
+LEADERS_MIN_RS = 80
+
+
+@app.get("/api/leaders")
+def get_leaders():
+    """Stocks with RS >= 80 in a Stage 2 uptrend (strongest first), plus per-sector strength over the whole scanned
+    universe: how many stocks, average RS, share in Stage 2. Rows older than 3 days are ignored."""
+    now = time.time()
+    if _leaders_cache["data"] is not None and now - _leaders_cache["ts"] < 600:
+        return _leaders_cache["data"]
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        if not _table_exists(cur, "stock_leaders"):
+            return {"available": False}
+        cur.execute("""SELECT ticker, name, sector, close, pct_from_high, chg_1m, chg_3m, stage, rs_rating, market_cap,
+                              updated_at FROM stock_leaders WHERE updated_at > NOW() - INTERVAL '3 days'""")
+        rows = cur.fetchall()
+    if not rows:
+        return {"available": False}
+    r1 = lambda v: round(float(v), 1) if v is not None else None
+    sectors: dict = {}
+    for r in rows:
+        sec = _norm_sector(r["sector"])
+        if not sec:
+            continue
+        g = sectors.setdefault(sec, {"sector": sec, "n": 0, "rs_sum": 0, "stage2": 0})
+        g["n"] += 1
+        g["rs_sum"] += r["rs_rating"] or 0
+        g["stage2"] += 1 if (r["stage"] or "").startswith("Stage 2") else 0
+    sector_list = [{"sector": g["sector"], "n": g["n"], "avg_rs": round(g["rs_sum"] / g["n"]),
+                    "pct_stage2": round(100 * g["stage2"] / g["n"])} for g in sectors.values() if g["n"] >= 3]
+    sector_list.sort(key=lambda g: g["avg_rs"], reverse=True)
+    leaders = [{"ticker": r["ticker"], "name": r["name"], "sector": _norm_sector(r["sector"]), "rs": r["rs_rating"],
+                "close": r1(r["close"]), "from_high": r1(r["pct_from_high"]), "chg_1m": r1(r["chg_1m"]),
+                "chg_3m": r1(r["chg_3m"]), "market_cap": r["market_cap"]}
+               for r in rows if (r["rs_rating"] or 0) >= LEADERS_MIN_RS and (r["stage"] or "").startswith("Stage 2")]
+    leaders.sort(key=lambda x: (-x["rs"], x["from_high"] if x["from_high"] is not None else -999))
+    data = {"available": True, "updated_at": max(r["updated_at"] for r in rows).isoformat(), "universe": len(rows),
+            "leaders": leaders[:60], "n_leaders": len(leaders), "sectors": sector_list}
+    _leaders_cache.update(ts=now, data=data)
+    return data
+
+
+_sigctx_cache = {"ts": 0.0, "data": None}
+SIGCTX_MIN_N = 10            # fewer past cases than this -> the site says "too few to judge" instead of a percentage
+
+
+def _sigctx_data():
+    """All independent past signals with a 10-day result (same rules as /api/pattern-stats), each tagged with the
+    S&P 500 trend on its day and the SPY 10-trading-day return from that day (market_regime). Cached 10 minutes."""
+    now = time.time()
+    if _sigctx_cache["data"] is not None and now - _sigctx_cache["ts"] < 600:
+        return _sigctx_cache["data"]
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute("""SELECT ticker, timestamp, pattern_type, rs_rating, forward_return_10d AS fwd_return
+                       FROM scanned_stocks WHERE pattern_type IS NOT NULL AND forward_return_10d IS NOT NULL
+                       ORDER BY timestamp ASC""")
+        raw = cur.fetchall()
+        regime = []
+        if _table_exists(cur, "market_regime"):
+            cur.execute("SELECT day, spy_close, spy_sma50, spy_sma200 FROM market_regime ORDER BY day")
+            regime = cur.fetchall()
+    days = [r["day"] for r in regime]
+    closes = [r["spy_close"] for r in regime]
+    info_by_day = {}
+    for i, r in enumerate(regime):
+        fwd = (closes[i + 10] / closes[i] - 1) * 100 if i + 10 < len(regime) and closes[i] and closes[i + 10] else None
+        info_by_day[r["day"]] = (_trend_label(r["spy_close"], r["spy_sma50"], r["spy_sma200"]), fwd)
+    import bisect
+    sigs = []
+    for s in _independent_signals(raw, 10):
+        d = s["timestamp"].date()
+        i = bisect.bisect_right(days, d) - 1          # that day, or the last trading day before it
+        trend, spy_fwd = info_by_day.get(days[i], (None, None)) if i >= 0 and (d - days[i]).days <= 4 else (None, None)
+        sigs.append({"ticker": s["ticker"], "pattern": s["pattern_type"], "rs": s["rs_rating"], "ret": s["fwd_return"],
+                     "trend": trend, "spy": spy_fwd})
+    _sigctx_cache.update(ts=now, data=sigs)
+    return sigs
+
+
+def _sigctx_slice(sigs):
+    n = len(sigs)
+    if not n:
+        return {"n": 0}
+    rets = [s["ret"] for s in sigs]
+    spy = [s["spy"] for s in sigs if s["spy"] is not None]
+    return {"n": n, "enough": n >= SIGCTX_MIN_N, "win_rate": round(100 * sum(1 for x in rets if x > 0) / n),
+            "avg": round(sum(rets) / n, 2),
+            "spy_avg": round(sum(spy) / len(spy), 2) if len(spy) >= max(3, n // 2) else None}
+
+
+@app.get("/api/signal-context")
+def get_signal_context(ticker: str = Query(..., max_length=12), pattern: str = Query(..., max_length=60)):
+    """What happened after earlier signals like this one, 10 trading days later: the same pattern across the whole
+    scanner, the same pattern while the S&P 500 was in an uptrend, the same pattern on stocks with RS >= 80, and this
+    stock's own earlier signals (any pattern). Each slice: count, share that went up, average change, and the S&P 500
+    over the same days."""
+    ticker = _canon_ticker(ticker)
+    sigs = _sigctx_data()
+    same = [s for s in sigs if s["pattern"] == pattern]
+    mine = [s for s in sigs if s["ticker"] == ticker]
+    return {
+        "ticker": ticker, "pattern": pattern, "horizon_days": 10,
+        "pattern_all": _sigctx_slice(same),
+        "pattern_uptrend": _sigctx_slice([s for s in same if s["trend"] == "up"]),
+        "pattern_rs80": _sigctx_slice([s for s in same if (s["rs"] or 0) >= 80]),
+        "ticker_all": _sigctx_slice(mine),
+        "ticker_same_pattern": sum(1 for s in mine if s["pattern"] == pattern),
+    }
+
+
 @app.get("/api/insider-buys")
 def get_insider_buys(days: int = Query(default=30, ge=1, le=90), min_value: float = Query(default=100000, ge=0)):
     """Open-market insider PURCHASES filed in the last `days`, one row per stock (all insiders together),
