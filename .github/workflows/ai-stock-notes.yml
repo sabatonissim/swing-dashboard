@@ -1,0 +1,27 @@
+name: AI Stock Notes
+
+# v25: a short AI summary per stock (scanner signals + watchlists + open trades), written from facts already in the
+# database -> Postgres (ai_stock_notes). Started by the built-in scheduler on Render (scheduler.py) at 17:30 ET on
+# weekdays; can also be run by hand. Same AI settings as the daily digest.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  notes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: python -u ai_stock_notes.py
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODELS: ${{ vars.LLM_MODELS }}

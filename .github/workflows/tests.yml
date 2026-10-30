@@ -1,0 +1,23 @@
+name: Tests
+
+# v25: automatic checks on every upload to main (and by hand). A red X here = something in the uploaded Python would
+# break the server or the scanner — see tests/test_core.py for what is checked. Needs no secrets.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest -q tests
