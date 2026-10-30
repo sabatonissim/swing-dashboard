@@ -367,6 +367,21 @@ def init_db():
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sector TEXT;")   # v19 sector filter
     push_alerts.ensure_tables(cur)                                                     # v19 alerts
     fundlib.ensure_table(cur)                                                          # v21 stored fundamentals
+    # v24: the person's own trades — open ones are "my portfolio", closed ones the trade journal
+    cur.execute("""CREATE TABLE IF NOT EXISTS trades (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        ticker TEXT NOT NULL,
+        side TEXT NOT NULL DEFAULT 'long' CHECK (side IN ('long', 'short')),
+        opened_on DATE NOT NULL,
+        entry_price REAL NOT NULL,
+        shares REAL NOT NULL,
+        stop REAL, target REAL,
+        setup TEXT, note TEXT,
+        closed_on DATE, exit_price REAL,
+        fees REAL DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())""")
+    cur.execute("CREATE INDEX IF NOT EXISTS trades_user ON trades (user_id)")
     conn.commit()
     cur.close()
     conn.close()
@@ -494,7 +509,10 @@ def auth_export(user_id: int = Depends(current_user_id)):
         alerts = [dict(r) for r in cur.fetchall()]
         cur.execute("SELECT created_at, lang, watch_signals FROM push_subscriptions WHERE user_id = %s", (user_id,))
         devices = [dict(r) for r in cur.fetchall()]
-    return {"user": dict(u), "watchlist": wl, "price_alerts": alerts, "notification_devices": devices,
+        cur.execute("""SELECT ticker, side, opened_on, entry_price, shares, stop, target, setup, note, closed_on,
+                              exit_price, fees, created_at FROM trades WHERE user_id = %s ORDER BY opened_on, id""", (user_id,))
+        trades = [dict(r) for r in cur.fetchall()]                                       # v24
+    return {"user": dict(u), "watchlist": wl, "price_alerts": alerts, "notification_devices": devices, "trades": trades,
             "note": "Anonymous usage statistics are currently not linked to your account and are not included."}
 
 
@@ -503,7 +521,7 @@ def auth_delete_me(user_id: int = Depends(current_user_id)):
     """Permanently delete the account and its personal data (privacy: right to erasure)."""
     with db_cursor() as (conn, cur):
         cur.execute("DELETE FROM watchlist WHERE user_id = %s", (user_id,))
-        for table in ("push_subscriptions", "price_alerts", "push_log"):     # v19 alerts (fixed names, not input)
+        for table in ("push_subscriptions", "price_alerts", "push_log", "trades"):   # v19 alerts, v24 trades (fixed names)
             cur.execute(f"DELETE FROM {table} WHERE user_id = %s", (user_id,))
         cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
         conn.commit()
@@ -4163,6 +4181,150 @@ def remove_from_watchlist(ticker: str, user_id: int = Depends(current_user_id)):
     cur.close()
     conn.close()
     return {"ticker": ticker, "removed": True}
+
+
+# ------------------------------------------------------------------
+# v24: MY PORTFOLIO + TRADE JOURNAL — the signed-in person's own trades. One row per trade: open (closed_on NULL) =
+# a position in the portfolio, closed = a journal entry. The statistics (win rate, R, profit factor...) are computed
+# in the browser from these rows; the server only stores them and gives current prices for the open tickers.
+# ------------------------------------------------------------------
+MAX_TRADES_PER_USER = 2000
+_TICKER_RE = r"[A-Z0-9][A-Z0-9.\-^=]{0,10}"
+
+
+class TradeIn(BaseModel):
+    ticker: str = Field(max_length=12)
+    side: str = Field(default="long", pattern="^(long|short)$")
+    opened_on: date
+    entry_price: float = Field(gt=0, lt=10_000_000)
+    shares: float = Field(gt=0, lt=1_000_000_000)
+    stop: Optional[float] = Field(default=None, gt=0, lt=10_000_000)
+    target: Optional[float] = Field(default=None, gt=0, lt=10_000_000)
+    setup: Optional[str] = Field(default=None, max_length=60)
+    note: Optional[str] = Field(default=None, max_length=2000)
+    closed_on: Optional[date] = None
+    exit_price: Optional[float] = Field(default=None, gt=0, lt=10_000_000)
+    fees: float = Field(default=0, ge=0, lt=10_000_000)
+
+
+def _trade_row(r) -> dict:
+    d = dict(r)
+    for k in ("opened_on", "closed_on"):
+        d[k] = d[k].isoformat() if d.get(k) else None
+    for k in ("created_at", "updated_at"):
+        d.pop(k, None)
+    return d
+
+
+def _trade_values(body: TradeIn):
+    ticker = _canon_ticker(body.ticker)
+    if not ticker or not re.fullmatch(_TICKER_RE, ticker):
+        raise HTTPException(status_code=400, detail="invalid ticker")
+    if (body.closed_on is None) != (body.exit_price is None):
+        raise HTTPException(status_code=400, detail="a closed trade needs both an exit date and an exit price")
+    if body.closed_on and body.closed_on < body.opened_on:
+        raise HTTPException(status_code=400, detail="the exit date is before the entry date")
+    clean = lambda s: (s or "").strip() or None
+    return (ticker, body.side, body.opened_on, body.entry_price, body.shares, body.stop, body.target,
+            clean(body.setup), clean(body.note), body.closed_on, body.exit_price, body.fees)
+
+
+@app.get("/api/trades")
+def list_trades(user_id: int = Depends(current_user_id)):
+    """All of the user's trades + the next earnings date of every open ticker (from earnings_calendar)."""
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute("""SELECT id, ticker, side, opened_on, entry_price, shares, stop, target, setup, note,
+                              closed_on, exit_price, fees FROM trades WHERE user_id = %s
+                       ORDER BY COALESCE(closed_on, opened_on) DESC, id DESC""", (user_id,))
+        trades = [_trade_row(r) for r in cur.fetchall()]
+        open_tk = sorted({t["ticker"] for t in trades if not t["closed_on"]})
+        earnings = {}
+        if open_tk and _table_exists(cur, "earnings_calendar"):
+            cur.execute("""SELECT DISTINCT ON (ticker) ticker, report_date, session FROM earnings_calendar
+                           WHERE ticker = ANY(%s) AND report_date >= CURRENT_DATE ORDER BY ticker, report_date""",
+                        (open_tk,))
+            earnings = {r["ticker"]: {"date": r["report_date"].isoformat(), "session": r["session"]} for r in cur.fetchall()}
+    return {"trades": trades, "earnings": earnings}
+
+
+@app.post("/api/trades")
+def add_trade(body: TradeIn, user_id: int = Depends(current_user_id)):
+    vals = _trade_values(body)
+    with db_cursor() as (conn, cur):
+        cur.execute("SELECT COUNT(*) FROM trades WHERE user_id = %s", (user_id,))
+        if cur.fetchone()[0] >= MAX_TRADES_PER_USER:
+            raise HTTPException(status_code=400, detail=f"up to {MAX_TRADES_PER_USER} trades")
+        cur.execute("""INSERT INTO trades (user_id, ticker, side, opened_on, entry_price, shares, stop, target, setup,
+                                           note, closed_on, exit_price, fees)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""", (user_id, *vals))
+        new_id = cur.fetchone()[0]
+        conn.commit()
+    return {"id": new_id}
+
+
+@app.put("/api/trades/{trade_id}")
+def update_trade(trade_id: int, body: TradeIn, user_id: int = Depends(current_user_id)):
+    """Replaces the whole trade (edit, close it, or re-open it by sending no exit)."""
+    vals = _trade_values(body)
+    with db_cursor() as (conn, cur):
+        cur.execute("""UPDATE trades SET ticker=%s, side=%s, opened_on=%s, entry_price=%s, shares=%s, stop=%s, target=%s,
+                              setup=%s, note=%s, closed_on=%s, exit_price=%s, fees=%s, updated_at=NOW()
+                       WHERE id = %s AND user_id = %s""", (*vals, trade_id, user_id))
+        found = cur.rowcount == 1
+        conn.commit()
+    if not found:
+        raise HTTPException(status_code=404, detail="trade not found")
+    return {"id": trade_id}
+
+
+@app.delete("/api/trades/{trade_id}")
+def delete_trade(trade_id: int, user_id: int = Depends(current_user_id)):
+    with db_cursor() as (conn, cur):
+        cur.execute("DELETE FROM trades WHERE id = %s AND user_id = %s", (trade_id, user_id))
+        conn.commit()
+    return {"deleted": True}
+
+
+_QUOTE_TTL_SEC = 120
+_quote_cache: dict = {}            # ticker -> (timestamp, {price, prev_close, day})
+
+
+@app.get("/api/quotes")
+def get_quotes(tickers: str = Query(..., min_length=1, max_length=800)):
+    """Last price + previous close for up to 60 tickers, one batched daily-history download (works from Render,
+    unlike .info). As-traded prices (auto_adjust=False), like the rest of the site. Cached 2 minutes per ticker."""
+    tks = []
+    for raw in tickers.split(","):
+        t = _canon_ticker(raw)
+        if t and re.fullmatch(_TICKER_RE, t) and t not in tks:
+            tks.append(t)
+    tks = tks[:60]
+    now = time.time()
+    out = {t: _quote_cache[t][1] for t in tks if t in _quote_cache and now - _quote_cache[t][0] < _QUOTE_TTL_SEC}
+    missing = [t for t in tks if t not in out]
+    if missing:
+        try:
+            df = yf.download(missing, period="7d", interval="1d", group_by="column", auto_adjust=False,
+                             threads=True, progress=False)
+            close = df["Close"] if df is not None and not df.empty else None
+            if close is not None and isinstance(close, pd.Series):   # a single ticker can come back as one column
+                close = close.to_frame(missing[0])
+            for t in missing:
+                if close is None or t not in close.columns:
+                    continue
+                s = pd.to_numeric(close[t], errors="coerce").dropna()
+                if s.empty:
+                    continue
+                q = {"price": round(float(s.iloc[-1]), 4),
+                     "prev_close": round(float(s.iloc[-2]), 4) if len(s) >= 2 else None,
+                     "day": pd.Timestamp(s.index[-1]).strftime("%Y-%m-%d")}
+                _quote_cache[t] = (now, q)
+                out[t] = q
+        except Exception as e:  # noqa: BLE001
+            print(f"[warn] /api/quotes download failed for {len(missing)} ticker(s): {type(e).__name__}: {e}")
+        if len(_quote_cache) > 2000:
+            _quote_cache.clear()
+    return {"quotes": out}
 
 
 # ------------------------------------------------------------------

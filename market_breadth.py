@@ -145,17 +145,25 @@ def regime_rows() -> pd.DataFrame:
     if df is None or df.empty:
         raise RuntimeError("no SPY/VIX data")
     close = df["Close"]
-    idx = pd.to_datetime(close.index)
-    close.index = (idx.tz_localize(None) if idx.tz is not None else idx).normalize()
-    close = close[~close.index.duplicated(keep="last")].sort_index().apply(pd.to_numeric, errors="coerce")
-    spy = close["SPY"]
+
+    def daily(col):
+        # Each series on its own, one value per calendar day. Together in one table the SPY and VIX rows came with
+        # different times of day, so SPY had a gap on every other row and the 50/200-day averages were always empty
+        # (seen live 29.10.2026: spy_sma50 = null with 130 days stored).
+        s = pd.to_numeric(close[col], errors="coerce").dropna()
+        idx = pd.to_datetime(s.index)
+        s.index = (idx.tz_localize(None) if idx.tz is not None else idx).normalize()
+        return s.groupby(level=0).last().sort_index()
+
+    spy = daily("SPY")
+    vix = daily("^VIX")
     out = pd.DataFrame({
         "spy_close": spy,
         "spy_sma50": spy.rolling(50, min_periods=50).mean(),
         "spy_sma200": spy.rolling(200, min_periods=200).mean(),
-        "vix": close["^VIX"].ffill(limit=3),     # the VIX can miss a day that SPY has
+        "vix": vix.reindex(spy.index).ffill(limit=3),     # the VIX can miss a day that SPY has
     })
-    return out[out["spy_close"].notna()].tail(HISTORY_DAYS)
+    return out.tail(HISTORY_DAYS)
 
 
 TREASURY_URL = ("https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/"
