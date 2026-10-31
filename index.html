@@ -2525,6 +2525,13 @@ function updateDdOwnEmpty(){
 // box), the chart re-measures when its box changes size (sections filling in below), and a watchdog rebuilds it once
 // if no visible iframe appeared after 8 seconds.
 let _ddChartObserver = null;
+var _ddChartStale = false;      // v26e: the box changed size while the browser tab was hidden — rebuild when shown
+document.addEventListener('visibilitychange', () => {
+  if(document.visibilityState !== 'visible' || !_ddChartStale) return;
+  _ddChartStale = false;
+  const box = document.getElementById('dd-tv-chart');
+  if(box && box.offsetWidth > 0 && typeof TradingView !== 'undefined') _ddMountChart(true);
+});
 function _ddMountChart(force){
   const box = document.getElementById('dd-tv-chart');
   if(!box || !_ddChartTicker) return;
@@ -2536,14 +2543,23 @@ function _ddMountChart(force){
   box.innerHTML = '';
   if(_ddChartObserver){ _ddChartObserver.disconnect(); _ddChartObserver = null; }
   if(window.ResizeObserver){
-    // v26c: any change of the frame's width OR height (a scrollbar appearing as the sections fill in is ~15px — the
-    // old 20px width-only threshold missed it, so the chart kept its old size and spilled out of its frame)
-    let lastW = box.offsetWidth, lastH = box.offsetHeight, timer = null;
+    // v26e (owner's screenshot, AMZN 1.11: the chart drawn narrower and taller than its frame — dates cut off, an empty
+    // strip on the side): TradingView's own iframe always fills the box (width/height 100%), but the chart INSIDE it
+    // sometimes keeps the size the box had when it was built (window resized, tab in the background...). We cannot
+    // reach inside that iframe, so when the box really changes size after the build, the chart is rebuilt (~1 s).
+    const builtW = box.offsetWidth, builtH = box.offsetHeight;
+    let timer = null;
     _ddChartObserver = new ResizeObserver(() => {
       const w = box.offsetWidth, h = box.offsetHeight;
-      if(w > 0 && (Math.abs(w - lastW) > 1 || Math.abs(h - lastH) > 1)){
-        lastW = w; lastH = h;
-        clearTimeout(timer);
+      if(w === 0) return;                                              // page hidden — nothing to fit
+      clearTimeout(timer);
+      if(Math.abs(w - builtW) > 24 || Math.abs(h - builtH) > 24){
+        timer = setTimeout(() => {
+          const cur = document.getElementById('dd-tv-chart');
+          if(cur === box && box.offsetWidth > 0 && document.visibilityState === 'visible') _ddMountChart(true);
+          else _ddChartStale = true;                                   // rebuild when the tab is visible again
+        }, 450);
+      } else {
         timer = setTimeout(() => { try { window.dispatchEvent(new Event('resize')); } catch(e){} }, 120);
       }
     });
