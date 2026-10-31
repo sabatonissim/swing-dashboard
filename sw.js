@@ -3,8 +3,8 @@
 // Rules: only this site's own files are cached. The page itself is "network first" — online you always get the newest
 // version (the owner uploads index.html often); the cached copy is used only when the network fails. Data (the Render
 // API), TradingView and Google are never touched here: they go straight to the network as before.
-const CACHE = 'swingdesk-v19';
-const SHELL = ['/', '/manifest.json', '/favicon.svg', '/icon-192.png', '/icon-512.png', '/logo.png'];
+const CACHE = 'swingdesk-v26';
+const SHELL = ['/', '/manifest.json', '/favicon.svg', '/icon-192.png', '/icon-512.png', '/logo.png', '/badge-96.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -56,7 +56,9 @@ self.addEventListener('push', (e) => {
   e.waitUntil(self.registration.showNotification(title, {
     body: String(d.body || '').slice(0, 300),
     icon: '/icon-192.png',
-    badge: '/icon-192.png',
+    // v26c: the small status-bar icon is drawn from the image's transparency only — a full square image showed as a
+    // solid white square. badge-96.png = the white S on a transparent background.
+    badge: '/badge-96.png',
     tag: d.tag ? String(d.tag).slice(0, 64) : undefined,
     data: { url: typeof d.url === 'string' && d.url.startsWith('/') ? d.url : '/' },   // only links inside the site
   }));

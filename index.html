@@ -311,6 +311,10 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .dd-header .name{color:var(--text-dim);font-size:13px;margin-left:8px;}
   .dd-header .price{font-family:'JetBrains Mono',monospace;font-size:20px;font-weight:700;}
   .dd-chart-wrap{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:16px;height:340px;}
+  /* v26c (owner: "sometimes the chart doesn't fit its frame"): the TradingView widget goes into an inner layer that
+     exactly fills the frame inside its padding, and nothing can spill outside it */
+  .dd-chart-wrap{position:relative;overflow:hidden;}      /* the inner layer = the same area the chart had before */
+  .dd-tv-inner{position:absolute;inset:10px;overflow:hidden;}
   .dd-stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px;}
   .dd-stat-card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;text-align:center;}
   .dd-stat-card .k{font-size:10px;color:var(--text-dim);text-transform:uppercase;margin-bottom:4px;}
@@ -468,6 +472,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
     #market-tv-chart,.sector-chart-wrap{height:min(420px,60vh);}
     .tv-chart-box{height:min(440px,62vh);}
     .dd-chart-wrap{height:min(460px,64vh);padding:4px;}
+    .dd-tv-inner{inset:4px;}
   }
   .news-section{margin-bottom:16px;}
   .news-item{padding:9px 0;border-bottom:1px solid var(--line);}
@@ -2284,6 +2289,7 @@ async function loadDeepDive(){
       if(!current()) return;
       st.insider = d || {available: false, failed: true};
       renderInsiderSection(st.insider);
+      updateDdOwnEmpty();                             // v26d
     });
     streetP.then(v => v, () => null).then(d => {     // v23: hidden unless there is something to show
       if(!current()) return;
@@ -2367,7 +2373,7 @@ function renderDeepDive(quote, sector, signals, news){
       <button class="dd-action-btn" onclick="openTradeForm({ticker:'${escH(quote.ticker)}', entry_price:${Number(quote.price)||'null'}})">${t?'Log a trade':'רישום עסקה'}</button>
     </div>
 
-    <div class="dd-chart-wrap" id="dd-tv-chart"></div>
+    <div class="dd-chart-wrap"><div class="dd-tv-inner" id="dd-tv-chart"></div></div>
 
     <div class="dd-stats-row">
       <div class="dd-stat-card"><div class="k">${t?'52w High':'שיא 52ש'}</div><div class="v">${quote.week52_high ?? '—'}</div></div>
@@ -2380,29 +2386,19 @@ function renderDeepDive(quote, sector, signals, news){
 
   html += `<div id="dd-ai-note"></div>`;             // v25: AI summary (when one exists)
 
+  // v26d (owner approved 1.11): the fixed top above, then four tabs instead of one long page. Every section keeps its
+  // own container (the loaders fill them as before); a tab only shows/hides its containers.
+  const tab = (k, he, en) => `<button class="pulse-view-btn ${ddTab === k ? 'active' : ''}" id="dd-tab-btn-${k}" onclick="setDdTab('${k}')">${t ? en : he}</button>`;
+  html += `<div class="pulse-view-switch four dd-tabs" style="margin-top:16px">
+      ${tab('tech', 'טכני', 'Technical')}${tab('fund', 'פונדמנטלי', 'Fundamentals')}${tab('own', 'מי קונה ומוכר', 'Who buys and sells')}${tab('news', 'חדשות', 'News')}
+    </div>`;
+  const pane = k => `<div class="dd-tab" id="dd-tab-${k}" style="${ddTab === k ? '' : 'display:none'}">`;
+
+  // --- tab: technical ---
+  html += pane('tech');
   html += `<div id="dd-technical-setup-section"></div>`;
 
-  if(quote.sector || quote.sub_industry || quote.description){
-    html += `<div class="dd-section-title">${t?'About the Company':'על החברה'}</div>`;
-    if(quote.sector || quote.sub_industry){
-      html += `<div style="font-size:12.5px;color:var(--text-dim);margin-bottom:8px;">${[quote.sector, quote.sub_industry].filter(Boolean).join(' · ')}</div>`;
-    }
-    if(quote.description){
-      html += `<div style="font-size:13px;line-height:1.6;color:var(--text);margin-bottom:6px;">${escH(quote.description)}</div>`;
-    } else {
-      html += `<div class="bt-empty" style="padding:10px 0;">${t?'Company description unavailable right now.':'תיאור החברה לא זמין כרגע.'}</div>`;
-    }
-  }
-
   html += `<div id="dd-sector-compare-section"></div>`;
-
-  html += `<div id="dd-fundamentals-section"></div>`;
-
-  html += `<div id="dd-street-section"></div>`;    // v23: analyst targets + short interest
-
-  html += `<div id="dd-funds-section"></div>`;     // v25: well-known funds holding it (13F)
-
-  html += `<div id="dd-insider-section"></div>`;
 
   html += `<div class="dd-section-title">${t?'Signal History':'היסטוריית איתותים'}</div>`;
   if(signals && signals.length){
@@ -2433,7 +2429,37 @@ function renderDeepDive(quote, sector, signals, news){
   } else {
     html += `<div class="bt-empty">${t?'No past signals for this ticker in our scan history yet.':'אין עדיין איתותים קודמים לטיקר הזה בהיסטוריית הסריקות שלנו.'}</div>`;
   }
+  html += `</div>`;   // /tech
 
+  // --- tab: fundamentals ---
+  html += pane('fund');
+  html += `<div id="dd-fundamentals-section"></div>`;
+
+  html += `<div id="dd-street-section"></div>`;    // v23: analyst targets + short interest
+
+  if(quote.sector || quote.sub_industry || quote.description){
+    html += `<div class="dd-section-title">${t?'About the Company':'על החברה'}</div>`;
+    if(quote.sector || quote.sub_industry){
+      html += `<div style="font-size:12.5px;color:var(--text-dim);margin-bottom:8px;">${[quote.sector, quote.sub_industry].filter(Boolean).join(' · ')}</div>`;
+    }
+    if(quote.description){
+      html += `<div style="font-size:13px;line-height:1.6;color:var(--text);margin-bottom:6px;">${escH(quote.description)}</div>`;
+    } else {
+      html += `<div class="bt-empty" style="padding:10px 0;">${t?'Company description unavailable right now.':'תיאור החברה לא זמין כרגע.'}</div>`;
+    }
+  }
+  html += `</div>`;   // /fund
+
+  // --- tab: who buys and sells ---
+  html += pane('own');
+  html += `<div id="dd-insider-section"></div>`;
+
+  html += `<div id="dd-funds-section"></div>`;     // v25: well-known funds holding it (13F)
+  html += `<div id="dd-own-empty"></div>`;
+  html += `</div>`;   // /own
+
+  // --- tab: news ---
+  html += pane('news');
   html += `<div class="dd-section-title">${t?'Recent News':'חדשות אחרונות'}</div>`;
   if(news && news.length){
     html += news.map(n => `
@@ -2445,6 +2471,7 @@ function renderDeepDive(quote, sector, signals, news){
   } else {
     html += `<div class="bt-empty">${t?'No recent news found.':'לא נמצאו כתבות עדכניות.'}</div>`;
   }
+  html += `</div>`;   // /news
 
   el.innerHTML = html;
   renderDeepDivePeCard(); // fills in the NTM/LTM P/E stat card built above
@@ -2453,6 +2480,42 @@ function renderDeepDive(quote, sector, signals, news){
   _ddRenderedKey = lang + '|' + tvTheme();
   _ddChartTicker = quote.ticker;
   if(typeof TradingView !== 'undefined') _ddMountChart(); else loadTV(_ddMountChart);
+}
+
+// v26d: the analysis page's tabs. The last choice is remembered in this browser.
+var DD_TABS = ['tech', 'fund', 'own', 'news'];
+var ddTab = 'tech';
+try { const saved = localStorage.getItem('swing_dd_tab'); if(DD_TABS.includes(saved)) ddTab = saved; } catch(e){}
+var _ddFundDrawnHidden = false;     // the fundamentals charts were drawn while their tab was hidden (width 0)
+
+function setDdTab(k){
+  if(!DD_TABS.includes(k)) k = 'tech';
+  ddTab = k;
+  try { localStorage.setItem('swing_dd_tab', k); } catch(e){}
+  DD_TABS.forEach(x => {
+    const p = document.getElementById('dd-tab-' + x), b = document.getElementById('dd-tab-btn-' + x);
+    if(p) p.style.display = x === k ? '' : 'none';
+    if(b) b.classList.toggle('active', x === k);
+  });
+  // the fundamentals charts size themselves to their box when drawn — drawn inside a hidden tab they came out at the
+  // minimum width, so they are drawn again now that the tab is visible
+  if(k === 'fund' && _ddFundDrawnHidden && _ddState && _ddState.fundData){
+    _ddFundDrawnHidden = false;
+    try { renderFundamentals(_ddState.fundData, 'dd-fundamentals-section'); } catch(e){ console.warn('[fundamentals] redraw failed', e); }
+  }
+  updateDdOwnEmpty();
+  track('dd_tab', k);
+}
+
+// "Who buys and sells" has nothing to show for many stocks (no insider trades and no tracked fund) — say so plainly
+function updateDdOwnEmpty(){
+  const box = document.getElementById('dd-own-empty');
+  if(!box) return;
+  const ins = document.getElementById('dd-insider-section'), funds = document.getElementById('dd-funds-section');
+  box.innerHTML = (funds && !funds.innerHTML.trim() && ins && !ins.querySelector('table') && _ddState && _ddState.insider !== undefined)
+    ? `<div class="fund-source-note" style="margin-top:8px">${lang === 'en'
+        ? 'None of the 11 tracked big funds holds this stock among its top 40 positions.'
+        : 'אף אחת מ-11 הקרנות הגדולות שאנחנו עוקבים אחריהן לא מחזיקה במניה הזו בין 40 הפוזיציות הגדולות שלה.'}</div>` : '';
 }
 
 // Builds the TradingView chart of the analysis page. A chart created inside a hidden page (display:none) gets a wrong
@@ -2473,10 +2536,16 @@ function _ddMountChart(force){
   box.innerHTML = '';
   if(_ddChartObserver){ _ddChartObserver.disconnect(); _ddChartObserver = null; }
   if(window.ResizeObserver){
-    let lastW = box.offsetWidth;
+    // v26c: any change of the frame's width OR height (a scrollbar appearing as the sections fill in is ~15px — the
+    // old 20px width-only threshold missed it, so the chart kept its old size and spilled out of its frame)
+    let lastW = box.offsetWidth, lastH = box.offsetHeight, timer = null;
     _ddChartObserver = new ResizeObserver(() => {
-      const w = box.offsetWidth;
-      if(w > 0 && Math.abs(w - lastW) > 20){ lastW = w; try { window.dispatchEvent(new Event('resize')); } catch(e){} }
+      const w = box.offsetWidth, h = box.offsetHeight;
+      if(w > 0 && (Math.abs(w - lastW) > 1 || Math.abs(h - lastH) > 1)){
+        lastW = w; lastH = h;
+        clearTimeout(timer);
+        timer = setTimeout(() => { try { window.dispatchEvent(new Event('resize')); } catch(e){} }, 120);
+      }
     });
     _ddChartObserver.observe(box);
   }
@@ -2485,7 +2554,11 @@ function _ddMountChart(force){
     if(cur !== box || box.dataset.tvKey !== key || force) return;      // page moved on, or this already was the retry
     if(box.offsetWidth === 0) return;                                  // analysis page hidden now — setPage handles it
     const f = box.querySelector('iframe');
-    if(!f || f.offsetHeight < 50 || f.offsetWidth < 50){ console.warn('[deep dive] chart did not appear — rebuilding once'); _ddMountChart(true); }
+    // v26c: also when the chart exists but stayed the wrong size for its frame
+    const wrongSize = f && (Math.abs(f.offsetWidth - box.offsetWidth) > 8 || Math.abs(f.offsetHeight - box.offsetHeight) > 8);
+    if(!f || f.offsetHeight < 50 || f.offsetWidth < 50 || wrongSize){
+      console.warn('[deep dive] chart missing or the wrong size — rebuilding once'); _ddMountChart(true);
+    }
   }, 8000);
   new TradingView.widget({
     autosize: true, symbol: tvSymbol(_ddChartTicker), interval: 'D',
@@ -5479,6 +5552,8 @@ function renderFundamentals(data, containerId){
   if(!el) return;
   destroyFundCharts();
   const t = lang==='en';
+  // v26d: drawn inside the hidden "Fundamentals" tab of the analysis page -> draw again when that tab opens
+  if(containerId === 'dd-fundamentals-section') _ddFundDrawnHidden = el.offsetWidth === 0;
 
   if(!data || !data.has_fundamentals || !Array.isArray(data.income_labels)){
     el.innerHTML = `<div class="fund-section-title">${t?'Fundamentals':'נתונים פונדמנטליים'}</div><div class="fund-empty">${t?'No standard SEC financial data found for this ticker — this happens for ETFs/indices, but also sometimes for very recent IPOs or unusual filers.':'לא נמצאו נתונים פונדמנטליים סטנדרטיים מ-SEC לטיקר זה — זה קורה עבור ETF/מדדים, אבל גם לפעמים עבור הנפקות טריות מאוד או חברות עם מבנה דיווח חריג.'}</div>`;
@@ -6679,8 +6754,8 @@ var TOUR_STEPS = [
    he: ['סורק התבניות', 'מניות שנכנסו היום לתבנית טכנית (פריצה, קו מגמה, כוס וידית ועוד). "מסננים" מצמצמים לפי RS, שווי ודוח קרוב. לחיצה על שורה פותחת גרף, ו"מה קרה בעבר" באיתותים דומים.'],
    en: ['The pattern scanner', 'Stocks that formed a technical pattern today (breakout, trendline, cup and handle and more). "Filters" narrow it by RS, size and upcoming earnings. Click a row for the chart and "what happened before" on similar signals.']},
   {page: 'deepdive', target: '#page-deepdive .dd-search-row',
-   he: ['ניתוח מניה', 'מקלידים טיקר ומקבלים הכל במקום אחד: גרף, מבנה טכני, סיכום AI, נתונים פונדמנטליים, יעדי אנליסטים ושורט, קרנות ובעלי עניין. לכל מניה כתובת קבועה לשיתוף.'],
-   en: ['Stock analysis', 'Type a ticker and get it all in one place: chart, technical structure, an AI summary, fundamentals, analyst targets and short interest, funds and insiders. Every stock has a permanent link to share.']},
+   he: ['ניתוח מניה', 'מקלידים טיקר: למעלה מחיר, גרף וסיכום AI, ומתחת ארבע לשוניות — טכני, פונדמנטלי (כולל אנליסטים ושורט), מי קונה ומוכר (בעלי עניין וקרנות) וחדשות. לכל מניה כתובת קבועה לשיתוף.'],
+   en: ['Stock analysis', 'Type a ticker: price, chart and an AI summary on top, then four tabs — technical, fundamentals (with analysts and short interest), who buys and sells (insiders and funds) and news. Every stock has a permanent link to share.']},
   {page: 'pulse', target: '#page-pulse .pulse-view-switch',
    he: ['עמוד השוק', 'ארבע לשוניות: מצב השוק (רוחב, עקום תשואות, מפת חום), מניות וקרנות (המובילות ומה מחזיקות הקרנות הגדולות), דוחות ודיבידנדים (כולל הנפקות), ולוח כלכלי (ריבית, אינפלציה, תעסוקה).'],
    en: ['The market page', 'Four tabs: market state (breadth, yield curve, heatmap), stocks and funds (leaders and what the big funds hold), earnings and dividends (with IPOs), and the economic calendar (rates, inflation, jobs).']},
@@ -7650,9 +7725,10 @@ async function loadDdFunds(ticker){
   let d = null;
   try { const r = await fetchWithTimeout(`${API_BASE}/api/funds/stock/${encodeURIComponent(ticker)}`, 20000); if(r.ok) d = await r.json(); } catch(e){}
   const box = document.getElementById('dd-funds-section');
-  if(!box || !d || !d.available || d.ticker !== canonTicker(ticker)) { if(box) box.innerHTML = ''; return; }
+  if(!box || !d || !d.available || d.ticker !== canonTicker(ticker)) { if(box) box.innerHTML = ''; updateDdOwnEmpty(); return; }
   _ddFundsData = d;
   renderDdFunds();
+  updateDdOwnEmpty();
 }
 var _ddFundsData = null;
 function renderDdFunds(){
