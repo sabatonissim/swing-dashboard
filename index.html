@@ -366,6 +366,23 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .hx-row .val{font-family:'JetBrains Mono',monospace;color:var(--green);white-space:nowrap;}
   .hx-row .dt{font-size:11px;color:var(--text-dim);white-space:nowrap;}
   .breadth-chart{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:10px;}
+  /* v26: first-visit guide (startTour) — a dimmed page, a highlighted area and a small card */
+  .tour-btn{width:30px;height:30px;border-radius:50%;background:var(--panel);border:1px solid var(--line);color:var(--text-dim);font-size:14px;font-weight:700;cursor:pointer;font-family:'Heebo',sans-serif;flex:0 0 auto;}
+  .tour-btn:hover{border-color:var(--amber);color:var(--amber);}
+  .tour-block{position:fixed;inset:0;z-index:300;background:transparent;}
+  .tour-block.full{background:rgba(0,0,0,.62);}
+  .tour-spot{position:fixed;z-index:301;border:2px solid var(--amber);border-radius:12px;box-shadow:0 0 0 9999px rgba(0,0,0,.62);pointer-events:none;transition:all .25s ease;}
+  .tour-card{position:fixed;z-index:302;left:50%;transform:translateX(-50%);bottom:84px;width:min(420px,calc(100vw - 24px));background:var(--panel);border:1px solid var(--line-hover);border-radius:14px;padding:14px 16px;box-shadow:0 10px 30px rgba(0,0,0,.45);}
+  .tour-card.center{top:50%;bottom:auto;transform:translate(-50%,-50%);}
+  @media(min-width:901px){.tour-card{bottom:28px;}}
+  .tour-card .t-step{font-size:11px;color:var(--text-dim);}
+  .tour-card .t-title{font-size:16px;font-weight:700;color:var(--text);margin:3px 0 6px;}
+  .tour-card .t-text{font-size:13px;line-height:1.65;color:var(--text);}
+  .tour-card .t-row{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:12px;}
+  .tour-card .t-skip{background:none;border:none;color:var(--text-dim);font-size:12.5px;cursor:pointer;font-family:'Heebo',sans-serif;padding:4px 2px;}
+  .tour-card .t-btns{display:flex;gap:6px;}
+  .tour-card .t-btns button{border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer;font-family:'Heebo',sans-serif;border:1px solid var(--line);background:var(--panel-2);color:var(--text);}
+  .tour-card .t-btns button.next{background:var(--amber);border-color:var(--amber);color:var(--on-amber);font-weight:700;}
   /* v24: my portfolio + trade journal */
   .pf-bar{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;}
   .pf-bar .al-btn.primary{margin-top:0;}
@@ -887,13 +904,26 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
     #page-home > .breaking-bar{order:2;}
     #page-home > .board{display:contents;}
     #page-home > .board > .col.right{order:3;}
-    #page-home > .market-charts{order:4;border-top:1px solid var(--line);}
-    #page-home > .board > .col.left{order:5;border-top:1px solid var(--line);}
+    /* v26 (owner approved 31.10): the market-state line stays on top, the breadth and insider-buys cards come after
+       the scanner instead of pushing it to the second screen */
+    #page-home > .home-extras{display:contents;}
+    #page-home > .home-extras > .hx-regime{order:0;padding:10px 12px;background:var(--panel-2);border-bottom:1px solid var(--line);}
+    #page-home > .home-extras > .hx-card{order:4;margin:0 12px 12px;}
+    #page-home > .home-extras > #hx-breadth{margin-top:4px;}
+    #page-home > .market-charts{order:5;border-top:1px solid var(--line);}
+    #page-home > .board > .col.left{order:6;border-top:1px solid var(--line);}
     .board .col{padding:16px 14px 24px;}
   }
   @media(max-width:480px){
     .econ-grid{grid-template-columns:1fr;}
     .pulse-view-btn{flex:1;padding:8px 10px;}
+  }
+  /* v26: the market page's four tabs — one row that scrolls sideways on a narrow phone instead of squeezing */
+  @media(max-width:700px){
+    .pulse-view-switch.four{overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;padding-bottom:2px;}
+    .pulse-view-switch.four::-webkit-scrollbar{display:none;}
+    .pulse-view-switch.four{gap:4px;}
+    .pulse-view-switch.four .pulse-view-btn{flex:1 0 auto;white-space:nowrap;padding:8px 6px;font-size:12px;}
   }
 </style>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -929,6 +959,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   </div>
   <div style="display:flex;flex-direction:row-reverse;align-items:center;gap:12px;">
     <button id="lang-toggle" onclick="toggleLang()" style="background:var(--panel);border:1px solid var(--line);color:var(--text-dim);border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;font-family:'JetBrains Mono',monospace;transition:all .15s;" onmouseover="this.style.borderColor='var(--amber)'" onmouseout="this.style.borderColor='var(--line)'">EN</button>
+    <button id="tour-btn" class="tour-btn" onclick="startTour()" title="מדריך קצר לאתר" aria-label="מדריך קצר לאתר">?</button>
     <button id="install-btn" class="install-btn" style="display:none;" onclick="installApp()">התקן אפליקציה</button>
     <div class="clock mono" id="clock"></div>
     <div id="auth-box" style="position:relative;display:flex;align-items:center;min-height:34px;"></div>
@@ -1044,9 +1075,12 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
 
 <div id="page-pulse" style="display:none;">
   <div class="pulse-page-wrap">
-    <div class="pulse-view-switch">
+    <!-- v26: four views instead of one long page (owner approved 31.10) — each loads its data the first time it opens -->
+    <div class="pulse-view-switch four">
       <button class="pulse-view-btn active" id="pulse-view-btn-overview" onclick="setPulseView('overview')">מצב השוק</button>
-      <button class="pulse-view-btn" id="pulse-view-btn-events" onclick="setPulseView('events')">אירועי שוק</button>
+      <button class="pulse-view-btn" id="pulse-view-btn-stocks" onclick="setPulseView('stocks')">מניות וקרנות</button>
+      <button class="pulse-view-btn" id="pulse-view-btn-cal" onclick="setPulseView('cal')">דוחות ודיבידנדים</button>
+      <button class="pulse-view-btn" id="pulse-view-btn-events" onclick="setPulseView('events')">לוח כלכלי</button>
     </div>
 
     <!-- View 1: Upcoming Market Events (economic calendar) -->
@@ -1080,10 +1114,6 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
     </div>
     <div id="yields-wrap" style="margin-bottom:24px;"></div>
     <div class="pulse-section-head">
-      <div class="pulse-section-title" id="leaders-title">מניות מובילות</div>
-    </div>
-    <div id="leaders-wrap" style="margin-bottom:24px;"></div>
-    <div class="pulse-section-head">
       <div class="pulse-section-title" id="breadth-title">רוחב השוק</div>
     </div>
     <div id="breadth-wrap" style="margin-bottom:24px;"></div>
@@ -1101,8 +1131,24 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
       <div class="pulse-section-title" id="feargreed-title">מדד סנטימנט שוק (Fear &amp; Greed)</div>
     </div>
     <div id="fear-greed-wrap"></div>
+    </div><!-- /pulse-view-overview -->
 
-    <div class="pulse-section-head" style="margin-top:24px;">
+    <!-- v26 view: stocks and funds -->
+    <div id="pulse-view-stocks" style="display:none;">
+    <div class="pulse-section-head">
+      <div class="pulse-section-title" id="leaders-title">מניות מובילות</div>
+    </div>
+    <div id="leaders-wrap" style="margin-bottom:24px;"></div>
+    <!-- v25: what well-known funds hold (13F) — filled by renderFunds -->
+    <div class="pulse-section-head">
+      <div class="pulse-section-title" id="funds-title">מה מחזיקות הקרנות הגדולות</div>
+    </div>
+    <div id="funds-wrap"></div>
+    </div><!-- /pulse-view-stocks -->
+
+    <!-- v26 view: earnings, dividends, IPOs -->
+    <div id="pulse-view-cal" style="display:none;">
+    <div class="pulse-section-head">
       <div class="pulse-section-title" id="earnings-cal-title">דוחות רבעוניים</div>
     </div>
     <div id="earnings-cal-wrap"></div>
@@ -1111,12 +1157,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
       <div class="pulse-section-title" id="corp-cal-title">דיבידנדים והנפקות</div>
     </div>
     <div class="yc-charts" id="corp-cal-wrap" style="margin-top:0"></div>
-    <!-- v25: what well-known funds hold (13F) — filled by renderFunds -->
-    <div class="pulse-section-head" style="margin-top:24px;">
-      <div class="pulse-section-title" id="funds-title">מה מחזיקות הקרנות הגדולות</div>
-    </div>
-    <div id="funds-wrap"></div>
-    </div><!-- /pulse-view-overview -->
+    </div><!-- /pulse-view-cal -->
   </div>
 </div>
 
@@ -2534,7 +2575,7 @@ function setStockAddress(ticker){
       if(canon) canon.href = _baseCanonical.replace(/\/$/, '') + path;
     } else if(location.pathname.startsWith('/stock/')){
       history.replaceState(null, '', '/');
-      document.title = _baseTitle;
+      document.title = typeof lang !== 'undefined' && lang === 'en' ? 'Swing Desk — Real-time trading dashboard' : _baseTitle;
       if(canon) canon.href = _baseCanonical;
     }
   } catch(e){ /* history API refused — the page itself still works */ }
@@ -2717,16 +2758,21 @@ function renderDemoPortfolio(){
   });
 }
 
-// ---- Market Pulse: two views (market events | market overview) ----
+// ---- Market Pulse: v26 four views (market state | stocks and funds | earnings and dividends | economic calendar) ----
 let pulseView = 'overview';
 let econLoaded = false;
+const PULSE_VIEWS = ['overview', 'stocks', 'cal', 'events'];
+let pulseStocksLoaded = false, pulseCalLoaded = false;
 
 function setPulseView(v){
+  if(!PULSE_VIEWS.includes(v)) v = 'overview';
   pulseView = v;
-  document.getElementById('pulse-view-events').style.display = v==='events' ? '' : 'none';
-  document.getElementById('pulse-view-overview').style.display = v==='overview' ? '' : 'none';
-  document.getElementById('pulse-view-btn-events').classList.toggle('active', v==='events');
-  document.getElementById('pulse-view-btn-overview').classList.toggle('active', v==='overview');
+  PULSE_VIEWS.forEach(k => {
+    document.getElementById('pulse-view-' + k).style.display = k === v ? '' : 'none';
+    document.getElementById('pulse-view-btn-' + k).classList.toggle('active', k === v);
+  });
+  const btn = document.getElementById('pulse-view-btn-' + v);           // phone: keep the chosen tab in view
+  if(btn && btn.scrollIntoView) btn.scrollIntoView({block: 'nearest', inline: 'nearest'});
   ensurePulseViewLoaded();
 }
 
@@ -2739,10 +2785,16 @@ function ensurePulseViewLoaded(){   // each view loads its data only the first t
     pulseLoaded = true;
     loadHeatmap(heatmapIndex);
     loadFearGreed();
-    loadEarningsCalendar();
+  }
+  if(pulseView === 'stocks' && !pulseStocksLoaded){
+    pulseStocksLoaded = true;
     loadLeaders();          // v25
-    loadCorpCalendar();     // v25
     loadFunds();            // v25
+  }
+  if(pulseView === 'cal' && !pulseCalLoaded){
+    pulseCalLoaded = true;
+    loadEarningsCalendar();
+    loadCorpCalendar();     // v25
   }
 }
 
@@ -6611,6 +6663,133 @@ async function tryLoadOnce(timeoutMs){
   saveSnapshot({ stocks: rawStocks, macro: rawMacro, keyNews: rawKeyNews }, true);
 }
 
+// ---- v26: first-visit guide ----
+// Six short steps. Shown once on the first visit (not when the visit starts from a stock link), any time again from
+// the "?" button in the header. Each step opens its page, scrolls the area into view and highlights it; nothing is
+// loaded or changed. Seen = localStorage 'swing_tour_v1' (a private window simply sees it again).
+var TOUR_KEY = 'swing_tour_v1';
+var TOUR_STEPS = [
+  {page: 'home', target: null,
+   he: ['ברוכים הבאים ל-Swing Desk', 'דשבורד למסחר סווינג בשוק האמריקאי: סורק תבניות טכניות, מצב השוק, חדשות, ניתוח מניה, ותיק ויומן אישיים. שישה צעדים קצרים ואתם בפנים.'],
+   en: ['Welcome to Swing Desk', 'A swing-trading dashboard for the US market: a technical pattern scanner, the market state, news, stock analysis and a personal portfolio and journal. Six short steps and you are in.']},
+  {page: 'home', target: '#hx-regime',
+   he: ['מצב השוק בשורה אחת', 'מגמת S&P 500, כמה מניות משתתפות, תנודתיות (VIX) ועקום התשואות — כל תווית לפי כלל קבוע. "מה זה אומר" מסביר כל אחת.'],
+   en: ['The market in one line', 'The S&P 500 trend, how many stocks take part, volatility (VIX) and the yield curve — each label follows a fixed rule. "What it means" explains each one.']},
+  {page: 'home', target: '.board .col.right',
+   he: ['סורק התבניות', 'מניות שנכנסו היום לתבנית טכנית (פריצה, קו מגמה, כוס וידית ועוד). "מסננים" מצמצמים לפי RS, שווי ודוח קרוב. לחיצה על שורה פותחת גרף, ו"מה קרה בעבר" באיתותים דומים.'],
+   en: ['The pattern scanner', 'Stocks that formed a technical pattern today (breakout, trendline, cup and handle and more). "Filters" narrow it by RS, size and upcoming earnings. Click a row for the chart and "what happened before" on similar signals.']},
+  {page: 'deepdive', target: '#page-deepdive .dd-search-row',
+   he: ['ניתוח מניה', 'מקלידים טיקר ומקבלים הכל במקום אחד: גרף, מבנה טכני, סיכום AI, נתונים פונדמנטליים, יעדי אנליסטים ושורט, קרנות ובעלי עניין. לכל מניה כתובת קבועה לשיתוף.'],
+   en: ['Stock analysis', 'Type a ticker and get it all in one place: chart, technical structure, an AI summary, fundamentals, analyst targets and short interest, funds and insiders. Every stock has a permanent link to share.']},
+  {page: 'pulse', target: '#page-pulse .pulse-view-switch',
+   he: ['עמוד השוק', 'ארבע לשוניות: מצב השוק (רוחב, עקום תשואות, מפת חום), מניות וקרנות (המובילות ומה מחזיקות הקרנות הגדולות), דוחות ודיבידנדים (כולל הנפקות), ולוח כלכלי (ריבית, אינפלציה, תעסוקה).'],
+   en: ['The market page', 'Four tabs: market state (breadth, yield curve, heatmap), stocks and funds (leaders and what the big funds hold), earnings and dividends (with IPOs), and the economic calendar (rates, inflation, jobs).']},
+  {page: 'portfolio', target: '#page-portfolio .pulse-view-switch',
+   he: ['התיק שלי והתראות', 'אחרי התחברות עם Google: רושמים עסקאות ומקבלים תיק עם רווח/הפסד ויומן עם סטטיסטיקה, וגם רשימת מעקב והתראות לטלפון. כל המידע באתר עובדתי — לא ייעוץ השקעות.'],
+   en: ['My portfolio and alerts', 'After signing in with Google: log trades and get a portfolio with profit/loss and a journal with statistics, plus a watchlist and phone alerts. Everything on the site is factual — not investment advice.']},
+];
+var tourStep = -1, _tourReturnPage = 'home';
+
+function startTour(){
+  if(tourStep >= 0) return;
+  _tourReturnPage = typeof currentPage !== 'undefined' ? currentPage : 'home';
+  tourStep = 0;
+  document.addEventListener('keydown', _tourKey);
+  window.addEventListener('resize', _tourPlace);
+  window.addEventListener('scroll', _tourPlace, {passive: true});
+  showTourStep();
+}
+
+function _tourKey(e){
+  if(e.key === 'Escape') endTour();
+  else if(e.key === 'ArrowLeft') tourGo(lang === 'en' ? -1 : 1);
+  else if(e.key === 'ArrowRight') tourGo(lang === 'en' ? 1 : -1);
+}
+
+function _tourEl(id, cls){
+  let el = document.getElementById(id);
+  if(!el){ el = document.createElement('div'); el.id = id; el.className = cls; document.body.appendChild(el); }
+  return el;
+}
+
+function showTourStep(){
+  const s = TOUR_STEPS[tourStep];
+  if(!s) return endTour();
+  if(currentPage !== s.page) setPage(s.page);
+  if(s.page === 'pulse' && typeof setPulseView === 'function' && pulseView !== 'overview') setPulseView('overview');
+  const target = s.target ? document.querySelector(s.target) : null;
+  if(target) target.scrollIntoView({block: 'center', behavior: 'smooth'});
+  else window.scrollTo({top: 0, behavior: 'smooth'});
+  renderTourCard();
+  setTimeout(_tourPlace, 380);
+  setTimeout(_tourPlace, 900);                   // again once the smooth scroll / page switch has settled
+}
+
+function _tourPlace(){
+  if(tourStep < 0) return;
+  const s = TOUR_STEPS[tourStep];
+  const target = s && s.target ? document.querySelector(s.target) : null;
+  const block = _tourEl('tour-block', 'tour-block');
+  const spot = _tourEl('tour-spot', 'tour-spot');
+  const r = target ? target.getBoundingClientRect() : null;
+  if(!r || r.width === 0){                       // no area to show: the whole page is dimmed, the card in the middle
+    block.classList.add('full'); spot.style.display = 'none'; return;
+  }
+  block.classList.remove('full');
+  const pad = 6, top = Math.max(r.top - pad, 4), bottom = Math.min(r.bottom + pad, innerHeight - 4);
+  Object.assign(spot.style, {display: 'block', left: (r.left - pad) + 'px', top: top + 'px',
+                             width: (r.width + 2 * pad) + 'px', height: Math.max(bottom - top, 24) + 'px'});
+}
+
+function renderTourCard(){
+  const s = TOUR_STEPS[tourStep];
+  if(!s) return;
+  const en = lang === 'en', n = TOUR_STEPS.length, last = tourStep === n - 1;
+  const [title, text] = en ? s.en : s.he;
+  const card = _tourEl('tour-card', 'tour-card');
+  card.classList.toggle('center', !s.target);
+  card.setAttribute('role', 'dialog');
+  card.setAttribute('aria-label', title);
+  card.innerHTML = `<div class="t-step">${en ? `Step ${tourStep + 1} of ${n}` : `${tourStep + 1} מתוך ${n}`}</div>
+    <div class="t-title">${title}</div>
+    <div class="t-text">${text}</div>
+    <div class="t-row">
+      <button class="t-skip" onclick="endTour()">${last ? '' : (en ? 'Skip' : 'דילוג')}</button>
+      <div class="t-btns">
+        ${tourStep > 0 ? `<button onclick="tourGo(-1)">${en ? 'Back' : 'הקודם'}</button>` : ''}
+        <button class="next" onclick="tourGo(1)">${last ? (en ? 'Done' : 'סיום') : (en ? 'Next' : 'הבא')}</button>
+      </div>
+    </div>`;
+  card.querySelector('.next').focus({preventScroll: true});
+}
+
+function tourGo(d){
+  const n = tourStep + d;
+  if(n < 0) return;
+  if(n >= TOUR_STEPS.length) return endTour();
+  tourStep = n;
+  showTourStep();
+}
+
+function endTour(){
+  if(tourStep < 0) return;
+  tourStep = -1;
+  ['tour-block', 'tour-spot', 'tour-card'].forEach(id => { const el = document.getElementById(id); if(el) el.remove(); });
+  document.removeEventListener('keydown', _tourKey);
+  window.removeEventListener('resize', _tourPlace);
+  window.removeEventListener('scroll', _tourPlace);
+  try { localStorage.setItem(TOUR_KEY, '1'); } catch(e){}
+  setPage(_tourReturnPage || 'home');            // back where the guide was opened (the first visit: the home page)
+  window.scrollTo({top: 0});
+}
+
+function maybeStartTour(){
+  let seen = false;
+  try { seen = !!localStorage.getItem(TOUR_KEY); } catch(e){ seen = true; }   // no storage = don't nag on every visit
+  if(seen || /^\/stock\//.test(location.pathname) || /[?&](ticker|page)=/.test(location.search)) return;
+  setTimeout(() => { if(tourStep < 0 && currentPage === 'home') startTour(); }, 1800);
+}
+
 // ---- v24: MY PORTFOLIO + TRADE JOURNAL ----
 // The person records each trade once (/api/trades, per account). Open = a position in the portfolio, valued with
 // /api/quotes; closed = a journal entry. All statistics are computed here from the person's own numbers — facts about
@@ -7348,7 +7527,8 @@ function renderLeaders(){
 }
 
 // ---- v25: dividends (ex-dates of the scanned stocks) + IPO calendar (/api/corporate-calendar) ----
-var corpData = null;
+var corpData = null, corpShowAll = {div: false, ipo: false};
+var CORP_ROWS = 8;
 
 async function loadCorpCalendar(){
   try {
@@ -7363,15 +7543,19 @@ function renderCorpCalendar(){
   if(!el || typeof lang === 'undefined') return;
   const en = lang==='en', d = corpData;
   if(!d){ el.innerHTML = `<div class="movers-empty">${UI[lang].loading}</div>`; return; }
-  const usd = v => v == null ? '—' : '$' + Number(v).toLocaleString('en-US', {maximumFractionDigits: 4});
-  const divRows = (d.dividends || []).slice(0, 25).map(x => {
+  // v26: always 2 decimals ($0.30, not $0.3); a third/fourth only when the payment has them ($0.475)
+  const usd = v => v == null ? '—' : '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 4});
+  const more = (key, list) => list.length > CORP_ROWS && !corpShowAll[key]
+    ? `<button class="scan-more-btn" style="margin:6px 0 0" onclick="corpShowAll.${key}=true;renderCorpCalendar()">${en ? `Show all ${list.length}` : `הצג את כל ${list.length}`}</button>` : '';
+  const divList = d.dividends || [], ipoList = d.ipos || [];
+  const divRows = divList.slice(0, corpShowAll.div ? 60 : CORP_ROWS).map(x => {
     const tk = escH(x.ticker);
     return `<div class="hx-row" onclick="openTickerAnalysis('${tk}')"><span class="tk">${tk}</span>
       <span class="who">${escH(x.name || '')}</span>
       <span class="dt">${_ddmm(x.ex_date)}</span>
       <span class="val" style="color:var(--text)">${usd(x.amount)}${x.yield_pct != null ? ` <span class="pf-sub">${x.yield_pct}%</span>` : ''}</span></div>`;
   }).join('');
-  const ipoRows = (d.ipos || []).slice(0, 25).map(x => {
+  const ipoRows = ipoList.slice(0, corpShowAll.ipo ? 60 : CORP_ROWS).map(x => {
     const up = x.status === 'upcoming';
     return `<div class="hx-row" style="cursor:default"><span class="tk">${escH(x.ticker || '—')}</span>
       <span class="who" title="${escH(x.exchange || '')}">${escH(x.name || '')}</span>
@@ -7381,6 +7565,7 @@ function renderCorpCalendar(){
   el.innerHTML = `<div class="hx-card">
       <div class="hx-head"><span class="hx-title">${en ? 'Ex-dividend dates · 30 days' : 'תאריכי אקס-דיבידנד · 30 יום'}</span></div>
       ${divRows || `<div class="movers-empty">${en ? 'No ex-dividend dates in the next 30 days yet (filled by the full scan).' : 'אין עדיין תאריכי אקס ב-30 הימים הקרובים (מתמלא בסריקה המלאה).'}</div>`}
+      ${more('div', divList)}
       <div class="hx-note">${en
         ? 'To get a dividend you must own the stock before the ex-date. Amount = the last declared payment; the % = annual dividend ÷ price. Source: Yahoo Finance.'
         : 'כדי לקבל דיבידנד צריך להחזיק במניה לפני יום האקס. הסכום = התשלום האחרון שהוכרז; האחוז = הדיבידנד השנתי ÷ המחיר. מקור: Yahoo Finance.'}</div>
@@ -7388,6 +7573,7 @@ function renderCorpCalendar(){
     <div class="hx-card">
       <div class="hx-head"><span class="hx-title">${en ? 'IPOs · recent and upcoming' : 'הנפקות · אחרונות וקרובות'}</span></div>
       ${ipoRows || `<div class="movers-empty">${en ? 'The IPO calendar is not available right now.' : 'לוח ההנפקות לא זמין כרגע.'}</div>`}
+      ${more('ipo', ipoList)}
       <div class="hx-note">${en
         ? 'Amber = expected pricing date and price range; the rest were priced at that price. SPACs are left out. Source: Nasdaq.'
         : 'בענבר = תאריך התמחור הצפוי וטווח המחיר; השאר כבר תומחרו במחיר הזה. בלי חברות SPAC. מקור: Nasdaq.'}</div>
@@ -7879,7 +8065,11 @@ function applyLang(){
   // The layout is always left-to-right in both languages. Hebrew text gets its own right-to-left direction (see hebDir).
   document.documentElement.setAttribute('dir', 'ltr');
   document.documentElement.setAttribute('lang', lang === 'he' ? 'he' : 'en');
-  document.title = lang==='en' ? 'Swing Desk — Real-time trading dashboard' : 'Swing Desk — דשבורד מסחר';
+  // v26: applyLang runs every 20 s — on a stock page (/stock/KO) keep the stock's title, don't reset it
+  const _stockPath = location.pathname.match(/^\/stock\/([^\/]+)/);
+  document.title = _stockPath && currentPage === 'deepdive'
+    ? `${decodeURIComponent(_stockPath[1])} — ${lang === 'en' ? 'stock analysis' : 'ניתוח מניה'} · Swing Desk`
+    : (lang==='en' ? 'Swing Desk — Real-time trading dashboard' : 'Swing Desk — דשבורד מסחר');
   document.getElementById('header-sub').textContent = t.sub;
   document.getElementById('search-input').placeholder = t.search_placeholder;
   document.getElementById('search-input-mobile').placeholder = t.search_placeholder;
@@ -7903,6 +8093,9 @@ function applyLang(){
   document.getElementById('bnav-deepdive').textContent = lang==='en' ? 'Analyze' : 'ניתוח מניה';
   document.getElementById('bnav-backtest').textContent = lang==='en' ? 'Track record' : 'ביצועים';
   document.getElementById('page-nav-portfolio').textContent = lang==='en' ? 'My portfolio' : 'התיק שלי';      // v24
+  const _tb = document.getElementById('tour-btn');                                                              // v26
+  if(_tb){ _tb.title = lang==='en' ? 'A short guide to the site' : 'מדריך קצר לאתר'; _tb.setAttribute('aria-label', _tb.title); }
+  if(typeof tourStep !== 'undefined' && tourStep >= 0) renderTourCard();
   document.getElementById('bnav-portfolio').textContent = lang==='en' ? 'Portfolio' : 'התיק שלי';
   document.getElementById('pf-view-btn-open').textContent = lang==='en' ? 'Open positions' : 'התיק שלי';
   document.getElementById('pf-view-btn-journal').textContent = lang==='en' ? 'Trade journal' : 'יומן עסקאות';
@@ -7937,8 +8130,10 @@ function applyLang(){
   if(backtestLastData && document.getElementById('backtest-content')) renderBacktestContent(backtestLastData);
   renderMarketTicker();
   if(lastEarningsCalItems) renderEarningsCalendar(lastEarningsCalItems);
-  document.getElementById('pulse-view-btn-events').textContent = lang==='en' ? 'Market Events' : 'אירועי שוק';
-  document.getElementById('pulse-view-btn-overview').textContent = lang==='en' ? 'Market Overview' : 'מצב השוק';
+  document.getElementById('pulse-view-btn-events').textContent = lang==='en' ? 'Economic calendar' : 'לוח כלכלי';
+  document.getElementById('pulse-view-btn-overview').textContent = lang==='en' ? 'Market state' : 'מצב השוק';
+  document.getElementById('pulse-view-btn-stocks').textContent = lang==='en' ? 'Stocks and funds' : 'מניות וקרנות';      // v26
+  document.getElementById('pulse-view-btn-cal').textContent = lang==='en' ? 'Earnings and dividends' : 'דוחות ודיבידנדים';
   if(econLoaded){ econSetHeader(); renderEconActive(); }
   document.getElementById('bt-view-btn-demo').textContent = lang==='en' ? 'Demo Portfolio' : 'תיק דמו';
   document.getElementById('bt-view-btn-stats').textContent = lang==='en' ? 'Signal Statistics' : 'סטטיסטיקת איתותים';
@@ -8068,6 +8263,7 @@ const hebDir = (function(){
 })();
 
 restoreSnapshot();          // v20c: draw the last saved data at once, then refresh from the server
+maybeStartTour();           // v26: the short guide, on the first visit only
 loadFromApi();
 setInterval(loadFromApi, 20000);
 loadMarketMovers();

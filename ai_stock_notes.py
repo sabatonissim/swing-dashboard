@@ -28,8 +28,15 @@ import llm_provider
 MAX_STOCKS = 45
 NOTE_MAX_CHARS = 900
 # advice words the note must never contain (the site describes, it does not recommend)
-_BANNED = re.compile(r"\b(buy|sell|should|recommend|strong buy|price target of ours)\b|לקנות|למכור|כדאי|ממליצ|המלצת קנייה|המלצת מכירה",
+_BANNED = re.compile(r"\b(buy|sell|should|recommend|strong buy|price target of ours|cheap|expensive|undervalued|overvalued|attractive)\b"
+                     r"|לקנות|למכור|כדאי|ממליצ|המלצת קנייה|המלצת מכירה|אטרקטיב|ריבית short|ריבית שורט|מכירות פנימיות"
+                     r"|(?<![א-ת])(זולה?|יקרה?|זולות|יקרות)(?![א-ת])",          # whole words only ("בעיקר" is fine)
                      re.I)
+# v25b (seen live 30.10: "the P/E is low", "ריבית short", "מהציפה", "מכירות פנימיות", "Stage 2" in Hebrew): no value
+# judgements about numbers, and the site's own Hebrew terms
+_VALUE_WORDS = re.compile(r"\b(p/?e|multiple|valuation)\b(?:[^.]|\.(?=\d)){0,30}\b(is )?(low|high)\b"   # "PE 14.7 is low"
+                          r"|\b(low|high) (p/?e|multiple|valuation)\b"
+                          r"|מכפיל(?:[^.]|\.(?=\d)){0,40}(נמוך|גבוה)", re.I)
 
 SYSTEM = (
     "You write short factual summaries of a US stock for a swing-trading dashboard, in Hebrew and in English. "
@@ -38,7 +45,14 @@ SYSTEM = (
     "being cheap or expensive. Mention what stands out: the trend and the scanner signal if any, strength vs. the "
     "market (RS), notable fundamentals (growth, margins, P/E), and risk facts (earnings within days, high short "
     "interest, insider selling, the market state). 3 to 5 short sentences per language, plain words, no lists, no "
-    "markdown. Hebrew: natural Israeli Hebrew, keep tickers and numbers as they are. "
+    "markdown. Never call a number low, high, cheap or expensive (write 'P/E 14.7', not 'a low P/E of 14.7'); "
+    "you may compare only with another number in the facts (e.g. 'RS 83 = stronger than 83% of scanned stocks'). "
+    "Hebrew: natural Israeli Hebrew, keep tickers and numbers as they are, and use exactly these terms: "
+    "Stage 2 = 'מגמה עולה (שלב 2)', Stage 1 = 'בסיס (שלב 1)', Stage 3 = 'היפוך אפשרי (שלב 3)', "
+    "Stage 4 = 'מגמה יורדת (שלב 4)'; short interest = 'שורט', '% of float' = 'מהמניות הצפות'; "
+    "insider sales/buys = 'מכירות/קניות של בעלי עניין'; trailing P/E = 'מכפיל רווח (12 חודשים אחרונים)'; "
+    "forward P/E = 'מכפיל רווח עתידי'; 52-week high = 'השיא השנתי'; revenue = 'הכנסות'; earnings report = 'דוח רבעוני'. "
+    "No English words in the Hebrew text except tickers, 'RS' and 'VIX'. "
     'Answer with JSON only: {"he": "...", "en": "..."}'
 )
 
@@ -170,7 +184,11 @@ def _validate(text):
     if len(he) > NOTE_MAX_CHARS or len(en) > NOTE_MAX_CHARS:
         raise ValueError("too long")
     if _BANNED.search(he) or _BANNED.search(en):
-        raise ValueError("advice wording")
+        raise ValueError("advice or wrong-term wording")
+    if _VALUE_WORDS.search(he) or _VALUE_WORDS.search(en):
+        raise ValueError("value judgement about a number")
+    if re.search(r"\b(stage|trailing|forward|short interest|insider|float)\b", he, re.I):
+        raise ValueError("English term left in the Hebrew text")
     return d
 
 
