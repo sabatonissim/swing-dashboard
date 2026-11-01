@@ -2473,7 +2473,29 @@ function renderDeepDive(quote, sector, signals, news){
   }
   html += `</div>`;   // /news
 
-  el.innerHTML = html;
+  // v26f (owner: "it got stuck again when I switched from English to Hebrew"): a language switch redraws this page,
+  // which used to throw the TradingView chart away and build a new one — and that rebuild is when TradingView sometimes
+  // lays its chart out at the wrong size. Now, for the same stock and theme, the existing chart stays in the page
+  // untouched (an iframe that leaves the document is reloaded, so it is never moved out) and only the rest is redrawn.
+  // Its own toolbar keeps the previous language until the next stock is opened.
+  const oldWrap = el.querySelector(':scope > .dd-chart-wrap');
+  const oldBox = oldWrap && oldWrap.querySelector('#dd-tv-chart');
+  const keepChart = !!(oldBox && oldBox.querySelector('iframe') && _ddChartTicker === quote.ticker
+                       && (oldBox.dataset.tvKey || '').split('|')[1] === tvTheme());
+  if(keepChart){
+    const tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    const newWrap = tmp.querySelector(':scope > .dd-chart-wrap');
+    Array.from(el.childNodes).forEach(n => { if(n !== oldWrap) n.remove(); });
+    let beforeChart = true;
+    Array.from(tmp.childNodes).forEach(n => {
+      if(n === newWrap){ beforeChart = false; return; }
+      if(beforeChart) el.insertBefore(n, oldWrap); else el.appendChild(n);
+    });
+    oldBox.dataset.tvKey = quote.ticker + '|' + tvTheme() + '|' + lang;    // so _ddMountChart below keeps it
+  } else {
+    el.innerHTML = html;
+  }
   renderDeepDivePeCard(); // fills in the NTM/LTM P/E stat card built above
   renderDeepDiveSectorSection(sector); // fills in dd-sector-compare-section built above
 
