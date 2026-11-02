@@ -210,8 +210,15 @@ def build_scan_universe() -> List[str]:
 # prices. Same detectors, RS rating and leaders table; no .info -> no analyst estimates / short interest for them.
 # ------------------------------------------------------------------
 NASDAQ_SCREENER_URL = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=10000&exchange={ex}&download=true"
-EXTRA_MIN_MARKET_CAP = 2_000_000_000
-EXTRA_MIN_DOLLAR_VOLUME = 20_000_000       # 20-day average daily dollar volume (checked on the downloaded prices)
+# v27 (owner, after the first wide scan: "so many stocks I never heard of"): $10B+ and $50M a day — ~860 stocks in
+# all (was $2B / $20M = ~1,800, many small unknown names)
+EXTRA_MIN_MARKET_CAP = 10_000_000_000
+EXTRA_MIN_DOLLAR_VOLUME = 50_000_000       # 20-day average daily dollar volume (checked on the downloaded prices)
+# ...OR a heavily traded name of $2B+ (owner: OKLO, CIFR, HIMS, RIOT — well known, not in the indexes): the market's
+# own measure of "well known" is how much money changes hands. $150M a day on average, ~100 more names.
+POPULAR_MIN_MARKET_CAP = 2_000_000_000
+POPULAR_MIN_DOLLAR_VOLUME = 150_000_000
+LIQUID_MIN_DOLLAR_VOLUME = 20_000_000      # the core list's liquidity filter: 1.5M shares OR this much a day
 EXTRA_EXCHANGES = {"nasdaq": "NMS", "nyse": "NYQ"}   # Yahoo's codes, so passes_liquidity_and_cap_filter accepts them
 EXTRA_CHUNK = 100
 _NASDAQ_SECTOR_TO_YAHOO = {   # the site's sector filter uses Yahoo's names
@@ -244,12 +251,15 @@ def fetch_extra_universe(core: set) -> Dict[str, dict]:
                 continue                      # preferreds / warrants / units carry ^ or / in the symbol
             mcap = _nasdaq_num(row.get("marketCap")) or 0
             price = _nasdaq_num(row.get("lastsale")) or 0
-            if mcap < EXTRA_MIN_MARKET_CAP or price < MIN_PRICE:
+            dv_today = price * (_nasdaq_num(row.get("volume")) or 0)
+            # a loose first cut on TODAY's volume (keeps the download small); the 20-day average decides in the scan
+            if price < MIN_PRICE or mcap < POPULAR_MIN_MARKET_CAP or (mcap < EXTRA_MIN_MARKET_CAP and dv_today < 50_000_000):
                 continue
             name = _NAME_SUFFIX_RE.sub("", str(row.get("name") or "").strip()) or None
             out[sym] = {"marketCap": mcap, "exchange": code, "shortName": name,
                         "sector": _NASDAQ_SECTOR_TO_YAHOO.get(str(row.get("sector") or "").strip())}
-    print(f"[info] extra universe: {len(out)} more US stocks of ${EXTRA_MIN_MARKET_CAP / 1e9:.0f}B+ beyond the core list")
+    print(f"[info] extra universe: {len(out)} candidate(s) beyond the core list (${EXTRA_MIN_MARKET_CAP / 1e9:.0f}B+, "
+          f"or ${POPULAR_MIN_MARKET_CAP / 1e9:.0f}B+ and heavily traded — the 20-day average decides)")
     return out
 
 
@@ -339,7 +349,7 @@ def passes_liquidity_and_cap_filter(ticker: str, info: dict, hist: pd.DataFrame)
     if price < MIN_PRICE:
         return False
     # v27: OR $20M a day — a $500 stock trading 300K shares ($150M a day) is liquid, the share count alone cut it out
-    if avg_vol_20d < MIN_AVG_VOLUME_20D and avg_vol_20d * price < EXTRA_MIN_DOLLAR_VOLUME:
+    if avg_vol_20d < MIN_AVG_VOLUME_20D and avg_vol_20d * price < LIQUID_MIN_DOLLAR_VOLUME:
         return False
     if market_cap < MIN_MARKET_CAP:
         return False
@@ -1596,8 +1606,10 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
                 continue
             hist, info = extra_hist[ticker], extra_info[ticker]
             tail = hist.tail(20)
-            if not float((tail["Close"] * tail["Volume"]).mean()) >= EXTRA_MIN_DOLLAR_VOLUME:
-                continue                       # big but thinly traded — not for this scan
+            dollar_vol = float((tail["Close"] * tail["Volume"]).mean())
+            big = (info.get("marketCap") or 0) >= EXTRA_MIN_MARKET_CAP and dollar_vol >= EXTRA_MIN_DOLLAR_VOLUME
+            if not (big or dollar_vol >= POPULAR_MIN_DOLLAR_VOLUME):
+                continue                       # neither large nor heavily traded — not for this scan
         elif core_aborted:
             continue
         try:
