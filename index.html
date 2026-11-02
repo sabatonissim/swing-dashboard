@@ -4843,7 +4843,7 @@ async function translateHeBrowser(text){
   }
 }
 
-function closeDrawer(){ const o = document.getElementById("overlay"); o.classList.remove("open"); o.style.zIndex = ''; articlePreviewToken++; destroyFundCharts(); }
+function closeDrawer(){ const o = document.getElementById("overlay"); o.classList.remove("open"); o.style.zIndex = ''; articlePreviewToken++; destroyFundCharts('fundamentals-section'); }
 document.getElementById("overlay").addEventListener("click", e=>{ if(e.target.id==="overlay") closeDrawer(); });
 
 // ---- TradingView chart in drawer ----
@@ -4885,10 +4885,12 @@ async function loadStockNews(ticker){
 }
 
 // ---- Fundamentals (quarterly financials, EPS surprises, P/E band) ----
-let activeFundCharts = [];
-function destroyFundCharts(){
-  activeFundCharts.forEach(c=>{ try{ c.destroy(); }catch(e){} });
-  activeFundCharts = [];
+let activeFundCharts = [];   // [{chart, box}] — box = the container id (drawer or analysis page)
+// v27: only the charts of ONE container — redrawing the analysis page (every 20 s via applyLang) or closing the drawer
+// used to destroy the other one's charts too
+function destroyFundCharts(box){
+  activeFundCharts.filter(c => !box || c.box === box).forEach(c=>{ try{ c.chart.destroy(); }catch(e){} });
+  activeFundCharts = box ? activeFundCharts.filter(c => c.box !== box) : [];
 }
 
 // A chart needs ~46px per data point. Up to 6 points fit in a ~300px card, so
@@ -4905,7 +4907,7 @@ function fundCanvasWidth(canvas, points, perPoint){
 }
 
 function fundChartCanvas(id){
-  return `<div class="fund-scroll"><canvas id="${id}" style="display:block;"></canvas></div>`;
+  return `<div class="fund-scroll"><canvas data-fc="${id}" style="display:block;"></canvas></div>`;   // v27: no id — the drawer and the analysis page both show these (duplicate ids drew the drawer's charts into the hidden page)
 }
 
 // Fund charts are often wider than their container (one column per quarter)
@@ -5614,7 +5616,8 @@ function renderFundamentals(data, containerId){
   containerId = containerId || "fundamentals-section";
   const el = document.getElementById(containerId);
   if(!el) return;
-  destroyFundCharts();
+  destroyFundCharts(containerId);
+  const fundCanvas = id => el.querySelector(`canvas[data-fc="${id}"]`);   // this container's canvas only (v27)
   const t = lang==='en';
   // v26d: drawn inside the hidden "Fundamentals" tab of the analysis page -> draw again when that tab opens
   if(containerId === 'dd-fundamentals-section') _ddFundDrawnHidden = el.offsetWidth === 0;
@@ -5724,13 +5727,13 @@ function renderFundamentals(data, containerId){
   function safeChart(ctx, config){
     if(!ctx) return;
     try {
-      activeFundCharts.push(new Chart(ctx, config));
+      activeFundCharts.push({chart: new Chart(ctx, config), box: containerId});
     } catch(e) {
       console.error('[fundamentals] chart render failed for', ctx.id, e);
     }
   }
 
-  const revCtx = document.getElementById('chart-rev-ni-fcf');
+  const revCtx = fundCanvas('chart-rev-ni-fcf');
   if(revCtx){
     revCtx.width = fundCanvasWidth(revCtx, n); revCtx.height = 150;
     safeChart(revCtx, {
@@ -5745,7 +5748,7 @@ function renderFundamentals(data, containerId){
     scrollFundChartToEnd(revCtx);
   }
 
-  const marginCtx = document.getElementById('chart-margin');
+  const marginCtx = fundCanvas('chart-margin');
   if(marginCtx && data.margin_labels && data.margin_labels.length){
     marginCtx.width = fundCanvasWidth(marginCtx, data.margin_labels.length); marginCtx.height = 150;
     safeChart(marginCtx, {
@@ -5758,7 +5761,7 @@ function renderFundamentals(data, containerId){
     scrollFundChartToEnd(marginCtx);
   }
 
-  const debtCtx = document.getElementById('chart-netdebt');
+  const debtCtx = fundCanvas('chart-netdebt');
   if(debtCtx && data.debt_labels && data.debt_labels.length){
     debtCtx.width = fundCanvasWidth(debtCtx, data.debt_labels.length); debtCtx.height = 150;
     safeChart(debtCtx, {
@@ -5771,7 +5774,7 @@ function renderFundamentals(data, containerId){
     scrollFundChartToEnd(debtCtx);
   }
 
-  const epsCtx = document.getElementById('chart-eps');
+  const epsCtx = fundCanvas('chart-eps');
   if(epsCtx && data.eps_labels && data.eps_labels.length){
     epsCtx.width = fundCanvasWidth(epsCtx, data.eps_labels.length); epsCtx.height = 150;
     safeChart(epsCtx, {
@@ -5785,7 +5788,7 @@ function renderFundamentals(data, containerId){
     scrollFundChartToEnd(epsCtx);
   }
 
-  const epsActualOnlyCtx = document.getElementById('chart-eps-actual-only');
+  const epsActualOnlyCtx = fundCanvas('chart-eps-actual-only');
   if(epsActualOnlyCtx && data.diluted_eps_labels && data.diluted_eps_labels.length){
     epsActualOnlyCtx.width = fundCanvasWidth(epsActualOnlyCtx, data.diluted_eps_labels.length); epsActualOnlyCtx.height = 150;
     safeChart(epsActualOnlyCtx, {
@@ -5798,7 +5801,7 @@ function renderFundamentals(data, containerId){
     scrollFundChartToEnd(epsActualOnlyCtx);
   }
 
-  const peCtx = document.getElementById('chart-pe');
+  const peCtx = fundCanvas('chart-pe');
   if(peCtx && data.pe_band){
     const pb = data.pe_band;
     peCtx.width = Math.max(pb.dates.length * 4, 280); peCtx.height = 150;
