@@ -569,6 +569,21 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .earn-tk{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:13.5px;}
   .earn-name{font-size:11.5px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .earn-im{font-size:10.5px;color:var(--sky);white-space:nowrap;}
+  /* v27 today's focus */
+  .focus-box{border:1px solid var(--amber);border-radius:10px;padding:10px 12px;margin-bottom:14px;background:var(--panel);}
+  .focus-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px;font-size:13.5px;}
+  .focus-head .dim{font-size:11.5px;color:var(--text-dim);}
+  .focus-more{margin-left:auto;background:none;border:1px solid var(--line);border-radius:6px;color:var(--text-dim);font-size:11px;padding:3px 8px;cursor:pointer;font-family:'Heebo',sans-serif;}
+  .focus-row{display:flex;align-items:baseline;gap:10px;padding:7px 4px;border-top:1px solid var(--line);cursor:pointer;}
+  .focus-row:hover{background:var(--panel-2);}
+  .focus-tk{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:13.5px;min-width:52px;}
+  .focus-why{font-size:11.5px;color:var(--text-dim);line-height:1.45;}
+  .focus-empty,.focus-rec{font-size:12px;color:var(--text-dim);line-height:1.5;padding:6px 2px 0;}
+  .focus-details{font-size:12px;line-height:1.55;color:var(--text-dim);border-top:1px dashed var(--line);margin-top:8px;padding-top:8px;}
+  .focus-table{width:100%;border-collapse:collapse;margin-top:8px;font-size:11.5px;}
+  .focus-table th,.focus-table td{padding:3px 4px;text-align:center;border-bottom:1px solid var(--line);}
+  .earn-more{display:block;width:100%;margin:4px 0 8px;padding:8px;border:1px dashed var(--line);border-radius:8px;background:none;color:var(--text-dim);font-size:12px;cursor:pointer;font-family:'Heebo',sans-serif;}
+  .earn-more:hover{color:var(--text);border-color:var(--text-dim);}
   .earn-im b{font-family:'JetBrains Mono',monospace;font-weight:600;}
   .earn-fig{flex:0 0 96px;display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-family:'JetBrains Mono',monospace;}
   .earn-fig .k{font-size:9.5px;color:var(--text-dim);font-family:'Heebo',sans-serif;}
@@ -1057,7 +1072,8 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
 <!-- Main Board -->
 <div class="board">
   <div class="col right">
-    <div class="col-title"><span class="dot"></span> איתותי הסורק</div>
+    <div class="col-title"><span class="dot"></span> סריקות</div>
+    <div id="focus-wrap"></div>
     <div class="scan-pattern-filter" id="scan-pattern-filter"></div>
     <div class="scan-adv" id="scan-adv" style="display:none;"></div>
     <div id="stocks"></div>
@@ -1172,7 +1188,7 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   <div class="pulse-page-wrap">
     <div class="pulse-view-switch">
       <button class="pulse-view-btn active" id="bt-view-btn-demo" onclick="setBtView('demo')">תיק דמו</button>
-      <button class="pulse-view-btn" id="bt-view-btn-stats" onclick="setBtView('stats')">סטטיסטיקת איתותים</button>
+      <button class="pulse-view-btn" id="bt-view-btn-stats" onclick="setBtView('stats')">סטטיסטיקת סריקות</button>
     </div>
 
     <!-- View 1: demo portfolio (the historical test as a paper-trading account) -->
@@ -1290,7 +1306,7 @@ function winRateBadgeHtml(patternType){
   const color = wr>=55 ? 'var(--green)' : wr>=45 ? 'var(--amber)' : 'var(--red)';
   const title = lang==='en'
     ? `${patternType}: profitable ${wr}% of the time historically (${stat.n} past signals)`
-    : `${patternType}: רווחי ב-${wr}% מהמקרים היסטורית (${stat.n} איתותים קודמים)`;
+    : `${patternType}: רווחי ב-${wr}% מהמקרים היסטורית (${stat.n} סריקות קודמות)`;
   return `<div class="win-rate-badge" style="color:${color};border-color:${color}" title="${title}">${wr}%</div>`;
 }
 
@@ -1434,12 +1450,12 @@ function renderScanAdv(shown, total){
       ${sel('cap', en ? 'Market cap' : 'שווי שוק', [[0, any], [2e9, en ? 'Over $2B' : 'מעל 2 מיליארד $'], [10e9, en ? 'Over $10B' : 'מעל 10 מיליארד $'], [50e9, en ? 'Over $50B' : 'מעל 50 מיליארד $'], [200e9, en ? 'Over $200B' : 'מעל 200 מיליארד $']])}
       ${sel('stage2', en ? 'Trend' : 'מגמה', [[false, any], [true, en ? 'Uptrend only (Stage 2)' : 'רק מגמה עולה (שלב 2)']])}
       ${sel('earn', en ? 'Earnings report' : 'דוח רבעוני', [['any', any], ['none7', en ? 'No report in the next 7 days' : 'בלי דוח ב-7 הימים הקרובים'], ['soon7', en ? 'Report within 7 days' : 'דוח בתוך 7 ימים']])}
-      ${sel('vol', en ? 'Volume on the signal day' : 'מחזור ביום האיתות', [[0, any], [50, en ? '1.5× the 20-day average or more' : 'פי 1.5 מהממוצע ומעלה'], [100, en ? '2× the 20-day average or more' : 'פי 2 מהממוצע ומעלה']])}
-      ${sel('move', en ? 'Change on the signal day' : 'שינוי ביום האיתות', [['any', any], ['up', en ? 'Up' : 'עלתה'], ['down', en ? 'Down' : 'ירדה']])}
+      ${sel('vol', en ? 'Volume on the signal day' : 'מחזור ביום הסריקה', [[0, any], [50, en ? '1.5× the 20-day average or more' : 'פי 1.5 מהממוצע ומעלה'], [100, en ? '2× the 20-day average or more' : 'פי 2 מהממוצע ומעלה']])}
+      ${sel('move', en ? 'Change on the signal day' : 'שינוי ביום הסריקה', [['any', any], ['up', en ? 'Up' : 'עלתה'], ['down', en ? 'Down' : 'ירדה']])}
       ${sel('insider', en ? 'Insiders (30 days)' : 'בעלי עניין (30 יום)', [[false, any], [true, en ? 'Insiders bought shares' : 'בעלי עניין קנו מניות']])}
-      ${sel('sort', en ? 'Sort by' : 'מיון לפי', [['rank', en ? 'Default ranking' : 'דירוג רגיל'], ['rs', en ? 'RS rating' : 'דירוג RS'], ['change', en ? 'Change on the signal day' : 'שינוי ביום האיתות'], ['vol', en ? 'Volume vs. average' : 'מחזור מול הממוצע'], ['cap', en ? 'Market cap' : 'שווי שוק'], ['score', en ? 'Signal score' : 'ציון האיתות']])}
+      ${sel('sort', en ? 'Sort by' : 'מיון לפי', [['rank', en ? 'Default ranking' : 'דירוג רגיל'], ['rs', en ? 'RS rating' : 'דירוג RS'], ['change', en ? 'Change on the signal day' : 'שינוי ביום הסריקה'], ['vol', en ? 'Volume vs. average' : 'מחזור מול הממוצע'], ['cap', en ? 'Market cap' : 'שווי שוק'], ['score', en ? 'Signal score' : 'ציון הסריקה']])}
     </div>
-    <div class="scan-adv-foot"><span>${en ? `${shown} of ${total} signals shown` : `מוצגים ${shown} מתוך ${total} איתותים`}</span><button onclick="resetScanFilters()">${en ? 'Clear' : 'ניקוי'}</button></div>`;
+    <div class="scan-adv-foot"><span>${en ? `${shown} of ${total} signals shown` : `מוצגות ${shown} מתוך ${total} סריקות`}</span><button onclick="resetScanFilters()">${en ? 'Clear' : 'ניקוי'}</button></div>`;
 }
 
 function setScanPatternFilter(p){
@@ -1474,7 +1490,7 @@ function renderStocks(){
     .filter(i => activeScanSector==='all' || stocks[i].sector===activeScanSector)
     .filter(i => scanPasses(stocks[i])));                                  // v23 filters
   renderScanAdv(visibleIdx.length, stocks.length);
-  if(!visibleIdx.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${!stocks.length && apiLoadState!=='ok' ? apiWaitMsg() : stocks.length ? (lang==='en' ? 'No signals match this filter.' : 'אין איתותים שמתאימים לסינון הזה.') : UI[lang].no_stocks}</div>`; return; }
+  if(!visibleIdx.length){ el.innerHTML=`<div style="color:var(--text-dim);padding:20px;text-align:center;">${!stocks.length && apiLoadState!=='ok' ? apiWaitMsg() : stocks.length ? (lang==='en' ? 'No signals match this filter.' : 'אין סריקות שמתאימות לסינון הזה.') : UI[lang].no_stocks}</div>`; return; }
 
   const recent = [], previous = [];
   visibleIdx.forEach(i=>{ (stocks[i].isRecent===false ? previous : recent).push(i); });
@@ -1492,7 +1508,7 @@ function renderStocks(){
   }
   if(phoneCut){
     const n = recent.length + previous.length;
-    html += `<button class="scan-more-btn" onclick="scanShowAll=true;renderStocks();">${lang==='en' ? `Show all ${n} signals` : `הצג את כל ${n} האיתותים`}</button>`;
+    html += `<button class="scan-more-btn" onclick="scanShowAll=true;renderStocks();">${lang==='en' ? `Show all ${n} signals` : `הצג את כל ${n} הסריקות`}</button>`;
   } else if(previous.length){
     const collapsed = collapsedStockGroups.previous;
     html += `<div class="stock-group-title previous" onclick="toggleStockGroup('previous')">
@@ -1796,7 +1812,7 @@ function renderPatternStatsBlurb(patternType){
   const color = wr>=55 ? 'var(--green)' : wr>=45 ? 'var(--amber)' : 'var(--red)';
   const text = t
     ? `Historically, this pattern was profitable ${wr}% of the time over the next 10 trading days (avg ${avg>=0?'+':''}${avg}%), based on ${n} past signals from our own scans.`
-    : `מבחינה היסטורית, התבנית הזו הייתה רווחית ב-${wr}% מהמקרים תוך 10 ימי מסחר (ממוצע ${avg>=0?'+':''}${avg}%), על בסיס ${n} איתותים קודמים מהסריקות שלנו.`;
+    : `מבחינה היסטורית, התבנית הזו הייתה רווחית ב-${wr}% מהמקרים תוך 10 ימי מסחר (ממוצע ${avg>=0?'+':''}${avg}%), על בסיס ${n} סריקות קודמות שלנו.`;
   return `<div class="pattern-stats-blurb" style="border-color:${color}"><span style="color:${color};font-weight:700;">${wr}%</span> ${text}</div>`;
 }
 
@@ -1935,12 +1951,12 @@ function renderBacktestPatternSummary(){
     <div class="dd-section-title">${t?`Pattern Comparison (${backtestHorizon}d)`:`השוואת תבניות (${backtestHorizon} ימים)`}</div>
     <div style="font-size:11px;color:var(--text-dim);margin:-4px 0 8px;">${t
       ? 'Independent signals only: the same stock + pattern is counted once per holding period, so repeated scans do not inflate the numbers.'
-      : 'רק איתותים בלתי-תלויים: אותה מניה + תבנית נספרת פעם אחת בכל תקופת החזקה, כך שסריקות חוזרות לא מנפחות את המספרים.'}</div>
+      : 'רק סריקות בלתי-תלויות: אותה מניה + תבנית נספרת פעם אחת בכל תקופת החזקה, כך שסריקות חוזרות לא מנפחות את המספרים.'}</div>
     <div style="overflow-x:auto;margin-bottom:16px;">
       <table class="bt-signals-table">
         <thead><tr>
           <th>${t?'Pattern':'תבנית'}</th>
-          <th>${t?'Signals':'איתותים'}</th>
+          <th>${t?'Scans':'סריקות'}</th>
           <th>${t?'Win Rate':'אחוז הצלחה'}</th>
           <th>${t?'Avg Return':'תשואה ממוצעת'}</th>
         </tr></thead>
@@ -1986,8 +2002,8 @@ function renderBacktestContent(data){
 
   if(!data.n || data.n === 0){
     el.innerHTML = `<div class="bt-empty">${t
-      ? "No resolved signals yet for this selection. Signals need to \"mature\" (10–20 trading days) after being scanned before they count here — check back as scan history builds up."
-      : 'אין עדיין איתותים שהבשילו עבור הבחירה הזו. איתותים צריכים "להבשיל" (10–20 ימי מסחר) אחרי שנסרקו כדי להיספר כאן — חזור לבדוק ככל שנצברת היסטוריית סריקה.'}</div>`;
+      ? "No resolved scans yet for this selection. Scans need to \"mature\" (10–20 trading days) after being scanned before they count here. The statistics count only scans from 3.11.2026 on — the scanner's rules were rebuilt then (quality filter, first breakouts only), and the older results described rules that no longer exist."
+      : 'אין עדיין סריקות שהבשילו עבור הבחירה הזו. סריקות צריכות "להבשיל" (10–20 ימי מסחר) אחרי שנסרקו כדי להיספר כאן. הסטטיסטיקה נספרת רק מסריקות מ-3.11.2026 והלאה — אז נבנו מחדש כללי הסורק (סינון איכות, רק פריצות ראשונות), והתוצאות הישנות תיארו כללים שכבר לא קיימים.'}</div>`;
     return;
   }
 
@@ -2002,15 +2018,15 @@ function renderBacktestContent(data){
   const thinBanner = sm.thin ? `
     <div class="bt-warn">${t
       ? `Thin sample: ${data.n} independent signals from only ${sm.distinct_days} scan day${sm.distinct_days===1?'':'s'} (${sm.first_date} → ${sm.last_date}). That is a snapshot of one market stretch, not statistical proof — treat these numbers as a first look, and let the history build up.`
-      : `מדגם דל: ${data.n} איתותים בלתי-תלויים מ-${sm.distinct_days} ימי סריקה בלבד (${sm.first_date} ← ${sm.last_date}). זו תמונת מצב של פרק שוק אחד ולא הוכחה סטטיסטית — להתייחס למספרים כמבט ראשוני, ולתת להיסטוריה להצטבר.`}</div>` : '';
+      : `מדגם דל: ${data.n} סריקות בלתי-תלויות מ-${sm.distinct_days} ימי סריקה בלבד (${sm.first_date} ← ${sm.last_date}). זו תמונת מצב של פרק שוק אחד ולא הוכחה סטטיסטית — להתייחס למספרים כמבט ראשוני, ולתת להיסטוריה להצטבר.`}</div>` : '';
   const extremeNote = data.extreme_returns ? `<div style="font-size:11px;color:var(--text-dim);margin:0 2px 10px;">${t
       ? `${data.extreme_returns} signal(s) moved 50%+ (possible splits / one-off events) — the median is a safer read than the average here.`
-      : `${data.extreme_returns} איתותים זזו 50%+ (ייתכנו פיצולי מניה/אירועים חריגים) — החציון אמין יותר מהממוצע במקרה כזה.`}</div>` : '';
+      : `ב-${data.extreme_returns} סריקות המניה זזה 50%+ (ייתכנו פיצולי מניה/אירועים חריגים) — החציון אמין יותר מהממוצע במקרה כזה.`}</div>` : '';
 
   let html = `
     ${thinBanner}
     <div class="bt-stats-row">
-      <div class="bt-stat-card"><div class="k">${t?'Independent signals':'איתותים בלתי-תלויים'}</div><div class="v">${data.n}</div><div class="sub">${t?`of ${data.n_raw} raw rows`:`מתוך ${data.n_raw} שורות גולמיות`}</div></div>
+      <div class="bt-stat-card"><div class="k">${t?'Independent signals':'סריקות בלתי-תלויות'}</div><div class="v">${data.n}</div><div class="sub">${t?`of ${data.n_raw} raw rows`:`מתוך ${data.n_raw} שורות גולמיות`}</div></div>
       <div class="bt-stat-card"><div class="k">${t?'Win Rate':'אחוז הצלחה'}</div><div class="v" style="color:${wrColor}">${wr}%</div></div>
       <div class="bt-stat-card"><div class="k">${t?'Avg Return':'תשואה ממוצעת'}</div><div class="v" style="color:${avgColor}">${fmtPct(data.avg_return)}</div></div>
       <div class="bt-stat-card"><div class="k">${t?'Median Return':'תשואה חציונית'}</div><div class="v" style="color:${medColor}">${fmtPct(data.median_return)}</div></div>
@@ -2022,7 +2038,7 @@ function renderBacktestContent(data){
     <div class="bt-chart-wrap"><canvas id="backtest-equity-canvas"></canvas></div>
     <div style="font-size:11px;color:var(--text-dim);margin:-6px 2px 14px;">${t
       ? `Equity curve: each scan day is one equal-weight basket of that day's independent signals, using 1/${data.horizon} of the account (so at most ${data.horizon} baskets overlap, like a real portfolio). Illustrative only — no stops, fees or slippage.`
-      : `עקומת הון: כל יום סריקה הוא סל אחד במשקל שווה של האיתותים הבלתי-תלויים של אותו יום, עם 1/${data.horizon} מההון (כך שלכל היותר ${data.horizon} סלים חופפים, כמו תיק אמיתי). להמחשה בלבד — בלי סטופים, עמלות או החלקה.`}</div>
+      : `עקומת הון: כל יום סריקה הוא סל אחד במשקל שווה של הסריקות הבלתי-תלויות של אותו יום, עם 1/${data.horizon} מההון (כך שלכל היותר ${data.horizon} סלים חופפים, כמו תיק אמיתי). להמחשה בלבד — בלי סטופים, עמלות או החלקה.`}</div>
   `;
 
   if(data.rs_breakdown && data.rs_breakdown.length){
@@ -2402,7 +2418,7 @@ function renderDeepDive(quote, sector, signals, news){
 
   html += `<div id="dd-sector-compare-section"></div>`;
 
-  html += `<div class="dd-section-title">${t?'Signal History':'היסטוריית איתותים'}</div>`;
+  html += `<div class="dd-section-title">${t?'Signal History':'היסטוריית סריקות'}</div>`;
   if(signals && signals.length){
     html += `
       <div style="overflow-x:auto;">
@@ -2429,7 +2445,7 @@ function renderDeepDive(quote, sector, signals, news){
       </div>
     `;
   } else {
-    html += `<div class="bt-empty">${t?'No past signals for this ticker in our scan history yet.':'אין עדיין איתותים קודמים לטיקר הזה בהיסטוריית הסריקות שלנו.'}</div>`;
+    html += `<div class="bt-empty">${t?'No past signals for this ticker in our scan history yet.':'אין עדיין סריקות קודמות לטיקר הזה בהיסטוריית הסריקות שלנו.'}</div>`;
   }
   html += `</div>`;   // /tech
 
@@ -2775,7 +2791,7 @@ function renderDemoControls(){
       <div class="demo-ctl-row"><span class="demo-ctl-label">${en?'Account size':'גודל התיק'}</span>${chips('capital',[10000,25000,100000],o=>'$'+o.toLocaleString())}</div>
       <div class="demo-rules">${en
         ? 'Rules: each scan day the portfolio buys the best-scoring signals (up to the daily limit) with a fixed amount, only if it has the cash and does not already hold the stock. It exits at the <b>stop</b> (support), at the <b>target</b> (resistance), or after <b>20 trading days</b> — whichever comes first. If one day touches both, the stop is assumed first. No fees or slippage.'
-        : 'הכללים: בכל יום סריקה התיק קונה את האיתותים עם הציון הגבוה ביותר (עד המגבלה היומית) בסכום קבוע — רק אם יש בו מזומן והוא עוד לא מחזיק את המניה. יציאה ב<b>סטופ</b> (תמיכה), ב<b>יעד</b> (התנגדות) או אחרי <b>20 ימי מסחר</b> — מה שקורה ראשון. אם ביום אחד נגעו בשניהם, מניחים שהסטופ קרה קודם. בלי עמלות והחלקה.'}</div>
+        : 'הכללים: בכל יום סריקה התיק קונה את הסריקות עם הציון הגבוה ביותר (עד המגבלה היומית) בסכום קבוע — רק אם יש בו מזומן והוא עוד לא מחזיק את המניה. יציאה ב<b>סטופ</b> (תמיכה), ב<b>יעד</b> (התנגדות) או אחרי <b>20 ימי מסחר</b> — מה שקורה ראשון. אם ביום אחד נגעו בשניהם, מניחים שהסטופ קרה קודם. בלי עמלות והחלקה.'}</div>
     </div>`;
 }
 
@@ -2794,7 +2810,7 @@ function renderDemoPortfolio(){
   if(!s.trades_total){
     el.innerHTML = `<div class="bt-warn">${en
       ? `No trades yet for these settings. ${sm.signals_pending_simulation ? `${sm.signals_pending_simulation} signals are still waiting for the scanner to simulate them — run the scanner and check again.` : 'Try a lower minimum score.'}`
-      : `אין עדיין עסקאות בהגדרות האלה. ${sm.signals_pending_simulation ? `${sm.signals_pending_simulation} איתותים עדיין ממתינים לסימולציה של הסורק — הרץ את הסורק ובדוק שוב.` : 'נסה ציון מינימלי נמוך יותר.'}`}</div>`;
+      : `אין עדיין עסקאות בהגדרות האלה. ${sm.signals_pending_simulation ? `${sm.signals_pending_simulation} סריקות עדיין ממתינות לסימולציה של הסורק — הרץ את הסורק ובדוק שוב.` : 'נסה ציון מינימלי נמוך יותר.'}`}</div>`;
     return;
   }
 
@@ -2803,7 +2819,7 @@ function renderDemoPortfolio(){
     : `תוצאות ראשוניות: ${s.trades_closed} עסקאות סגורות מ-${sm.scan_days} ימי סריקה (${sm.first_date} ← ${sm.last_date}). מעט מדי כדי להבדיל בין כישרון למזל — המספרים הופכים למשמעותיים ככל שההיסטוריה מצטברת.`}</div>` : '';
   const pending = sm.signals_pending_simulation ? `<div style="font-size:11px;color:var(--text-dim);margin:-6px 2px 10px;">${en
     ? `${sm.signals_pending_simulation} older signals are still waiting to be simulated by the scanner.`
-    : `${sm.signals_pending_simulation} איתותים ישנים עדיין ממתינים לסימולציה של הסורק.`}</div>` : '';
+    : `${sm.signals_pending_simulation} סריקות ישנות עדיין ממתינות לסימולציה של הסורק.`}</div>` : '';
 
   const cards = `
     <div class="bt-stats-row">
@@ -3967,9 +3983,16 @@ function renderEarningsCalendar(items){
   const sessionOrder = { bmo: 0, unknown: 1, amc: 2 };
   const groups = {};
   for(const it of byDay.get(_earnDay)) (groups[it.session in sessionOrder ? it.session : 'unknown'] ||= []).push(it);
+  // v27: up to ~40 companies a day now (Nasdaq's calendar) — the largest EARN_SESSION_SHOWN per session, the rest on a click
   const list = Object.keys(groups).sort((a, b) => sessionOrder[a] - sessionOrder[b]).map(s => {
     const sLabel = s === 'bmo' ? t.session_bmo : s === 'amc' ? t.session_amc : (en ? 'Time not confirmed' : 'שעה לא ידועה');
-    return `<div class="earn-session">${sLabel}</div>` + groups[s].map(it => _earnRowHtml(it, todayStr)).join('');
+    const rows = groups[s].slice().sort((a, b) => (b.market_cap || 0) - (a.market_cap || 0));
+    const key = `${_earnDay}|${s}`;
+    const showAll = _earnShowAll.has(key) || rows.length <= EARN_SESSION_SHOWN + 2;
+    const shown = showAll ? rows : rows.slice(0, EARN_SESSION_SHOWN);
+    const more = rows.length - shown.length;
+    return `<div class="earn-session">${sLabel} · ${rows.length}</div>` + shown.map(it => _earnRowHtml(it, todayStr)).join('')
+      + (more > 0 ? `<button type="button" class="earn-more" onclick="showAllEarnSession('${key}')">${en ? `Show all ${rows.length}` : `הצג את כל ה-${rows.length}`}</button>` : '');
   }).join('');
 
   // keep the tab strip where the user scrolled it (the calendar is re-rendered by applyLang every 20 s); the first
@@ -3987,6 +4010,12 @@ function renderEarningsCalendar(items){
   }
 }
 let _earnStripCentered = false;
+const EARN_SESSION_SHOWN = 12;
+const _earnShowAll = new Set();   // "day|session" groups opened in full
+function showAllEarnSession(key){
+  _earnShowAll.add(key);
+  if(lastEarningsCalItems) renderEarningsCalendar(lastEarningsCalItems);
+}
 
 let _earnDay = null;            // report date shown in the calendar
 let _earnOpen = null;           // "TICKER|date" of the row whose detail panel is open
@@ -6797,7 +6826,7 @@ async function tryLoadOnce(timeoutMs){
   // ~1.3 s later on an awake server); it is still optional, a failure only keeps the previous strip.
   const keyP = fetchWithTimeout(`${API_BASE}/api/key-news`, timeoutMs).then(r => r.ok ? r.json() : null).catch(() => null);
   const [stocksRes, macroRes] = await Promise.all([
-    fetchWithTimeout(`${API_BASE}/api/stocks?limit=60`, timeoutMs),
+    fetchWithTimeout(`${API_BASE}/api/stocks?limit=150`, timeoutMs),   // v27: ~2,000 stocks scanned (was 60)
     fetchWithTimeout(`${API_BASE}/api/macro-news`, timeoutMs),
   ]);
   if(!stocksRes.ok||!macroRes.ok) throw new Error("API error");
@@ -6826,7 +6855,7 @@ var TOUR_STEPS = [
    he: ['מצב השוק בשורה אחת', 'מגמת S&P 500, כמה מניות משתתפות, תנודתיות (VIX) ועקום התשואות — כל תווית לפי כלל קבוע. "מה זה אומר" מסביר כל אחת.'],
    en: ['The market in one line', 'The S&P 500 trend, how many stocks take part, volatility (VIX) and the yield curve — each label follows a fixed rule. "What it means" explains each one.']},
   {page: 'home', target: '.board .col.right',
-   he: ['סורק התבניות', 'מניות שנכנסו היום לתבנית טכנית (פריצה, קו מגמה, כוס וידית ועוד). "מסננים" מצמצמים לפי RS, שווי ודוח קרוב. לחיצה על שורה פותחת גרף, ו"מה קרה בעבר" באיתותים דומים.'],
+   he: ['סורק התבניות', 'מניות שנכנסו היום לתבנית טכנית (פריצה, קו מגמה, כוס וידית ועוד). "מסננים" מצמצמים לפי RS, שווי ודוח קרוב. לחיצה על שורה פותחת גרף, ו"מה קרה בעבר" בסריקות דומות.'],
    en: ['The pattern scanner', 'Stocks that formed a technical pattern today (breakout, trendline, cup and handle and more). "Filters" narrow it by RS, size and upcoming earnings. Click a row for the chart and "what happened before" on similar signals.']},
   {page: 'deepdive', target: '#page-deepdive .dd-search-row',
    he: ['ניתוח מניה', 'מקלידים טיקר: למעלה מחיר, גרף וסיכום AI, ומתחת ארבע לשוניות — טכני, פונדמנטלי (כולל אנליסטים ושורט), מי קונה ומוכר (בעלי עניין וקרנות) וחדשות. לכל מניה כתובת קבועה לשיתוף.'],
@@ -7320,10 +7349,12 @@ async function loadV22Data(force){
   if(v22Busy || (!force && (now - v22LoadedAt < 10*60000 || now < v22NextTry))) return;
   v22Busy = true;
   try {
-    const [b, ib] = await Promise.allSettled([
+    const [b, ib, fc] = await Promise.allSettled([
       fetchWithTimeout(`${API_BASE}/api/market-breadth`, 20000).then(r => r.ok ? r.json() : Promise.reject(r.status)),
       fetchWithTimeout(`${API_BASE}/api/insider-buys?days=30`, 20000).then(r => r.ok ? r.json() : Promise.reject(r.status)),
+      fetchWithTimeout(`${API_BASE}/api/focus`, 20000).then(r => r.ok ? r.json() : Promise.reject(r.status)),   // v27
     ]);
+    if(fc.status === 'fulfilled') focusData = fc.value;
     if(b.status === 'fulfilled') breadthData = b.value && b.value.available ? b.value : (breadthData || b.value);
     if(ib.status === 'fulfilled') setInsiderBuys(ib.value && ib.value.available ? ib.value : (insiderBuysData || ib.value));
     if(b.status === 'fulfilled' && ib.status === 'fulfilled') v22LoadedAt = Date.now();
@@ -7335,7 +7366,60 @@ async function loadV22Data(force){
   renderV22();
 }
 
+// ==== v27 "today's focus": up to 5 scan results that pass the strictest rule, + their public track record ====
+let focusData = null;
+let focusOpen = false;
+function openFocusTicker(tk){
+  const i = stocks.findIndex(s => s.ticker === tk);
+  if(i >= 0) openDrawer(i); else showTickerDrawer(tk);
+}
+function _focusPct(v){
+  if(v == null || !isFinite(v)) return '—';
+  return `<span dir="ltr" style="unicode-bidi:isolate;color:${v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--text-dim)'}">${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(1)}%</span>`;
+}
+function renderFocus(){
+  const el = document.getElementById('focus-wrap');
+  if(!el) return;
+  const en = lang === 'en';
+  const d = focusData;
+  if(!d){ el.innerHTML = ''; return; }
+  const picks = d.picks || [];
+  const when = d.day ? new Date(d.day + 'T12:00:00').toLocaleDateString(en ? 'en-US' : 'he-IL', {day:'numeric', month:'numeric'}) : '';
+  const rows = picks.length ? picks.map(p => `
+      <div class="focus-row" role="button" tabindex="0" onclick="openFocusTicker('${escH(p.ticker)}')" onkeydown="if(event.key==='Enter')openFocusTicker('${escH(p.ticker)}')">
+        <span class="focus-tk">${escH(p.ticker)}</span>
+        <span class="focus-why">${escH(patternLabel(p.pattern_type))} · RS ${p.rs_rating} · ${en ? 'uptrend' : 'מגמה עולה'} · ${en ? 'daily range' : 'תנודתיות'} ${Number(p.atr_pct).toFixed(1)}% · ${en ? 'no report this week' : 'אין דוח השבוע'}</span>
+      </div>`).join('')
+    : `<div class="focus-empty">${en ? 'No stock passed all the conditions in the latest scan — on purpose: none is better than a weak one.' : 'אף מניה לא עברה את כל התנאים בסריקה האחרונה — בכוונה: עדיף אף אחת מאשר מניה חלשה.'}</div>`;
+  const r20 = d.record && d.record.d20, r10 = d.record && d.record.d10;
+  const rec = (r20 && r20.n) ? r20 : (r10 && r10.n ? r10 : null);
+  const h = rec === r20 ? 20 : 10;
+  const recLine = rec
+    ? (en ? `Track record: ${rec.n} earlier picks — ${rec.win_rate}% were higher ${h} trading days later, average ${_focusPct(rec.avg)} (S&P 500 over the same days ${_focusPct(rec.spy_avg)}; beat it ${rec.beat_spy}% of the time).`
+          : `תוצאות עד היום: ${rec.n} מניות שנבחרו — ${rec.win_rate}% היו גבוהות יותר אחרי ${h} ימי מסחר, ממוצע ${_focusPct(rec.avg)} (S&P 500 באותם ימים ${_focusPct(rec.spy_avg)}; ניצחו אותו ב-${rec.beat_spy}% מהמקרים).`)
+    : (en ? 'The track record fills in 10 trading days after the first picks.' : 'לוח התוצאות מתחיל להתמלא 10 ימי מסחר אחרי הבחירות הראשונות.');
+  const hist = (d.history || []).slice(0, 20).map(x => `<tr><td>${escH(x.day.slice(5).split('-').reverse().join('.'))}</td><td class="mono"><b>${escH(x.ticker)}</b></td><td>${_focusPct(x.ret_10d)}</td><td>${_focusPct(x.spy_10d)}</td><td>${_focusPct(x.ret_20d)}</td><td>${_focusPct(x.spy_20d)}</td></tr>`).join('');
+  const details = focusOpen ? `<div class="focus-details">
+      <div>${en
+        ? 'How a stock gets here — fixed rules, the same for every stock: relative strength (RS) of 90+ (stronger than 90% of the ~2,000 stocks scanned over the past year), a Stage 2 uptrend (above a rising 150-day average, averages in rising order), an average daily range of 3%+ and no earnings report in the next 7 days. Strongest RS first, up to 5.'
+        : 'איך מניה מגיעה לכאן — כללים קבועים, זהים לכל מניה: חוזק יחסי (RS) של 90 ומעלה (חזקה מ-90% מכ-2,000 המניות שנסרקות, בשנה האחרונה), מגמת עלייה (שלב 2: מעל ממוצע 150 עולה, הממוצעים בסדר עולה), תנודתיות יומית ממוצעת של 3% ומעלה, ואין דוח ב-7 הימים הקרובים. החזקה ביותר קודם, עד 5.'}</div>
+      <div style="margin-top:6px;">${en
+        ? 'Why these rules: in 3,687 earlier scan results (Aug–Oct 2026) the ones that met them were higher 20 trading days later in 64% of cases, average +6.2%, while all results together were higher in 38%. That is history in one market period, not a promise — the table below is the live check.'
+        : 'למה הכללים האלה: ב-3,687 סריקות קודמות (אוגוסט–אוקטובר 2026), אלה שעמדו בהם היו גבוהות יותר אחרי 20 ימי מסחר ב-64% מהמקרים, ממוצע +6.2%, לעומת 38% בכל הסריקות יחד. זו היסטוריה של תקופה אחת בשוק, לא הבטחה — הטבלה למטה היא הבדיקה החיה.'}</div>
+      ${hist ? `<table class="focus-table"><thead><tr><th>${en?'Day':'יום'}</th><th>${en?'Stock':'מניה'}</th><th>10d</th><th>S&amp;P 10d</th><th>20d</th><th>S&amp;P 20d</th></tr></thead><tbody>${hist}</tbody></table>` : ''}
+      <div class="dim" style="margin-top:6px;">${en ? 'Information only, not a recommendation.' : 'מידע בלבד, לא המלצה.'}</div>
+    </div>` : '';
+  el.innerHTML = `<div class="focus-box">
+      <div class="focus-head"><b>${en ? "Today's focus" : 'המוקד של היום'}</b><span class="dim">${when ? (en ? ` · scan of ${when}` : ` · סריקה מ-${when}`) : ''}</span>
+        <button type="button" class="focus-more" onclick="focusOpen=!focusOpen;renderFocus();">${focusOpen ? (en ? 'Less' : 'פחות') : (en ? 'How it is chosen · results' : 'איך נבחר · תוצאות')}</button></div>
+      ${rows}
+      <div class="focus-rec">${recLine}</div>
+      ${details}
+    </div>`;
+}
+
 function renderV22(){
+  renderFocus();           // v27
   renderRegimeHome();      // v23
   renderBreadthHome();
   renderInsiderHome();
@@ -7842,11 +7926,11 @@ async function loadSignalContext(s){
         ${cell(en ? 'This pattern, all stocks' : 'התבנית, בכל הסורק', d.pattern_all)}
         ${cell(en ? 'When the S&P 500 was in an uptrend' : 'כשה-S&P 500 היה במגמה עולה', d.pattern_uptrend)}
         ${cell(en ? 'On stocks with RS 80+' : 'במניות עם RS מעל 80', d.pattern_rs80)}
-        ${cell(en ? `Earlier ${escH(d.ticker)} signals` : `איתותים קודמים ב-${escH(d.ticker)}`, d.ticker_all, true)}
+        ${cell(en ? `Earlier ${escH(d.ticker)} signals` : `סריקות קודמות ב-${escH(d.ticker)}`, d.ticker_all, true)}
       </div>
       <div class="hx-note">${en
         ? 'The big number = the share of past signals that were higher 10 trading days later; "S&P" = the index over the same days. Each stock and pattern is counted once per 10 days. Past results of our own signals — they do not promise the future.'
-        : 'המספר הגדול = אחוז האיתותים הקודמים שהיו גבוהים יותר אחרי 10 ימי מסחר; "S&P" = המדד באותם ימים. כל מניה ותבנית נספרות פעם אחת ל-10 ימים. תוצאות עבר של האיתותים שלנו — לא מבטיחות את העתיד.'}</div>
+        : 'המספר הגדול = אחוז הסריקות הקודמות שבהן המניה הייתה גבוהה יותר אחרי 10 ימי מסחר; "S&P" = המדד באותם ימים. כל מניה ותבנית נספרות פעם אחת ל-10 ימים. תוצאות עבר של הסריקות שלנו — לא מבטיחות את העתיד.'}</div>
     </div>`;
 }
 
@@ -8119,7 +8203,7 @@ const UI = {
     news_search_placeholder: 'חיפוש בחדשות',
     search_btn: 'חפש',
     breaking_title: 'אירועים מרכזיים',
-    scanner_title: 'איתותי הסורק',
+    scanner_title: 'סריקות',
     macro_title: 'חדשות מאקרו ושווקים',
     charts_title: 'גרפי מדדים',
     nav_backtest: 'בדיקה היסטורית',
@@ -8167,7 +8251,7 @@ const UI = {
     news_search_placeholder: 'Search news',
     search_btn: 'Search',
     breaking_title: 'Key events',
-    scanner_title: 'Scanner signals',
+    scanner_title: 'Scans',
     macro_title: 'Macro & markets news',
     charts_title: 'Market Charts',
     nav_backtest: 'Backtest',
@@ -8287,7 +8371,7 @@ function applyLang(){
   document.getElementById('pulse-view-btn-cal').textContent = lang==='en' ? 'Earnings and dividends' : 'דוחות ודיבידנדים';
   if(econLoaded){ econSetHeader(); renderEconActive(); }
   document.getElementById('bt-view-btn-demo').textContent = lang==='en' ? 'Demo Portfolio' : 'תיק דמו';
-  document.getElementById('bt-view-btn-stats').textContent = lang==='en' ? 'Signal Statistics' : 'סטטיסטיקת איתותים';
+  document.getElementById('bt-view-btn-stats').textContent = lang==='en' ? 'Signal Statistics' : 'סטטיסטיקת סריקות';
   if(demoLoaded){ renderDemoControls(); if(demoData) renderDemoPortfolio(); }
   if(backtestPatternsCache) renderBacktestPatternFilter();
   if(backtestPatternStatsCache) renderBacktestPatternSummary();
@@ -8557,8 +8641,15 @@ async function addPriceAlert(){
     if(!r.ok) throw new Error('add ' + r.status);
     _alertDraft = null;
     await renderAlertsPanel();
-    _alertsNote(en ? `Alert saved: ${tk} ${direction==='above'?'above':'below'} $${price}` : `ההתראה נשמרה: ${tk} ${direction==='above'?'מעל':'מתחת ל-'}$${price}`);
+    _alertsNote(en ? `Alert saved: ${tk} ${_alertWord(direction)}$${price}` : `ההתראה נשמרה: ${tk} ${_alertWord(direction)}$${price}`);
   } catch(e){ _alertsNote(en ? 'Could not save the alert.' : 'לא הצלחנו לשמור את ההתראה.', true); }
+}
+// v27: "touch" (the default) = the price trades AT the level, from above or below
+function _alertWord(dir){
+  const en = lang==='en';
+  if(dir === 'above') return en ? 'above ' : 'מעל ';
+  if(dir === 'below') return en ? 'below ' : 'מתחת ל-';
+  return en ? 'touches ' : 'נוגעת ב-';
 }
 async function deletePriceAlert(id){
   try { await authFetch(`${API_BASE}/api/alerts/${Number(id)}`, {method:'DELETE'}); } catch(e){}
@@ -8576,7 +8667,7 @@ async function renderAlertsPanel(){
   if(!authToken){
     box.innerHTML = `<h3>${en?'Alerts':'התראות'}</h3><div class="al-text">${en
       ? 'Sign in with Google (the person icon at the top) to get a notification when a stock on your watchlist gets a scanner signal, or when a price you set is reached.'
-      : 'התחברו עם Google (סמל האדם למעלה) כדי לקבל התראה כשמניה מרשימת המעקב שלכם מקבלת איתות בסורק, או כשמניה מגיעה למחיר שקבעתם.'}</div>${close}`;
+      : 'התחברו עם Google (סמל האדם למעלה) כדי לקבל התראה כשמניה מרשימת המעקב שלכם מופיעה בסריקה, או כשמניה מגיעה למחיר שקבעתם.'}</div>${close}`;
     return;
   }
   box.innerHTML = `<h3>${en?'Alerts':'התראות'}</h3><div class="al-text">${UI[lang].loading}</div>`;
@@ -8600,7 +8691,7 @@ async function renderAlertsPanel(){
   const alerts = (data && data.alerts) || [];
   const fmtD = (iso) => new Date(iso).toLocaleString(en?'en-GB':'he-IL', {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'});
   const row = (a) => `<div class="al-item ${a.triggered_at?'done':''}">
-      <span class="mono"><b>${escH(a.ticker)}</b> ${a.direction==='above'?(en?'above ':'מעל '):(en?'below ':'מתחת ל-')}<span dir="ltr">$${Number(a.price).toLocaleString('en-US',{maximumFractionDigits:2})}</span></span>
+      <span class="mono"><b>${escH(a.ticker)}</b> ${_alertWord(a.direction)}<span dir="ltr">$${Number(a.price).toLocaleString('en-US',{maximumFractionDigits:2})}</span></span>
       <span class="al-when">${a.triggered_at ? (en?`reached ${fmtD(a.triggered_at)}`:`הופעלה ${fmtD(a.triggered_at)}`) : ''}</span>
       <button class="al-x" onclick="deletePriceAlert(${Number(a.id)})" aria-label="${en?'Delete':'מחיקה'}">✕</button></div>`;
   const d = _alertDraft || {};
@@ -8609,7 +8700,7 @@ async function renderAlertsPanel(){
     ${device}
     <label class="al-check"><input type="checkbox" ${data && data.watch_signals ? 'checked' : ''} ${data && data.devices ? '' : 'disabled'} onchange="setWatchSignals(this.checked)">
       <span>${en?'Stocks in my watchlist: a new scanner signal, and earnings reports (a reminder before the report and the results after it)'
-                 :'מניות מרשימת המעקב שלי: איתות חדש בסורק, ודוחות רבעוניים (תזכורת לפני הדוח והתוצאות אחריו)'}</span></label>
+                 :'מניות מרשימת המעקב שלי: מופיעה בסריקה חדשה, ודוחות רבעוניים (תזכורת לפני הדוח והתוצאות אחריו)'}</span></label>
     <label class="al-check"><input type="checkbox" ${!data || data.watch_insider !== false ? 'checked' : ''} ${data && data.devices ? '' : 'disabled'} onchange="setWatchInsider(this.checked)">
       <span>${en?'Stocks in my watchlist: insider trades — an officer, director or 10% owner bought shares in the open market, or sold outside a pre-arranged plan (from $50K, SEC Form 4)'
                  :'מניות מרשימת המעקב שלי: עסקאות בעלי עניין — מנהל, דירקטור או בעל 10% קנה מניות בשוק, או מכר שלא לפי תוכנית שנקבעה מראש (מ-$50K, דיווח Form 4 ל-SEC)'}</span></label>
@@ -8618,18 +8709,18 @@ async function renderAlertsPanel(){
                  :'נתונים כלכליים חשובים בארה"ב (ריבית, אינפלציה, תעסוקה, תוצר) — כ-40 דקות לפני הפרסום'}</span></label>
     <label class="al-check"><input type="checkbox" ${data && data.watch_morning ? 'checked' : ''} ${data && data.devices ? '' : 'disabled'} onchange="setWatchMorning(this.checked)">
       <span>${en?'Morning brief (weekdays, 08:00 New York time): today\'s economic data, today\'s earnings reports (your watchlist first) and the last scan\'s signals'
-                 :'תדריך בוקר (בימי מסחר, 08:00 שעון ניו יורק — אחר הצהריים בישראל): הנתונים הכלכליים של היום, הדוחות של היום (קודם מרשימת המעקב שלך) והאיתותים מהסריקה האחרונה'}</span></label>
+                 :'תדריך בוקר (בימי מסחר, 08:00 שעון ניו יורק — אחר הצהריים בישראל): הנתונים הכלכליים של היום, הדוחות של היום (קודם מרשימת המעקב שלך) והמניות מהסריקה האחרונה'}</span></label>
     <div class="al-sec">${en?'Price alerts':'התראות מחיר'}</div>
     <div class="al-form">
       <input id="al-ticker" class="search-input mono" placeholder="${en?'Ticker':'טיקר'}" value="${escH(d.ticker||'')}" maxlength="12">
-      <select id="al-dir" class="search-input"><option value="above">${en?'above':'מעל'}</option><option value="below">${en?'below':'מתחת ל-'}</option></select>
+      <select id="al-dir" class="search-input"><option value="touch" selected>${en?'touches':'נוגעת ב-'}</option><option value="above">${en?'above':'מעל'}</option><option value="below">${en?'below':'מתחת ל-'}</option></select>
       <input id="al-price" class="search-input mono" type="number" step="0.01" min="0" placeholder="$" value="${d.price ? Number(d.price) : ''}">
       <button class="al-btn primary" onclick="addPriceAlert()">${en?'Add':'הוספה'}</button>
     </div>
     ${alerts.length ? alerts.map(row).join('') : `<div class="al-text dim">${en?'No price alerts yet.':'אין עדיין התראות מחיר.'}</div>`}
     <div class="al-text dim" style="margin-top:8px;">${en
-      ? 'Prices are checked about every 20 minutes during US market hours (quotes may be delayed up to 15 minutes). Alerts are information only, not a recommendation.'
-      : 'המחירים נבדקים בערך כל 20 דקות בשעות המסחר בארה"ב (המחירים עשויים להתעכב עד 15 דקות). ההתראות הן מידע בלבד, לא המלצה.'}</div>
+      ? 'Prices are checked about every 20 minutes during US market hours (quotes may be delayed up to 15 minutes). "Touches" fires when the stock traded at your price at any moment since you set the alert — even between two checks, and from either direction. Alerts are information only, not a recommendation.'
+      : 'המחירים נבדקים בערך כל 20 דקות בשעות המסחר בארה"ב (המחירים עשויים להתעכב עד 15 דקות). "נוגעת ב-" מופעלת כשהמניה נסחרה במחיר שקבעתם בכל רגע מאז שקבעתם את ההתראה — גם בין שתי בדיקות, ומכל כיוון. ההתראות הן מידע בלבד, לא המלצה.'}</div>
     <div id="alerts-note" class="al-text" style="min-height:18px;"></div>
     ${close}`;
 }

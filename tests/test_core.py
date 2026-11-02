@@ -184,6 +184,28 @@ def test_fundamentals_stale_series():
     assert fundamentals._drop_if_stale({}, "2026-09-30") == {}
 
 
+def test_touch_alert_range():
+    """v27: a "touch" alert looks at the low..high of the bars since it was set — the bar running at that moment counts,
+    earlier bars do not."""
+    import datetime as _dt
+    import push_alerts
+    utc, five = _dt.timezone.utc, _dt.timedelta(minutes=5)
+    t0 = _dt.datetime(2026, 11, 2, 15, 0, tzinfo=utc)
+    bars = [(t0, 95.0, 96.0, five), (t0 + five, 97.0, 98.0, five), (t0 + 2 * five, 98.5, 99.5, five)]
+    assert push_alerts.range_since(bars, t0 + _dt.timedelta(minutes=7)) == (97.0, 99.5)   # set during the 2nd bar
+    assert push_alerts.range_since(bars, t0 + _dt.timedelta(minutes=20)) is None           # nothing traded since
+    lo, hi = push_alerts.range_since(bars, t0 - five)
+    assert lo <= 95.5 <= hi and not (lo <= 100 <= hi)
+
+
+def test_nasdaq_numbers(scanner):
+    """v27: Nasdaq's calendar / screener text fields (market cap, price, EPS forecast in parentheses = negative)."""
+    assert scanner._nasdaq_num("$1,171,562,950,000") == 1171562950000.0
+    assert scanner._nasdaq_num("49300898699.00") == 49300898699.0
+    assert scanner._nasdaq_num("($0.05)") == -0.05
+    assert scanner._nasdaq_num("") is None and scanner._nasdaq_num("N/A") is None
+
+
 def test_morning_brief_text():
     import datetime as _dt
     import push_alerts

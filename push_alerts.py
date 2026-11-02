@@ -78,7 +78,7 @@ def ensure_tables(cur):
             id SERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL,
             ticker TEXT NOT NULL,
-            direction TEXT NOT NULL CHECK (direction IN ('above', 'below')),
+            direction TEXT NOT NULL CHECK (direction IN ('above', 'below', 'touch')),
             price REAL NOT NULL,
             created_at TIMESTAMPTZ DEFAULT NOW(),
             triggered_at TIMESTAMPTZ,
@@ -95,6 +95,15 @@ def ensure_tables(cur):
         ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS watch_insider BOOLEAN DEFAULT TRUE;
         ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS watch_morning BOOLEAN DEFAULT FALSE;
     """)
+    # v27: a "touch" alert (the price trades AT the level, from either side) — the table made before v27 only allowed
+    # above/below; its CHECK is replaced once
+    cur.execute("""SELECT pg_get_constraintdef(oid) FROM pg_constraint
+                   WHERE conname = 'price_alerts_direction_check' AND conrelid = 'price_alerts'::regclass""")
+    row = cur.fetchone()
+    if row and "touch" not in row[0]:
+        cur.execute("ALTER TABLE price_alerts DROP CONSTRAINT price_alerts_direction_check")
+        cur.execute("""ALTER TABLE price_alerts ADD CONSTRAINT price_alerts_direction_check
+                       CHECK (direction IN ('above', 'below', 'touch'))""")
 
 
 def _send_one(sub: dict, payload: dict) -> str:
@@ -173,7 +182,7 @@ def notify_watchlist_signals(conn, signals: list) -> int:
         he, en = by_ticker[tk]
 
         def payload(lang, tk=tk, he=he, en=en):
-            return {"title": f"{tk}: " + ("new scanner signal" if lang == "en" else "איתות חדש בסורק"),
+            return {"title": f"{tk}: " + ("new scanner signal" if lang == "en" else "סריקה חדשה"),
                     "body": (en if lang == "en" else he)[:200], "url": f"/?ticker={tk}", "tag": f"sig-{tk}"}
         sent += send_to_user(cur, user_id, payload, only_signals=True)
     conn.commit()
@@ -406,7 +415,7 @@ def _morning_payload(lang: str, events: list, earnings: list, n_earnings: int, n
             parts.append(tk + (f" ({w[0] if en else w[1]})" if mine and w else ""))
         more = n_earnings - len(parts)
         lines.append(("Reports: " if en else "דוחות: ") + ", ".join(parts) + (f" +{more}" if more > 0 else ""))
-    sig = (f"Last scan: {n_signals} signal{'s' if n_signals != 1 else ''}" if en else f"הסריקה האחרונה: {n_signals} איתותים")
+    sig = (f"Last scan: {n_signals} signal{'s' if n_signals != 1 else ''}" if en else f"הסריקה האחרונה: {n_signals} מניות")
     if watch_signals:
         sig += (" — watchlist: " if en else " — מרשימת המעקב: ") + ", ".join(watch_signals[:4])
     lines.append(sig)
@@ -467,17 +476,41 @@ def open_alert_tickers(conn) -> list:
     return out
 
 
-def check_price_alerts(conn, prices: dict) -> int:
-    """prices = {ticker: last price}. Every open alert whose level was crossed fires once and is closed."""
+def range_since(bars, since):
+    """(lowest low, highest high) of the bars that end after `since` (UTC) — the bar running at that moment counts;
+    None if there is none yet. bars = [(bar start UTC, low, high, bar length timedelta)]."""
+    lo = hi = None
+    for start, low, high, length in bars or ():
+        if start + length <= since:
+            continue
+        lo = low if lo is None else min(lo, low)
+        hi = high if hi is None else max(hi, high)
+    return None if lo is None else (lo, hi)
+
+
+def check_price_alerts(conn, prices: dict, bars: dict = None) -> int:
+    """prices = {ticker: last price}; bars = {ticker: [(bar start UTC, low, high, length)]} — 5-minute bars of the
+    last few sessions. Every open alert whose condition was met fires once and is closed.
+    above / below: the last price is at/over (at/under) the level.
+    touch (v27, the default — owner: "when the stock touches the support line, at that exact point"): the price
+    traded AT the level at some moment since the alert was set — the low..high range of the bars since then contains
+    it. A gap straight through the level also counts (the range spans it). No bars yet = not fired (retried next run)."""
     if not prices:
         return 0
     cur = conn.cursor()
-    cur.execute("""SELECT id, user_id, ticker, direction, price FROM price_alerts
+    cur.execute("""SELECT id, user_id, ticker, direction, price, created_at FROM price_alerts
                    WHERE triggered_at IS NULL AND ticker = ANY(%s)""", (list(prices),))
     fired = 0
-    for aid, user_id, tk, direction, level in cur.fetchall():
+    for aid, user_id, tk, direction, level, created_at in cur.fetchall():
         p = prices.get(tk)
-        if p is None or not ((direction == "above" and p >= level) or (direction == "below" and p <= level)):
+        if p is None:
+            continue
+        if direction == "touch":
+            rng = range_since((bars or {}).get(tk), created_at)
+            hit = bool(rng) and rng[0] <= level <= rng[1]   # no bars since the alert was set = nothing traded yet
+        else:
+            hit = (direction == "above" and p >= level) or (direction == "below" and p <= level)
+        if not hit:
             continue
         cur.execute("UPDATE price_alerts SET triggered_at = NOW(), triggered_price = %s WHERE id = %s", (p, aid))
         fired += 1
@@ -486,10 +519,10 @@ def check_price_alerts(conn, prices: dict) -> int:
 
         def payload(lang, tk=tk, direction=direction, level=level, p=p):
             if lang == "en":
-                word = "rose above" if direction == "above" else "fell below"
+                word = {"above": "rose above", "below": "fell below"}.get(direction, "touched")
                 return {"title": f"{tk} {word} ${level:,.2f}", "body": f"Last price ${p:,.2f} (your price alert).",
                         "url": f"/?ticker={tk}", "tag": f"px-{tk}"}
-            word = "עלתה מעל" if direction == "above" else "ירדה מתחת ל-"
+            word = {"above": "עלתה מעל", "below": "ירדה מתחת ל-"}.get(direction, "נגעה ב-")
             return {"title": f"{tk} {word} ${level:,.2f}", "body": f"מחיר אחרון ${p:,.2f} (התראת מחיר שקבעת).",
                     "url": f"/?ticker={tk}", "tag": f"px-{tk}"}
         send_to_user(cur, user_id, payload)

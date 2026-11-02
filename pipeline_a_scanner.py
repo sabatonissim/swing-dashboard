@@ -202,6 +202,96 @@ def build_scan_universe() -> List[str]:
     return combined[rotate_by:] + combined[:rotate_by]
 
 
+# ------------------------------------------------------------------
+# v27 (owner, 2.11.2026: "I want those stocks — big companies that move the market, with high volume"): the core
+# universe above is ~520 names; every other US-listed common stock of EXTRA_MIN_MARKET_CAP+ is scanned too (~1,500
+# more). Fetching each one the core way (.history + .info per ticker, ~2.5 s) would take over an hour, so the extras
+# come from Nasdaq's public stock screener (market cap, sector, name, exchange) + yf.download in chunks of 100 for the
+# prices. Same detectors, RS rating and leaders table; no .info -> no analyst estimates / short interest for them.
+# ------------------------------------------------------------------
+NASDAQ_SCREENER_URL = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=10000&exchange={ex}&download=true"
+EXTRA_MIN_MARKET_CAP = 2_000_000_000
+EXTRA_MIN_DOLLAR_VOLUME = 20_000_000       # 20-day average daily dollar volume (checked on the downloaded prices)
+EXTRA_EXCHANGES = {"nasdaq": "NMS", "nyse": "NYQ"}   # Yahoo's codes, so passes_liquidity_and_cap_filter accepts them
+EXTRA_CHUNK = 100
+_NASDAQ_SECTOR_TO_YAHOO = {   # the site's sector filter uses Yahoo's names
+    "Technology": "Technology", "Health Care": "Healthcare", "Finance": "Financial Services",
+    "Consumer Discretionary": "Consumer Cyclical", "Consumer Staples": "Consumer Defensive",
+    "Industrials": "Industrials", "Real Estate": "Real Estate", "Utilities": "Utilities", "Energy": "Energy",
+    "Basic Materials": "Basic Materials", "Telecommunications": "Communication Services",
+}
+_NAME_SUFFIX_RE = re.compile(r"\s+(Common Stock|Class [A-Z] Common Stock|Ordinary Shares|American Depositary Shares?.*|"
+                             r"Common Shares|Class [A-Z] Ordinary Shares|Subordinate Voting Shares)$", re.I)
+
+
+def fetch_extra_universe(core: set) -> Dict[str, dict]:
+    """{ticker: info-like dict (marketCap, exchange, sector, shortName)} for US-listed common stocks of
+    EXTRA_MIN_MARKET_CAP+ and $MIN_PRICE+ that are not in the core universe. {} if Nasdaq does not answer."""
+    import requests
+    out = {}
+    for ex, code in EXTRA_EXCHANGES.items():
+        try:
+            r = requests.get(NASDAQ_SCREENER_URL.format(ex=ex), timeout=40,
+                             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept": "application/json"})
+            r.raise_for_status()
+            rows = ((r.json() or {}).get("data") or {}).get("rows") or []
+        except Exception as e:
+            print(f"[warn] extra universe ({ex}): {type(e).__name__}: {e}")
+            continue
+        for row in rows:
+            sym = str(row.get("symbol") or "").strip().upper()
+            if not re.fullmatch(r"[A-Z]{1,5}", sym) or sym in core or sym in out:
+                continue                      # preferreds / warrants / units carry ^ or / in the symbol
+            mcap = _nasdaq_num(row.get("marketCap")) or 0
+            price = _nasdaq_num(row.get("lastsale")) or 0
+            if mcap < EXTRA_MIN_MARKET_CAP or price < MIN_PRICE:
+                continue
+            name = _NAME_SUFFIX_RE.sub("", str(row.get("name") or "").strip()) or None
+            out[sym] = {"marketCap": mcap, "exchange": code, "shortName": name,
+                        "sector": _NASDAQ_SECTOR_TO_YAHOO.get(str(row.get("sector") or "").strip())}
+    print(f"[info] extra universe: {len(out)} more US stocks of ${EXTRA_MIN_MARKET_CAP / 1e9:.0f}B+ beyond the core list")
+    return out
+
+
+def download_histories(tickers: List[str]) -> Dict[str, pd.DataFrame]:
+    """2 years of daily prices for many tickers, EXTRA_CHUNK per request (actual prices, like _fetch_ticker_data)."""
+    out = {}
+    for i in range(0, len(tickers), EXTRA_CHUNK):
+        chunk = tickers[i:i + EXTRA_CHUNK]
+        try:
+            df = yf.download(chunk, period="2y", interval="1d", group_by="ticker",
+                             auto_adjust=False, progress=False, threads=True)
+        except Exception as e:
+            print(f"[warn] extra universe download {i}-{i + len(chunk)}: {type(e).__name__}: {e}")
+            continue
+        for t in chunk:
+            try:
+                h = df[t].dropna(subset=["Close"])
+            except Exception:
+                continue
+            if len(h) >= 60:
+                out[t] = h
+        time.sleep(1)
+    print(f"[info] extra universe: prices for {len(out)} of {len(tickers)}")
+    return out
+
+
+def upcoming_report_days() -> Dict[str, int]:
+    """{ticker: days until its report} from the stored earnings calendar — the extras have no .info earnings date."""
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT ticker, MIN(report_date) FROM earnings_calendar WHERE report_date >= CURRENT_DATE GROUP BY ticker")
+        today = datetime.now(timezone.utc).date()
+        out = {t: (d - today).days for t, d in cur.fetchall()}
+        cur.close()
+        conn.close()
+        return out
+    except Exception as e:
+        print(f"[warn] upcoming report days: {type(e).__name__}: {e}")
+        return {}
+
+
 
 @dataclass
 class ScanResult:
@@ -248,7 +338,8 @@ def passes_liquidity_and_cap_filter(ticker: str, info: dict, hist: pd.DataFrame)
 
     if price < MIN_PRICE:
         return False
-    if avg_vol_20d < MIN_AVG_VOLUME_20D:
+    # v27: OR $20M a day — a $500 stock trading 300K shares ($150M a day) is liquid, the share count alone cut it out
+    if avg_vol_20d < MIN_AVG_VOLUME_20D and avg_vol_20d * price < EXTRA_MIN_DOLLAR_VOLUME:
         return False
     if market_cap < MIN_MARKET_CAP:
         return False
@@ -1274,6 +1365,7 @@ def init_db():
     cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS implied_move_pct REAL;")
     cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS implied_move_expiry DATE;")
     cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS implied_move_at TIMESTAMPTZ;")
+    cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS company_name TEXT;")   # v27: Nasdaq's name
     # Values stored before provenance existed can't be verified, so drop them
     # once; the next scan refetches them with the validated logic. Idempotent:
     # every value written from now on carries its provenance date.
@@ -1460,7 +1552,21 @@ def compute_days_to_earnings(info: dict) -> Optional[int]:
 # ------------------------------------------------------------------
 
 def scan_universe(universe: List[str] = None, target_language: str = "he") -> List[ScanResult]:
+    with_extras = universe is None
     universe = universe or build_scan_universe()
+    # v27: the extra $2B+ stocks (see fetch_extra_universe) — no .info; their prices are downloaded in chunks when the
+    # loop reaches them (after the ~20-minute core list, so the latest bar is as fresh as the core's)
+    extra_info: Dict[str, dict] = {}
+    extra_hist: Dict[str, pd.DataFrame] = {}
+    extra_report_days: Dict[str, int] = {}
+    if with_extras:
+        try:
+            extra_info = fetch_extra_universe(set(universe))
+            extra_report_days = upcoming_report_days()
+        except Exception as e:
+            print(f"[warn] extra universe failed — scanning the core list only: {type(e).__name__}: {e}")
+            extra_info = {}
+    extras_downloaded = False
     results: List[ScanResult] = []
     consecutive_timeouts = 0
     all_changes: List[tuple] = []  # (ticker, change_pct, close, market_cap) for EVERY ticker fetched —
@@ -1476,10 +1582,28 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
                                               # percentile ranking after the full loop below
     leader_rows: Dict[str, dict] = {}        # v25: every liquid stock's leadership data (see save_stock_leaders)
 
-    for ticker in universe:
+    core_aborted = False
+    for ticker in universe + list(extra_info):
+        is_extra = ticker in extra_info
+        if is_extra:
+            if not extras_downloaded:
+                extras_downloaded = True
+                try:
+                    extra_hist = download_histories(list(extra_info))
+                except Exception as e:
+                    print(f"[warn] extra universe download failed: {type(e).__name__}: {e}")
+            if ticker not in extra_hist:
+                continue
+            hist, info = extra_hist[ticker], extra_info[ticker]
+            tail = hist.tail(20)
+            if not float((tail["Close"] * tail["Volume"]).mean()) >= EXTRA_MIN_DOLLAR_VOLUME:
+                continue                       # big but thinly traded — not for this scan
+        elif core_aborted:
+            continue
         try:
-            hist, info = fetch_ticker_data_with_timeout(ticker)
-            consecutive_timeouts = 0  # reset on any successful fetch
+            if not is_extra:
+                hist, info = fetch_ticker_data_with_timeout(ticker)
+                consecutive_timeouts = 0  # reset on any successful fetch
         except FutureTimeoutError:
             print(f"[warn] {ticker}: timed out after {PER_TICKER_TIMEOUT_SEC}s, skipping")
             consecutive_timeouts += 1
@@ -1493,14 +1617,15 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
                 print(f"[fatal] {consecutive_timeouts} consecutive timeouts — Yahoo Finance appears to be "
                       f"heavily rate-limiting right now. Aborting scan early to avoid resource exhaustion. "
                       f"Saving the {len(results)} result(s) found so far.")
-                break
+                core_aborted = True     # v27: the rest of the core list is skipped; the already-downloaded extras still run
             continue
         except Exception as e:
             print(f"[warn] failed to fetch {ticker}: {e}")
             consecutive_timeouts = 0
             continue
         finally:
-            time.sleep(INTER_TICKER_DELAY_SEC)  # be gentle with Yahoo Finance's rate limits
+            if not is_extra:
+                time.sleep(INTER_TICKER_DELAY_SEC)  # be gentle with Yahoo Finance's rate limits
 
         if hist is not None and len(hist) >= 2:
             try:
@@ -1550,7 +1675,7 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         vol_pct = check_breakout_volume(hist)
         trend = compute_trend_structure(hist)
         atr = compute_atr(hist)
-        days_to_earnings = compute_days_to_earnings(info)
+        days_to_earnings = extra_report_days.get(ticker) if is_extra else compute_days_to_earnings(info)
 
         # v25: leadership data for EVERY liquid stock (not only pattern matches) -> stock_leaders, the site's
         # "leading stocks" table. Same hist/info already fetched — no extra Yahoo calls.
@@ -1815,6 +1940,15 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
                 result.ai_summary_en += f" RS Rating {rating}/99 — this pattern is firing on a market laggard, lower conviction."
                 result.ai_summary_he += f" דירוג RS {rating}/99 — התבנית מתרחשת על מניה שפחות מובילה את השוק, רמת ביטחון נמוכה יותר."
 
+    # v27 quality gate (owner, 2.11.2026: "fewer, as long as they are good and accurate"). Measured on the 3,687 past
+    # scan results of Aug-Oct 2026, each rebuilt from its chart on the day (HISTORY §27.3כט): the results that pass —
+    # RS >= 70 in a Stage 2 uptrend with ATR >= 3%, or RS >= 90 — went up in 50% of cases 20 trading days later,
+    # average +2.1%; the rest 36%, average -2.4% (the S&P 500 over the same days: ~+0.05% per 10 days). Volume made
+    # no difference, so it is not part of it.
+    before = len(results)
+    results = [r for r in results if passes_quality_gate(r)]
+    print(f"[info] quality gate: {len(results)} of {before} scan result(s) kept")
+
     upsert_universe_movers(all_changes)
     update_earnings_calendar(earnings_candidates)
     try:
@@ -1826,6 +1960,127 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
     except Exception as e:
         print(f"[warn] saving stock leaders failed: {type(e).__name__}: {e}")
     return results
+
+
+QUALITY_MIN_RS = 70            # with a Stage 2 uptrend and ATR >= QUALITY_MIN_ATR_PCT
+QUALITY_MIN_ATR_PCT = 3.0
+QUALITY_STRONG_RS = 90         # alone is enough
+FOCUS_MIN_RS = 90              # "today's focus": RS >= 90 + Stage 2 + ATR >= 3% + no report within 7 days
+FOCUS_MAX = 5
+
+
+MA150_BOUNCE_MIN_ATR_PCT = 2.5
+
+
+def passes_quality_gate(r) -> bool:
+    # v27 (owner: "crossing the 150 MA and holding, and support on the MA, are setups I like"): the two 150-MA setups
+    # have their own rule. Bounce: ATR >= 2.5% (history: 55% higher after 20 days, avg +1.2%, vs 31% / -2.6% for quieter
+    # stocks; 184 results). Reclaim (cross / second close above): kept as is — 19 past results are too few to judge;
+    # the statistics from 3.11 will show.
+    if r.pattern_type == "ma150_support_bounce":
+        return (r.atr_pct or 0) >= MA150_BOUNCE_MIN_ATR_PCT
+    if r.pattern_type == "ma150_breakout":
+        return True
+    rs = r.rs_rating or 0
+    stage2 = r.trend_stage == "Stage 2 - Uptrend"
+    return rs >= QUALITY_STRONG_RS or (rs >= QUALITY_MIN_RS and stage2 and (r.atr_pct or 0) >= QUALITY_MIN_ATR_PCT)
+
+
+def pick_focus(results: List["ScanResult"]) -> List["ScanResult"]:
+    """v27: up to FOCUS_MAX scan results that pass the strictest rule — in the Aug-Oct 2026 history these went up in
+    64% of cases 20 trading days later, average +6.2% (220 results, ~4 a day). Strongest RS first."""
+    def ok(r):
+        return ((r.rs_rating or 0) >= FOCUS_MIN_RS and r.trend_stage == "Stage 2 - Uptrend"
+                and (r.atr_pct or 0) >= QUALITY_MIN_ATR_PCT
+                and not (r.days_to_earnings is not None and 0 <= r.days_to_earnings <= EARNINGS_WARNING_WINDOW_DAYS))
+    return sorted((r for r in results if ok(r)), key=lambda r: (-(r.rs_rating or 0), -r.swing_score))[:FOCUS_MAX]
+
+
+def save_focus_picks(results: List["ScanResult"]):
+    """Today's focus (New York date) replaces what an earlier scan of the same day picked — the last scan of the day
+    (the close) is the one the track record measures, from its entry price."""
+    picks = pick_focus(results)
+    day = datetime.now(ZoneInfo("America/New_York")).date()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""CREATE TABLE IF NOT EXISTS focus_picks (
+        day DATE NOT NULL, ticker TEXT NOT NULL, rank INTEGER, rs_rating INTEGER, trend_stage TEXT, atr_pct REAL,
+        pattern_type TEXT, trigger_text_he TEXT, trigger_text_en TEXT, entry_price REAL, sector TEXT,
+        ret_10d REAL, ret_20d REAL, spy_10d REAL, spy_20d REAL, created_at TIMESTAMPTZ DEFAULT NOW(),
+        PRIMARY KEY (day, ticker))""")
+    cur.execute("DELETE FROM focus_picks WHERE day = %s", (day,))
+    for i, r in enumerate(picks, 1):
+        cur.execute("""INSERT INTO focus_picks (day, ticker, rank, rs_rating, trend_stage, atr_pct, pattern_type,
+                           trigger_text_he, trigger_text_en, entry_price, sector)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (day, r.ticker, i, r.rs_rating, r.trend_stage, _native(r.atr_pct), r.pattern_type,
+                     r.trigger_text_he, r.trigger_text_en, _native(r.entry_price), r.sector))
+    conn.commit()
+    cur.close()
+    conn.close()
+    print(f"[info] focus {day}: {', '.join(r.ticker for r in picks) or 'none passed'}")
+
+
+def backfill_focus_returns():
+    """10 / 20 trading days after each focus day: the pick's return from its entry price, and the S&P 500 (SPY)
+    over the same days — the public track record."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT to_regclass('focus_picks')")
+    if cur.fetchone()[0] is None:
+        cur.close(); conn.close()
+        return
+    cur.execute("SELECT day, ticker, entry_price FROM focus_picks WHERE (ret_10d IS NULL OR ret_20d IS NULL) "
+                "AND day <= CURRENT_DATE - 13 ORDER BY day")
+    todo = cur.fetchall()
+    cur.close()
+    conn.close()
+    if not todo:
+        return
+    tickers = sorted({t for _, t, _ in todo} | {"SPY"})
+    start = (min(d for d, _, _ in todo) - timedelta(days=5)).isoformat()
+    try:
+        df = yf.download(tickers, start=start, interval="1d", group_by="ticker", auto_adjust=False,
+                         progress=False, threads=True)
+    except Exception as e:
+        print(f"[warn] focus returns: download failed: {type(e).__name__}: {e}")
+        return
+
+    def closes(t):
+        try:
+            s = df[t]["Close"].dropna()
+            s.index = pd.to_datetime(s.index).tz_localize(None).normalize()
+            return s
+        except Exception:
+            return None
+
+    spy = closes("SPY")
+    updates = []
+    for day, tk, entry in todo:
+        s = closes(tk)
+        if s is None or spy is None or not entry:
+            continue
+        pos = int(s.index.searchsorted(pd.Timestamp(day)))   # the focus day's own bar (entry = its close)
+        spos = int(spy.index.searchsorted(pd.Timestamp(day)))
+        out = {}
+        for n in (10, 20):
+            if pos + n < len(s) and spos + n < len(spy):
+                out[n] = (round((float(s.iloc[pos + n]) / float(entry) - 1) * 100, 2),
+                          round((float(spy.iloc[spos + n]) / float(spy.iloc[spos]) - 1) * 100, 2))
+        if out:
+            updates.append((out.get(10, (None, None)), out.get(20, (None, None)), day, tk))
+    if not updates:
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    for (r10, s10), (r20, s20), day, tk in updates:
+        cur.execute("""UPDATE focus_picks SET ret_10d = COALESCE(%s, ret_10d), spy_10d = COALESCE(%s, spy_10d),
+                           ret_20d = COALESCE(%s, ret_20d), spy_20d = COALESCE(%s, spy_20d)
+                       WHERE day = %s AND ticker = %s""", (r10, s10, r20, s20, day, tk))
+    conn.commit()
+    cur.close()
+    conn.close()
+    print(f"[info] focus returns: {len(updates)} pick(s) updated")
 
 
 def save_stock_leaders(rows: Dict[str, dict], rs_ratings: Dict[str, int]):
@@ -1987,7 +2242,11 @@ def upsert_universe_movers(all_changes: List[tuple]):
 # roundup, not a wall of every micro-cap reporting). It costs zero extra
 # calls: earnings_candidates was built during the scan's normal .info
 # fetch already performed for every ticker anyway.
-EARNINGS_CALENDAR_TOP_N = 40          # how many notable names to keep, by market cap
+EARNINGS_CALENDAR_TOP_N = 40          # how many notable names to keep PER DAY, by market cap (v27: was 40 for the
+                                      # whole 2-week window = ~20 a week; Earnings Hub shows 30-60 a day)
+EARNINGS_MIN_MARKET_CAP = 2_000_000_000   # v27: names from Nasdaq's calendar below this are left out
+EARNINGS_ENRICH_BUDGET_SEC = 480      # Yahoo estimate/result calls per scan stop after this; the rest next run
+NASDAQ_EARNINGS_URL = "https://api.nasdaq.com/api/calendar/earnings?date={d}"
 # Was 2 days. revenue_actual comes from yfinance's quarterly_income_stmt,
 # which often lags the EPS release itself by several days (the statement
 # isn't refreshed the instant a company reports). A 2-day window was
@@ -2437,10 +2696,57 @@ def _fetch_revenue_result(ticker: str, report_dt, stored_estimate=None) -> tuple
     return (revenue_estimate, revenue_actual, period_end)
 
 
+def _nasdaq_num(s) -> Optional[float]:
+    """'$1,234,500' -> 1234500.0; '($0.05)' -> -0.05; '' / 'N/A' -> None."""
+    txt = str(s or "").strip()
+    neg = txt.startswith("(") and txt.endswith(")")
+    txt = re.sub(r"[^\d.]", "", txt)
+    try:
+        v = float(txt)
+    except ValueError:
+        return None
+    return -v if neg else v
+
+
+def fetch_nasdaq_earnings(start, end) -> List[tuple]:
+    """v27: [(ticker, market cap, report moment UTC, company name, EPS forecast)] for every weekday from start to end
+    — Nasdaq's public earnings calendar (the JSON its own website uses, no key; the IPO calendar in market_breadth.py
+    comes from the same API). The whole US market, $2B+ only. Time: pre-market = 08:00 ET, after-hours = 16:30 ET,
+    not supplied = 12:00 ET (shown as "time not confirmed")."""
+    import requests
+    et = ZoneInfo("America/New_York")
+    out, d = [], start
+    while d <= end:
+        if d.weekday() < 5:
+            try:
+                r = requests.get(NASDAQ_EARNINGS_URL.format(d=d.isoformat()), timeout=20,
+                                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept": "application/json"})
+                r.raise_for_status()
+                rows = ((r.json() or {}).get("data") or {}).get("rows") or []
+            except Exception as e:
+                print(f"[warn] nasdaq earnings {d}: {type(e).__name__}: {e}")
+                rows = []
+            for row in rows:
+                sym = str(row.get("symbol") or "").strip().upper().replace(".", "-")   # BRK.B -> Yahoo's BRK-B
+                if not re.fullmatch(r"[A-Z][A-Z0-9\-]{0,9}", sym):
+                    continue
+                mcap = _nasdaq_num(row.get("marketCap")) or 0
+                if mcap < EARNINGS_MIN_MARKET_CAP:
+                    continue
+                tm = str(row.get("time") or "")
+                hh, mm = (8, 0) if "pre-market" in tm else (16, 30) if "after-hours" in tm else (12, 0)
+                dt_utc = datetime(d.year, d.month, d.day, hh, mm, tzinfo=et).astimezone(timezone.utc)
+                name = str(row.get("name") or "").strip()[:120] or None
+                out.append((sym, mcap, dt_utc, name, _nasdaq_num(row.get("epsForecast"))))
+            time.sleep(0.5)
+        d += timedelta(days=1)
+    print(f"[info] nasdaq earnings: {len(out)} report(s) of $2B+ companies {start}..{end}")
+    return out
+
+
 def update_earnings_calendar(earnings_candidates: List[tuple]):
-    """earnings_candidates: (ticker, market_cap, earnings_timestamp)."""
-    if not earnings_candidates:
-        return
+    """earnings_candidates: (ticker, market_cap, earnings_timestamp) from the scan; v27: plus Nasdaq's calendar."""
+    earnings_candidates = earnings_candidates or []
     today = datetime.now(timezone.utc).date()
     window_start = today - timedelta(days=EARNINGS_CALENDAR_WINDOW_PAST_DAYS)
     window_end = today + timedelta(days=EARNINGS_CALENDAR_WINDOW_FUTURE_DAYS)
@@ -2454,10 +2760,33 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
         if window_start <= dt_utc.date() <= window_end:
             in_window.append((ticker, mcap or 0, dt_utc))
 
-    # Keep only the top N by market cap — "interesting"/notable names,
-    # not the full list of everyone reporting that week.
-    in_window.sort(key=lambda r: r[1], reverse=True)
-    top = in_window[:EARNINGS_CALENDAR_TOP_N]
+    # v27 (owner, compared with Earnings Hub: "very few companies"): the scan universe is only the S&P 500 +
+    # Nasdaq-100, and 40 names were kept for the whole two-week window. Now Nasdaq's public calendar adds every
+    # company of $2B+ reporting in the window (Yahoo's date/time wins for a ticker both have), and the top
+    # EARNINGS_CALENDAR_TOP_N by market cap are kept for EACH day.
+    names, nasdaq_eps = {}, {}
+    yahoo_tickers = {r[0] for r in in_window}
+    seen_name_day = set()
+    for sym, mcap, dt_utc, name, eps_f in sorted(fetch_nasdaq_earnings(window_start, window_end),
+                                                  key=lambda r: (r[0] not in yahoo_tickers, -r[1])):
+        if name:
+            names[sym] = name
+            key = (name.lower(), dt_utc.date())
+            if key in seen_name_day:
+                continue                    # a second share class of the same company (BRK.A / BRK.B)
+            seen_name_day.add(key)
+        if sym in yahoo_tickers:
+            continue
+        in_window.append((sym, mcap, dt_utc))
+        nasdaq_eps[(sym, dt_utc.date())] = eps_f
+
+    # Keep only the top N by market cap PER DAY — notable names, not every micro-cap reporting that day.
+    by_day = {}
+    for r in in_window:
+        by_day.setdefault(r[2].date(), []).append(r)
+    top = []
+    for day_rows in by_day.values():
+        top += sorted(day_rows, key=lambda r: r[1], reverse=True)[:EARNINGS_CALENDAR_TOP_N]
     top_tickers = {r[0] for r in top}
 
     # Protect names that ALREADY reported and already have a real result
@@ -2471,20 +2800,24 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
         conn_chk = get_conn()
         cur_chk = conn_chk.cursor()
         cur_chk.execute(
-            "SELECT ticker, report_date, eps_actual IS NOT NULL, revenue_estimate FROM earnings_calendar "
-            "WHERE report_date BETWEEN %s AND %s",
+            "SELECT ticker, report_date, eps_actual IS NOT NULL, revenue_estimate, revenue_actual IS NOT NULL, "
+            "eps_estimate IS NOT NULL FROM earnings_calendar WHERE report_date BETWEEN %s AND %s",
             (window_start.isoformat(), window_end.isoformat()),
         )
         chk_rows = cur_chk.fetchall()
         already_reported = {row[0] for row in chk_rows if row[2]}
         # the pre-report revenue estimate, used to sanity-check a press-release figure (v18)
         stored_rev_est = {(row[0], row[1]): row[3] for row in chk_rows if row[3]}
+        # v27: rows that need no Yahoo call this run — both results in, or (before the report) both estimates in
+        complete = {(row[0], row[1]) for row in chk_rows if row[2] and row[4]}
+        estimated = {(row[0], row[1]) for row in chk_rows if row[3] and row[5]}
         cur_chk.close()
         conn_chk.close()
     except Exception as e:
         print(f"[warn] earnings calendar: failed to check already-reported protection list: {e}")
         already_reported = set()
         stored_rev_est = {}
+        complete, estimated = set(), set()
 
     protected = [r for r in in_window if r[0] in already_reported and r[0] not in top_tickers]
     if protected:
@@ -2498,13 +2831,30 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
     # 2 extra yfinance calls per notable ticker (~40, not the whole
     # universe) on top of the 1 for EPS — this is what lets the
     # dashboard show revenue beat/miss too, not just EPS.
+    # v27: with ~10x more rows, Yahoo is only asked about rows that still miss something, within a time budget —
+    # the rest are stored as they are (the upsert keeps what is already there) and filled on the next runs
     enriched = []
+    now_utc = datetime.now(timezone.utc)
+    t_start, skipped, deferred = time.time(), 0, 0
+    top.sort(key=lambda r: (abs((r[2].date() - today).days), -(r[1] or 0)))   # nearest days first if time runs out
     for ticker, mcap, dt_utc in top:
-        eps_est, eps_actual, eps_surprise, eps_src = _fetch_eps_result(ticker, dt_utc.date())
-        time.sleep(INTER_TICKER_DELAY_SEC)
-        rev_est, rev_actual, rev_period_end = _fetch_revenue_result(ticker, dt_utc, stored_rev_est.get((ticker, dt_utc.date())))
-        time.sleep(INTER_TICKER_DELAY_SEC)
+        key = (ticker, dt_utc.date())
+        eps_est = eps_actual = eps_surprise = eps_src = rev_est = rev_actual = rev_period_end = None
+        if key in complete or (dt_utc > now_utc and key in estimated):
+            skipped += 1
+        elif time.time() - t_start > EARNINGS_ENRICH_BUDGET_SEC:
+            deferred += 1
+        else:
+            eps_est, eps_actual, eps_surprise, eps_src = _fetch_eps_result(ticker, dt_utc.date())
+            time.sleep(INTER_TICKER_DELAY_SEC)
+            rev_est, rev_actual, rev_period_end = _fetch_revenue_result(ticker, dt_utc, stored_rev_est.get(key))
+            time.sleep(INTER_TICKER_DELAY_SEC)
+        if eps_est is None and dt_utc > now_utc and nasdaq_eps.get(key) is not None:
+            # Nasdaq's consensus until Yahoo's is fetched; its "source date" is this report (init_db clears
+            # estimates that have none)
+            eps_est, eps_src = nasdaq_eps[key], dt_utc.date()
         enriched.append((ticker, mcap, dt_utc, eps_est, eps_actual, eps_surprise, rev_est, rev_actual, eps_src, rev_period_end))
+    print(f"[info] earnings calendar: {len(top)} row(s), {skipped} already complete, {deferred} left for the next run")
 
     conn = get_conn()
     cur = conn.cursor()
@@ -2524,11 +2874,12 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
             """
             INSERT INTO earnings_calendar
                 (ticker, report_date, session, market_cap, eps_estimate, eps_actual, surprise_pct, eps_source_date,
-                 revenue_estimate, revenue_actual, revenue_period_end, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 revenue_estimate, revenue_actual, revenue_period_end, updated_at, company_name)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (ticker, report_date) DO UPDATE SET
                 session = EXCLUDED.session,
                 market_cap = EXCLUDED.market_cap,
+                company_name = COALESCE(EXCLUDED.company_name, earnings_calendar.company_name),
                 eps_estimate = COALESCE(EXCLUDED.eps_estimate, earnings_calendar.eps_estimate),
                 eps_actual = COALESCE(EXCLUDED.eps_actual, earnings_calendar.eps_actual),
                 surprise_pct = COALESCE(EXCLUDED.surprise_pct, earnings_calendar.surprise_pct),
@@ -2545,7 +2896,7 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
             (ticker, dt_utc.date().isoformat(), _earnings_session(dt_utc), _native(mcap),
              eps_est, eps_actual, eps_surprise, eps_src.isoformat() if eps_src else None,
              rev_est, rev_actual, rev_period_end.isoformat() if rev_period_end else None,
-             datetime.now(timezone.utc).isoformat()),
+             datetime.now(timezone.utc).isoformat(), names.get(ticker)),
         )
     # Revenue surprise is always derived from what is NOW stored (pre-report
     # estimate + validated actual), so it can never mix two different quarters.
@@ -2799,6 +3150,8 @@ def backfill_sim_outcomes():
 #   * refresh_movers_only(): one batched price download -> heatmap / movers table.
 # ------------------------------------------------------------------
 _SESSION_REPORT_HOUR_UTC = {"bmo": 10, "amc": 20}   # earliest moment the figures can plausibly exist
+EARNINGS_REFRESH_BUDGET_SEC = 300    # v27: per quick run (the workflow stops at 15 minutes)
+IMPLIED_MOVE_MAX_PER_RUN = 60        # v27: per quick run; the least recently priced first
 
 
 def refresh_earnings_results():
@@ -2842,7 +3195,13 @@ def refresh_earnings_results():
     print(f"[info] earnings refresh: {len(todo)} reported name(s) still missing EPS or revenue.")
 
     updates = []
+    t_start = time.time()
     for ticker, rdate, report_dt, eps_actual, rev_actual, rev_est in todo:
+        # v27: the calendar is ~10x larger — newest reports first (the query's order), the rest on the next run, so
+        # the quick job (15-minute limit) always finishes
+        if time.time() - t_start > EARNINGS_REFRESH_BUDGET_SEC:
+            print(f"[info] earnings refresh: time budget reached — the remaining names wait for the next run")
+            break
         eps_est = eps_new = eps_sur = eps_src = rev_new = rev_pe = None
         if eps_actual is None:
             eps_est, eps_new, eps_sur, eps_src = _fetch_eps_result(ticker, rdate)
@@ -2942,7 +3301,7 @@ def refresh_implied_moves():
         """SELECT ticker, report_date, session FROM earnings_calendar
            WHERE report_date BETWEEN %s AND %s
              AND (implied_move_at IS NULL OR implied_move_at < NOW() - make_interval(hours => %s))
-           ORDER BY report_date, market_cap DESC NULLS LAST""",
+           ORDER BY implied_move_at NULLS FIRST, report_date, market_cap DESC NULLS LAST""",
         (today, today + timedelta(days=IMPLIED_MOVE_DAYS_AHEAD), IMPLIED_MOVE_REFRESH_H),
     )
     rows = cur.fetchall()
@@ -2954,6 +3313,8 @@ def refresh_implied_moves():
         report_dt = datetime(rdate.year, rdate.month, rdate.day, _SESSION_REPORT_HOUR_UTC.get(session or "", 15), 0, tzinfo=timezone.utc)
         if report_dt <= now:
             continue
+        if tried >= IMPLIED_MOVE_MAX_PER_RUN:
+            break                                   # the rest (priced longest ago first) on the next run
         tried += 1
         try:
             res = compute_implied_move(ticker, rdate, session)
@@ -3041,9 +3402,30 @@ def check_price_alerts_job():
                 continue
             if len(closes):
                 prices[t] = round(float(closes.iloc[-1]), 4)
+    # v27 "touch" alerts: the 5-minute bars of the last sessions — whether the price traded AT the level at any moment
+    # since the alert was set, not only where it is at this check (every ~20 min)
+    bars = {}
+    for i in range(0, len(tickers), 100):
+        chunk = tickers[i:i + 100]
+        try:
+            df = yf.download(chunk, period="5d", interval="5m", group_by="ticker",
+                             auto_adjust=False, progress=False, threads=True, prepost=False)
+        except Exception as e:
+            print(f"[warn] price alerts: 5-minute download failed: {type(e).__name__}: {e}")
+            continue
+        for t in chunk:
+            try:
+                sub = df[t][["Low", "High"]].dropna()
+            except Exception:
+                continue
+            if sub.empty:
+                continue
+            idx = sub.index.tz_convert("UTC") if sub.index.tz is not None else sub.index.tz_localize("UTC")
+            bars[t] = [(ts.to_pydatetime(), float(lo), float(hi), timedelta(minutes=5))
+                       for ts, lo, hi in zip(idx, sub["Low"], sub["High"])]
     conn = get_conn()   # fresh connection after the download (Neon auto-suspend)
     try:
-        push_alerts.check_price_alerts(conn, prices)
+        push_alerts.check_price_alerts(conn, prices, bars)
     finally:
         conn.close()
 
@@ -3282,7 +3664,8 @@ def main():
         raise
     finally:
         conn.close()
-    for job in (lambda: notify_new_signals(results), check_price_alerts_job):   # v19 alerts — never fail the scan
+    for job in (lambda: save_focus_picks(results), backfill_focus_returns,   # v27 focus + its track record
+                lambda: notify_new_signals(results), check_price_alerts_job):   # v19 alerts — never fail the scan
         try:
             job()
         except Exception:

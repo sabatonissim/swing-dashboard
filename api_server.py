@@ -257,6 +257,7 @@ def _sanitize_legacy_earnings(cur):
     cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS implied_move_pct REAL;")
     cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS implied_move_expiry DATE;")
     cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS implied_move_at TIMESTAMPTZ;")
+    cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS company_name TEXT;")   # v27: Nasdaq's name
     cur.execute("""UPDATE earnings_calendar SET revenue_actual = NULL, revenue_surprise_pct = NULL
                    WHERE revenue_actual IS NOT NULL AND revenue_period_end IS NULL;""")
     cur.execute("""UPDATE earnings_calendar SET eps_actual = NULL, eps_estimate = NULL, surprise_pct = NULL
@@ -554,7 +555,7 @@ except Exception as e:
 
 
 @app.get("/api/stocks")
-def get_stocks(limit: int = Query(default=25, le=100)):
+def get_stocks(limit: int = Query(default=25, le=300)):   # v27: le 100 -> 300 (the scan covers ~2,000 stocks now)
     """One row per ticker (its most recent signal), not one row per scan
     run. The scan runs twice a day and INSERTs a fresh row for every match
     without deduping — a stock that keeps re-qualifying (e.g. a strong
@@ -609,9 +610,9 @@ def get_backtest_patterns():
         cur.execute(
             """
             SELECT DISTINCT pattern_type FROM scanned_stocks
-            WHERE pattern_type IS NOT NULL AND forward_return_10d IS NOT NULL
+            WHERE pattern_type IS NOT NULL AND forward_return_10d IS NOT NULL AND timestamp >= %s
             ORDER BY pattern_type
-            """
+            """, (STATS_SINCE,)
         )
         rows = cur.fetchall()
     return [r["pattern_type"] for r in rows]
@@ -639,6 +640,10 @@ def get_backtest_patterns():
 # really is.
 # ------------------------------------------------------------------
 BACKTEST_COOLDOWN_DAYS = {10: 14, 20: 28}   # calendar days ~ 10 / 20 trading days
+# v27 (owner, 2.11.2026): the statistics (backtest page, win-rate badges, demo portfolio, "what happened before")
+# count only scan results from the v27 rules on — the quality gate, first-breakout-only, etc. The older results were
+# measured (HISTORY §27.3כט) and mostly describe rules that no longer exist; they stay in the table, just not counted.
+STATS_SINCE = "2026-11-03"
 
 
 def _finite_float(v):
@@ -700,12 +705,12 @@ def get_backtest(
         base = f"""
             SELECT ticker, timestamp, pattern_type, rs_rating, entry_price, {return_col} AS fwd_return
             FROM scanned_stocks
-            WHERE pattern_type IS NOT NULL AND {return_col} IS NOT NULL AND {return_col} <> 'NaN'
+            WHERE pattern_type IS NOT NULL AND {return_col} IS NOT NULL AND {return_col} <> 'NaN' AND timestamp >= %s
         """
         if pattern and pattern != "all":
-            cur.execute(base + " AND pattern_type = %s ORDER BY timestamp ASC", (pattern,))
+            cur.execute(base + " AND pattern_type = %s ORDER BY timestamp ASC", (STATS_SINCE, pattern))
         else:
-            cur.execute(base + " ORDER BY timestamp ASC")
+            cur.execute(base + " ORDER BY timestamp ASC", (STATS_SINCE,))
         raw_rows = cur.fetchall()
 
     rows = _independent_signals(raw_rows, horizon)
@@ -944,16 +949,16 @@ def get_demo_portfolio(
                    sim_exit_reason, sim_exit_price, sim_exit_days, sim_exit_date, sim_exit_return
             FROM scanned_stocks
             WHERE pattern_type IS NOT NULL AND swing_score >= %s AND sim_stop IS NOT NULL
-              AND (sim_exit_return IS NULL OR sim_exit_return <> 'NaN')
+              AND (sim_exit_return IS NULL OR sim_exit_return <> 'NaN') AND timestamp >= %s
             ORDER BY timestamp ASC
             """,
-            (min(DEMO_SCORE_STEPS),),
+            (min(DEMO_SCORE_STEPS), STATS_SINCE),
         )
         rows = cur.fetchall()
         cur.execute(
             """SELECT COUNT(*) AS pending FROM scanned_stocks
-               WHERE pattern_type IS NOT NULL AND swing_score >= %s AND sim_stop IS NULL""",
-            (min(DEMO_SCORE_STEPS),),
+               WHERE pattern_type IS NOT NULL AND swing_score >= %s AND sim_stop IS NULL AND timestamp >= %s""",
+            (min(DEMO_SCORE_STEPS), STATS_SINCE),
         )
         pending = cur.fetchone()["pending"]
 
@@ -990,6 +995,42 @@ def get_demo_portfolio(
     }
 
 
+@app.get("/api/focus")
+def get_focus():
+    """v27 "today's focus": the latest day's picks (pipeline_a_scanner.save_focus_picks — RS >= 90, Stage 2 uptrend,
+    ATR >= 3%, no report within 7 days, up to 5) and the public track record of every earlier pick: 10 / 20 trading
+    days later vs the S&P 500 over the same days."""
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        if not _table_exists(cur, "focus_picks"):
+            return {"day": None, "picks": [], "record": None, "history": []}
+        cur.execute("SELECT MAX(day) AS d FROM focus_picks")
+        day = cur.fetchone()["d"]
+        picks = []
+        if day:
+            cur.execute("""SELECT ticker, rank, rs_rating, trend_stage, atr_pct, pattern_type, trigger_text_he,
+                                  trigger_text_en, entry_price, sector FROM focus_picks WHERE day = %s ORDER BY rank""", (day,))
+            picks = [dict(r) for r in cur.fetchall()]
+        cur.execute("""SELECT day, ticker, rs_rating, pattern_type, entry_price, ret_10d, ret_20d, spy_10d, spy_20d
+                       FROM focus_picks WHERE ret_10d IS NOT NULL OR ret_20d IS NOT NULL ORDER BY day DESC, rank""")
+        hist = [dict(r) for r in cur.fetchall()]
+
+    def summary(h):
+        rows = [r for r in hist if r[f"ret_{h}d"] is not None]
+        if not rows:
+            return {"n": 0}
+        rets = [float(r[f"ret_{h}d"]) for r in rows]
+        spy = [float(r[f"spy_{h}d"]) for r in rows if r[f"spy_{h}d"] is not None]
+        return {"n": len(rows), "win_rate": round(sum(1 for v in rets if v > 0) / len(rets) * 100, 1),
+                "avg": round(sum(rets) / len(rets), 2), "spy_avg": round(sum(spy) / len(spy), 2) if spy else None,
+                "beat_spy": round(sum(1 for r in rows if r[f"spy_{h}d"] is not None
+                                      and float(r[f"ret_{h}d"]) > float(r[f"spy_{h}d"])) / len(rows) * 100, 1)}
+
+    for r in hist:
+        r["day"] = r["day"].isoformat()
+    return {"day": day.isoformat() if day else None, "picks": picks,
+            "record": {"d10": summary(10), "d20": summary(20)}, "history": hist[:40]}
+
+
 @app.get("/api/pattern-stats")
 def get_pattern_stats():
     """Win rate and average forward return per pattern type, from independent
@@ -1007,9 +1048,9 @@ def get_pattern_stats():
             SELECT ticker, timestamp, pattern_type, forward_return_10d, forward_return_20d
             FROM scanned_stocks
             WHERE pattern_type IS NOT NULL
-              AND (forward_return_10d IS NOT NULL OR forward_return_20d IS NOT NULL)
+              AND (forward_return_10d IS NOT NULL OR forward_return_20d IS NOT NULL) AND timestamp >= %s
             ORDER BY timestamp ASC
-            """
+            """, (STATS_SINCE,)
         )
         raw = cur.fetchall()
 
@@ -3527,7 +3568,7 @@ _SETUP_DETECTORS = [
 _SETUP_EXPLANATIONS = {
     "week52_high_breakout": {
         "he": lambda d: (
-            (f"המניה פרצה את השיא של 52 השבועות האחרונים (${d['key_level']}) — איתות חיובי חזק, "
+            (f"המניה פרצה את השיא של 52 השבועות האחרונים (${d['key_level']}) — סימן חיובי חזק, "
              f"כי אין מעליה יותר \"תקרה\" של מוכרים משנה שעברה." if d['stage']=='triggered'
              else f"המניה מתקרבת לשיא של 52 השבועות האחרונים (${d['key_level']}), כ-{abs(d['distance_pct'])}% מתחתיו.")
             + " אין כאן יעד מספרי סטנדרטי — פריצת שיא כזו, מעצם הגדרתה, פותחת \"שטח פנוי\" שאין בו התנגדות היסטורית. לא המלצת השקעה."
@@ -3555,10 +3596,10 @@ _SETUP_EXPLANATIONS = {
     },
     "golden_cross": {
         "he": lambda d: (
-            (f"התרחש \"צלב זהב\" — הממוצע הנע ל-50 יום חצה מעל הממוצע ל-200 יום, איתות קלאסי לשינוי מגמה ארוך-טווח לחיובי."
+            (f"התרחש \"צלב זהב\" — הממוצע הנע ל-50 יום חצה מעל הממוצע ל-200 יום, סימן קלאסי לשינוי מגמה ארוך-טווח לחיובי."
              if d['stage']=='triggered'
              else f"הממוצע ל-50 יום מתקרב לחצות מעל הממוצע ל-200 יום (${d['key_level']}) — הפער מצטמצם.")
-            + " זו קריאת מגמה ארוכת-טווח, לא איתות לפעולה מיידית."
+            + " זו קריאת מגמה ארוכת-טווח, לא המלצה לפעולה מיידית."
         ),
         "en": lambda d: (
             (f"A \"golden cross\" just occurred — the 50-day moving average crossed above the 200-day, a classic long-term trend-change signal."
@@ -3584,7 +3625,7 @@ _SETUP_EXPLANATIONS = {
             f"ה-RSI(14) ירד מתחת ל-30 (איזור \"קניית יתר שלילית\") בימים האחרונים — כרגע {d['rsi']}. "
             + ("המניה כבר חצתה בחזרה מעל 30 עם עלייה במחיר — סימן מוקדם אפשרי להיפוך." if d['stage']=='triggered'
                else "עדיין מתחת ל-30 — לא חזרה עדיין.")
-            + " זהו אינדיקטור מומנטום, אין כאן רמת מחיר או יעד — לא איתות לפעולה בפני עצמו."
+            + " זהו אינדיקטור מומנטום, אין כאן רמת מחיר או יעד — לא המלצה לפעולה בפני עצמו."
         ),
         "en": lambda d: (
             f"RSI(14) dipped below 30 (\"oversold\") in the last few days — currently {d['rsi']}. "
@@ -3642,7 +3683,7 @@ _SETUP_EXPLANATIONS = {
             f"המניה במגמת עלייה ומתמודדת כרגע עם קו תמיכה עולה (שעובר דרך שפלים קודמים) סביב ${d['key_level']}. "
             + (f"המחיר כרגע כ-{d['distance_pct']}% מעל הקו — נראה כמו ריבאונד תקין ממנו." if d['stage']=='holding'
                else f"המחיר ירד קלות מתחת לקו (כ-{abs(d['distance_pct'])}%) — שווה לעקוב אם זה יחזיק או יישבר.")
-            + " זה מבנה טכני, לא איתות לפעולה."
+            + " זה מבנה טכני, לא המלצה לפעולה."
         ),
         "en": lambda d: (
             f"The stock is in an uptrend and is currently testing a rising support line (drawn through prior swing lows) around ${d['key_level']}. "
@@ -3699,7 +3740,7 @@ _SETUP_EXPLANATIONS = {
              if d.get('breakout') else
              f"הממוצע הנע ל-150 יום (עולה, כלומר מגמה כללית חיובית) נמצא סביב ${d['key_level']}, והמחיר בודק אותו כרגע. "
              + ("המחיר סוגר מעל הממוצע — התנהגות של ריבאונד." if d['stage']=='holding' else "המחיר כרגע מתחת לממוצע — שווה לעקוב אם הוא יחזיר את זה."))
-            + " רמה טכנית נפוצה, לא איתות לפעולה."
+            + " רמה טכנית נפוצה, לא המלצה לפעולה."
         ),
         "en": lambda d: (
             ((f"Price crossed back above the 150-day moving average (around ${d['key_level']}) on the latest close after trading below it — a possible early recovery signal."
@@ -4618,7 +4659,7 @@ def list_alerts(user_id: int = Depends(current_user_id)):
 
 class PriceAlertIn(BaseModel):
     ticker: str = Field(max_length=12)
-    direction: str = Field(pattern="^(above|below)$")
+    direction: str = Field(pattern="^(above|below|touch)$")   # v27: touch = trades at the level (the default)
     price: float = Field(gt=0, lt=10_000_000)
 
 
@@ -5072,7 +5113,8 @@ def get_earnings_calendar():
         cur.execute(
             """
             SELECT ticker, report_date, session, market_cap, eps_estimate, eps_actual, surprise_pct,
-                   revenue_estimate, revenue_actual, revenue_surprise_pct, implied_move_pct, implied_move_expiry
+                   revenue_estimate, revenue_actual, revenue_surprise_pct, implied_move_pct, implied_move_expiry,
+                   company_name
             FROM earnings_calendar
             ORDER BY report_date ASC, market_cap DESC
             """
@@ -5084,7 +5126,8 @@ def get_earnings_calendar():
         d = dict(r)
         d["report_date"] = d["report_date"].isoformat() if d["report_date"] else None
         d["implied_move_expiry"] = d["implied_move_expiry"].isoformat() if d.get("implied_move_expiry") else None
-        d["name"] = info_map.get(d["ticker"], {}).get("name")
+        d["name"] = info_map.get(d["ticker"], {}).get("name") or d.pop("company_name", None)   # v27: non-S&P names
+        d.pop("company_name", None)
         d["reported"] = d["eps_actual"] is not None
         items.append(d)
     return {"count": len(items), "items": items}
@@ -6194,7 +6237,8 @@ def _sigctx_data():
     with db_cursor(dict_cursor=True) as (conn, cur):
         cur.execute("""SELECT ticker, timestamp, pattern_type, rs_rating, forward_return_10d AS fwd_return
                        FROM scanned_stocks WHERE pattern_type IS NOT NULL AND forward_return_10d IS NOT NULL
-                       ORDER BY timestamp ASC""")
+                         AND timestamp >= %s
+                       ORDER BY timestamp ASC""", (STATS_SINCE,))
         raw = cur.fetchall()
         regime = []
         if _table_exists(cur, "market_regime"):
