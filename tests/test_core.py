@@ -176,6 +176,14 @@ def test_signal_context_slice(api):
     assert api._sigctx_slice([]) == {"n": 0}
 
 
+def test_fundamentals_stale_series():
+    """v27: a series the company stopped reporting (JPM debt 2014, BRK EPS 2013) is dropped, a recent one is kept."""
+    import fundamentals
+    assert fundamentals._drop_if_stale({"2014-06-30": 1.0}, "2026-09-30") == {}
+    assert fundamentals._drop_if_stale({"2026-06-30": 1.0}, "2026-09-30") == {"2026-06-30": 1.0}
+    assert fundamentals._drop_if_stale({}, "2026-09-30") == {}
+
+
 def test_morning_brief_text():
     import datetime as _dt
     import push_alerts

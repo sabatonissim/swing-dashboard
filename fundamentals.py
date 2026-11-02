@@ -41,7 +41,7 @@ import yfinance as yf
 
 SEC_HEADERS = {"User-Agent": "SwingDesk-Dashboard admin@swingdesk.app"}   # SEC fair-use: a descriptive User-Agent
 
-CACHE_VERSION = 2              # bump when the numbers' logic changes, so stored copies are rebuilt, not served
+CACHE_VERSION = 3             # bump when the numbers' logic changes, so stored copies are rebuilt, not served
 PE_NM_ABOVE = 300              # trailing P/E above this = earnings near zero -> shown as "not meaningful"
 SIDE_CALLS_BUDGET_SEC = 9      # all Yahoo extras together; whatever is slower is skipped (SEC data still returned)
 
@@ -226,6 +226,23 @@ CAPEX_TAGS = [
     "PaymentsToAcquireOtherPropertyPlantAndEquipment",
     "PurchaseOfPropertyPlantAndEquipment",  # IFRS naming
 ]
+# v27 (owner, GOOGL had no gross margin): many filers never tag GrossProfit (GOOGL, META, AMZN) or stopped years ago
+# (NFLX 2020, COST 2019) — gross profit = revenue - cost of revenue for the quarters GrossProfit does not cover
+COST_OF_REVENUE_TAGS = [
+    "CostOfRevenue",
+    "CostOfGoodsAndServicesSold",
+    "CostOfGoodsSold",
+    "CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization",
+    "CostOfSales",                                             # IFRS
+]
+CASH_TAGS = ["CashAndCashEquivalentsAtCarryingValue", "CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations",
+             "CashAndCashEquivalents",
+             "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"]   # v27: LEN's only current cash tag
+DEBT_TAGS = ["LongTermDebtNoncurrent", "LongTermDebt", "DebtLongtermAndShorttermCombinedAmount",
+             "LongTermDebtAndCapitalLeaseObligations",   # v27: KO (other debt tags ended 2024) and XOM (had none)
+             "NoncurrentBorrowings", "Borrowings"]
+STALE_SERIES_DAYS = 400   # v27: a series whose last figure is this much older than the latest revenue/profit quarter
+                          # was dropped by the company (JPM debt 2014, BRK EPS 2013) — shown as missing, not as old data
 
 
 # ------------------------------------------------------------------ Yahoo extras
@@ -546,6 +563,33 @@ def _nearest_pair(series_a: dict, series_b: dict, tolerance_days: int = 6):
     return out
 
 
+def _drop_if_stale(series: dict, latest_income: str) -> dict:
+    """{} when the series' last date is more than STALE_SERIES_DAYS before latest_income (both 'YYYY-MM-DD')."""
+    if not series:
+        return {}
+    try:
+        gap = (date.fromisoformat(latest_income) - date.fromisoformat(max(series))).days
+    except Exception:
+        return series
+    return {} if gap > STALE_SERIES_DAYS else series
+
+
+def _yf_gross_margin(ticker: str) -> dict:
+    """{quarter end: gross margin %} from Yahoo's quarterly income statement (a ratio — currency does not matter)."""
+    tk = yf.Ticker(ticker)
+    inc = None
+    for attr in ("quarterly_income_stmt", "quarterly_financials"):
+        try:
+            inc = getattr(tk, attr)
+            if inc is not None and not inc.empty:
+                break
+        except Exception:
+            inc = None
+    gross = _yf_row(inc, ["Gross Profit"])
+    rev = _yf_row(inc, ["Total Revenue", "Operating Revenue"])
+    return {d: g / rev[d] * 100 for d, g in gross.items() if rev.get(d) and -100 < g / rev[d] * 100 <= 100}
+
+
 def _to_chart(date_value_pairs: dict):
     """Most recent 32 points sorted by date -> (labels, values)."""
     items = sorted(date_value_pairs.items())[-32:]
@@ -589,11 +633,12 @@ def build_fundamentals(ticker: str, cik_map: dict, info_getter: Optional[Callabl
     revenue_s = sec_quarterly_series(combined, REVENUE_TAGS, instant=False)
     ni_s      = sec_quarterly_series(combined, NET_INCOME_TAGS, instant=False)
     gross_s   = sec_quarterly_series(combined, ["GrossProfit"], instant=False)
+    cost_s    = sec_quarterly_series(combined, COST_OF_REVENUE_TAGS, instant=False)
     eps_s     = sec_quarterly_series(combined, EPS_TAGS, instant=False)
     ocf_s     = sec_quarterly_series(combined, OCF_TAGS, instant=False)
     capex_s   = sec_quarterly_series(combined, CAPEX_TAGS, instant=False)
-    cash_s    = sec_quarterly_series(combined, ["CashAndCashEquivalentsAtCarryingValue", "CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations", "CashAndCashEquivalents"], instant=True)
-    debt_s    = sec_quarterly_series(combined, ["LongTermDebtNoncurrent", "LongTermDebt", "DebtLongtermAndShorttermCombinedAmount", "NoncurrentBorrowings", "Borrowings"], instant=True)
+    cash_s    = sec_quarterly_series(combined, CASH_TAGS, instant=True)
+    debt_s    = sec_quarterly_series(combined, DEBT_TAGS, instant=True)
     shares_s  = sec_quarterly_series(combined, ["CommonStockSharesOutstanding"], instant=True)
     # dei:EntityCommonStockSharesOutstanding is on every 10-Q/10-K cover page — the fallback for market cap
     for d, v in sec_quarterly_series(deifacts, ["EntityCommonStockSharesOutstanding"], instant=True).items():
@@ -603,6 +648,14 @@ def build_fundamentals(ticker: str, cik_map: dict, info_getter: Optional[Callabl
         print(f"[info] fundamentals({ticker}): SEC facts had no usable quarterly (10-Q/10-K) revenue/net-income — "
               f"typical for foreign filers (20-F/6-K); trying yfinance statements")
         return _fundamentals_fallback(ticker, cik10, combined, info_getter)
+
+    # v27: series the company stopped reporting are dropped instead of drawn up to an old year
+    latest_income = max(list(revenue_s) + list(ni_s))
+    debt_reported = bool(debt_s)     # a debt tag that went stale (JPM 2014) is not "no debt" -> no net-debt chart
+    eps_s, capex_s, cash_s, debt_s = (_drop_if_stale(s, latest_income) for s in (eps_s, capex_s, cash_s, debt_s))
+    for d, (r, c) in _nearest_pair(revenue_s, cost_s, tolerance_days=0).items():
+        if _nearest(gross_s, d) is None:
+            gross_s[d] = r - c
 
     fcf_s = {}
     for d, ov in ocf_s.items():
@@ -620,13 +673,15 @@ def build_fundamentals(ticker: str, cik_map: dict, info_getter: Optional[Callabl
     net_income = [round(float(v), 2) if (v := _nearest(ni_s, d)) is not None else None for d in income_dates]
     fcf        = [round(float(v), 2) if (v := _nearest(fcf_s, d)) is not None else None for d in income_dates]
 
-    margin_ratio = {d: (g / r * 100) for d, (g, r) in _nearest_pair(gross_s, revenue_s).items() if r}
+    margin_ratio = _drop_if_stale({d: (g / r * 100) for d, (g, r) in _nearest_pair(gross_s, revenue_s).items()
+                                   if r and -100 < g / r * 100 <= 100}, latest_income)
     margin_labels, gross_margin_pct = _to_chart(margin_ratio)
+    margin_source = "sec" if margin_ratio else None
 
     # no debt tag at all (SHOP and many growth names) = nothing to report, not missing: net debt = -cash
     if debt_s:
         net_debt_map = {d: (dv - cv) for d, (dv, cv) in _nearest_pair(debt_s, cash_s).items()}
-    elif cash_s:
+    elif cash_s and not debt_reported:
         net_debt_map = {d: -cv for d, cv in cash_s.items()}
     else:
         net_debt_map = {}
@@ -649,7 +704,15 @@ def build_fundamentals(ticker: str, cik_map: dict, info_getter: Optional[Callabl
     }
     if info_getter:
         calls["info"] = lambda: info_getter(yf.Ticker(ticker), ticker) or {}
+    if not margin_ratio:
+        calls["yf_margin"] = lambda: _yf_gross_margin(ticker)
     side = _run_side_calls(calls, SIDE_CALLS_BUDGET_SEC)
+    if not margin_ratio:
+        # v27: SEC has no (recent) gross profit or cost of revenue (ORCL, LEN) — Yahoo's quarterly statements
+        yf_margin = _drop_if_stale(side.get("yf_margin") or {}, latest_income)
+        if yf_margin:
+            margin_labels, gross_margin_pct = _to_chart(yf_margin)
+            margin_source = "yahoo"
     pe_band = side.get("pe_band")
     eps_labels, eps_actual, eps_estimate, eps_surprise_pct = side.get("analyst_eps") or ([], [], [], [])
     info = side.get("info") or {}
@@ -696,6 +759,7 @@ def build_fundamentals(ticker: str, cik_map: dict, info_getter: Optional[Callabl
         "fcf_ltm": fcf_ltm,
         "margin_labels": margin_labels,
         "gross_margin_pct": gross_margin_pct,
+        "margin_source": margin_source,
         "debt_labels": debt_labels,
         "net_debt": net_debt,
         "latest_shares_outstanding": latest_shares,

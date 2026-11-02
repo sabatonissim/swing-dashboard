@@ -568,6 +568,8 @@ try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.
   .earn-id{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;}
   .earn-tk{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:13.5px;}
   .earn-name{font-size:11.5px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .earn-im{font-size:10.5px;color:var(--sky);white-space:nowrap;}
+  .earn-im b{font-family:'JetBrains Mono',monospace;font-weight:600;}
   .earn-fig{flex:0 0 96px;display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-family:'JetBrains Mono',monospace;}
   .earn-fig .k{font-size:9.5px;color:var(--text-dim);font-family:'Heebo',sans-serif;}
   .earn-fig .v{font-size:12.5px;font-weight:600;}
@@ -2608,7 +2610,7 @@ function _ddMountChart(force){
     studies_overrides: {
       "Moving Average.length": 150,
       "Moving Average.plot.color": "#2962ff",
-      "Moving Average.plot.linewidth": 2,
+      "Moving Average.plot.linewidth": 1,
     },
   });
   // one nudge after the chart has appeared so its automatic sizing re-measures the box
@@ -2661,7 +2663,7 @@ function switchChart(symbol){
     studies_overrides: {
       "Moving Average.length": 150,
       "Moving Average.plot.color": "#2962ff",
-      "Moving Average.plot.linewidth": 2,
+      "Moving Average.plot.linewidth": 1,
     },
   });
 }
@@ -4029,7 +4031,8 @@ function _earnRowHtml(it, todayStr){
   const open = _earnOpen === key;
   return `<div class="earn-row${open ? ' open' : ''}">
     <div class="earn-row-main" role="button" tabindex="0" aria-expanded="${open}" onclick="toggleEarnDetail('${key}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleEarnDetail('${key}');}">
-      <div class="earn-id"><span class="earn-tk">${escH(it.ticker)}</span><span class="earn-name">${escH(it.name || '')}</span></div>
+      <div class="earn-id"><span class="earn-tk">${escH(it.ticker)}</span><span class="earn-name">${escH(it.name || '')}</span>${
+        it.implied_move_pct != null && !it.reported ? `<span class="earn-im">${en ? 'Expected move' : 'תנודה צפויה'} <b dir="ltr">±${Number(it.implied_move_pct).toFixed(1)}%</b></span>` : ''}</div>
       ${_earnFigHtml('EPS', it.eps_actual, it.eps_estimate, it.surprise_pct, _earnUsd, it.reported)}
       ${_earnFigHtml(en ? 'Revenue' : 'הכנסות', it.revenue_actual, it.revenue_estimate, it.revenue_surprise_pct, _earnBig, it.reported)}
       <span class="earn-chev">›</span>
@@ -4094,8 +4097,17 @@ function _earnDetailHtml(it, todayStr){
     cards.push(card(en ? 'EPS — estimate' : 'צפי EPS', it.eps_estimate != null ? _earnUsd(it.eps_estimate) : '—'));
     cards.push(card(en ? 'Revenue — estimate' : 'צפי הכנסות', it.revenue_estimate != null ? _earnBig(it.revenue_estimate) : '—'));
   }
+  if(it.implied_move_pct != null){
+    // v27: what the options priced in before the report (ATM straddle of the first expiry after it, ÷ price)
+    const exp = it.implied_move_expiry ? new Intl.DateTimeFormat(en ? 'en-US' : 'he-IL', { day:'numeric', month:'numeric' }).format(new Date(it.implied_move_expiry + 'T12:00:00')) : '';
+    cards.push(card(en ? 'Expected move (options)' : 'תנודה צפויה (אופציות)', `±${Number(it.implied_move_pct).toFixed(1)}%`,
+      en ? `ATM straddle${exp ? ', expiry ' + exp : ''}` : `סטראדל ATM${exp ? ', פקיעה ' + exp : ''}`));
+  }
   if(it.market_cap) cards.push(card(en ? 'Market cap' : 'שווי שוק', _earnBig(it.market_cap)));
-  out.push(`<div class="earn-dsec"><div class="earn-dsec-t">${when} · ${sess}</div><div class="earn-kv">${cards.join('')}</div></div>`);
+  out.push(`<div class="earn-dsec"><div class="earn-dsec-t">${when} · ${sess}</div><div class="earn-kv">${cards.join('')}</div>${
+    it.implied_move_pct != null && !it.reported ? `<div class="earn-note">${en
+      ? `Options prices imply a move of about ±${Number(it.implied_move_pct).toFixed(1)}% in either direction by that expiry — a market estimate of the size of the move, not its direction.`
+      : `מחירי האופציות מגלמים תזוזה של כ-±${Number(it.implied_move_pct).toFixed(1)}% לכל כיוון עד הפקיעה — הערכת השוק לגודל התזוזה, לא לכיוונה.`}</div>` : ''}</div>`);
 
   // 2. how the stock reacted (reported only)
   if(it.reported){
@@ -4103,7 +4115,8 @@ function _earnDetailHtml(it, todayStr){
     if(st.px){
       const r = _earnReaction(it, st.px);
       body = r ? `<div class="earn-kv">
-          ${card(en ? 'Reaction day' : 'ביום התגובה', _earnPct(r.day), `S&amp;P 500 ${_earnPct(r.mkt)}`)}
+          ${card(en ? 'Reaction day' : 'ביום התגובה', _earnPct(r.day), `S&amp;P 500 ${_earnPct(r.mkt)}`
+            + (it.implied_move_pct != null ? ` · ${en ? 'expected' : 'צפי'} ±${Number(it.implied_move_pct).toFixed(1)}%` : ''))}
           ${r.since != null ? card(en ? 'Since the report' : 'מאז הדוח', _earnPct(r.since), en ? 'to the last close' : 'עד הסגירה האחרונה') : ''}
         </div>`
         : `<div class="earn-note">${en ? 'The first trading day after the report has not closed yet.' : 'יום המסחר הראשון אחרי הדוח עוד לא נסגר.'}</div>`;
@@ -4848,7 +4861,7 @@ function renderTradingViewChart(ticker){
     studies_overrides: {
       "Moving Average.length": 150,
       "Moving Average.plot.color": "#2962ff",
-      "Moving Average.plot.linewidth": 2,
+      "Moving Average.plot.linewidth": 1,
     },
   });
 }
@@ -5220,7 +5233,7 @@ function buildTechnicalSetupSvg(priceSeries, lines){
     if(ln.type === 'ma'){
       // v27: the real 150-day MA (one point per day, from the server's ma150.line) — TradingView blue like every other chart
       entries.push({color:'var(--ma150)', kind:'trend', name, value:'$'+fmtP(last.price), note:'', anchorX: last.x, anchorY: last.y, dim: 1});
-      return `<polyline points="${pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}" fill="none" stroke="var(--ma150)" stroke-width="1.6"/>`;
+      return `<polyline points="${pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}" fill="none" stroke="var(--ma150)" stroke-width="1"/>`;
     }
     if(ln.type === 'curve'){
       entries.push({color:'var(--struct)', kind:'curve', name, value:'',
@@ -5630,8 +5643,16 @@ function renderFundamentals(data, containerId){
     <div style="font-size:10px;color:var(--text-dim);margin-bottom:10px;">${t?'Bars below are per-quarter — LTM above is the trailing 4-quarter sum, comparable to how most terminals (e.g. Koyfin) report it.':'העמודות למטה הן לפי רבעון — ה-LTM למעלה הוא סכום 4 הרבעונים האחרונים, בדיוק כמו שרוב הטרמינלים (כמו Koyfin) מציגים.'}</div>
   ` : ''}
   ${fundChartCanvas('chart-rev-ni-fcf')}</div>`;
-  html += `<div class="${fundCardClass(marginN)}"><div class="fund-card-title">${t?'Gross Margin %':'שולי רווח גולמי %'}${fundInfoIcon('gross_margin')}</div>${fundChartCanvas('chart-margin')}</div>`;
-  html += `<div class="${fundCardClass(debtN)}"><div class="fund-card-title">${t?'Net Debt':'חוב נטו'}${fundInfoIcon('net_debt')}</div>${fundChartCanvas('chart-netdebt')}</div>`;
+  // v27: an empty card said nothing — now it says why (banks/insurers have no "cost of revenue"; some filers stopped tagging debt)
+  const fundNoData = (he, en) => `<div class="fund-empty" style="padding:18px 4px;font-size:12px;">${t?en:he}</div>`;
+  html += `<div class="${fundCardClass(marginN)}"><div class="fund-card-title">${t?'Gross Margin %':'שולי רווח גולמי %'}${fundInfoIcon('gross_margin')}</div>${marginN
+    ? fundChartCanvas('chart-margin') + (data.margin_source==='yahoo' ? `<div style="font-size:10px;color:var(--text-dim);margin-top:4px;">${t?'Source: Yahoo Finance (SEC filings have no gross profit for this company).':'מקור: Yahoo Finance (בדוחות ל-SEC אין לחברה הזו רווח גולמי).'}</div>` : '')
+    : fundNoData('החברה לא מדווחת רווח גולמי בדוחות שלה (נפוץ בבנקים, ביטוח, נדל"ן וחלק מחברות התוכנה) — לכן אין כאן גרף.',
+                 'This company does not report gross profit in its filings (common for banks, insurers, REITs and some software firms), so there is no chart.')}</div>`;
+  html += `<div class="${fundCardClass(debtN)}"><div class="fund-card-title">${t?'Net Debt':'חוב נטו'}${fundInfoIcon('net_debt')}</div>${debtN
+    ? fundChartCanvas('chart-netdebt')
+    : fundNoData('אין בדוחות העדכניים של החברה נתון חוב ומזומן בפורמט הסטנדרטי (נפוץ בבנקים) — לכן אין כאן גרף.',
+                 'The company\'s recent filings have no debt and cash figures in the standard format (common for banks), so there is no chart.')}</div>`;
   html += `</div>`;
 
   const latestShares = data.latest_shares_outstanding;

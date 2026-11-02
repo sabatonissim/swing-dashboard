@@ -1270,6 +1270,10 @@ def init_db():
     # Micron its EPS) as if it were the report that had just come out.
     cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS revenue_period_end DATE;")
     cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS eps_source_date DATE;")
+    # v27: options-implied move before the report (refresh_implied_moves)
+    cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS implied_move_pct REAL;")
+    cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS implied_move_expiry DATE;")
+    cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS implied_move_at TIMESTAMPTZ;")
     # Values stored before provenance existed can't be verified, so drop them
     # once; the next scan refetches them with the validated logic. Idempotent:
     # every value written from now on carries its provenance date.
@@ -2877,6 +2881,101 @@ def refresh_earnings_results():
     print(f"[info] earnings refresh: {len(updates)} row(s) updated with new results.")
 
 
+# ------------------------------------------------------------------
+# Expected move before a report (v27, owner's request): what the options market prices in. The at-the-money
+# STRADDLE (call + put at the strike nearest the price) of the first expiry that still includes the reaction to the
+# report, as a % of the price — the usual "expected move" (it also carries the few ordinary days until that expiry).
+# Stored per report and frozen once the report is out, so the site can show the prediction next to the real move.
+# Yahoo options work from GitHub Actions (not from Render).
+# ------------------------------------------------------------------
+IMPLIED_MOVE_DAYS_AHEAD = 8          # reports up to this many days ahead
+IMPLIED_MOVE_REFRESH_H = 3           # re-price at most every 3 hours (option prices move as the report gets closer)
+IMPLIED_MOVE_MAX_EXPIRY_GAP = 10     # an expiry more than 10 days after the report says little about the report itself
+
+
+def _option_mid(row) -> Optional[float]:
+    bid, ask, last = (float(row.get(k) or 0) for k in ("bid", "ask", "lastPrice"))
+    if bid > 0 and ask >= bid:
+        return (bid + ask) / 2
+    return last if last > 0 else None
+
+
+def compute_implied_move(ticker: str, report_date, session: Optional[str]) -> Optional[tuple]:
+    """(move %, expiry date) or None. The expiry must come after the reaction: on/after the report day for a
+    before-the-open report, strictly after it for an after-the-close (or unknown-time) one."""
+    tk = yf.Ticker(ticker)
+    expiry = None
+    for e in tk.options or ():
+        d = datetime.strptime(e, "%Y-%m-%d").date()
+        if d > report_date or (d == report_date and session == "bmo"):
+            expiry = d
+            break
+    if expiry is None or (expiry - report_date).days > IMPLIED_MOVE_MAX_EXPIRY_GAP:
+        return None
+    h = tk.history(period="5d", auto_adjust=False)
+    if h is None or h.empty:
+        return None
+    price = float(h["Close"].iloc[-1])
+    chain = tk.option_chain(expiry.isoformat())
+    calls, puts = chain.calls, chain.puts
+    common = sorted(set(calls["strike"]) & set(puts["strike"]))
+    if not common or price <= 0:
+        return None
+    strike = min(common, key=lambda s: abs(s - price))
+    c = _option_mid(calls[calls["strike"] == strike].iloc[0])
+    p = _option_mid(puts[puts["strike"] == strike].iloc[0])
+    if c is None or p is None:
+        return None
+    pct = (c + p) / price * 100
+    if not 0.3 <= pct <= 40:          # a stale or broken quote, not a real price
+        return None
+    return round(pct, 1), expiry
+
+
+def refresh_implied_moves():
+    init_db()
+    now = datetime.now(timezone.utc)
+    today = now.date()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT ticker, report_date, session FROM earnings_calendar
+           WHERE report_date BETWEEN %s AND %s
+             AND (implied_move_at IS NULL OR implied_move_at < NOW() - make_interval(hours => %s))
+           ORDER BY report_date, market_cap DESC NULLS LAST""",
+        (today, today + timedelta(days=IMPLIED_MOVE_DAYS_AHEAD), IMPLIED_MOVE_REFRESH_H),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    results, tried = [], 0
+    for ticker, rdate, session in rows:
+        # frozen at the report: from the moment the figures can exist the options price the NEXT event
+        report_dt = datetime(rdate.year, rdate.month, rdate.day, _SESSION_REPORT_HOUR_UTC.get(session or "", 15), 0, tzinfo=timezone.utc)
+        if report_dt <= now:
+            continue
+        tried += 1
+        try:
+            res = compute_implied_move(ticker, rdate, session)
+        except Exception as e:
+            print(f"[info] implied move {ticker}: {type(e).__name__}: {e}")
+            res = None
+        if res:
+            results.append((res[0], res[1], ticker, rdate))
+        time.sleep(INTER_TICKER_DELAY_SEC)
+    if results:
+        conn = get_conn()
+        cur = conn.cursor()
+        for pct, expiry, ticker, rdate in results:
+            cur.execute("""UPDATE earnings_calendar SET implied_move_pct = %s, implied_move_expiry = %s, implied_move_at = NOW()
+                           WHERE ticker = %s AND report_date = %s""", (pct, expiry, ticker, rdate))
+        conn.commit()
+        cur.close()
+        conn.close()
+    print(f"[info] implied moves: {len(results)} of {tried} upcoming report(s) priced"
+          + (f" (e.g. {results[0][2]} ±{results[0][0]}% to {results[0][1]})" if results else ""))
+
+
 def refresh_movers_only():
     init_db()
     universe = build_scan_universe()
@@ -3114,7 +3213,8 @@ def notify_new_signals(results):
 def main():
     import sys
     if "--quick" in sys.argv:
-        for job in (refresh_movers_only, refresh_earnings_results, check_price_alerts_job, earnings_alerts_job):
+        for job in (refresh_movers_only, refresh_earnings_results, refresh_implied_moves, check_price_alerts_job,
+                    earnings_alerts_job):
             try:
                 job()
             except Exception:

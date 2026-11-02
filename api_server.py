@@ -252,6 +252,11 @@ def _sanitize_legacy_earnings(cur):
         return
     cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS revenue_period_end DATE;")
     cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS eps_source_date DATE;")
+    # v27: options-implied move (the scanner's refresh_implied_moves fills it) — here too, so the SELECT below
+    # works before the first scanner run
+    cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS implied_move_pct REAL;")
+    cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS implied_move_expiry DATE;")
+    cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS implied_move_at TIMESTAMPTZ;")
     cur.execute("""UPDATE earnings_calendar SET revenue_actual = NULL, revenue_surprise_pct = NULL
                    WHERE revenue_actual IS NOT NULL AND revenue_period_end IS NULL;""")
     cur.execute("""UPDATE earnings_calendar SET eps_actual = NULL, eps_estimate = NULL, surprise_pct = NULL
@@ -5067,7 +5072,7 @@ def get_earnings_calendar():
         cur.execute(
             """
             SELECT ticker, report_date, session, market_cap, eps_estimate, eps_actual, surprise_pct,
-                   revenue_estimate, revenue_actual, revenue_surprise_pct
+                   revenue_estimate, revenue_actual, revenue_surprise_pct, implied_move_pct, implied_move_expiry
             FROM earnings_calendar
             ORDER BY report_date ASC, market_cap DESC
             """
@@ -5078,6 +5083,7 @@ def get_earnings_calendar():
     for r in rows:
         d = dict(r)
         d["report_date"] = d["report_date"].isoformat() if d["report_date"] else None
+        d["implied_move_expiry"] = d["implied_move_expiry"].isoformat() if d.get("implied_move_expiry") else None
         d["name"] = info_map.get(d["ticker"], {}).get("name")
         d["reported"] = d["eps_actual"] is not None
         items.append(d)
