@@ -2107,6 +2107,19 @@ def _tested_times_he(n) -> str:
     return f"נבחנה {n if n else 'כמה'} פעמים בעבר"
 
 
+def _ago_he(days) -> str:
+    """When a breakout happened, counted in trading sessions (v27). None/0 = the latest close."""
+    if not days:
+        return "בסגירה האחרונה"
+    return "לפני יום מסחר אחד" if days == 1 else f"לפני {days} ימי מסחר"
+
+
+def _ago_en(days) -> str:
+    if not days:
+        return "on the latest close"
+    return "1 trading day ago" if days == 1 else f"{days} trading days ago"
+
+
 def _fmt_date(ts) -> str:
     return pd.Timestamp(ts).strftime("%Y-%m-%d")
 
@@ -2510,6 +2523,9 @@ def _setup_horizontal_resistance_breakout(hist: pd.DataFrame) -> Optional[dict]:
     }
 
 
+_MA150_RECLAIM_MAX_DAYS = 10   # v27: a reclaim of the 150 MA is shown while it is at most this many closes old
+
+
 def _setup_ma150_support(hist: pd.DataFrame) -> Optional[dict]:
     scan_rule = _scanner_rule_ma150_breakout(hist) or _scanner_rule_ma150_bounce(hist)  # scanner parity
     if scan_rule:
@@ -2521,6 +2537,17 @@ def _setup_ma150_support(hist: pd.DataFrame) -> Optional[dict]:
     sma150 = closes.rolling(150).mean()
     if sma150.isna().iloc[-21:].any():
         return None
+
+    # v27 (owner, LEN 30.10.2026): a reclaim of the MA a few sessions ago that has held since — every close from the
+    # cross to today above it, after at least 5 closes below — is still "back above the 150", whatever the MA's slope
+    # (the explanation says when the MA itself is still falling). The scanner only flags the first two days.
+    above = (closes > sma150).values
+    streak = 0
+    while streak < len(above) and above[-1 - streak]:
+        streak += 1
+    if 1 <= streak <= _MA150_RECLAIM_MAX_DAYS and not above[-1 - streak - 4:-streak].any():
+        if (float(closes.iloc[-1]) / float(sma150.iloc[-1]) - 1) <= 0.08:
+            return _ma150_reclaim_result(hist, sma150, streak - 1)
 
     slope = float(sma150.iloc[-1] - sma150.iloc[-20])
     if slope <= 0:
@@ -2540,6 +2567,7 @@ def _setup_ma150_support(hist: pd.DataFrame) -> Optional[dict]:
     return {
         "pattern": "ma150_support",
         "stage": stage,
+        "ma_rising": True,
         "key_level": round(ma_today, 2),
         "distance_pct": round(distance_pct, 2),
         "target_price": None,
@@ -2551,6 +2579,58 @@ def _setup_ma150_support(hist: pd.DataFrame) -> Optional[dict]:
                  [_fmt_date(tail.index[-1]), round(ma_today, 2)],
              ]},
         ],
+    }
+
+
+def _ma150_context(hist: pd.DataFrame) -> Optional[dict]:
+    """v27 (owner, LEN 30.10.2026: "the analysis isn't linked to the 150 MA"): where the price stands against the
+    150-day MA, shown on EVERY stock page whatever pattern is found — the MA's value, distance, slope, and how long
+    price has been on this side of it (with the cross, when it is recent) — plus the MA's daily values for the
+    analysis chart, drawn in var(--ma150). Display only: the scanner has no twin of it."""
+    closes = hist["Close"]
+    sma = closes.rolling(150).mean()
+    if len(hist) < 170 or sma.iloc[-20:].isna().any():
+        return None
+    ma = float(sma.iloc[-1])
+    close = float(closes.iloc[-1])
+    if ma <= 0:
+        return None
+    above = close > ma
+    side = (closes > sma).values
+    valid = sma.notna().values
+    last = len(closes) - 1
+    streak = 0                     # closes in a row on today's side of the MA, today included
+    while streak <= last and valid[last - streak] and bool(side[last - streak]) == above:
+        streak += 1
+    prior = 0                      # closes in a row on the OTHER side, just before that
+    while streak + prior <= last and valid[last - streak - prior] and bool(side[last - streak - prior]) != above:
+        prior += 1
+    rising = float(sma.iloc[-1] - sma.iloc[-20]) > 0
+    dist = (close - ma) / ma * 100
+    d = abs(round(dist, 1))
+
+    he = f"ממוצע 150 יום: ${ma:.2f} — המחיר {d}% {'מעליו' if above else 'מתחתיו'}"
+    en = f"150-day MA: ${ma:.2f} — price is {d}% {'above' if above else 'below'} it"
+    if streak <= _MA150_RECLAIM_MAX_DAYS and prior >= 5:
+        he += (f". {'חצה מעליו' if above else 'ירד מתחתיו'} {_ago_he(streak - 1)}, "
+               f"אחרי {prior} ימי מסחר {'מתחתיו' if above else 'מעליו'}")
+        en += (f". It crossed {'above' if above else 'below'} it {_ago_en(streak - 1)}, "
+               f"after {prior} trading days {'below' if above else 'above'} it")
+    else:
+        he += f", {streak} ימי מסחר ברציפות"
+        en += f", {streak} trading days in a row"
+    he += ". הממוצע עצמו " + ("עולה." if rising else "יורד.")
+    en += ". The average itself is " + ("rising." if rising else "falling.")
+    if d <= 2:
+        he += " המחיר צמוד לממוצע — רמה שסוחרים רבים עוקבים אחריה."
+        en += " Price is right at the average — a level many traders watch."
+
+    tail = sma.tail(_TL_SEARCH_DAYS + 10).dropna()
+    return {
+        "value": round(ma, 2), "dist_pct": round(dist, 2), "above": above, "rising": rising,
+        "streak": streak, "prior_streak": prior, "text_he": he, "text_en": en,
+        "line": {"type": "ma", "label_he": "ממוצע נע 150 יום", "label_en": "150-day moving average",
+                 "points": [[_fmt_date(i), round(float(v), 2)] for i, v in tail.items()]},
     }
 
 
@@ -2595,6 +2675,10 @@ def _setup_horizontal_support_bounce(hist: pd.DataFrame) -> Optional[dict]:
     level, touches = min(candidates, key=lambda x: abs(x[0] - today_close))
     distance_pct = (today_close - level) / level * 100
     if distance_pct < -5 or distance_pct > 10:
+        return None
+    # v27 (LEN): price above a level it was mostly BELOW for the last 10 closes came up through it — that is not
+    # support holding (the resistance-breakout / MA detectors describe that move), same rule as the scanner's bounce
+    if distance_pct >= 0 and float((window["Close"].values[-11:-1] > level).mean()) < _LEVEL_MIN_PRIOR_ABOVE:
         return None
 
     stage = "holding" if distance_pct >= 0 else "approaching"
@@ -2648,6 +2732,15 @@ def _setup_52w_high_breakout(hist: pd.DataFrame) -> Optional[dict]:
     }
 
 
+def _bull_flag_breakout_bar(scan, pole_end: int) -> Optional[int]:
+    """Twin of bull_flag_breakout_bar in the scanner: the first close >= every close since the pole top, at least
+    4 bars after it; None if none yet."""
+    for k in range(pole_end + 4, len(scan)):
+        if scan[k] >= scan[pole_end:k].max():
+            return k
+    return None
+
+
 def _setup_bull_flag(hist: pd.DataFrame) -> Optional[dict]:
     if len(hist) < 60:
         return None
@@ -2671,22 +2764,32 @@ def _setup_bull_flag(hist: pd.DataFrame) -> Optional[dict]:
 
     pole_start_rel = best_pole_end_rel - best_pole_len
     pole_top = scan[best_pole_end_rel]
-    flag_section = scan[best_pole_end_rel:]
-    if len(flag_section) < 5:
+    if len(scan) - best_pole_end_rel < 5:
         return None
-    flag_low = float(flag_section.min())
-    flag_high = float(flag_section.max())
+    # v27 (LOW/LEN/KIM): the flag ends at its FIRST breakout close (twin of the scanner's bull_flag_breakout_bar). The
+    # level used to include today's close, so it moved up every day and a two-day-old breakout read as today's.
+    brk = _bull_flag_breakout_bar(scan, best_pole_end_rel)
+    flag_end = brk if brk is not None else len(scan) - 1          # the flag = pole top .. day before the breakout
+    flag_section = scan[best_pole_end_rel:flag_end]
+    flag_low = float(scan[best_pole_end_rel:flag_end + 1].min())   # scanner: min incl. the breakout bar
     pullback_pct = (pole_top - flag_low) / pole_top * 100
     if pullback_pct > best_pole_pct * 0.5:
         return None  # pullback too deep to still be a tight flag
 
     today_close = float(closes[-1])
-    breakout_level = flag_high
+    breakout_level = float(flag_section.max())
     distance_pct = (breakout_level - today_close) / today_close * 100
     if distance_pct > 10:
         return None
+    days_since_breakout = None
+    if brk is not None and today_close >= breakout_level:
+        stage = "triggered"
+        days_since_breakout = len(scan) - 1 - brk
+        if days_since_breakout > 10:
+            return None
+    else:
+        stage = "approaching"
     target_price = breakout_level + (pole_top - scan[pole_start_rel])
-    stage = "triggered" if today_close >= breakout_level else "approaching"
 
     pole_start_idx = scan_start + pole_start_rel
     pole_end_idx = scan_start + best_pole_end_rel
@@ -2697,6 +2800,7 @@ def _setup_bull_flag(hist: pd.DataFrame) -> Optional[dict]:
         "stage": stage,
         "key_level": round(breakout_level, 2),
         "distance_pct": round(distance_pct, 2),
+        "days_since_breakout": days_since_breakout,
         "target_price": round(target_price, 2),
         "target_pct": round((target_price - breakout_level) / breakout_level * 100, 1),
         "lines": [
@@ -2805,6 +2909,14 @@ def _setup_double_bottom(hist: pd.DataFrame) -> Optional[dict]:
         return None
     target_price = neckline + (neckline - bottom_price)
     stage = "triggered" if today_close > neckline else "approaching"
+    # v27 twin of the scanner's freshness rule (IFF): the breakout is the FIRST close above the neckline after the second
+    # bottom — the scanner fires only when that is today; here a break up to 20 sessions old is shown with its age.
+    days_since_breakout = None
+    if stage == "triggered":
+        first_break = next(k for k in range(hi_idx + 1, n) if closes[k] > neckline)
+        days_since_breakout = n - 1 - first_break
+        if days_since_breakout > 20:
+            return None
     neckline_idx = lo_idx + int(np.argmax(closes[lo_idx:hi_idx+1]))
 
     return {
@@ -2812,6 +2924,7 @@ def _setup_double_bottom(hist: pd.DataFrame) -> Optional[dict]:
         "stage": stage,
         "key_level": round(neckline, 2),
         "distance_pct": round(distance_pct, 2),
+        "days_since_breakout": days_since_breakout,
         "target_price": round(target_price, 2),
         "target_pct": round((target_price - neckline) / neckline * 100, 1),
         "lines": [
@@ -3090,6 +3203,7 @@ def _snap_horizontal_lines(candidates: list, hist: pd.DataFrame) -> None:
     shows that price; the candidate's key level follows when it was the same number. Detection is not affected."""
     idx = {_fmt_date(d): k for k, d in enumerate(hist.index)}
     highs, lows = hist["High"].values, hist["Low"].values
+    close = float(hist["Close"].iloc[-1])
     for c in candidates:
         for ln in c.get("lines") or []:
             if ln.get("type") != "horizontal" or not ln.get("price"):
@@ -3098,6 +3212,10 @@ def _snap_horizontal_lines(candidates: list, hist: pd.DataFrame) -> None:
             if k1 is None or k2 is None:
                 continue
             p = float(ln["price"])
+            # v27 (LEN bull flag: level $86.94 drawn at the $88.11 wick top, above the close — the breakout looked like
+            # it had not happened): a level the price has broken is never moved onto a wick above today's close
+            ceiling = close if c.get("stage") == "triggered" and ln.get("wick") != "low" and p <= close else None
+            ends_ok = (lambda v: ceiling is None or v <= ceiling)
             # v18c (owner, KO): the TOP of the wick for a resistance-type line (resistance, neckline, rim, 52-week
             # high...), the BOTTOM for a support line ("wick": "low"). v18b took whichever end was nearer the average —
             # KO's 89.65 landed on the low of 29 Jul ($88.64) instead of its high ($90.92).
@@ -3106,7 +3224,7 @@ def _snap_horizontal_lines(candidates: list, hist: pd.DataFrame) -> None:
             # high, not a later bar that happens to sit near the average). So the start bar's own high/low wins when it
             # is within 2% (the cluster tolerance); the search below is only the fallback.
             own = float(ends[k1])
-            if abs(own - p) / p <= 0.02:
+            if abs(own - p) / p <= 0.02 and ends_ok(own):
                 new_p = round(own, 2)
                 if abs(float(c.get("key_level") or 0) - p) < 0.011:
                     c["key_level"] = new_p
@@ -3115,6 +3233,8 @@ def _snap_horizontal_lines(candidates: list, hist: pd.DataFrame) -> None:
             best = None   # (bar, value, rel. distance)
             for k in range(k1, k2 + 1):
                 v = float(ends[k])
+                if not ends_ok(v):
+                    continue
                 dist = abs(v - p) / p
                 if dist <= 0.004:
                     best = (k, v, dist)
@@ -3234,11 +3354,13 @@ def _scanner_rule_desc_trendline_breakout(hist: pd.DataFrame) -> Optional[dict]:
 
 
 def _scanner_rule_ma150_breakout(hist: pd.DataFrame) -> Optional[dict]:
-    if len(hist) < 160:
+    """Twin of detect_ma150_breakout: crossed above the 150 MA today, or (v27) crossed yesterday and closed above it
+    again today. The scanner's volume gate is not applied here (it never was)."""
+    if len(hist) < 170:
         return None
     closes = hist["Close"]
     sma150 = closes.rolling(150).mean()
-    if sma150.isna().iloc[-2:].any():
+    if sma150.isna().iloc[-20:].any():
         return None
     ma_today = float(sma150.iloc[-1])
     ma_yesterday = float(sma150.iloc[-2])
@@ -3246,14 +3368,26 @@ def _scanner_rule_ma150_breakout(hist: pd.DataFrame) -> Optional[dict]:
     prev_close = float(closes.iloc[-2])
     if ma_today <= 0 or ma_yesterday <= 0:
         return None
-    if not (prev_close <= ma_yesterday and close > ma_today):
+    if prev_close <= ma_yesterday and close > ma_today:
+        days = 0
+    elif float(closes.iloc[-3]) <= float(sma150.iloc[-3]) and prev_close > ma_yesterday and close > ma_today:
+        days = 1
+    else:
         return None
+    return _ma150_reclaim_result(hist, sma150, days)
+
+
+def _ma150_reclaim_result(hist: pd.DataFrame, sma150: pd.Series, days_since_cross: int) -> dict:
+    ma_today = float(sma150.iloc[-1])
+    close = float(hist["Close"].iloc[-1])
     tail = hist.tail(60)
     ma_tail = sma150.tail(60)
     return {
         "pattern": "ma150_support",
         "stage": "triggered",
         "breakout": True,
+        "days_since_cross": days_since_cross,
+        "ma_rising": float(sma150.iloc[-1] - sma150.iloc[-20]) > 0,
         "key_level": round(ma_today, 2),
         "distance_pct": round((close - ma_today) / ma_today * 100, 2),
         "target_price": None,
@@ -3296,6 +3430,7 @@ def _scanner_rule_ma150_bounce(hist: pd.DataFrame) -> Optional[dict]:
     return {
         "pattern": "ma150_support",
         "stage": "holding",
+        "ma_rising": True,
         "key_level": round(ma_today, 2),
         "distance_pct": round((close - ma_today) / ma_today * 100, 2),
         "target_price": None,
@@ -3310,9 +3445,13 @@ def _scanner_rule_ma150_bounce(hist: pd.DataFrame) -> Optional[dict]:
     }
 
 
+_LEVEL_MIN_PRIOR_ABOVE = 0.6   # v27 twin of MIN_PRIOR_ABOVE_PCT in detect_horizontal_level_bounce (LEN came from below)
+
+
 def _scanner_rule_level_bounce(hist: pd.DataFrame) -> Optional[dict]:
     """Twin of detect_horizontal_level_bounce: a level touched 2+ times
-    (swing lows within 2%), today's LOW within 1.5% of it, close back above."""
+    (swing lows within 2%), today's LOW within 1.5% of it, close back above,
+    and >= 60% of the 10 closes before today above it (a pullback from above)."""
     window = hist.tail(150)
     if len(window) < 30:
         return None
@@ -3335,12 +3474,14 @@ def _scanner_rule_level_bounce(hist: pd.DataFrame) -> Optional[dict]:
         return None
     today_low = float(window["Low"].iloc[-1])
     close = float(window["Close"].iloc[-1])
+    prior_closes = window["Close"].values[-11:-1]
     best = None
     for level, touches in levels:
         if level <= 0:
             continue
         dist = abs(today_low - level) / level
-        if dist <= 0.015 and close > level and (best is None or dist < best[2]):
+        if dist <= 0.015 and close > level and float((prior_closes > level).mean()) >= _LEVEL_MIN_PRIOR_ABOVE \
+                and (best is None or dist < best[2]):
             best = (level, touches, dist)
     if not best:
         return None
@@ -3396,13 +3537,13 @@ _SETUP_EXPLANATIONS = {
     "bull_flag": {
         "he": lambda d: (
             f"נראה דגל שורי: תורן עלייה חד ואז התכנסות צרה (\"הדגל\"). "
-            + (f"המניה כבר פרצה את גבול הדגל ב-${d['key_level']}." if d['stage']=='triggered'
+            + (f"המניה פרצה את גבול הדגל ב-${d['key_level']} " + _ago_he(d.get('days_since_breakout')) + "." if d['stage']=='triggered'
                else f"קו פריצת הדגל נמצא ב-${d['key_level']}, כ-{abs(d['distance_pct'])}% מעל המחיר הנוכחי.")
             + (f" יעד מדידת-גובה קלאסי (אורך התורן שוב, מעל הפריצה) הוא סביב ${d['target_price']} (כ-{d['target_pct']}%). ניתוח טכני היסטורי בלבד, לא המלצה." if d.get('target_price') else "")
         ),
         "en": lambda d: (
             f"This looks like a bull flag: a sharp rally (the pole), then a tight consolidation (the flag). "
-            + (f"Price has already broken above the flag's boundary at ${d['key_level']}." if d['stage']=='triggered'
+            + (f"Price broke above the flag's boundary at ${d['key_level']} " + _ago_en(d.get('days_since_breakout')) + "." if d['stage']=='triggered'
                else f"The flag's breakout level is ${d['key_level']}, about {abs(d['distance_pct'])}% above the current price.")
             + (f" A classic measured-move target (the pole's length again, above the breakout) sits around ${d['target_price']} (about {d['target_pct']}%). Historical technical analysis only, not a recommendation." if d.get('target_price') else "")
         ),
@@ -3424,12 +3565,12 @@ _SETUP_EXPLANATIONS = {
     "double_bottom": {
         "he": lambda d: (
             f"נראית תבנית תחתית כפולה (\"W\") — שני שפלים דומים בגובהם עם פסגה (\"קו הצוואר\") ביניהם ב-${d['key_level']}. "
-            + (f"המניה כבר פרצה מעל קו הצוואר." if d['stage']=='triggered' else f"המחיר כ-{abs(d['distance_pct'])}% מתחת לקו הצוואר.")
+            + ("המניה פרצה מעל קו הצוואר " + _ago_he(d.get('days_since_breakout')) + "." if d['stage']=='triggered' else f"המחיר כ-{abs(d['distance_pct'])}% מתחת לקו הצוואר.")
             + (f" יעד מדידת-גובה קלאסי (עומק התבנית מעל הפריצה) הוא סביב ${d['target_price']} (כ-{d['target_pct']}%). ניתוח טכני היסטורי בלבד, לא המלצה." if d.get('target_price') else "")
         ),
         "en": lambda d: (
             f"This looks like a double bottom (\"W\") pattern — two similarly-deep lows with a peak (the \"neckline\") between them at ${d['key_level']}. "
-            + (f"Price has already broken above the neckline." if d['stage']=='triggered' else f"Price is about {abs(d['distance_pct'])}% below the neckline.")
+            + ("Price broke above the neckline " + _ago_en(d.get('days_since_breakout')) + "." if d['stage']=='triggered' else f"Price is about {abs(d['distance_pct'])}% below the neckline.")
             + (f" A classic measured-move target (the pattern's depth above the breakout) sits around ${d['target_price']} (about {d['target_pct']}%). Historical technical analysis only, not a recommendation." if d.get('target_price') else "")
         ),
     },
@@ -3543,14 +3684,26 @@ _SETUP_EXPLANATIONS = {
     },
     "ma150_support": {
         "he": lambda d: (
-            (f"המחיר חצה היום מעל הממוצע הנע ל-150 יום (סביב ${d['key_level']}) אחרי שהיה מתחתיו — סימן אפשרי להתאוששות."
+            ((f"המחיר חצה בסגירה האחרונה מעל הממוצע הנע ל-150 יום (סביב ${d['key_level']}) אחרי שהיה מתחתיו — סימן אפשרי להתאוששות."
+              if not d.get('days_since_cross') else
+              f"המחיר חזר מעל הממוצע הנע ל-150 יום (סביב ${d['key_level']}) "
+              + ("לפני יום מסחר אחד" if d['days_since_cross'] == 1 else f"לפני {d['days_since_cross']} ימי מסחר")
+              + f" ונשאר מעליו מאז (כרגע {abs(d['distance_pct'])}% מעליו) — סימן אפשרי להתאוששות.")
+             + (" הממוצע עצמו עולה." if d.get('ma_rising') else
+                " שימו לב: הממוצע עצמו עדיין יורד — המגמה הארוכה עוד לא התהפכה, זה סימן מוקדם בלבד.")
              if d.get('breakout') else
              f"הממוצע הנע ל-150 יום (עולה, כלומר מגמה כללית חיובית) נמצא סביב ${d['key_level']}, והמחיר בודק אותו כרגע. "
              + ("המחיר סוגר מעל הממוצע — התנהגות של ריבאונד." if d['stage']=='holding' else "המחיר כרגע מתחת לממוצע — שווה לעקוב אם הוא יחזיר את זה."))
             + " רמה טכנית נפוצה, לא איתות לפעולה."
         ),
         "en": lambda d: (
-            (f"Price crossed back above the 150-day moving average (around ${d['key_level']}) today after trading below it — a possible early recovery signal."
+            ((f"Price crossed back above the 150-day moving average (around ${d['key_level']}) on the latest close after trading below it — a possible early recovery signal."
+              if not d.get('days_since_cross') else
+              f"Price got back above the 150-day moving average (around ${d['key_level']}) "
+              + ("1 trading day ago" if d['days_since_cross'] == 1 else f"{d['days_since_cross']} trading days ago")
+              + f" and has stayed above it since (now {abs(d['distance_pct'])}% above) — a possible early recovery signal.")
+             + (" The average itself is rising." if d.get('ma_rising') else
+                " Note: the average itself is still falling — the long-term trend hasn't turned yet, so this is an early sign only.")
              if d.get('breakout') else
              f"The 150-day moving average (rising, so the broader trend is up) sits around ${d['key_level']}, and price is testing it right now. "
              + ("Price is closing above the average — a normal bounce-type behavior." if d['stage']=='holding' else "Price is currently below the average — worth watching whether it reclaims it."))
@@ -3598,6 +3751,21 @@ _SETUP_PRIORITY = {
 }
 
 
+# v27: these detectors compute distance_pct as (level - price) / price, so a stock 3% ABOVE a broken level showed
+# "Distance -3%" on the site. They are flipped once, here, to the site-wide meaning: price vs. the level (+ = above).
+# The explanations only use abs() of it, and the detectors' own filters run before the flip.
+_LEVEL_MINUS_PRICE_PATTERNS = {
+    "cup_and_handle", "ascending_triangle", "descending_trendline_breakout", "horizontal_resistance_breakout",
+    "week52_high_breakout", "bull_flag", "double_bottom",
+}
+
+
+def _explain_setup(c: dict) -> None:
+    explain = _SETUP_EXPLANATIONS[c["pattern"]]
+    c["explanation_he"] = explain["he"](c)
+    c["explanation_en"] = explain["en"](c)
+
+
 def _compute_setup_candidates(hist: pd.DataFrame, ticker: str) -> list:
     """Shared by /api/technical-setup/{ticker} and the watchlist-wide scan
     below: runs every detector, attaches bilingual explanations, and sorts
@@ -3612,9 +3780,9 @@ def _compute_setup_candidates(hist: pd.DataFrame, ticker: str) -> list:
             print(f"[warn] technical-setup: {fn.__name__} failed for {ticker}: {e}")
             result = None
         if result:
-            explain = _SETUP_EXPLANATIONS[result["pattern"]]
-            result["explanation_he"] = explain["he"](result)
-            result["explanation_en"] = explain["en"](result)
+            if result["pattern"] in _LEVEL_MINUS_PRICE_PATTERNS:
+                result["distance_pct"] = -result["distance_pct"]
+            _explain_setup(result)
             candidates.append(result)
 
     def sort_key(c):
@@ -3686,8 +3854,14 @@ def get_technical_setup(ticker: str):
                     break
         scan_signal["reproduced"] = scan_match
 
+    ma150 = None
+    try:
+        ma150 = _ma150_context(hist)
+    except Exception as e:
+        print(f"[warn] technical-setup {ticker}: ma150 context failed: {type(e).__name__}: {e}")
+
     if not candidates:
-        return {"ticker": ticker, "has_setup": False, "candidates": [], "scan_signal": scan_signal}
+        return {"ticker": ticker, "has_setup": False, "candidates": [], "scan_signal": scan_signal, "ma150": ma150}
 
     tail_hist = hist.tail(160)
     price_series = [
@@ -3698,8 +3872,23 @@ def get_technical_setup(ticker: str):
     context_lines = []
     try:
         _snap_horizontal_lines(candidates, hist)
+        # v27 (LEN): snapping can move the key level onto a wick (84.77 -> 84.27) — the text is rebuilt so it shows the
+        # same number as the "key level" box and the chart legend
+        for c in candidates:
+            _explain_setup(c)
     except Exception as e:
         print(f"[warn] technical-setup {ticker}: snapping horizontal lines failed: {type(e).__name__}: {e}")
+    if ma150:
+        for c in candidates:
+            if c["pattern"] == "ma150_support":
+                c["lines"] = []          # the full 150-MA curve (ma150["line"]) is drawn instead of a 2-point line
+            elif c["pattern"] not in ("golden_cross", "rsi_oversold_bounce", "momentum_surge") and c.get("key_level") \
+                    and abs(float(c["key_level"]) / ma150["value"] - 1) <= 0.015:
+                # v27 (owner, LEN): the level and the 150 MA in the same place — say so
+                c["explanation_he"] += (f" הרמה הזו כמעט זהה לממוצע הנע ל-150 יום (${ma150['value']}) — "
+                                        f"שתי רמות שסוחרים רבים עוקבים אחריהן נמצאות באותו מקום.")
+                c["explanation_en"] += (f" This level nearly coincides with the 150-day moving average (${ma150['value']}) — "
+                                        f"two widely-watched levels in the same place.")
     try:
         # v18: the main trendline only when no detected pattern already draws a trendline (KO: the rising-support
         # pattern already shows the Jan->Oct line, a second "main" line from another low was clutter)
@@ -3760,6 +3949,7 @@ def get_technical_setup(ticker: str):
         "price_series": price_series,
         "context_lines": context_lines,
         "zones": zones,
+        "ma150": ma150,
     }
 
 

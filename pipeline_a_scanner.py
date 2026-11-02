@@ -562,6 +562,9 @@ def detect_horizontal_level_bounce(hist: pd.DataFrame, lookback: int = 150) -> O
     LEVEL_CLUSTER_PCT = 0.02     # swing lows within 2% of each other = "the same level"
     BOUNCE_TOLERANCE_PCT = 0.015  # today's low must come within 1.5% of the level to count as "testing" it
     MIN_TOUCHES = 2
+    # v27 (owner, LEN 30.10.2026): a bounce = a pullback FROM ABOVE onto the level. LEN, IP and LOW were below their
+    # level on 8-9 of the 10 previous closes — price coming up through it from below, not support holding.
+    MIN_PRIOR_ABOVE_PCT = 0.6    # at least 6 of the 10 closes before today were above the level
 
     window = hist.tail(lookback).reset_index(drop=True)
     if len(window) < 30:
@@ -591,6 +594,7 @@ def detect_horizontal_level_bounce(hist: pd.DataFrame, lookback: int = 150) -> O
 
     today_low = float(window["Low"].iloc[-1])
     today_close = float(window["Close"].iloc[-1])
+    prior_closes = window["Close"].values[-11:-1]
 
     # If several validated levels qualify, the one closest to today's low
     # is the one actually in play right now.
@@ -600,7 +604,8 @@ def detect_horizontal_level_bounce(hist: pd.DataFrame, lookback: int = 150) -> O
         if level <= 0:
             continue
         dist_pct = abs(today_low - level) / level
-        if dist_pct <= BOUNCE_TOLERANCE_PCT and today_close > level:
+        if dist_pct <= BOUNCE_TOLERANCE_PCT and today_close > level \
+                and float((prior_closes > level).mean()) >= MIN_PRIOR_ABOVE_PCT:
             # BUGFIX: this used to compare the fraction (0.012) against the
             # already-rounded PERCENT stored in best["distance_pct"] (1.2),
             # so the comparison was almost always True and the LAST
@@ -899,17 +904,25 @@ def detect_bull_flag(hist: pd.DataFrame) -> Optional[dict]:
         return None
 
     flag_low = flag_section.min()
-    flag_high = flag_section.max()
     pullback_pct = (pole_top - flag_low) / pole_top * 100
 
     # pullback should be less than 50% of the pole
     if pullback_pct > best_pole_pct * 0.5:
         return None
 
-    # breakout: today's close above the flag high
-    today_close = float(closes[-1])
-    if today_close >= flag_high and len(flag_section) >= 5:
-        return {"pole_pct": round(best_pole_pct, 1), "pullback_pct": round(pullback_pct, 1)}
+    # breakout = the FIRST close at/above the flag's high (pole top included), at least 4 bars after the pole top.
+    # v27 (owner, LOW/LEN/KIM 30.10.2026): today must be that first close — a stock that broke out yesterday and
+    # closed higher again today used to be re-flagged as a "breakout". Twin: api_server._bull_flag_breakout_bar.
+    if bull_flag_breakout_bar(scan, best_pole_end) != len(scan) - 1:
+        return None
+    return {"pole_pct": round(best_pole_pct, 1), "pullback_pct": round(pullback_pct, 1)}
+
+
+def bull_flag_breakout_bar(scan, pole_end: int) -> Optional[int]:
+    """Index of the first close >= every close since the pole top, at least 4 bars after it; None if none yet."""
+    for k in range(pole_end + 4, len(scan)):
+        if scan[k] >= scan[pole_end:k].max():
+            return k
     return None
 
 
@@ -1009,11 +1022,11 @@ def detect_ma150_breakout(hist: pd.DataFrame) -> Optional[dict]:
     the actual crossing day — otherwise a stock that crossed weeks ago
     and kept climbing away from the MA would re-flag this every scan.
     """
-    if len(hist) < 160:
+    if len(hist) < 170:
         return None
     closes = hist["Close"]
     sma150 = closes.rolling(150).mean()
-    if sma150.isna().iloc[-2:].any():
+    if sma150.isna().iloc[-20:].any():
         return None
 
     ma_today = float(sma150.iloc[-1])
@@ -1022,9 +1035,15 @@ def detect_ma150_breakout(hist: pd.DataFrame) -> Optional[dict]:
     prev_close = float(closes.iloc[-2])
     if ma_today <= 0 or ma_yesterday <= 0:
         return None
+    rising = float(sma150.iloc[-1] - sma150.iloc[-20]) > 0
 
     if prev_close <= ma_yesterday and today_close > ma_today:
-        return {"ma150": round(ma_today, 2)}
+        return {"ma150": round(ma_today, 2), "held": False, "ma_rising": rising}
+    # v27 (owner, LEN 30.10.2026): LEN reclaimed the MA on light volume, so the volume gate dropped it. A SECOND close
+    # above the MA (crossed yesterday, still above today) confirms the reclaim instead of volume. Twin: api_server
+    # _scanner_rule_ma150_breakout.
+    if float(closes.iloc[-3]) <= float(sma150.iloc[-3]) and prev_close > ma_yesterday and today_close > ma_today:
+        return {"ma150": round(ma_today, 2), "held": True, "ma_rising": rising}
     return None
 
 
@@ -1070,9 +1089,13 @@ def detect_double_bottom(hist: pd.DataFrame) -> Optional[dict]:
         return None  # not enough of a bounce between the two bottoms
 
     today_close = float(closes[-1])
-    if today_close > neckline:
-        return {"neckline": round(neckline, 2), "bottom_price": round(float(min(lo_low, hi_low)), 2)}
-    return None
+    if today_close <= neckline:
+        return None
+    # v27 (owner, IFF/IR 30.10.2026): only the breakout DAY — the first close above the neckline after the second
+    # bottom. IFF broke out 13 sessions earlier and was still flagged daily. Twin: api_server._setup_double_bottom.
+    if (closes[hi_idx + 1:-1] > neckline).any():
+        return None
+    return {"neckline": round(neckline, 2), "bottom_price": round(float(min(lo_low, hi_low)), 2)}
 
 
 def _macd_lines(closes: pd.Series):
@@ -1565,6 +1588,11 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             bull_flag = None
             asc_triangle = None
             trendline_break = None  # descending-trendline breakout — a different, older pattern not part of this request; left gated as before
+            if ma150_breakout and not ma150_breakout["held"]:
+                ma150_breakout = None   # v27: a light-volume reclaim waits for its second close above the MA
+        # v27: the second-close confirmation only stands in for volume — a reclaim that already had the volume yesterday
+        # was flagged then
+        if ma150_breakout and ma150_breakout["held"] and check_breakout_volume(hist.iloc[:-1]) >= BREAKOUT_VOLUME_THRESHOLD_PCT:
             ma150_breakout = None
 
         # Skip if no pattern found at all
@@ -1614,6 +1642,11 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             trigger_he = "פריצת גולדן קרוס (ממוצע 50 יום חצה מעל ממוצע 200 יום)"
             tech_score = min(100, 74 + int(vol_pct / 5))
             pattern_type = "golden_cross"
+        elif ma150_breakout and ma150_breakout["held"]:
+            trigger_en = f"Back above the 150-day MA (~${ma150_breakout['ma150']}) — second close above it"
+            trigger_he = f"חזרה מעל ממוצע 150 יום (סביב ${ma150_breakout['ma150']}) — סגירה שנייה ברצף מעליו"
+            tech_score = 73
+            pattern_type = "ma150_breakout"
         elif ma150_breakout:
             trigger_en = f"Breaking back above the 150-day MA (~${ma150_breakout['ma150']}) — possible recovery signal"
             trigger_he = f"פריצה מעל ממוצע 150 יום (סביב ${ma150_breakout['ma150']}) — ייתכן שזה סימן להתאוששות"

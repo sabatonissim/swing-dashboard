@@ -126,6 +126,39 @@ def test_cup_twins_agree(scanner, api, ticker):
             f"{ticker} cup (today = {off} bars before the last): scanner and stock page differ"
 
 
+def _hist(ticker):
+    df = _load(ticker)
+    return df.set_index(pd.to_datetime(df["Date"]))[["Open", "High", "Low", "Close", "Volume"]]
+
+
+@pytest.mark.parametrize("ticker", FIXTURE_TICKERS)
+def test_signal_twins_agree(scanner, api, ticker):
+    """v27: for 150 different "today"s — when the scanner fires bull flag / double bottom / support bounce / 150-MA
+    reclaim, the stock page finds the same pattern, as a breakout of TODAY, at the same level (and the other way round)."""
+    df = _hist(ticker)
+    for off in range(150):
+        h = df.iloc[:len(df) - off]
+        where = f"{ticker}, today = {off} bars before the last"
+
+        s, a = scanner.detect_bull_flag(h), api._setup_bull_flag(h)
+        assert (s is not None) == bool(a and a["stage"] == "triggered" and a["days_since_breakout"] == 0), f"bull flag: {where}"
+
+        s, a = scanner.detect_double_bottom(h), api._setup_double_bottom(h)
+        assert (s is not None) == bool(a and a["stage"] == "triggered" and a["days_since_breakout"] == 0), f"double bottom: {where}"
+        if s:
+            assert s["neckline"] == a["key_level"], f"double bottom level: {where}"
+
+        s, a = scanner.detect_horizontal_level_bounce(h), api._scanner_rule_level_bounce(h)
+        assert (s is None) == (a is None), f"support bounce: {where}"
+        if s:
+            assert (s["level"], s["touches"]) == (a["key_level"], a["touches"]), f"support bounce level: {where}"
+
+        s, a = scanner.detect_ma150_breakout(h), api._scanner_rule_ma150_breakout(h)
+        assert (s is None) == (a is None), f"150-MA reclaim: {where}"
+        if s:
+            assert a["days_since_cross"] == (1 if s["held"] else 0) and s["ma150"] == a["key_level"], f"150-MA reclaim: {where}"
+
+
 # ------------------------------------------------------------------ 4. fixed rules shown on the site
 def test_market_state_labels(api):
     assert api._trend_label(110, 105, 100) == "up"

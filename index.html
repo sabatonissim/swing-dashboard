@@ -5102,7 +5102,8 @@ function buildTechnicalSetupSvg(priceSeries, lines){
   let minP = Math.min(...priceSeries.map(p => p[3]));
   let maxP = Math.max(...priceSeries.map(p => p[2]));
   (lines||[]).forEach(ln => {
-    (ln.points||[]).forEach(([,pr]) => { if(pr>0){ minP = Math.min(minP, pr); maxP = Math.max(maxP, pr); } });
+    // only points on the chart count (v27: the 150-MA line carries more days than the chart shows)
+    (ln.points||[]).forEach(([d,pr]) => { if(pr>0 && d in dateIndex){ minP = Math.min(minP, pr); maxP = Math.max(maxP, pr); } });
     if(ln.type==='horizontal' && ln.price>0){ minP = Math.min(minP, ln.price); maxP = Math.max(maxP, ln.price); }
     if(ln.type==='zone' && ln.lo>0){ minP = Math.min(minP, ln.lo); maxP = Math.max(maxP, ln.hi); }
   });
@@ -5216,6 +5217,11 @@ function buildTechnicalSetupSvg(priceSeries, lines){
                     note:(t?'from ':'מ-')+_fmtShortDate(first.date), anchorX: last.x, anchorY: last.y, dim});
       return `<polyline points="${pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}" fill="none" stroke="${col}" stroke-opacity="${dim}" stroke-width="2"/>${dots}`;
     }
+    if(ln.type === 'ma'){
+      // v27: the real 150-day MA (one point per day, from the server's ma150.line) — TradingView blue like every other chart
+      entries.push({color:'var(--ma150)', kind:'trend', name, value:'$'+fmtP(last.price), note:'', anchorX: last.x, anchorY: last.y, dim: 1});
+      return `<polyline points="${pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}" fill="none" stroke="var(--ma150)" stroke-width="1.6"/>`;
+    }
     if(ln.type === 'curve'){
       entries.push({color:'var(--struct)', kind:'curve', name, value:'',
                     note:_fmtShortDate(first.date)+' – '+_fmtShortDate(last.date), anchorX: last.x, anchorY: last.y, dim});
@@ -5288,10 +5294,16 @@ function renderTechnicalSetup(data, elId){
   const el = document.getElementById(elId);
   if(!el) return;
   const t = lang==='en';
+  // v27 (owner, LEN): where the price stands against the 150-day MA — on every stock, whatever pattern is found
+  const ma = data && data.ma150;
+  const maHtml = ma ? `<div style="font-size:12.5px;line-height:1.55;color:var(--text-dim);margin-bottom:10px;display:flex;gap:8px;align-items:baseline;">
+      <span style="flex:0 0 auto;width:14px;height:0;border-top:2px solid var(--ma150);transform:translateY(-3px);"></span>
+      <span>${escH(t ? ma.text_en : ma.text_he)}</span></div>` : '';
   if(!data || !data.has_setup || !data.candidates || !data.candidates.length){
     el.innerHTML = `
       <div class="dd-section-title">${t?'Current Technical Setup':'מבנה טכני נוכחי'}</div>
       ${scanSignalBannerHtml(data && data.scan_signal)}
+      ${maHtml}
       <div class="bt-empty" style="padding:10px 0;">${t
         ? 'No clear pattern forming right now — looks like plain consolidation or trend, nothing specific to flag.'
         : 'אין כרגע תבנית ברורה שנבנית — נראה כמו התכנסות או מגמה רגילה, אין משהו ספציפי לסמן.'}</div>
@@ -5315,7 +5327,7 @@ function renderTechnicalSetup(data, elId){
     o.stage === 'triggered' || o.stage === 'holding' || Math.abs(o.distance_pct) <= 6
   ).slice(0, 2);
   const drawCandidates = [c, ...others.slice(0, 1)];   // v18: one extra pattern on the chart (owner: too many lines); all are listed below
-  const svg = buildTechnicalSetupSvg(data.price_series, [...drawCandidates.flatMap(dc => dc.lines), ...(data.context_lines || []), ...(data.zones || [])]);
+  const svg = buildTechnicalSetupSvg(data.price_series, [...drawCandidates.flatMap(dc => dc.lines), ...(data.context_lines || []), ...(data.zones || []), ...(ma && ma.line ? [ma.line] : [])]);
 
   let statsHtml = `
     <div class="dd-stats-row">
@@ -5360,6 +5372,7 @@ function renderTechnicalSetup(data, elId){
   el.innerHTML = `
     <div class="dd-section-title">${t?'Current Technical Setup':'מבנה טכני נוכחי'}</div>
     ${scanSignalBannerHtml(data.scan_signal)}
+    ${maHtml}
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap;">
       <span style="font-weight:700;font-size:14px;">${name}</span>
       <span style="font-size:11px;color:${stageColor};border:1px solid ${stageColor};border-radius:6px;padding:2px 8px;">${stageLabel}</span>
