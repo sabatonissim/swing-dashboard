@@ -28,7 +28,7 @@ permissions:
 jobs:
   run-scanner:
     runs-on: ubuntu-latest
-    timeout-minutes: 45          # was 30; real runs took up to 28 min
+    timeout-minutes: 75          # was 45 (runs took up to 28 min); v27 adds ~1,500 more stocks (chunked downloads) + the full earnings calendar
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
