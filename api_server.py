@@ -1710,7 +1710,7 @@ def stock_news(ticker: str, limit: int = 6, lang: str = Query(default="en", patt
 
 # v28 (owner 3.11.2026: "every company I open has no news"): yf.Ticker().news failed from Render for EVERY ticker
 # (502 "שגיאה בשליפת חדשות" — Yahoo blocks Render's address, like .info), so the news tab was always empty.
-# Now: yfinance -> Yahoo's RSS feed (another host) -> Google News search RSS; first one with headlines wins.
+# Sources since v28c: Google News search by company name, topped up by yfinance / Yahoo's RSS feed (see below).
 # Cached 15 minutes per ticker; a failing yfinance is skipped for 15 minutes.
 _STOCK_NEWS_CACHE: dict = {}
 _STOCK_NEWS_TTL = 15 * 60
@@ -1743,20 +1743,105 @@ def _rss_items(url: str, google: bool = False) -> list:
     return out
 
 
+# v28c (owner 3.11.2026: "NVDA's articles are not about it"): Yahoo's RSS feed for a ticker is mostly general market
+# stories (NVDA: 3 of 19 named Nvidia — the rest were Coca-Cola dividends, SpaceX, Intel; AAPL 1/19, BAC 0/19). A Google
+# News search by the COMPANY NAME was 90-100% on topic (NVDA 94/100, AAPL 100/100, KO 90/100, GOOGL 98/100). So: Google
+# News by name first, every source filtered to headlines that name the company or the ticker, Yahoo only tops it up.
+_NEWS_NAME_NOISE_RE = re.compile(
+    r"\([^)]*\)|\.com\b|[,.]|^\s*the\b|\b(inc|incorporated|corp|corporation|co|company|companies|plc|ltd|limited|holdings?|group|"
+    r"n\.?v|s\.?a|ag|se|lp|llc|class [a-c]|common stock|ordinary shares|american depositary shares|"
+    r"technologies|technology|platforms)\b", re.I)
+_NEWS_GENERIC_WORDS = {"advanced", "american", "applied", "first", "general", "united", "international", "global",
+                       "national", "bank", "new", "southern", "western", "eastern", "northern", "digital", "energy",
+                       "public", "royal", "capital", "consolidated", "texas", "the", "west", "best", "home", "data"}
+_NEWS_ALIASES = {"GOOGL": ["Google"], "GOOG": ["Google"], "META": ["Facebook", "Instagram"], "BRK-B": ["Berkshire"],
+                 "BRK-A": ["Berkshire"], "BAC": ["BofA"]}
+# quote pages that Google News lists as articles: "JPMorgan Chase & Co. (JPM) Stock Price, News, Quote & History",
+# "JPM Stock Price and Chart — NYSE:JPM", and its title placeholder "META_TITLE_QUOTE"
+_NEWS_QUOTE_PAGE_RE = re.compile(r"stock price,? (news|and chart|quote)|quote & history|price and chart|META_TITLE", re.I)
+
+
+def _news_company_name(ticker: str) -> Optional[str]:
+    """The company's name without "Inc."/"Corporation"/"(Class A)": S&P 500 list first (never waits for its download),
+    then names the scanner saved for other stocks."""
+    name = ((_sp500_map_nowait() or {}).get(ticker) or {}).get("name")
+    if not name:
+        try:
+            with db_cursor() as (conn, cur):
+                cur.execute("""SELECT name FROM (
+                                   SELECT company_name AS name FROM earnings_calendar WHERE ticker = %s AND company_name <> ''
+                                   UNION ALL SELECT name FROM stock_leaders WHERE ticker = %s AND name <> '') n LIMIT 1""",
+                            (ticker, ticker))
+                row = cur.fetchone()
+                name = row[0] if row else None
+        except Exception as e:
+            print(f"[warn] stock-news: company name lookup failed for {ticker}: {type(e).__name__}: {e}")
+    if not name:
+        return None
+    short = re.sub(r"\s+", " ", _NEWS_NAME_NOISE_RE.sub(" ", name)).strip(" -&")
+    return short if len(short) >= 2 else None
+
+
+def _news_relevance_re(ticker: str, name: Optional[str]):
+    """A headline is about the stock when it names the ticker (exact capitals, 2+ letters), the company (or its first
+    distinctive word: "Palantir", "JPMorgan") or a well-known alias (Alphabet -> Google)."""
+    base = ticker.split("-")[0]
+    terms = list(_NEWS_ALIASES.get(ticker, []))
+    if name:
+        terms.append(name)
+        first = name.split()[0]
+        if len(name.split()) > 1 and len(first) >= 4 and first.lower() not in _NEWS_GENERIC_WORDS:
+            terms.append(first)
+    elif len(base) >= 4:
+        terms.append(base)                       # "Oklo" for OKLO when no name is known
+    parts = [r"(?<![A-Za-z$])\$?" + re.escape(base) + r"(?![A-Za-z])"] if len(base) >= 2 else []
+    parts += [r"(?i:\b" + re.escape(t) + r"\b)" for t in terms]
+    return re.compile("|".join(parts)) if parts else None
+
+
+def _news_ts(published) -> float:
+    """Seconds since 1970 for any of the date forms the sources give (epoch, ISO, RSS); 0 when unknown."""
+    from email.utils import parsedate_to_datetime
+    if isinstance(published, (int, float)):
+        return float(published)
+    s = str(published or "")
+    for parse in (lambda v: dt.fromisoformat(v.replace("Z", "+00:00")), parsedate_to_datetime):
+        try:
+            d = parse(s)
+            return (d if d.tzinfo else d.replace(tzinfo=timezone.utc)).timestamp()
+        except Exception:
+            continue
+    return 0.0
+
+
 def _stock_news_raw(ticker: str) -> list:
-    """English headlines for one ticker (title, link, publisher, published), newest first, promo listicles and
-    repeats removed (same rules as the home feed). [] when every source failed."""
+    """English headlines about one stock (title, link, publisher, published), newest first — only headlines that name
+    the company or ticker, promo listicles and repeats removed. [] when every source failed."""
     global _yf_news_blocked_until
     hit = _STOCK_NEWS_CACHE.get(ticker)
     if hit and time.time() - hit[0] < _STOCK_NEWS_TTL:
         return hit[1]
 
+    name = _news_company_name(ticker)
+    about = _news_relevance_re(ticker, name)
+
     def clean(items):
+        items = [it for it in items if (about is None or about.search(it["title"]))
+                 and not _NEWS_QUOTE_PAGE_RE.search(it["title"])]
         rows = _feed_clean([{**it, "summary_en": it["title"]} for it in items], set(), promo_only=True)
         return [{k: r[k] for k in ("title", "link", "publisher", "published")} for r in rows]
 
+    from urllib.parse import quote
+    google_q = (f'"{name}" stock when:7d' if name else f'"{ticker.split("-")[0]}" stock when:14d')
+    result = []
+    try:
+        result = clean(_rss_items(f"https://news.google.com/rss/search?q={quote(google_q)}&hl=en-US&gl=US&ceid=US:en",
+                                  google=True))
+    except Exception as e:
+        print(f"[warn] stock-news Google News failed for {ticker}: {type(e).__name__}: {e}")
+
     items = []
-    if time.time() >= _yf_news_blocked_until:
+    if len(result) < 8 and time.time() >= _yf_news_blocked_until:
         try:
             for it in yf.Ticker(ticker).news or []:
                 content = it.get("content", it)  # newer yfinance versions nest under "content"
@@ -1769,21 +1854,15 @@ def _stock_news_raw(ticker: str) -> list:
         except Exception as e:
             _yf_news_blocked_until = time.time() + _STOCK_NEWS_TTL
             print(f"[warn] stock-news yfinance failed ({type(e).__name__}: {e}) — using RSS for 15 minutes")
-    result = clean(items)
-
-    from urllib.parse import quote
-    google_q = quote('"' + ticker + '" stock when:14d')
-    sources = [
-        (f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={quote(ticker)}&region=US&lang=en-US", False),
-        (f"https://news.google.com/rss/search?q={google_q}&hl=en-US&gl=US&ceid=US:en", True),
-    ]
-    for url, google in sources:
-        if result:
-            break
+    if len(result) + len(clean(items)) < 8:
         try:
-            result = clean(_rss_items(url, google))
+            items += _rss_items(f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={quote(ticker)}&region=US&lang=en-US")
         except Exception as e:
-            print(f"[warn] stock-news RSS failed ({url.split('/')[2]}): {type(e).__name__}: {e}")
+            print(f"[warn] stock-news Yahoo RSS failed for {ticker}: {type(e).__name__}: {e}")
+    if items:                       # top up from Yahoo, same story once (_feed_clean compares the headline text)
+        seen_links = {r["link"] for r in result}
+        result = clean(result + [it for it in items if it["link"] not in seen_links])
+    result.sort(key=lambda r: _news_ts(r["published"]), reverse=True)
 
     if result:                      # an empty answer is not cached, so the next request tries again
         if len(_STOCK_NEWS_CACHE) >= 300:
