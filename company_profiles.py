@@ -90,6 +90,7 @@ SYSTEM_HE = (
     "asset management = ניהול נכסים; investment banking = בנקאות השקעות; insurance = ביטוח; reactor = כור; "
     "fiscal year = שנת כספים; competitor = מתחרה. "
     "A company is feminine in Hebrew ('החברה היא', 'Nvidia מפתחת'). Keep every number exactly as written. "
+    "Write Hebrew abbreviations with the Hebrew mark ״ (ארה״ב, מנכ״ל), never with a plain double quote. "
     "Keep the same fields; an empty field stays empty. "
     'Answer with JSON only: {"summary": "", "what": "", "revenue": "", "products": "", "customers": ""}'
 )
@@ -216,8 +217,11 @@ def business_section(text, form):
         head = re.compile(r"^\s*item\s*4\s*[.:\-–—]?\s*information\s+on\s+the\s+company", flags)
         stop = re.compile(r"^\s*(item\s*4\s*a\b|item\s*5\s*[.:\-–—]?\s*operating)", flags)
     else:
-        head = re.compile(r"^\s*item\s*1\s*[.:\-–—]?\s*business\b", flags)
-        stop = re.compile(r"^\s*(item\s*1\s*a\s*[.:\-–—]?\s*risk|item\s*2\s*[.:\-–—]?\s*properties)", flags)
+        # v30c: also "Items 1 and 2. Business and Properties" (DK's 10-K — no section was found)
+        head = re.compile(r"^\s*items?\s*1\s*(?:(?:and|&)\s*2\s*)?[.:\-–—]?\s*business(?:es)?"
+                          r"(?:\s*(?:and|&)\s*properties)?", flags)
+        stop = re.compile(r"^\s*(items?\s*1\s*a\s*[.:\-–—]?\s*risk|item\s*2\s*[.:\-–—]?\s*properties|"
+                          r"item\s*3\s*[.:\-–—]?\s*legal)", flags)
     for m in head.finditer(text):
         nxt = stop.search(text, m.end())
         end = nxt.start() if nxt else len(text)
@@ -311,8 +315,19 @@ def _fit(s, limit):
 def _json_fields(text):
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
-        raise ValueError("no JSON")
-    d = json.loads(m.group(0))
+        raise ValueError("the answer has no JSON object — answer with the JSON only")
+    raw = m.group(0)
+    try:
+        d = json.loads(raw)
+    except json.JSONDecodeError:
+        # a Hebrew abbreviation written with a plain double quote ("ארה"ב") ends the JSON string early —
+        # the second run lost two translations to "Expecting ',' delimiter". Use the Hebrew gershayim instead.
+        try:
+            d = json.loads(re.sub(r'(?<=[א-ת])"(?=[א-ת])', "״", raw))
+        except json.JSONDecodeError as e:
+            raise ValueError(f"the JSON is broken ({e}) — escape double quotes inside the texts")
+    if not isinstance(d, dict):
+        raise ValueError("the answer must be one JSON object with the five fields")
     if isinstance(d.get("en"), dict):            # a model that still answers {"en": {...}}
         d = d["en"]
     out = {}
@@ -330,18 +345,25 @@ def _json_fields(text):
 
 def clean_english(text, source):
     """The English answer, made safe: sentences with a number that is not in the source or about the source text
-    itself are dropped (not the whole answer), fields cut to their size. Rejected (ValueError -> the next model) only
-    for advice wording or when a required field ends up empty."""
+    itself are dropped (not the whole answer), fields cut to their size. Rejected (ValueError -> the AI is asked again
+    with the reason) only for advice wording or when a required field ends up empty."""
     allowed = _numbers(source)
     p = _json_fields(text)
     for f in FIELDS:
         if _BANNED.search(p[f]):
-            raise ValueError(f"{f}: advice/valuation wording")
-        kept = [x for x in _sentences(p[f]) if not (_numbers(x) - allowed) and not _META.search(x)]
+            raise ValueError(f"the field '{f}' contains advice or valuation wording — describe facts only")
+        bad = set()
+        kept = []
+        for x in _sentences(p[f]):
+            extra = _numbers(x) - allowed
+            bad |= extra
+            if not extra and not _META.search(x):
+                kept.append(x)
         p[f] = _fit(" ".join(kept), FIELD_MAX[f])
-    for f in REQUIRED:
-        if len(p[f]) < 20:
-            raise ValueError(f"{f} too short after the checks")
+        if f in REQUIRED and len(p[f]) < 20:
+            why = (f"its numbers {sorted(bad)[:4]} do not appear in the source text — copy numbers exactly as written "
+                   "there or leave them out") if bad else "it is empty or only talks about the source text"
+            raise ValueError(f"the field '{f}' was removed: {why}")
     return p
 
 
@@ -349,48 +371,81 @@ def clean_hebrew(text, en):
     """The Hebrew translation: every field Hebrew, no number that is not in the English, no ordinary English word
     left untranslated (names may stay: they are capitalised / abbreviations and appear in the English)."""
     allowed = _numbers(" ".join(en.values()))
-    en_words = {w.rstrip(".-") for w in re.findall(r"[A-Za-z][A-Za-z0-9&+.\-]*", " ".join(en.values()))}
+    # names compared without case — "Youtube" for the English "YouTube" was rejected in the second run
+    en_words = {w.rstrip(".-").lower() for w in re.findall(r"[A-Za-z][A-Za-z0-9&+.\-]*", " ".join(en.values()))}
     p = _json_fields(text)
     for f in FIELDS:
         if en[f] and not p[f]:
-            raise ValueError(f"he.{f} missing")
+            raise ValueError(f"the field '{f}' is missing — translate it too")
         if not en[f]:
             p[f] = ""
             continue
         if not re.search(r"[א-ת]", p[f]):
-            raise ValueError(f"he.{f} is not in Hebrew")
+            raise ValueError(f"the field '{f}' is not in Hebrew — translate it into Hebrew")
         if _BANNED.search(p[f]):
-            raise ValueError(f"he.{f}: advice wording")
-        if _numbers(p[f]) - allowed:
-            raise ValueError(f"he.{f}: a number that is not in the English")
+            raise ValueError(f"the field '{f}' contains advice wording")
+        extra = _numbers(p[f]) - allowed
+        if extra:
+            raise ValueError(f"the field '{f}' has numbers that are not in the English: {sorted(extra)[:4]}")
+        untranslated, invented = [], []
         for w in re.findall(r"[A-Za-z][A-Za-z0-9&+.\-]*", p[f]):
             w = w.rstrip(".-")
             if w.islower() and len(w) > 2:
-                raise ValueError(f"he.{f}: English word left untranslated: {w!r}")
-            if w not in en_words and not (w.isupper() and len(w) <= 6):   # names must come from the English
-                raise ValueError(f"he.{f}: a name that is not in the English: {w!r}")
+                untranslated.append(w)
+            elif w.lower() not in en_words and not (w.isupper() and len(w) <= 6):   # names must come from the English
+                invented.append(w)
+        if untranslated:
+            raise ValueError(f"in the field '{f}' these English words were not translated into Hebrew: "
+                             f"{sorted(set(untranslated))[:6]} — translate them (only names stay in English)")
+        if invented:
+            raise ValueError(f"in the field '{f}' these names do not appear in the English text: "
+                             f"{sorted(set(invented))[:6]} — use only names from the English text")
         p[f] = _fit(p[f], int(FIELD_MAX[f] * 1.3))
     return p
 
 
+ATTEMPTS = 3
+
+
+def _ask(system, user, clean, max_tokens):
+    """v30c (second run 3.11.2026: of the three models in LLM_MODELS only the first answered — the second is
+    "Not found for account" (404), the third timed out every time after 60 s — so each small rejection cost a minute
+    and the run ended after 25 companies): only the first model, and a rejected answer goes BACK to it with the
+    reason ("these English words were not translated: stack, interconnect"), up to ATTEMPTS times."""
+    models = [m.strip() for m in (os.environ.get("LLM_MODELS") or llm_provider.DEFAULT_MODELS).split(",") if m.strip()]
+    saved = os.environ.get("LLM_MODELS")
+    os.environ["LLM_MODELS"] = models[0]
+    try:
+        msgs = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        last = "no answer"
+        for _ in range(ATTEMPTS):
+            try:
+                text, model = llm_provider.chat(msgs, max_tokens=max_tokens, temperature=0.1)
+            except RuntimeError as e:                    # timeout / the provider is busy — ask again
+                last = str(e)
+                continue
+            try:
+                return clean(text), model
+            except ValueError as e:
+                last = f"answer rejected — {e}"
+                print(f"[llm] {model}: {last} — asking again")
+                msgs = msgs[:2] + [{"role": "assistant", "content": text[:4000]},
+                                   {"role": "user", "content": f"Problem: {e}. Fix only that and answer again "
+                                                               "with the complete JSON, nothing else."}]
+        raise RuntimeError(f"{ATTEMPTS} attempts failed — last: {last}")
+    finally:
+        if saved is None:
+            os.environ.pop("LLM_MODELS", None)
+        else:
+            os.environ["LLM_MODELS"] = saved
+
+
 def write_english(source, name):
-    def validate(text):
-        clean_english(text, source)
-    text, model = llm_provider.chat(
-        [{"role": "system", "content": SYSTEM_EN},
-         {"role": "user", "content": f"Company: {name}\n\nSOURCE TEXT:\n{source}"}],
-        max_tokens=1300, temperature=0.1, validate=validate)
-    return clean_english(text, source), model
+    return _ask(SYSTEM_EN, f"Company: {name}\n\nSOURCE TEXT:\n{source}", lambda t: clean_english(t, source), 1300)
 
 
 def write_hebrew(en):
-    def validate(text):
-        clean_hebrew(text, en)
-    text, model = llm_provider.chat(
-        [{"role": "system", "content": SYSTEM_HE},
-         {"role": "user", "content": json.dumps(en, ensure_ascii=False)}],
-        max_tokens=2200, temperature=0.1, validate=validate)
-    return clean_hebrew(text, en), model
+    return _ask(SYSTEM_HE, json.dumps(en, ensure_ascii=False), lambda t: clean_hebrew(t, en), 2200)
 
 
 # ---------------------------------------------------------------- main
