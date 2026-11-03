@@ -350,11 +350,17 @@ def fetch_raw_headlines() -> List[dict]:
                     age = _entry_age_hours(entry)
                     if age is None or age > official["max_age_h"]:
                         continue  # old back-catalogue entry (or undated) — not news
+                raw_publisher = official["publisher"] if official else _publisher_name(source_name, entry, entry.get("title", ""))
+                title = entry.get("title", "").strip()
+                if "Google News" in source_name:
+                    # the " - Outlet" suffix exists only on Google News titles; elsewhere a trailing " - September 2026" is real.
+                    # v28: outlet names longer than 40 chars ("Euronext Markets: Real-time Stock Market Data | live") escaped the regex
+                    stripped = strip_outlet_suffix(title, raw_publisher)
+                    title = stripped if stripped != title else _clean_google_news_title(title)
                 item = {
                     "source": source_name,
-                    "publisher": official["publisher"] if official else _publisher_name(source_name, entry, entry.get("title", "")),
-                    # the " - Outlet" suffix exists only on Google News titles; elsewhere a trailing " - September 2026" is real
-                    "title": _clean_google_news_title(entry.get("title", "")) if "Google News" in source_name else entry.get("title", "").strip(),
+                    "publisher": clean_publisher(raw_publisher),     # v28: without the outlet's tagline
+                    "title": title,
                     "summary": entry.get("summary", ""),
                     "link": link,
                 }
@@ -369,6 +375,7 @@ def fetch_raw_headlines() -> List[dict]:
 # Translation fixes (v18): idioms rewritten before Google, known bad Hebrew renderings fixed after — shared with
 # api_server.py; see translation_fixes.py for the lists and for why the old placeholder masking was dropped.
 from translation_fixes import prep_en as _prep_en, fix_he as _fix_he
+from news_links import is_unwanted_headline, clean_publisher, strip_outlet_suffix   # v28: shared with api_server.py
 
 
 def translate_to_hebrew(text: str) -> str:
@@ -432,7 +439,21 @@ def translate_to_hebrew(text: str) -> str:
         print(f"[warn] translation (MyMemory): no usable translatedText — responseStatus={status}")
         return None
 
-    for provider_name, provider_fn in (("Google gtx", _try_google_gtx), ("MyMemory", _try_mymemory)):
+    def _try_google_dict() -> Optional[str]:
+        # v28: the second Google endpoint api_server.py already uses (v19c). On 3.11.2026 gtx answered "unusual traffic"
+        # even from a home connection, everything fell to MyMemory — whose answers carry HTML codes ("&quot;") and which
+        # has a daily cap, so some headlines stayed in English. This one answered fine at the same time.
+        url = f"https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=en&tl=he&q={encoded}"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = _json.loads(resp.read())
+        first = data[0] if isinstance(data, list) and data else None
+        if isinstance(first, list):          # some answers are [["text", "lang"]]
+            first = first[0] if first else None
+        return first if isinstance(first, str) and first.strip() else None
+
+    for provider_name, provider_fn in (("Google gtx", _try_google_gtx), ("Google dict", _try_google_dict),
+                                       ("MyMemory", _try_mymemory)):
         for attempt in (1, 2):
             try:
                 result = provider_fn()
@@ -722,6 +743,9 @@ def run_pipeline_b():
     for item in raw_items:
         if item["link"] in known:
             skipped_dupe += 1
+            continue
+        if not item.get("forced") and is_unwanted_headline(item["title"]):   # v28: promo / video / meaningless / far-away
+            skipped_no_match += 1
             continue
         classification = item.get("forced") or classify_headline(item["title"], item.get("summary", ""))
         if not classification:

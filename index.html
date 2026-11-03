@@ -2216,7 +2216,7 @@ async function rerenderDeepDiveForLang(){
   // fetch them again for the new language; everything else is re-rendered
   // from the data already on screen (no reload flicker).
   try {
-    const r = await fetch(`${API_BASE}/api/stock-news/${st.quote.ticker}?lang=${lang}`);
+    const r = await fetch(`${API_BASE}/api/stock-news/${st.quote.ticker}?lang=${lang}&limit=${STOCK_NEWS_LIMIT}`);
     if(r.ok) st.news = await r.json();
   } catch(e) { /* keep the old news list if the refetch fails */ }
   if(token !== _ddLangToken || _ddState !== st) return; // a newer switch or search took over
@@ -2264,7 +2264,7 @@ async function loadDeepDive(){
     const [lookupRes, signalsRes, newsRes] = await Promise.allSettled([
       fetch(`${API_BASE}/api/lookup/${ticker}`).then(r => r.ok ? r.json() : Promise.reject(r.status)),
       fetch(`${API_BASE}/api/signal-history/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
-      fetch(`${API_BASE}/api/stock-news/${ticker}?lang=${lang}`).then(r => r.ok ? r.json() : Promise.reject()),
+      fetch(`${API_BASE}/api/stock-news/${ticker}?lang=${lang}&limit=${STOCK_NEWS_LIMIT}`).then(r => r.ok ? r.json() : Promise.reject()),
     ]);
     if(loadId !== _ddLoadId) return;   // another ticker was searched meanwhile
 
@@ -2458,10 +2458,12 @@ function renderDeepDive(quote, sector, signals, news){
   if(quote.sector || quote.sub_industry || quote.description){
     html += `<div class="dd-section-title">${t?'About the Company':'על החברה'}</div>`;
     if(quote.sector || quote.sub_industry){
-      html += `<div style="font-size:12.5px;color:var(--text-dim);margin-bottom:8px;">${[quote.sector, quote.sub_industry].filter(Boolean).join(' · ')}</div>`;
+      html += `<div style="font-size:12.5px;color:var(--text-dim);margin-bottom:8px;">${escH([quote.sector, quote.sub_industry].filter(Boolean).join(' · '))}</div>`;
     }
     if(quote.description){
-      html += `<div style="font-size:13px;line-height:1.6;color:var(--text);margin-bottom:6px;">${escH(quote.description)}</div>`;
+      const desc = (!t && quote.description_he) || quote.description;
+      html += `<div data-dd-about style="font-size:13px;line-height:1.6;color:var(--text);margin-bottom:6px;">${escH(desc)}</div>`;
+      if(!t && !quote.description_he) setTimeout(() => ddTranslateAbout(quote), 0);
     } else {
       html += `<div class="bt-empty" style="padding:10px 0;">${t?'Company description unavailable right now.':'תיאור החברה לא זמין כרגע.'}</div>`;
     }
@@ -2483,7 +2485,7 @@ function renderDeepDive(quote, sector, signals, news){
     html += news.map(n => `
       <div class="dd-news-item">
         <a href="${escH(safeUrl(n.link))}" target="_blank" rel="noopener noreferrer">${escH(n.title)}</a>
-        <div class="meta">${escH(n.publisher||'')}</div>
+        <div class="meta">${newsMeta(n)}</div>
       </div>
     `).join('');
   } else {
@@ -2785,9 +2787,9 @@ function renderDemoControls(){
   const chips = (key, opts, fmt) => opts.map(o => `<button class="demo-chip ${demoParams[key]===o?'active':''}" onclick="setDemoParam('${key}', ${o})">${fmt(o)}</button>`).join('');
   document.getElementById('demo-controls').innerHTML = `
     <div class="demo-controls">
-      <div class="demo-ctl-row"><span class="demo-ctl-label">${en?'Minimum score to buy':'ציון מינימלי לקנייה'}</span>${chips('min_score',[70,75,80,85,90],o=>'≥ '+o)}</div>
+      <div class="demo-ctl-row"><span class="demo-ctl-label">${en?'Minimum score to enter':'ציון מינימלי לכניסה'}</span>${chips('min_score',[70,75,80,85,90],o=>'≥ '+o)}</div>
       <div class="demo-ctl-row"><span class="demo-ctl-label">${en?'Fixed amount per trade':'סכום קבוע לעסקה'}</span>${chips('amount',[500,1000,2000,5000],o=>'$'+o.toLocaleString())}</div>
-      <div class="demo-ctl-row"><span class="demo-ctl-label">${en?'Max buys per day':'מקסימום קניות ביום'}</span>${chips('top_per_day',[1,3,5],o=>String(o))}</div>
+      <div class="demo-ctl-row"><span class="demo-ctl-label">${en?'Max entries per day':'מקסימום כניסות ביום'}</span>${chips('top_per_day',[1,3,5],o=>String(o))}</div>
       <div class="demo-ctl-row"><span class="demo-ctl-label">${en?'Account size':'גודל התיק'}</span>${chips('capital',[10000,25000,100000],o=>'$'+o.toLocaleString())}</div>
       <div class="demo-rules">${en
         ? 'Rules: each scan day the portfolio buys the best-scoring signals (up to the daily limit) with a fixed amount, only if it has the cash and does not already hold the stock. It exits at the <b>stop</b> (support), at the <b>target</b> (resistance), or after <b>20 trading days</b> — whichever comes first. If one day touches both, the stop is assumed first. No fees or slippage.'
@@ -2808,9 +2810,11 @@ function renderDemoPortfolio(){
   const reasonLbl = r => r==='target' ? (en?'Target':'יעד') : r==='stop' ? (en?'Stop':'סטופ') : r==='time' ? (en?'20 days':'20 ימים') : (en?'Open':'פתוחה');
 
   if(!s.trades_total){
+    // v28: the old hint "try a lower minimum score" was wrong — the statistics restarted on 3.11.2026 (STATS_SINCE in
+    // api_server.py), when the scanner's quality rules changed, so the page is empty until new scans come in.
     el.innerHTML = `<div class="bt-warn">${en
-      ? `No trades yet for these settings. ${sm.signals_pending_simulation ? `${sm.signals_pending_simulation} signals are still waiting for the scanner to simulate them — run the scanner and check again.` : 'Try a lower minimum score.'}`
-      : `אין עדיין עסקאות בהגדרות האלה. ${sm.signals_pending_simulation ? `${sm.signals_pending_simulation} סריקות עדיין ממתינות לסימולציה של הסורק — הרץ את הסורק ובדוק שוב.` : 'נסה ציון מינימלי נמוך יותר.'}`}</div>`;
+      ? `No trades yet for these settings. ${sm.signals_pending_simulation ? `${sm.signals_pending_simulation} scans are still waiting for the scanner to simulate them — they will show up after the next scanner run.` : 'The statistics start on 3.11.2026, when the new quality rules for scans took effect — the first trades appear here after the next scans.'}`
+      : `אין עדיין עסקאות בהגדרות האלה. ${sm.signals_pending_simulation ? `${sm.signals_pending_simulation} סריקות עדיין ממתינות לסימולציה של הסורק — הן יופיעו אחרי הריצה הבאה שלו.` : 'הסטטיסטיקה מתחילה ב-3.11.2026, היום שבו נכנסו כללי האיכות החדשים לסריקות — העסקאות הראשונות יופיעו כאן אחרי הסריקות הבאות.'}`}</div>`;
     return;
   }
 
@@ -4872,6 +4876,30 @@ async function translateHeBrowser(text){
   }
 }
 
+// v28: the company description comes in English only (Wikipedia / SEC) — on the Hebrew site it is translated in the
+// browser (same two Google endpoints as the article preview) and kept per ticker for 30 days.
+async function ddTranslateAbout(quote){
+  if(!quote || !quote.description || quote._heTrying) return;
+  quote._heTrying = true;
+  const key = 'swing_desc_he_' + quote.ticker;
+  let he = null;
+  try {
+    const saved = JSON.parse(localStorage.getItem(key) || 'null');
+    if(saved && saved.src === quote.description && Date.now() - saved.at < 30 * 864e5) he = saved.he;
+  } catch(e){}
+  if(!he){
+    const out = await translateHeBrowser(quote.description);
+    if(out && out !== quote.description && /[א-ת]/.test(out)){
+      he = out;
+      try { localStorage.setItem(key, JSON.stringify({src: quote.description, he, at: Date.now()})); } catch(e){}
+    }
+  }
+  if(!he) return;                     // translation failed — the English text stays, and it is tried again next visit
+  quote.description_he = he;
+  if(lang !== 'he' || !_ddState || _ddState.quote !== quote) return;
+  document.querySelectorAll('#deepdive-content [data-dd-about]').forEach(el => { el.textContent = he; });
+}
+
 function closeDrawer(){ const o = document.getElementById("overlay"); o.classList.remove("open"); o.style.zIndex = ''; articlePreviewToken++; destroyFundCharts('fundamentals-section'); }
 document.getElementById("overlay").addEventListener("click", e=>{ if(e.target.id==="overlay") closeDrawer(); });
 
@@ -4895,19 +4923,39 @@ function renderTradingViewChart(ticker){
   });
 }
 
+// v28: "Yahoo Finance · 3 hours ago" under each stock headline. `published` comes as an ISO date (yfinance),
+// an RSS date ("Tue, 03 Nov 2026 02:12:41 +0000") or seconds since 1970 (older yfinance).
+const STOCK_NEWS_LIMIT = 8;
+function newsAgo(published){
+  if(published == null || published === '') return '';
+  const d = typeof published === 'number' ? new Date(published * 1000) : new Date(published);
+  const mins = (Date.now() - d.getTime()) / 60000;
+  if(!isFinite(mins) || mins < 0) return '';
+  const en = lang === 'en';
+  if(mins < 60) return en ? `${Math.max(1, Math.round(mins))} min ago` : `לפני ${Math.max(1, Math.round(mins))} דק'`;
+  const h = Math.round(mins / 60);
+  if(h < 24) return en ? `${h}h ago` : (h === 1 ? 'לפני שעה' : `לפני ${h} שעות`);
+  const days = Math.round(h / 24);
+  if(days < 7) return en ? `${days}d ago` : (days === 1 ? 'אתמול' : `לפני ${days} ימים`);
+  return d.toLocaleDateString(en ? 'en-US' : 'he-IL', {day:'numeric', month:'numeric'});
+}
+function newsMeta(n){
+  return [n.publisher, newsAgo(n.published)].filter(Boolean).map(escH).join(' · ');
+}
+
 // ---- Stock news in drawer ----
 async function loadStockNews(ticker){
   const el = document.getElementById("stock-news-list");
   if(!el) return;
   try {
-    const res = await fetch(`${API_BASE}/api/stock-news/${ticker}?lang=${lang}`);
+    const res = await fetch(`${API_BASE}/api/stock-news/${ticker}?lang=${lang}&limit=${STOCK_NEWS_LIMIT}`);
     if(!res.ok) throw new Error();
     const items = await res.json();
     if(!items.length){ el.innerHTML=`<div class="macro-time">${lang==='en'?'No recent articles found':'לא נמצאו כתבות עדכניות'}</div>`; return; }
     el.innerHTML = items.map(n=>`
       <div class="news-item">
         <a href="${escH(safeUrl(n.link))}" target="_blank" rel="noopener noreferrer">${escH(n.title)}</a>
-        <div class="macro-time">${escH(n.publisher||'')}</div>
+        <div class="macro-time">${newsMeta(n)}</div>
       </div>
     `).join("");
   } catch { el.innerHTML=`<div class="macro-time">${lang==='en'?'Could not load news right now':'לא ניתן לטעון חדשות כרגע'}</div>`; }

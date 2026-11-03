@@ -808,7 +808,20 @@ Actions → **AI Digest (manual test)** → Run workflow → `mode = probe` → 
 ### 27.3ל v28 (3.11.2026) — חדשות בניתוח מניה היו תמיד ריקות
 - **הבעיה (המשתמש: "כל חברה שאני פותח אין אצלה חדשות"):** `/api/stock-news/{t}` החזיר 502 `שגיאה בשליפת חדשות` לכל מניה (AAPL, MSFT; `/api/health` תקין) — `yf.Ticker().news` נכשל מ-Render (Yahoo חוסם את הכתובת, כמו `.info`). הפרונט מציג "לא נמצאו כתבות".
 - **התיקון (`api_server.py`, רק שרת):** `_stock_news_raw` — yfinance → RSS של Yahoo (`feeds.finance.yahoo.com/rss/2.0/headline?s=`, אין בו שם מקור → "Yahoo Finance") → Google News RSS (`"TICKER" stock when:14d`, הסיומת " - Outlet" מוסרת, ממוין לפי תאריך). המקור הראשון שנותן כותרות אחרי `_feed_clean` (בלי "מניות לקנות", בלי כפילויות) מנצח. מטמון 15 דק' לטיקר (תשובה ריקה לא נשמרת); yfinance שנכשל מדולג 15 דק'. שני ה-RSS נבדקו מהבית (KO 19 כתבות, OKLO 100) — מ-Render לא ניתן לבדוק לפני העלאה.
-- **לבדוק אחרי העלאה:** `/api/stock-news/AAPL` מחזיר רשימה (לא 502); בלוג Render — `stock-news yfinance failed ... using RSS`; בניתוח מניה לשונית חדשות מלאה. אם גם ה-RSS נחסמים — בלוג `stock-news RSS failed (host)`.
+- **לבדוק אחרי העלאה:** `/api/stock-news/AAPL` מחזיר רשימה (לא 502); בלוג Render — `stock-news yfinance failed ... using RSS`; בניתוח מניה לשונית חדשות מלאה. אם גם ה-RSS נחסמים — בלוג `stock-news RSS failed (host)`. **הועלה ואומת ע"י המשתמש 3.11 ("עכשיו יש חדשות").**
+
+### 27.3לא v28b (3.11.2026) — מעבר על האתר החי + תיקונים (אושר: "תתקן הכל חוץ משמות הסקטורים במפת החום")
+מעבר בדפדפן המובנה (בית, שוק, ניתוח AAPL על 4 הלשוניות, בדיקה היסטורית, התיק שלי, טלפון 375px): אין שגיאות קונסול, אין גלילה אופקית. נמצא ותוקן:
+- **`&quot;`/`&#39;` בכותרות בעברית:** Google gtx החזיר "unusual traffic" (גם מהבית), התרגום נפל ל-MyMemory — שמחזיר קודי HTML ויש לו מכסה יומית (→ 3 מתוך 40 כותרות נשארו באנגלית). תיקון: `fix_he` עושה `html.unescape` (תקף לפייפליין ולשרת); `translate_to_hebrew` קיבל ספק שני של Google (`clients5…dict-chrome-ex`, כמו בשרת מ-v19c) לפני MyMemory; שורות ישנות מתוקנות בהצגה (`_tidy_news_row` ב-`/api/macro-news`, `/search`, key-news).
+- **סלוגן של המקור על הכותרת/שם המקור** ("- Euronext Markets: Real-time Stock Market Data | live", "The Daily News | Texas' Oldest Newspaper"): `clean_publisher` + `strip_outlet_suffix` ב-`news_links.py` (שם ארוך מ-40 תווים לא נתפס ב-`_clean_google_news_title`).
+- **זבל ולא רלוונטי:** `is_unwanted_headline` ב-`news_links.py` (משותף; ה-`_FEED_PROMO` של השרת עבר לשם כ-`PROMO_RE` + "our AI picks"): וידאו/שאלות-תשובות ("Watch -", "Q."), כותרת של פחות מ-5 מילים בלי מילת שוק/מספר ("War Laura Thalassa OOP"), חדשות פנים של מדינות רחוקות (הודו, רוסים, אתיופיה...) בלי קשר לארה"ב/שווקים/נפט. נבדק על הכותרות האמיתיות. חדשות של מניה בודדת — רק סינון פרסומות (`promo_only`, אחרת Infosys תתרוקן).
+- **תרגום:** "inch higher/lower" → "rise/fall slightly" ("אינץ'"), "fan ... fears" → "increase ... fears" ("האוהדים").
+- **בדיקה היסטורית:** "נסה ציון מינימלי נמוך יותר" הוחלף בהסבר שהסטטיסטיקה מתחילה ב-3.11.2026; "ציון מינימלי לקנייה/קניות ביום" → "לכניסה/כניסות ביום".
+- **היסטוריית סריקות בניתוח מניה:** שורה אחת לכל יום ותבנית (`DISTINCT ON` ב-`/api/signal-history`; AAPL הציגה 29.10 שלוש פעמים).
+- **חדשות מניה:** 8 כתבות + "מקור · לפני X שעות" (`newsAgo`/`newsMeta`, `STOCK_NEWS_LIMIT`).
+- **"על החברה" בעברית:** `ddTranslateAbout` — תרגום בדפדפן (`translateHeBrowser`), שמור 30 יום ב-`localStorage` (`swing_desc_he_<ticker>`); נכשל → נשאר באנגלית. גם הסקטור עבר `escH`.
+- **לא שונה (בקשת המשתמש):** שמות הסקטורים במפת החום נשארים באנגלית.
+- **לבדוק אחרי העלאה:** בדף הבית אין `&quot;`, אין כותרות עם "Euronext Markets: ..."; בלוג news-aggregator — `translation (Google dict)` כשה-gtx חסום ופחות כותרות באנגלית; AAPL בעברית — "על החברה" בעברית, ליד כל כתבה "לפני X שעות", היסטוריית סריקות בלי כפילויות.
 
 ### 27.5 כיווני מוצר (סיכום שנמסר למשתמש 27.10.2026)
 1. **אמינות לפני פיצ'רים:** Render חינמי נרדם (טעינה קרה 30–60 שנ') ו-512MB → שרת בתשלום בסיסי (~$7/חודש) הוא השיפור הגדול ביותר לחוויה. ניטור uptime + התראה.

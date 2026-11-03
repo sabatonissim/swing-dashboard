@@ -12,6 +12,7 @@ broke the grammar. What works best: let Google translate the WHOLE sentence, aft
   2) HE_FIXES — known wrong Hebrew renderings replaced with the correct term ("סחיטה קצרה" -> "לחיצת שורטים").
 Add to these two lists when a bad translation is spotted on the site.
 """
+import html
 import re
 
 EN_REWRITES = [
@@ -42,6 +43,11 @@ EN_REWRITES = [
      r"\1 trade quietly"),                                                  # "Wall Street drifts" -> "נסחפת"
     (r"\bon deck\b", "coming up"),                                          # -> "בסיפון"
     (r"\b(courts?)\s+rul(?:e|es|ed)\b", r"\1 decided"),                     # "Courts Rule" -> "כלל בתי המשפט"
+    # v28 (live feed 3.11.2026)
+    (r"\binch(?:es|ed|ing)?\s+(?:higher|up)\b", "rise slightly"),            # "MU, SNDK inch higher" -> "אינץ' גבוה יותר"
+    (r"\binch(?:es|ed|ing)?\s+(?:lower|down)\b", "fall slightly"),
+    (r"\bfan(?:s|ned|ning)?\s+((?:\w+\s+){0,2}?)(fears|concerns|worries|speculation|hopes)\b",
+     r"increase \1\2"),                                                     # "strikes fan Fed inflation fears" -> "האוהדים"
 ]
 
 HE_FIXES = [
@@ -82,7 +88,8 @@ def prep_en(text: str) -> str:
 
 def fix_he(text: str) -> str:
     """Translator output with known bad renderings corrected."""
-    text = _NIQQUD.sub("", text or "")
+    # v28: MyMemory answers with HTML codes — the site showed "בארה&quot;ב" and "אנרג&#39;י" literally
+    text = _NIQQUD.sub("", html.unescape(text or ""))
     for bad, good in HE_FIXES:
         text = text.replace(bad, good)
     return text

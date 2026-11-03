@@ -73,3 +73,54 @@ def decode_google_news_url(url: str, timeout: float = 8.0) -> Optional[str]:
         return None
     except Exception:  # noqa: BLE001
         return None
+
+
+# ------------------------------------------------------------------
+# v28 (live feed 3.11.2026): headline clean-up rules, shared by the news pipeline (before saving) and api_server
+# (rows already saved). Junk seen on the site: "War Laura Thalassa OOP", "Q. Is this a credit card?", "Watch - Amer: ...",
+# "+113%, +43%, See Which Stocks Are In ... Our AI Picks", India food inflation / Russian utility bills / Ethiopia —
+# and outlet taglines glued to titles and names ("... - Euronext Markets: Real-time Stock Market Data | live").
+# ------------------------------------------------------------------
+PROMO_RE = re.compile(r"\b(stocks? to (buy|watch|own|bet on)|to bet on|should you (buy|sell|invest|bet)|buy now|"
+                      r"is it (time to buy|a buy)|smart buy|buy the dip|"
+                      r"stocks? (for|to) (retirees|beginners)|our (ai |top )?picks|stock picks)\b"
+                      r"|^\s*\d+\s+[\w\s&'-]{0,40}\bstocks?\b", re.I)
+_FORMAT_JUNK_RE = re.compile(r"^\s*(watch|video|listen|podcast)\s*[:\-\u2013\u2014]|^\s*q\s*[.:]\s", re.I)
+# Countries whose domestic news rarely moves US stocks — dropped unless the headline also ties it to the US / world markets
+_LOCAL_RE = re.compile(r"\b(india|indian|russians?|ethiopia|ethiopian|pakistan|nigeria|kenya|bangladesh|sri lanka|"
+                       r"philippines|indonesia|vietnam|thailand|malaysia|argentina|egypt|south africa|ghana|zimbabwe|"
+                       r"uganda|tanzania|sudan|myanmar|nepal|peru|colombia)\b", re.I)
+_GLOBAL_RE = re.compile(r"\bU\.?S\.?\b|(?i:\b(america|american|fed|wall street|trump|washington|oil|crude|opec|global|"
+                        r"world|stocks?|markets?|shares|dollar|treasur(y|ies)|tariffs?|sanctions?|nasdaq|s&p|chips?)\b)")
+_SUBSTANCE_RE = re.compile(r"\d|%|\$|\b(stocks?|shares|markets?|fed|rates?|earnings|oil|gold|bitcoin|economy)\b", re.I)
+
+
+def is_unwanted_headline(title: str) -> bool:
+    """True for promotional listicles, video/Q&A items, too-short meaningless titles and far-away domestic news."""
+    t = (title or "").strip()
+    if not t or PROMO_RE.search(t) or _FORMAT_JUNK_RE.search(t):
+        return True
+    if len(t.split()) < 5 and not _SUBSTANCE_RE.search(t):
+        return True
+    return bool(_LOCAL_RE.search(t)) and not _GLOBAL_RE.search(t)
+
+
+def clean_publisher(name: str) -> str:
+    """Outlet name without its tagline: "The Daily News | Texas' Oldest Newspaper" -> "The Daily News",
+    "Euronext Markets: Real-time Stock Market Data | live" -> "Euronext Markets"."""
+    name = (name or "").strip()
+    short = re.split(r"\s+[|\u2013\u2014]\s+|:\s+", name)[0].strip()
+    return short if len(short) >= 2 else name
+
+
+def strip_outlet_suffix(title: str, publisher: str) -> str:
+    """A title without a trailing " - <outlet name>" (Google News adds it; long outlet names escaped the old 40-char rule)."""
+    title = (title or "").strip()
+    for name in {(publisher or "").strip(), clean_publisher(publisher)}:
+        if name and title.endswith(" - " + name):
+            return title[: -len(" - " + name)].strip()
+    short = clean_publisher(publisher)
+    i = title.rfind(" - " + short) if short else -1
+    if i > 0 and len(short) >= 4:          # the translated tail of a long tagline: cut from the outlet name on
+        return title[:i].strip()
+    return title

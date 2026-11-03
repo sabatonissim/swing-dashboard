@@ -36,6 +36,7 @@ import re
 import time
 import io
 import hmac
+import html
 import threading
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
@@ -65,6 +66,7 @@ except Exception as _auth_import_err:  # server still boots; auth endpoints answ
 import econ_calendar  # US economic calendar
 from translation_fixes import prep_en, fix_he   # shared EN->HE translation fixes (also used by pipeline_b)
 from news_links import is_google_news, decode_google_news_url   # v18d: Google News link -> real article (also pipeline_b)
+from news_links import PROMO_RE, is_unwanted_headline, clean_publisher, strip_outlet_suffix   # v28: headline clean-up
 import push_alerts    # v19: push notifications (watchlist signals, price alerts) — also used by the scanner
 import fundamentals as fundlib   # v21: SEC fundamentals build + stored copies (also the nightly warm-up job)
 import scheduler      # starts the GitHub Actions workflows at exact ET times (see scheduler.py): providers -> processing -> uniform events (see econ_calendar.py)
@@ -1397,7 +1399,7 @@ def _recent_key_events() -> list:
         return _key_cache["events"]
     with db_cursor(dict_cursor=True) as (conn, cur):
         cur.execute("SELECT * FROM macro_news WHERE timestamp > NOW() - make_interval(hours => %s)", (_KEY_WINDOW_H,))
-        rows = [dict(r) for r in cur.fetchall()]
+        rows = [_tidy_news_row(r) for r in cur.fetchall()]
     events = _key_events(rows)
     _key_cache.update(at=time.time(), events=events)
     return events
@@ -1418,10 +1420,25 @@ def get_key_news():
 # v19 (live feed 27.10.2026): the feed showed "Best Momentum Stocks to Buy", "SMCI earnings expected to grow: should
 # you buy?", "3 Stocks ... to Bet on Right Away" — buy/sell promotion on a site whose content must stay factual — and the
 # same story 2-3 times ("Wall Street drifts as Broadcom..." from 3 outlets, one with "| National News | 2news.com").
-_FEED_PROMO = re.compile(r"\b(stocks? to (buy|watch|own|bet on)|to bet on|should you (buy|sell|invest|bet)|buy now|"
-                         r"is it (time to buy|a buy)|smart buy|buy the dip|"
-                         r"stocks? (for|to) (retirees|beginners))\b"
-                         r"|^\s*\d+\s+[\w\s&'-]{0,40}\bstocks?\b", re.I)
+# v28: the rules moved to news_links.py (shared with the news pipeline) and grew: video/Q&A items, meaningless short
+# titles, far-away domestic news (is_unwanted_headline).
+
+
+def _tidy_news_row(r) -> dict:
+    """v28: a macro_news row as it should be shown — rows saved before the pipeline fix still had HTML codes in the
+    Hebrew ("בארה&quot;ב", from MyMemory) and outlet taglines ("... - Euronext Markets: Real-time Stock Market Data | live",
+    "The Daily News | Texas' Oldest Newspaper")."""
+    r = dict(r)
+    for k in ("summary_he", "body_he"):
+        if r.get(k):
+            r[k] = html.unescape(r[k])
+    raw = (r.get("source_name") or "").strip()
+    if raw:
+        r["source_name"] = clean_publisher(raw)
+        for k in ("summary_en", "summary_he"):
+            if r.get(k):
+                r[k] = strip_outlet_suffix(r[k], raw)
+    return r
 
 
 def _feed_key(title: str) -> str:
@@ -1430,12 +1447,13 @@ def _feed_key(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", t.lower())
 
 
-def _feed_clean(rows, seen: set) -> list:
-    """rows without promotional listicles and without repeats of a headline already in `seen` (updated)."""
+def _feed_clean(rows, seen: set, promo_only: bool = False) -> list:
+    """rows without unwanted headlines (promo_only: just the buy/sell promotion — for one stock's own news, where
+    e.g. Infosys headlines all name India) and without repeats of a headline already in `seen` (updated)."""
     out = []
     for r in rows:
         title = r.get("summary_en") or ""
-        if _FEED_PROMO.search(title):
+        if PROMO_RE.search(title) if promo_only else is_unwanted_headline(title):
             continue
         k = _feed_key(title)
         if len(k) < 12:            # too short to say two headlines are the same story
@@ -1492,8 +1510,8 @@ def get_macro_news(limit: int = Query(default=25, le=100)):
     conn.close()
 
     seen: set = set()
-    critical_rows = _feed_clean(critical_rows, seen)
-    other_rows = _feed_clean(other_rows, seen)[:remaining]
+    critical_rows = _feed_clean([_tidy_news_row(r) for r in critical_rows], seen)
+    other_rows = _feed_clean([_tidy_news_row(r) for r in other_rows], seen)[:remaining]
     combined = list(critical_rows) + list(other_rows)
     combined.sort(key=lambda r: r["timestamp"], reverse=True)
     out = [{k: v for k, v in dict(r).items() if k != "rn"} for r in combined]
@@ -1556,7 +1574,7 @@ def search_macro_news(
     rows = cur.fetchall()
     cur.close()
     conn.close()
-    return [dict(r) for r in rows]
+    return [_tidy_news_row(r) for r in rows]
 
 
 @app.get("/api/ui-strings")
@@ -1734,7 +1752,7 @@ def _stock_news_raw(ticker: str) -> list:
         return hit[1]
 
     def clean(items):
-        rows = _feed_clean([{**it, "summary_en": it["title"]} for it in items], set())
+        rows = _feed_clean([{**it, "summary_en": it["title"]} for it in items], set(), promo_only=True)
         return [{k: r[k] for k in ("title", "link", "publisher", "published")} for r in rows]
 
     items = []
@@ -2072,13 +2090,19 @@ def get_signal_history(ticker: str, limit: int = Query(default=20, le=100)):
     fired, when, and (once resolved) how it played out. Powers the
     'has this stock done this before?' section of the stock deep-dive page."""
     ticker = _canon_ticker(ticker)
+    # v28: one row per day and pattern (the latest scan of that day) — several scans a day listed AAPL's
+    # "trendline support" three times for 29.10
     with db_cursor(dict_cursor=True) as (conn, cur):
         cur.execute(
             """
-            SELECT ticker, timestamp, pattern_type, swing_score, rs_rating,
-                   entry_price, forward_return_10d, forward_return_20d
-            FROM scanned_stocks
-            WHERE ticker = %s AND pattern_type IS NOT NULL
+            SELECT * FROM (
+                SELECT DISTINCT ON (timestamp::date, pattern_type)
+                       ticker, timestamp, pattern_type, swing_score, rs_rating,
+                       entry_price, forward_return_10d, forward_return_20d
+                FROM scanned_stocks
+                WHERE ticker = %s AND pattern_type IS NOT NULL
+                ORDER BY timestamp::date, pattern_type, timestamp DESC
+            ) per_day
             ORDER BY timestamp DESC
             LIMIT %s
             """,
