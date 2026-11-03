@@ -23,6 +23,7 @@ self.addEventListener('fetch', (e) => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;            // API, TradingView, fonts, Google: not ours to cache
+  if (url.pathname.startsWith('/api/')) return;               // v29: /api/geo (visitor's country) — always fresh
 
   if (req.mode === 'navigate') {                              // the page: network first, cached copy when offline
     e.respondWith(

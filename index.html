@@ -72,7 +72,31 @@ window.addEventListener('load', function(){
 <script>
 // The page LAYOUT is always left-to-right (same button/column positions in Hebrew and English — English is the base).
 // Hebrew TEXT is right-to-left: a small script near the end of the page marks every element that contains Hebrew letters.
-try { if (localStorage.getItem('swing_lang') === 'en') document.documentElement.setAttribute('lang','en'); } catch(e){}
+// v29 (owner: "Israeli IP -> Hebrew, any other -> English"): the language a visitor picked with the button
+// (swing_lang) always wins; otherwise the one chosen by their country on the first visit (swing_lang_auto, from
+// /api/geo — Vercel's x-vercel-ip-country). On that first visit the page stays hidden until the answer arrives
+// (at most ~1.2 s; no answer = Hebrew as before), so it does not jump from one language to the other.
+(function(){
+  var lang = null;
+  try { lang = localStorage.getItem('swing_lang') || localStorage.getItem('swing_lang_auto'); } catch(e){}
+  if (lang === 'en') document.documentElement.setAttribute('lang','en');
+  if (lang || !window.fetch || !window.Promise) return;
+  var root = document.documentElement;
+  root.classList.add('lang-pending');
+  var st = document.createElement('style');
+  st.textContent = 'html.lang-pending body{visibility:hidden}';
+  document.head.appendChild(st);
+  setTimeout(function(){ root.classList.remove('lang-pending'); }, 2500);   // never leave the page hidden
+  window.__geoLang = new Promise(function(resolve){
+    var done = false;
+    function fin(v){ if (!done) { done = true; resolve(v); } }
+    setTimeout(function(){ fin(null); }, 1200);
+    fetch('/api/geo', {cache: 'no-store'})
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(j){ fin(j && j.country ? (j.country === 'IL' ? 'he' : 'en') : null); })
+      .catch(function(){ fin(null); });
+  });
+})();
 </script>
 <script>
 // Theme: saved choice is 'dark' | 'light'. Default (and anything else) = dark.
@@ -8242,7 +8266,9 @@ function startBackgroundRetry(){
 }
 
 // ---- Language toggle ----
-let lang = localStorage.getItem('swing_lang') || 'he';
+// v29: the button choice, else the language picked by country on the first visit (see the top of the page), else Hebrew
+let lang = (() => { try { return localStorage.getItem('swing_lang') || localStorage.getItem('swing_lang_auto') || 'he'; }
+                    catch(e){ return 'he'; } })();
 
 const UI = {
   he: {
@@ -8462,6 +8488,18 @@ function toggleLang(){
   lang = lang === 'he' ? 'en' : 'he';
   localStorage.setItem('swing_lang', lang);
   applyLang();
+}
+
+// v29: first visit — the language by the visitor's country (see the small script at the top of the page). Runs after
+// this whole script has loaded (a promise callback), so applyLang and everything it draws already exist.
+if (window.__geoLang) {
+  window.__geoLang.then(function(auto){
+    try {
+      if (auto) localStorage.setItem('swing_lang_auto', auto);
+      if (auto && auto !== lang && !localStorage.getItem('swing_lang')) { lang = auto; applyLang(); }
+    } catch(e){ console.warn('[lang] auto language skipped', e); }
+    document.documentElement.classList.remove('lang-pending');
+  });
 }
 
 // ==== Hebrew text direction inside the (always left-to-right) layout ====
