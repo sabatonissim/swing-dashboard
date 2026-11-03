@@ -67,11 +67,39 @@ def download(tickers: List[str]):
             time.sleep(3 * (attempt + 1))
     if not closes:
         raise RuntimeError("no price data downloaded")
+
+    # v31b: threads=True can lose a random ticker (yfinance's cache: OperationalError 'database is locked', ALGN 3.11) —
+    # one more try for whatever came back empty, one at a time. A ticker that truly stopped trading just stays empty.
+    got = set()
+    for part in closes:
+        got |= set(part.columns[part.notna().any()])
+    lost = [t for t in tickers if t not in got]
+    for attempt in range(2):
+        if not lost:
+            break
+        print(f"market breadth: retrying {len(lost)} ticker(s) with no data: {', '.join(lost[:20])}")
+        time.sleep(2)
+        try:
+            df = yf.download(lost, period="2y", interval="1d", group_by="column", auto_adjust=False,
+                             threads=False, progress=False)
+        except Exception as e:
+            print(f"[warn] breadth: retry {attempt + 1} failed: {e}")
+            continue
+        if df is None or df.empty:
+            continue
+        as_frame = lambda s: s.to_frame(lost[0]) if isinstance(s, pd.Series) else s   # one ticker can come back as one column
+        closes.append(as_frame(df["Close"]))
+        highs.append(as_frame(df["High"]))
+        lows.append(as_frame(df["Low"]))
+        ok = set(closes[-1].columns[closes[-1].notna().any()])
+        lost = [t for t in lost if t not in ok]
+
     def tidy(parts):
         df = pd.concat(parts, axis=1)
         idx = pd.to_datetime(df.index)
         df.index = (idx.tz_localize(None) if idx.tz is not None else idx).normalize()
         df = df[~df.index.duplicated(keep="last")].sort_index()
+        df = df.dropna(axis=1, how="all")      # the empty column of a failed try must not hide its retry below
         return df.loc[:, ~df.columns.duplicated()].apply(pd.to_numeric, errors="coerce")
 
     close, high, low = tidy(closes), tidy(highs), tidy(lows)
