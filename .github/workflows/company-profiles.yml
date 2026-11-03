@@ -10,6 +10,12 @@ on:
 permissions:
   contents: read
 
+# v30b: one run at a time — two runs started a minute apart (3.11.2026) wrote the same companies and doubled the load
+# on the AI service; a second start now waits for the first one to finish
+concurrency:
+  group: company-profiles
+  cancel-in-progress: false
+
 jobs:
   profiles:
     runs-on: ubuntu-latest
