@@ -44,6 +44,7 @@ RUN_BUDGET_SEC = 25 * 60
 RECHECK_DAYS = 30
 LLM_CALL_BUDGET_SEC = "100"        # per AI request, across its fallback models (llm_provider's LLM_BUDGET_SECONDS)
 PROFILE_VERSION = 2                # stored as profile["v"]; profiles of an older version are written again
+HEBREW_VERSION = 2                 # profile["hv"]; an older Hebrew is translated again from the saved English (v30d)
 FIELD_MAX = {"summary": 300, "what": 600, "revenue": 650, "products": 500, "customers": 500}
 FIELDS = list(FIELD_MAX)
 REQUIRED = ("summary", "what", "revenue")
@@ -367,9 +368,33 @@ def clean_english(text, source):
     return p
 
 
-def clean_hebrew(text, en):
+_NAME_NOISE = re.compile(r"\([^)]*\)|\.com\b|[,.]|\b(inc|incorporated|corp|corporation|co|company|plc|ltd|limited|"
+                         r"holdings?|group|n\.?v|s\.?a|ag|se|the|class [a-c])\b", re.I)
+
+
+def company_word(name):
+    """The first word of the company's name ("Alphabet Inc." -> "Alphabet", "Edwards Lifesciences Corp" -> "Edwards")."""
+    words = [w for w in _NAME_NOISE.sub(" ", name or "").split() if len(w) >= 3 and re.match(r"[A-Za-z]", w)]
+    return words[0] if words else None
+
+
+def names_in(en):
+    """Names in the English profile (capitalised words that do not start a sentence, abbreviations) — the translator is
+    told to keep exactly these in English letters."""
+    out = []
+    for s in _sentences(" ".join(en.values())):
+        for i, w in enumerate(re.findall(r"[A-Za-z][A-Za-z0-9&+.\-]*", s)):
+            w = w.rstrip(".-")
+            if (i > 0 and w[:1].isupper()) or (len(w) > 1 and w.isupper()):
+                if w not in out:
+                    out.append(w)
+    return out[:30]
+
+
+def clean_hebrew(text, en, company=None):
     """The Hebrew translation: every field Hebrew, no number that is not in the English, no ordinary English word
-    left untranslated (names may stay: they are capitalised / abbreviations and appear in the English)."""
+    left untranslated (names may stay: they are capitalised / abbreviations and appear in the English), and the
+    company's own name in English letters (v30d: GOOGL came out as "אלקטיב אינק'" for Alphabet)."""
     allowed = _numbers(" ".join(en.values()))
     # names compared without case — "Youtube" for the English "YouTube" was rejected in the second run
     en_words = {w.rstrip(".-").lower() for w in re.findall(r"[A-Za-z][A-Za-z0-9&+.\-]*", " ".join(en.values()))}
@@ -401,6 +426,9 @@ def clean_hebrew(text, en):
             raise ValueError(f"in the field '{f}' these names do not appear in the English text: "
                              f"{sorted(set(invented))[:6]} — use only names from the English text")
         p[f] = _fit(p[f], int(FIELD_MAX[f] * 1.3))
+    if company and company.lower() not in p["summary"].lower():
+        raise ValueError(f"the company name must stay in English letters — write '{company}' in the field 'summary', "
+                         "not a Hebrew transliteration")
     return p
 
 
@@ -444,8 +472,14 @@ def write_english(source, name):
     return _ask(SYSTEM_EN, f"Company: {name}\n\nSOURCE TEXT:\n{source}", lambda t: clean_english(t, source), 1300)
 
 
-def write_hebrew(en):
-    return _ask(SYSTEM_HE, json.dumps(en, ensure_ascii=False), lambda t: clean_hebrew(t, en), 2200)
+def write_hebrew(en, name=None):
+    company = company_word(name)
+    if company and company.lower() not in en["summary"].lower():
+        company = None                       # the English summary does not name it — nothing to keep
+    keep = names_in(en)
+    user = (f"Keep these names exactly as written, in English letters: {', '.join(keep)}.\n\n" if keep else "") \
+        + json.dumps(en, ensure_ascii=False)
+    return _ask(SYSTEM_HE, user, lambda t: clean_hebrew(t, en, company), 2200)
 
 
 # ---------------------------------------------------------------- main
@@ -458,9 +492,11 @@ def main() -> int:
     init_db(cur)
     conn.commit()
     candidates = pick_tickers(cur)
-    cur.execute("""SELECT ticker, filing_date, checked_at, COALESCE((profile->>'v')::int, 1) AS v, profile->'en' AS en,
-                          (profile->'he' IS NULL OR jsonb_typeof(profile->'he') = 'null') AS no_he
-                   FROM company_profiles""")
+    cur.execute("""SELECT ticker, name, filing_date, checked_at, COALESCE((profile->>'v')::int, 1) AS v,
+                          profile->'en' AS en,
+                          (profile->'he' IS NULL OR jsonb_typeof(profile->'he') = 'null'
+                           OR COALESCE((profile->>'hv')::int, 1) < %s) AS no_he
+                   FROM company_profiles""", (HEBREW_VERSION,))
     have = {r["ticker"]: r for r in cur.fetchall()}
     cur.close()
     conn.close()                                   # the AI calls take minutes; the DB is reopened only to write
@@ -493,10 +529,11 @@ def main() -> int:
                 continue
             old = have.get(t)
             current = bool(old) and old["v"] == PROFILE_VERSION
-            if current and old["no_he"] and isinstance(old["en"], dict):      # only the Hebrew is missing
-                he, model = write_hebrew(old["en"])
-                db_exec("""UPDATE company_profiles SET profile = jsonb_set(profile, '{he}', %s::jsonb), checked_at = NOW()
-                           WHERE ticker = %s""", (json.dumps(he, ensure_ascii=False), t))
+            if current and old["no_he"] and isinstance(old["en"], dict):      # only the Hebrew is missing / outdated
+                he, model = write_hebrew(old["en"], old["name"])
+                db_exec("""UPDATE company_profiles SET profile = profile || jsonb_build_object('he', %s::jsonb, 'hv', %s),
+                                                       checked_at = NOW()
+                           WHERE ticker = %s""", (json.dumps(he, ensure_ascii=False), HEBREW_VERSION, t))
                 written += 1
                 print(f"  {t}: Hebrew added ({model})")
                 continue
@@ -513,12 +550,12 @@ def main() -> int:
                 continue
             en, model = write_english(source, meta["name"])
             try:
-                he, _ = write_hebrew(en)
+                he, _ = write_hebrew(en, meta["name"])
             except (RuntimeError, ValueError) as e:                         # the English is kept; Hebrew next run
                 he = None
                 reasons["hebrew later"] = reasons.get("hebrew later", 0) + 1
                 print(f"[warn] {t}: Hebrew failed, saved in English for now ({str(e)[:150]})")
-            profile = {"v": PROFILE_VERSION, "en": en, "he": he}
+            profile = {"v": PROFILE_VERSION, "en": en, "he": he, "hv": HEBREW_VERSION}
             facts = {k: v for k, v in meta["facts"].items() if v}
             db_exec("""INSERT INTO company_profiles (ticker, name, profile, facts, source, source_url, filing_date,
                                                      model, built_at, checked_at)
