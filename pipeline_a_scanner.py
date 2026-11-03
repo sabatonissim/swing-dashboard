@@ -1411,6 +1411,7 @@ def init_db():
     cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS implied_move_expiry DATE;")
     cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS implied_move_at TIMESTAMPTZ;")
     cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS company_name TEXT;")   # v27: Nasdaq's name
+    cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS eps_from_release BOOLEAN DEFAULT FALSE;")   # v33
     # Values stored before provenance existed can't be verified, so drop them
     # once; the next scan refetches them with the validated logic. Idempotent:
     # every value written from now on carries its provenance date.
@@ -2541,9 +2542,14 @@ def _sec_exhibit_names(cik, accession):
     return ordered
 
 
+_release_text_cache = {}   # v33: accession -> text, for this run (revenue and EPS read the same release)
+
+
 def _sec_release_text(cik, accession):
     """Plain text of the earnings press release (Exhibit 99.x) of an 8-K filing."""
     import html as _html
+    if accession in _release_text_cache:
+        return _release_text_cache[accession]
     base = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession.replace('-', '')}"
     for name in _sec_exhibit_names(cik, accession)[:3]:
         raw = _sec_get(f"{base}/{name}", as_json=False)
@@ -2551,6 +2557,7 @@ def _sec_release_text(cik, accession):
         text = re.sub(r"<[^>]+>", " ", text)
         text = re.sub(r"\s+", " ", _html.unescape(text)).strip()
         if re.search(r"revenue|net sales", text[:20000], re.I):
+            _release_text_cache[accession] = text
             return text
     return None
 
@@ -2683,6 +2690,85 @@ def _revenue_from_press_release(ticker, report_date, reference=None, estimate=No
         return None
     except Exception as e:
         print(f"[warn] press-release revenue fetch failed for {ticker}: {type(e).__name__}: {e}")
+        return None
+
+
+# ------------------------------------------------------------------
+# v33: EPS from the same press release, because Yahoo lists "Reported EPS" hours after the report (3.11.2026: 75 minutes
+# after the close, 0 of 16 evening reports had EPS and 11 had revenue from the 8-K).
+# ONLY the adjusted / non-GAAP figure: the analysts' estimate is on that basis, so GAAP would show a false miss (AMD: GAAP
+# $1.46, non-GAAP $2.09, estimate $1.94). A release with no clear adjusted figure stays empty until Yahoo has it.
+# Checked by hand on 67 real releases (29.10-3.11.2026): 27 gave a figure, 26 equal to Yahoo's; the other is Linde, where the
+# release says adjusted $4.59 and Yahoo holds the GAAP $3.66. Tuned on the same releases, so it is not a guarantee: Yahoo's
+# figure replaces this one when it arrives (eps_from_release marks it until then, and the site says where it came from).
+# ------------------------------------------------------------------
+EPS_RELEASE_BAND = 0.4           # at most this far from the estimate (or $0.10), else it is some other figure
+_EPS_NOUN = r"(?:EPS|earnings\s+per\s+(?:diluted\s+)?(?:common\s+)?share|(?:net\s+)?income\s+per\s+(?:diluted\s+)?(?:common\s+)?share)"
+_EPS_NUM = r"\(?\$\s?(\d{1,4}\.\d{2,3})\)?"
+_EPS_ADJ = r"(?:non[-\s]?GAAP|adjusted|core|comparable)"
+_EPS_PATTERNS = [
+    # "GAAP and non-GAAP diluted earnings per share of $1.22 and $1.20, respectively" (Arista): the SECOND figure
+    re.compile(r"GAAP\s+and\s+non[-\s]?GAAP\s+(?:diluted\s+)?" + _EPS_NOUN + r"[^$.;]{0,40}?\$\s?[\d.]+\s+and\s+" + _EPS_NUM, re.I),
+    # "On a non-GAAP basis, gross margin was 56%, ... and diluted earnings per share was $2.09" (AMD)
+    re.compile(r"non[-\s]?GAAP(?:\s*\(\*\))?\s+basis,(?:(?!\.\s).){0,200}?" + _EPS_NOUN + r"\s+(?:was|were|of)\s+" + _EPS_NUM, re.I),
+    # "Adjusted Diluted EPS of $3.82" / "Non-GAAP EPS was $2.49" / "non-GAAP EPS (a) increased 70% to $20.07"
+    re.compile(_EPS_ADJ + r"\s+(?:diluted\s+)?" + _EPS_NOUN + r"(?:\s*\([^)]{0,30}\))?[^$.;]{0,50}?" + _EPS_NUM, re.I),
+    # "Earnings per share (non-GAAP) $ 7.48" (Lilly)
+    re.compile(_EPS_NOUN + r"[^$.;]{0,25}?\b" + _EPS_ADJ + r"\b[^$.;]{0,30}?" + _EPS_NUM, re.I),
+    # "$1.20 adjusted diluted EPS"
+    re.compile(_EPS_NUM + r"\s+(?:of\s+|in\s+)?" + _EPS_ADJ + r"\s+(?:diluted\s+)?" + _EPS_NOUN, re.I),
+    # "Adjusted earnings for the third quarter were a record $2.21 per diluted share" (AMETEK)
+    re.compile(_EPS_ADJ + r"\s+(?:net\s+income|earnings|profit)[^$.;]{0,60}?" + _EPS_NUM + r"\s+per\s+(?:diluted\s+)?share", re.I),
+]
+# Not this quarter's figure: guidance, a comparison, an older or longer period, or a sum that "includes" other items
+_EPS_BAD = re.compile(
+    r"(includ|expect|anticipat|outlook|guidance|forecast|project|target|estimat|compared\s+(?:with|to)|versus|\bvs\.?\b|\bfrom\b|"
+    r"prior[-\s]year|year[-\s]ago|last\s+year|full[-\s]year|fiscal\s+(?:year\s+)?20\d\d|nine\s+months|six\s+months|"
+    r"year\s+to\s+date|year[-\s]to[-\s]date|range|next\s+quarter|current\s+quarter|second\s+half|\bto\s+be\b|\bwould\b)", re.I)
+_EPS_BAD_AFTER = re.compile(
+    r"^\W{0,3}(?:a\s+year\s+ago|last\s+year|in\s+the\s+(?:year[-\s]ago|prior|same)|for\s+the\s+(?:year|full)|compared)", re.I)
+_EPS_RANGE_AFTER = re.compile(r"^\s*(?:to|-|–|—)\s*\$", re.I)    # "$5.90 to $6.20" = guidance (Lumentum)
+
+
+def _parse_press_release_eps(text, estimate):
+    """This quarter's adjusted EPS from press-release text, or None. Without an estimate there is nothing to check it
+    against, so nothing is taken."""
+    if not text or estimate is None:
+        return None
+    head = text[:15000]
+    best = None   # (position, value)
+    for rx in _EPS_PATTERNS:
+        for m in rx.finditer(head):
+            val = float(m.group(1))
+            if re.search(r"\(\s?\$\s?$", head[max(0, m.start(1) - 5):m.start(1)]):
+                val = -val                            # "($0.05)" is a loss
+            before = re.split(r"[;.!?]\s", head[max(0, m.start() - 70):m.start()])[-1]
+            after = head[m.end():m.end() + 40]
+            if _EPS_BAD.search(before) or _EPS_BAD.search(m.group(0)):
+                continue
+            if _EPS_RANGE_AFTER.match(after) or _EPS_BAD_AFTER.match(after):
+                continue
+            if re.search(r"GAAP\s+and\s+$", before, re.I) and not re.match(r"GAAP\s+and", m.group(0), re.I):
+                continue                              # the GAAP half of "GAAP and non-GAAP ... of $A and $B"
+            if abs(val - estimate) > max(EPS_RELEASE_BAND * abs(estimate), 0.10):
+                continue
+            if best is None or m.start() < best[0]:
+                best = (m.start(), val)
+    return best[1] if best else None
+
+
+def _eps_from_press_release(ticker, report_date, estimate):
+    try:
+        cik = _sec_cik_for(ticker)
+        if not cik or estimate is None:
+            return None
+        for acc in _sec_release_accessions(cik, report_date):
+            val = _parse_press_release_eps(_sec_release_text(cik, acc), float(estimate))
+            if val is not None:
+                return val
+        return None
+    except Exception as e:
+        print(f"[warn] press-release EPS fetch failed for {ticker}: {type(e).__name__}: {e}")
         return None
 
 
@@ -3197,14 +3283,17 @@ def backfill_sim_outcomes():
 # ------------------------------------------------------------------
 _SESSION_REPORT_HOUR_UTC = {"bmo": 10, "amc": 20}   # earliest moment the figures can plausibly exist
 EARNINGS_REFRESH_BUDGET_SEC = 300    # v27: per quick run (the workflow stops at 15 minutes)
+EARNINGS_FAST_BUDGET_SEC = 150       # v33: per fast run (one starts every 5 minutes)
 IMPLIED_MOVE_MAX_PER_RUN = 60        # v27: per quick run; the least recently priced first
 
 
-def refresh_earnings_results():
+def refresh_earnings_results(fast: bool = False):
+    """fast (v33, --earnings-fast, every 5 minutes around the report hours): only today's reports still missing a figure,
+    and revenue only from the SEC release (Yahoo's statement lags by days, so asking it the same day is wasted time)."""
     init_db()
     now = datetime.now(timezone.utc)
-    today = now.date()
-    start = today - timedelta(days=EARNINGS_CALENDAR_WINDOW_PAST_DAYS)
+    today = now.astimezone(ZoneInfo("America/New_York")).date() if fast else now.date()
+    start = today if fast else today - timedelta(days=EARNINGS_CALENDAR_WINDOW_PAST_DAYS)
     conn = get_conn()
     cur = conn.cursor()
     # v18: re-check press-release revenues against the stored estimate (press-release rows are the ones whose
@@ -3223,10 +3312,13 @@ def refresh_earnings_results():
     conn.commit()
     if cleared:
         print(f"[info] earnings refresh: cleared {len(cleared)} press-release revenue(s) far from the estimate: {', '.join(cleared)}")
+    # v33: a release figure is looked at again until Yahoo's replaces it (not in a fast run: that one only fills blanks)
+    recheck = "" if fast else " OR COALESCE(eps_from_release, FALSE)"
     cur.execute(
-        """SELECT ticker, report_date, session, eps_actual, revenue_actual, revenue_estimate FROM earnings_calendar
-           WHERE report_date BETWEEN %s AND %s AND (eps_actual IS NULL OR revenue_actual IS NULL)
-           ORDER BY report_date DESC, market_cap DESC NULLS LAST""",
+        f"""SELECT ticker, report_date, session, eps_actual, revenue_actual, revenue_estimate, eps_estimate,
+                   COALESCE(eps_from_release, FALSE) FROM earnings_calendar
+            WHERE report_date BETWEEN %s AND %s AND (eps_actual IS NULL OR revenue_actual IS NULL{recheck})
+            ORDER BY report_date DESC, market_cap DESC NULLS LAST""",
         (start, today),
     )
     rows = cur.fetchall()
@@ -3234,43 +3326,61 @@ def refresh_earnings_results():
     conn.close()
 
     todo = []
-    for ticker, rdate, session, eps_actual, rev_actual, rev_est in rows:
+    for ticker, rdate, session, eps_actual, rev_actual, rev_est, eps_stored, from_release in rows:
         report_dt = datetime(rdate.year, rdate.month, rdate.day, _SESSION_REPORT_HOUR_UTC.get(session or "", 15), 0, tzinfo=timezone.utc)
         if report_dt <= now:
-            todo.append((ticker, rdate, report_dt, eps_actual, rev_actual, rev_est))
-    print(f"[info] earnings refresh: {len(todo)} reported name(s) still missing EPS or revenue.")
+            todo.append((ticker, rdate, report_dt, eps_actual, rev_actual, rev_est, eps_stored, from_release))
+    print(f"[info] earnings refresh{' (fast)' if fast else ''}: {len(todo)} reported name(s) still missing EPS or revenue.")
 
     updates = []
     t_start = time.time()
-    for ticker, rdate, report_dt, eps_actual, rev_actual, rev_est in todo:
+    budget = EARNINGS_FAST_BUDGET_SEC if fast else EARNINGS_REFRESH_BUDGET_SEC
+    for ticker, rdate, report_dt, eps_actual, rev_actual, rev_est, eps_stored, from_release in todo:
         # v27: the calendar is ~10x larger — newest reports first (the query's order), the rest on the next run, so
         # the quick job (15-minute limit) always finishes
-        if time.time() - t_start > EARNINGS_REFRESH_BUDGET_SEC:
+        if time.time() - t_start > budget:
             print(f"[info] earnings refresh: time budget reached — the remaining names wait for the next run")
             break
-        eps_est = eps_new = eps_sur = eps_src = rev_new = rev_pe = None
-        if eps_actual is None:
+        eps_est = eps_new = eps_sur = eps_src = rev_new = rev_pe = release_flag = None
+        if eps_actual is None or from_release:
             eps_est, eps_new, eps_sur, eps_src = _fetch_eps_result(ticker, rdate)
             time.sleep(INTER_TICKER_DELAY_SEC)
+            if eps_new is not None:
+                release_flag = False
+                if from_release and abs(float(eps_new) - float(eps_actual)) > 0.02:
+                    print(f"[warn] earnings {ticker}: the release said {eps_actual}, Yahoo says {eps_new} — using Yahoo's.")
+            elif eps_actual is None:
+                est = eps_est if eps_est is not None else eps_stored
+                eps_new = _eps_from_press_release(ticker, rdate, est)
+                if eps_new is not None:
+                    release_flag = True
+                    eps_src = rdate      # init_db clears any EPS without a source date (the v8 cleanup)
+                    eps_sur = round((eps_new - float(est)) / abs(float(est)) * 100, 2) if est else None
+                    print(f"[info] earnings {ticker}: adjusted EPS ${eps_new} taken from the SEC press release (estimate {est}).")
         if rev_actual is None:
-            _, rev_new, rev_pe = _fetch_revenue_result(ticker, report_dt, rev_est)
+            if fast:
+                rev_new = _revenue_from_press_release(ticker, rdate, None, float(rev_est) if rev_est else None)
+                rev_pe = rdate if rev_new is not None else None
+            else:
+                _, rev_new, rev_pe = _fetch_revenue_result(ticker, report_dt, rev_est)
             time.sleep(INTER_TICKER_DELAY_SEC)
         if eps_new is not None or rev_new is not None:
-            updates.append((ticker, rdate, eps_est, eps_new, eps_sur, eps_src, rev_new, rev_pe))
+            updates.append((ticker, rdate, eps_est, eps_new, eps_sur, eps_src, rev_new, rev_pe, release_flag))
 
     if updates:
         conn = get_conn()
         cur = conn.cursor()
-        for ticker, rdate, eps_est, eps_new, eps_sur, eps_src, rev_new, rev_pe in updates:
+        for ticker, rdate, eps_est, eps_new, eps_sur, eps_src, rev_new, rev_pe, release_flag in updates:
             cur.execute(
                 """UPDATE earnings_calendar SET
                        eps_estimate = COALESCE(%s, eps_estimate), eps_actual = COALESCE(%s, eps_actual),
                        surprise_pct = COALESCE(%s, surprise_pct), eps_source_date = COALESCE(%s, eps_source_date),
+                       eps_from_release = CASE WHEN %s IS NOT NULL THEN %s ELSE eps_from_release END,
                        revenue_actual = COALESCE(%s, revenue_actual),
                        revenue_period_end = CASE WHEN %s IS NOT NULL THEN %s ELSE revenue_period_end END,
                        updated_at = NOW()
                    WHERE ticker = %s AND report_date = %s""",
-                (eps_est, eps_new, eps_sur, eps_src, rev_new, rev_new, rev_pe, ticker, rdate),
+                (eps_est, eps_new, eps_sur, eps_src, release_flag, release_flag, rev_new, rev_new, rev_pe, ticker, rdate),
             )
         cur.execute(
             """UPDATE earnings_calendar SET revenue_surprise_pct =
@@ -3645,6 +3755,9 @@ def main():
             except Exception:
                 print(f"[fatal] {job.__name__} crashed:")
                 print(traceback.format_exc())
+        return
+    if "--earnings-fast" in sys.argv:
+        refresh_earnings_results(fast=True)
         return
     if "--earnings-only" in sys.argv:
         refresh_earnings_results()

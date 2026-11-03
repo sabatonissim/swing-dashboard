@@ -46,7 +46,12 @@ MAX_ATTEMPTS = 3
 JOBS = [
     dict(name="scan_open",  workflow="stock-scanner.yml",   kind="daily",    at=(9, 45),  weekdays_only=True,  grace_min=300),
     dict(name="scan_close", workflow="stock-scanner.yml",   kind="daily",    at=(16, 10), weekdays_only=True,  grace_min=300),
-    dict(name="quick",      workflow="earnings-refresh.yml", kind="interval", every_min=20, window=(6 * 60, 20 * 60), weekdays_only=True,  grace_min=25),
+    # v33: 30 minutes, on the same minutes as news and insider (was 20): each separate wake-up of the database costs its
+    # run + 5 idle minutes, and the free Neon plan has 100 CU-hours a month (28 were gone by 3.11)
+    dict(name="quick",      workflow="earnings-refresh.yml", kind="interval", every_min=30, window=(6 * 60, 20 * 60), weekdays_only=True,  grace_min=25),
+    # v33: today's earnings results within minutes — only while companies are actually reporting; a missed slot is not caught up
+    dict(name="earn_am",    workflow="earnings-fast.yml",   kind="interval", every_min=5, window=(6 * 60 + 45, 9 * 60), weekdays_only=True, grace_min=3),
+    dict(name="earn_pm",    workflow="earnings-fast.yml",   kind="interval", every_min=5, window=(16 * 60 + 5, 18 * 60), weekdays_only=True, grace_min=3),
     dict(name="news",       workflow="news-aggregator.yml", kind="interval", every_min=30, window=None,               weekdays_only=False, grace_min=35),
     # economic-calendar numbers (BLS API/FRED -> Postgres): every 30 min 08:00-10:30 ET (08:30 CPI/PPI/jobs, 10:00 JOLTS), plus once in the evening.
     # Kept sparse on purpose: the keyless BLS API allows 25 requests/day per IP.

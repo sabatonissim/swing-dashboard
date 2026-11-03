@@ -261,6 +261,7 @@ def _sanitize_legacy_earnings(cur):
     cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS implied_move_expiry DATE;")
     cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS implied_move_at TIMESTAMPTZ;")
     cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS company_name TEXT;")   # v27: Nasdaq's name
+    cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS eps_from_release BOOLEAN DEFAULT FALSE;")   # v33
     cur.execute("""UPDATE earnings_calendar SET revenue_actual = NULL, revenue_surprise_pct = NULL
                    WHERE revenue_actual IS NOT NULL AND revenue_period_end IS NULL;""")
     cur.execute("""UPDATE earnings_calendar SET eps_actual = NULL, eps_estimate = NULL, surprise_pct = NULL
@@ -5317,7 +5318,7 @@ def get_earnings_calendar():
             """
             SELECT ticker, report_date, session, market_cap, eps_estimate, eps_actual, surprise_pct,
                    revenue_estimate, revenue_actual, revenue_surprise_pct, implied_move_pct, implied_move_expiry,
-                   company_name
+                   company_name, eps_from_release
             FROM earnings_calendar
             ORDER BY report_date ASC, market_cap DESC
             """
@@ -5331,7 +5332,8 @@ def get_earnings_calendar():
         d["implied_move_expiry"] = d["implied_move_expiry"].isoformat() if d.get("implied_move_expiry") else None
         d["name"] = info_map.get(d["ticker"], {}).get("name") or d.pop("company_name", None)   # v27: non-S&P names
         d.pop("company_name", None)
-        d["reported"] = d["eps_actual"] is not None
+        # v33: revenue alone counts — it was stored but hidden until Yahoo listed the EPS, hours later
+        d["reported"] = d["eps_actual"] is not None or d["revenue_actual"] is not None
         items.append(d)
     return {"count": len(items), "items": items}
 

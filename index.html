@@ -3970,9 +3970,9 @@ function renderEconMonth(){
 // ---- Weekly earnings calendar (notable/large-cap names only) ----
 let lastEarningsCalItems = null;
 
-async function loadEarningsCalendar(){
+async function loadEarningsCalendar(silent){
   const el = document.getElementById('earnings-cal-wrap');
-  if(el) el.innerHTML = `<div class="movers-empty">${UI[lang].loading}</div>`;
+  if(el && !silent) el.innerHTML = `<div class="movers-empty">${UI[lang].loading}</div>`;
   try {
     const res = await fetch(`${API_BASE}/api/earnings-calendar`);
     if(!res.ok) throw new Error('bad response');
@@ -3980,10 +3980,17 @@ async function loadEarningsCalendar(){
     renderEarningsCalendar(data.items || []);
   } catch(e) {
     console.error('[earnings-calendar] load failed', e);
+    if(silent) return;      // a background refresh that failed keeps what is on the screen
     const t = lang==='en';
     if(el) el.innerHTML = `<div class="movers-empty">${t?'Could not load the earnings calendar right now.':'לא ניתן לטעון את יומן הדוחות כרגע.'}</div>`;
   }
 }
+
+// v33: new results appear while the calendar is on the screen, without reloading the page
+setInterval(() => {
+  const el = document.getElementById('earnings-cal-wrap');
+  if(lastEarningsCalItems && el && el.offsetParent !== null && !document.hidden) loadEarningsCalendar(true);
+}, 180000);
 
 function renderEarningsCalendar(items){
   lastEarningsCalItems = items;
@@ -4081,7 +4088,7 @@ function _earnFigHtml(label, actual, est, pct, fmt, reported){
   if(reported && actual != null){
     return `<div class="earn-fig"><span class="k">${label}</span><span class="v">${fmt(actual)}</span>${_earnSurpriseChip(pct) || (est != null ? `<span class="e">${en?'est':'צפי'} ${fmt(est)}</span>` : '')}</div>`;
   }
-  if(reported){   // EPS is out but this figure is not verified yet (statement lag)
+  if(reported){   // one figure is out, this one is not verified yet
     return `<div class="earn-fig"><span class="k">${label}</span><span class="v" style="color:var(--text-dim)">—</span><span class="e">${en?'updating':'בעדכון'}</span></div>`;
   }
   return `<div class="earn-fig"><span class="k">${en?label+' est':'צפי '+label}</span><span class="v" style="color:var(--text-dim)">${est != null ? fmt(est) : '—'}</span></div>`;
@@ -4154,8 +4161,9 @@ function _earnDetailHtml(it, todayStr){
   const card = (k, v, s) => `<div><div class="k">${k}</div><div class="v">${v}</div>${s ? `<div class="s">${s}</div>` : ''}</div>`;
   const cards = [];
   if(it.reported){
-    cards.push(card(en ? 'EPS — actual' : 'EPS בפועל', it.eps_actual != null ? _earnUsd(it.eps_actual) : '—',
-      it.eps_estimate != null ? `${en?'est':'צפי'} ${_earnUsd(it.eps_estimate)} · ${_earnPct(it.surprise_pct)}` : ''));
+    cards.push(card(en ? 'EPS — actual' : 'EPS בפועל', it.eps_actual != null ? _earnUsd(it.eps_actual) : (en ? 'updating' : 'בעדכון'),
+      (it.eps_estimate != null ? `${en?'est':'צפי'} ${_earnUsd(it.eps_estimate)}${it.eps_actual != null ? ' · ' + _earnPct(it.surprise_pct) : ''}` : '')
+      + (it.eps_from_release ? `<br>${en ? 'Adjusted, from the company\'s release' : 'מתואם, לפי הודעת החברה'}` : '')));
     cards.push(card(en ? 'Revenue — actual' : 'הכנסות בפועל', it.revenue_actual != null ? _earnBig(it.revenue_actual) : (en ? 'updating' : 'בעדכון'),
       it.revenue_estimate != null ? `${en?'est':'צפי'} ${_earnBig(it.revenue_estimate)}${it.revenue_actual != null ? ' · ' + _earnPct(it.revenue_surprise_pct) : ''}` : ''));
   } else {

@@ -13,6 +13,7 @@ The checks (a problem found = a line in the report, never a stop; a check that c
   * counts: how many stocks the site really shows per index, and which list members have no fresh data
   * arithmetic: numbers that must add up (breadth: up + down + unchanged = counted, above 50d <= with a 50d average ...)
   * values: impossible figures (a price of 0, a NaN, a one-day move of 50% or more)
+  * earnings: the last trading day's reports that still have no result
 
 status: ok / info (worth knowing, nothing to fix: KVUE still on the free list) / warn (look at it) / fail (wrong or stopped).
 Exit code 0 even when problems are found (a red run would email the owner, the report is where this is read).
@@ -44,6 +45,7 @@ BREADTH_MAX_NO_CHANGE = 5       # stocks counted without a change figure (first 
 BREADTH_MIN_PRICED = 0.98       # share of the list with a price on the latest day
 BIG_MOVE_PCT = 50               # a one-day move this big is rare enough to be looked at
 NEWS_MAX_HOURS = 6              # the news job runs every 30 minutes, every day
+MAX_BLANK_REPORTS = 3           # yesterday's reports with no result at all: a few can be a moved date, more = a problem
 KEEP_DAYS = 60
 
 # (table, time column, most weekdays since the last change, status when older). Normal = 1 at 07:30 ET (yesterday's
@@ -214,6 +216,24 @@ def check_values(cur) -> List[dict]:
     return out
 
 
+def check_earnings(cur, now: datetime) -> List[dict]:
+    """v33: the last trading day's reports should all have a result by the next morning."""
+    day = now.astimezone(ET).date() - timedelta(days=1)
+    while day.weekday() >= 5:
+        day -= timedelta(days=1)
+    cur.execute("""SELECT ticker, eps_actual, revenue_actual, COALESCE(eps_from_release, FALSE) AS rel
+                   FROM earnings_calendar WHERE report_date = %s""", (day,))
+    rows = cur.fetchall()
+    if not rows:
+        return [_line("earnings.results", "info", f"no reports on {day}")]
+    blank = [r["ticker"] for r in rows if r["eps_actual"] is None and r["revenue_actual"] is None]
+    no_eps = sum(1 for r in rows if r["eps_actual"] is None)
+    rel = sum(1 for r in rows if r["rel"])
+    status = "ok" if not blank else ("info" if len(blank) <= MAX_BLANK_REPORTS else "warn")
+    return [_line("earnings.results", status, f"{day}: {len(rows)} reports, no EPS: {no_eps}, EPS still from the release: {rel}, "
+                                              f"nothing at all: {', '.join(blank[:20]) or 'none'}", len(blank))]
+
+
 # ------------------------------------------------------------------ report
 def save(conn, day: date, status: str, results: List[dict]) -> None:
     cur = conn.cursor()
@@ -239,7 +259,8 @@ def main() -> int:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         results = []
         for name, run in (("freshness", lambda: check_freshness(cur, now)), ("counts", lambda: check_counts(cur, members)),
-                          ("arithmetic", lambda: check_arithmetic(cur)), ("values", lambda: check_values(cur))):
+                          ("arithmetic", lambda: check_arithmetic(cur)), ("values", lambda: check_values(cur)),
+                          ("earnings", lambda: check_earnings(cur, now))):
             try:
                 results += run()
             except Exception as e:

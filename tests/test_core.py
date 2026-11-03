@@ -198,6 +198,26 @@ def test_touch_alert_range():
     assert lo <= 95.5 <= hi and not (lo <= 100 <= hi)
 
 
+def test_press_release_eps(scanner):
+    """v33: EPS from the company's release — real sentences of 3.11.2026 and before. Only the adjusted figure of THIS
+    quarter counts; a wrong number is worse than a blank."""
+    p = scanner._parse_press_release_eps
+    amd = ("net income was $2.4 billion and diluted earnings per share was $1.46. On a non-GAAP(*) basis, gross margin was 56%, "
+           "operating income was $3.9 billion, net income was $3.5 billion and diluted earnings per share was $2.09. Next")
+    assert p(amd, 1.94) == 2.09                                                   # not the GAAP $1.46
+    assert p("• GAAP and non-GAAP diluted earnings per share of $1.22 and $1.20, respectively, compared to", 1.08) == 1.20
+    assert p("Non-GAAP operating margin of 45.0% to 46.0% • Non-GAAP diluted earnings per share of $5.90 to $6.20 We", 4.22) is None
+    assert p("the non-GAAP EPS included $4.57 of charges", 6.35) is None
+    assert p("EPS $3.66, down 11%; adjusted EPS $4.59, up 9% YoY", 4.17) == 4.59
+    assert p("Earnings per share (non-GAAP) $ 7.48", 6.35) == 7.48
+    assert p("Adjusted earnings for the third quarter were a record $2.21 per diluted share", 2.11) == 2.21
+    assert p("Diluted EPS of $0.56 for the quarter", 0.74) is None                 # GAAP only: stays empty
+    assert p("expects adjusted EPS of $4.10 next year", 4.0) is None               # guidance
+    assert p("Adjusted EPS of $9.99", 4.0) is None                                 # too far from the estimate
+    assert p("Adjusted EPS of ($0.05)", -0.01) == -0.05                            # a loss
+    assert p("Adjusted EPS of $1.00", None) is None and p("", 1.0) is None         # nothing to check it against
+
+
 def test_data_health_rules(api):
     """v32: the read-only data check — a weekend is not a false alarm, and numbers that do not add up are found."""
     import datetime as _dt
