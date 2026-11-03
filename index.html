@@ -7594,8 +7594,21 @@ function breadthStatsHtml(d){
     ${stat(en ? 'Above 50-day avg' : 'מעל ממוצע 50', d.pct50 != null ? Math.round(d.pct50) + '%' : '—', wk(d.pct50, d.pct50_week_ago))}
     ${stat(en ? 'Above 200-day avg' : 'מעל ממוצע 200', d.pct200 != null ? Math.round(d.pct200) + '%' : '—', wk(d.pct200, d.pct200_week_ago))}
     ${stat(en ? 'New highs / lows' : 'שיאים / שפלים', `${d.new_highs ?? '—'} / ${d.new_lows ?? '—'}`, en ? '52 weeks' : '52 שבועות')}
-    ${stat(en ? 'Up / down' : 'עולות / יורדות', `${d.advancers ?? '—'} / ${d.decliners ?? '—'}`, (en ? 'on ' : 'ב-') + _ddmm(d.day))}
+    ${stat(en ? 'Up / down' : 'עולות / יורדות', `${d.advancers ?? '—'} / ${d.decliners ?? '—'}`,
+           d.unchanged != null ? `${d.unchanged} ${en ? 'unchanged' : 'ללא שינוי'} · ${_ddmm(d.day)}` : (en ? 'on ' : 'ב-') + _ddmm(d.day))}
   </div>`;
+}
+
+// v31: the S&P 500 is ~500 companies but 503 shares (Alphabet, Fox and News Corp list two share classes each)
+function breadthCountNote(d){
+  const en = lang==='en';
+  if(d.total == null) return en ? 'How many of the 500 stocks take part in the move.' : 'כמה מ-500 המניות משתתפות בתנועת השוק.';
+  const missing = Math.max(0, d.total - (d.n || 0));
+  const base = en
+    ? `${d.total} shares of ~500 companies (Alphabet, Fox and News Corp have two share classes each).`
+    : `${d.total} מניות של כ-500 חברות (לאלפבית, פוקס וניוז קורפ יש שני סוגי מניות).`;
+  const miss = missing ? (en ? ` ${missing} without a price yet today.` : ` ל-${missing} עוד אין מחיר היום.`) : '';
+  return base + miss;
 }
 
 function renderBreadthHome(){
@@ -7608,7 +7621,7 @@ function renderBreadthHome(){
     return;
   }
   el.innerHTML = head + breadthStatsHtml(d) +
-    `<div class="hx-note">${en ? 'How many of the 500 stocks take part in the move.' : 'כמה מ-500 המניות משתתפות בתנועת השוק.'} <span class="hx-link" onclick="openBreadthPage()">${en ? 'Chart and details' : 'גרף ופירוט'}</span></div>`;
+    `<div class="hx-note">${breadthCountNote(d)} <span class="hx-link" onclick="openBreadthPage()">${en ? 'Chart and details' : 'גרף ופירוט'}</span></div>`;
 }
 
 function openBreadthPage(){
@@ -7656,6 +7669,7 @@ function renderBreadthFull(){
       <div class="hx-head"><span class="hx-title">S&P 500</span>${breadthChipHtml(d)}</div>
       ${breadthStatsHtml(d)}
       <div class="breadth-chart">${legend}${breadthChartSvg(d.history)}</div>
+      ${d.total != null ? `<div class="hx-note">${breadthCountNote(d)}</div>` : ''}
       <div class="hx-note">${en
         ? `Above 50/200-day avg: share of the index's stocks that closed above their 50/200-day moving average. New highs/lows: stocks whose price reached the highest/lowest level of the past 52 weeks that day. Label: 60% or more above the 50-day average = broad, 40–60% = mixed, under 40% = narrow — a description, not a recommendation. Today's list of S&P 500 members; during trading hours today's numbers use live prices and update every hour.${upd ? ' Updated ' + upd + '.' : ''}`
         : `מעל ממוצע 50/200: אחוז מניות המדד שנסגרו מעל הממוצע הנע של 50/200 הימים שלהן. שיאים/שפלים: מניות שהגיעו באותו יום למחיר הגבוה/הנמוך ביותר של 52 השבועות האחרונים. התווית: 60% ומעלה מעל ממוצע 50 = רחבה, 40–60% = מעורבת, מתחת ל-40% = חלשה — תיאור, לא המלצה. לפי רשימת חברות S&P 500 של היום; בשעות המסחר הנתונים של היום לפי מחירים חיים ומתעדכנים כל שעה.${upd ? ' עודכן ' + upd + '.' : ''}`}</div>

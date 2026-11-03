@@ -7,7 +7,9 @@ Stores one row per trading day in Postgres (market_breadth); the API (/api/marke
 Per day, over today's S&P 500 members (survivorship: the list is today's, as on most free breadth pages):
   * above 50 / 200: close above its 50-day / 200-day simple moving average (stocks with enough history)
   * new highs / lows: the day's HIGH is the highest high of the last 252 trading days (LOW: lowest low)
-  * advancers / decliners: close above / below the previous close
+  * advancers / decliners: close above / below the previous close; v31: unchanged too, and `total` = the member list
+    size (503 shares of ~500 companies — GOOG/GOOGL, FOX/FOXA, NWS/NWSA are two share classes each), without tickers
+    that stopped trading (taken over while the free list still has them)
 Prices are as traded (auto_adjust=False, like the scanner and TradingView); Yahoo already adjusts for splits.
 Two years of prices are downloaded each run, so the last ~130 days are all recomputed — the history fills in on the
 first run and a missed run heals itself. During market hours today's row uses the live (partial) daily bar.
@@ -97,12 +99,23 @@ def compute(close: pd.DataFrame, high: pd.DataFrame, low: pd.DataFrame) -> pd.Da
         "new_lows": ((low <= ll) & has_hl).sum(axis=1),
         "advancers": ((close > prev) & has_chg).sum(axis=1),
         "decliners": ((close < prev) & has_chg).sum(axis=1),
+        "unchanged": ((close == prev) & has_chg).sum(axis=1),      # v31: so up + down + unchanged = all counted
     })
     out = out[out["n"] >= MIN_STOCKS]
     return out.tail(HISTORY_DAYS)
 
 
-def save(rows: pd.DataFrame) -> int:
+def drop_delisted(close: pd.DataFrame) -> List[str]:
+    """v31: tickers with no close in the last 2 trading days (taken over / delisted while the free list still has them,
+    e.g. KVUE after the Kimberly-Clark deal). They are removed from all frames so the index size stays honest."""
+    if len(close.index) < 3:
+        return []
+    cutoff = close.index[-2]
+    last_seen = close.apply(lambda s: s.last_valid_index())
+    return sorted(t for t, d in last_seen.items() if d is None or pd.isna(d) or d < cutoff)
+
+
+def save(rows: pd.DataFrame, total: int) -> int:
     db_url = os.environ.get("DATABASE_URL")
     if not db_url:
         raise RuntimeError("DATABASE_URL is not set")
@@ -114,16 +127,21 @@ def save(rows: pd.DataFrame) -> int:
             n INTEGER, n50 INTEGER, above50 INTEGER, n200 INTEGER, above200 INTEGER,
             n_hl INTEGER, new_highs INTEGER, new_lows INTEGER, advancers INTEGER, decliners INTEGER,
             updated_at TIMESTAMPTZ DEFAULT NOW())""")
+        # v31: unchanged stocks + the size of the member list (503 shares of ~500 companies: GOOG/GOOGL, FOX/FOXA, NWS/NWSA)
+        cur.execute("ALTER TABLE market_breadth ADD COLUMN IF NOT EXISTS unchanged INTEGER")
+        cur.execute("ALTER TABLE market_breadth ADD COLUMN IF NOT EXISTS total INTEGER")
         for day, r in rows.iterrows():
             cur.execute("""INSERT INTO market_breadth (day, n, n50, above50, n200, above200, n_hl, new_highs, new_lows,
-                                                       advancers, decliners, updated_at)
-                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                                                       advancers, decliners, unchanged, total, updated_at)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
                            ON CONFLICT (day) DO UPDATE SET n=EXCLUDED.n, n50=EXCLUDED.n50, above50=EXCLUDED.above50,
                                n200=EXCLUDED.n200, above200=EXCLUDED.above200, n_hl=EXCLUDED.n_hl,
                                new_highs=EXCLUDED.new_highs, new_lows=EXCLUDED.new_lows,
-                               advancers=EXCLUDED.advancers, decliners=EXCLUDED.decliners, updated_at=NOW()""",
+                               advancers=EXCLUDED.advancers, decliners=EXCLUDED.decliners,
+                               unchanged=EXCLUDED.unchanged, total=EXCLUDED.total, updated_at=NOW()""",
                         (day.date(), *[int(r[c]) for c in ("n", "n50", "above50", "n200", "above200", "n_hl",
-                                                           "new_highs", "new_lows", "advancers", "decliners")]))
+                                                           "new_highs", "new_lows", "advancers", "decliners",
+                                                           "unchanged")], int(total)))
         conn.commit()
         cur.close()
     finally:
@@ -294,18 +312,29 @@ def main() -> int:
     started = time.time()
     tickers = sp500_tickers()
     close, high, low = download(tickers)
+    never = sorted(set(tickers) - set(close.columns))
+    if never:
+        print(f"[warn] market breadth: no data at all for: {', '.join(never)}")
+    gone = drop_delisted(close)
+    if gone:
+        close, high, low = (f.drop(columns=gone) for f in (close, high, low))
+        print(f"market breadth: dropped {len(gone)} ticker(s) with no recent price (delisted?): {', '.join(gone)}")
+    total = len(close.columns)
     rows = compute(close, high, low)
     status = 0
     if rows.empty:
         print("market breadth: nothing to store (too few stocks with data)")
         status = 1
     else:
-        n = save(rows)
+        n = save(rows, total)
         last = rows.iloc[-1]
+        no_price = sorted(t for t in close.columns if pd.isna(close[t].iloc[-1]))
         print(f"market breadth: saved {n} days, latest {rows.index[-1].date()}: "
               f"{int(last['above50'])}/{int(last['n50'])} above 50d, {int(last['above200'])}/{int(last['n200'])} above 200d, "
               f"highs {int(last['new_highs'])} lows {int(last['new_lows'])}, "
-              f"adv {int(last['advancers'])} dec {int(last['decliners'])} ({len(tickers)} tickers, {int(time.time() - started)}s)")
+              f"adv {int(last['advancers'])} dec {int(last['decliners'])} unch {int(last['unchanged'])} "
+              f"({int(last['n'])} priced of {total} in list{' — no price today: ' + ', '.join(no_price) if no_price else ''}; "
+              f"{int(time.time() - started)}s)")
     # v25: IPO calendar (Nasdaq) — on its own, a failure only prints a warning
     try:
         ipos = fetch_ipos()

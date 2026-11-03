@@ -6093,6 +6093,8 @@ def get_market_breadth():
         "pct200_week_ago": _pct(week["above200"], week["n200"]) if week else None,
         "new_highs": last["new_highs"], "new_lows": last["new_lows"],
         "advancers": last["advancers"], "decliners": last["decliners"],
+        "unchanged": last.get("unchanged"),          # v31 (None until market_breadth.py has run once)
+        "total": last.get("total"),                  # v31: member-list size (503 shares of ~500 companies)
         "label": _breadth_label(pct50),
         "history": [{"d": r["day"].isoformat(), "p50": _pct(r["above50"], r["n50"]),
                      "p200": _pct(r["above200"], r["n200"])} for r in rows],
