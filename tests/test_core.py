@@ -198,6 +198,30 @@ def test_touch_alert_range():
     assert lo <= 95.5 <= hi and not (lo <= 100 <= hi)
 
 
+def test_data_health_rules(api):
+    """v32: the read-only data check — a weekend is not a false alarm, and numbers that do not add up are found."""
+    import datetime as _dt
+    import data_health as dh
+    d = _dt.date
+    assert dh.weekdays_since(d(2026, 10, 30), d(2026, 11, 2)) == 1      # Friday -> Monday
+    assert dh.weekdays_since(d(2026, 10, 31), d(2026, 11, 2)) == 1      # Saturday -> Monday
+    assert dh.weekdays_since(d(2026, 10, 30), d(2026, 11, 3)) == 2      # Monday was a holiday
+    assert dh.weekdays_since(d(2026, 11, 3), d(2026, 11, 3)) == 0
+    good = dict(n=502, n50=501, above50=328, n200=499, above200=306, n_hl=497, new_highs=10, new_lows=1,
+                advancers=189, decliners=313, unchanged=0, total=502)
+    assert dh.breadth_problems(good) == []
+    assert dh.breadth_problems(dict(good, unchanged=None)) == []        # a row from before v31
+    assert dh.breadth_problems(dict(good, advancers=500))               # more than were counted
+    assert dh.breadth_problems(dict(good, advancers=170))               # 19 stocks went missing
+    assert dh.breadth_problems(dict(good, above50=600))
+    assert dh.breadth_problems(dict(good, total=490))
+    line = lambda s: {"status": s}
+    assert dh.overall_status([line("ok"), line("info")]) == "ok"
+    assert dh.overall_status([line("ok"), line("warn")]) == "warn"
+    assert dh.overall_status([line("warn"), line("fail")]) == "fail"
+    assert dh.MOVERS_MAX_AGE_DAYS == api.MOVERS_MAX_AGE_DAYS            # the check counts what the site really shows
+
+
 def test_nasdaq_numbers(scanner):
     """v27: Nasdaq's calendar / screener text fields (market cap, price, EPS forecast in parentheses = negative)."""
     assert scanner._nasdaq_num("$1,171,562,950,000") == 1171562950000.0

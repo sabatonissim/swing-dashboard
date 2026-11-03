@@ -68,6 +68,8 @@ JOBS = [
     # then only newly opened stocks and new annual reports; at quiet hours (no scan / AI-notes run at the same time)
     dict(name="profiles",    workflow="company-profiles.yml", kind="daily",   at=(2, 30),  weekdays_only=False, grace_min=300),
     dict(name="profiles_day", workflow="company-profiles.yml", kind="daily",  at=(13, 0),  weekdays_only=False, grace_min=180),
+    # v32: read-only data check (data_health.py) — after the evening jobs and the first quick refresh of the morning
+    dict(name="data_health", workflow="data-health.yml",     kind="daily",    at=(7, 30),  weekdays_only=True,  grace_min=300),
 ]
 
 _done = {}        # slot key -> outcome (this process)

@@ -22,6 +22,7 @@ Endpoints:
     POST /api/auth/google        -> exchange a Google sign-in credential for our session token
     GET /api/auth/me             -> the signed-in user (requires Authorization: Bearer)
     GET /api/scheduler/status    -> built-in scheduler: next slots, recent dispatches
+    GET /api/data-health         -> latest report of data_health.py: is the data fresh, does it add up
     GET /api/ticker-search?q=    -> find any US stock/ETF by ticker or company name (compare picker)
     GET /api/econ-calendar       -> upcoming US economic events (CPI/NFP/FOMC/...) with forecast/previous/actual (econ_calendar.py)
 
@@ -1598,6 +1599,22 @@ def ping():
 def scheduler_status():
     """When each workflow fires next (ET), what the scheduler started recently, and whether it is on. No secrets."""
     return scheduler.status(get_conn)
+
+
+@app.get("/api/data-health")
+def get_data_health():
+    """v32: the latest report of data_health.py (is the data fresh, does it add up) + the last 14 days' status.
+    Read at the start of a work session; the site does not use it. No secrets."""
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        if not _table_exists(cur, "data_health"):
+            return {"available": False}
+        cur.execute("SELECT day, checked_at, status, results FROM data_health ORDER BY day DESC LIMIT 14")
+        rows = cur.fetchall()
+    if not rows:
+        return {"available": False}
+    return {"available": True, "day": rows[0]["day"].isoformat(), "checked_at": rows[0]["checked_at"].isoformat(),
+            "status": rows[0]["status"], "results": rows[0]["results"],
+            "recent": [{"day": r["day"].isoformat(), "status": r["status"]} for r in rows]}
 
 
 @app.get("/api/health")
@@ -5075,6 +5092,11 @@ def _fetch_premarket_movers(limit: int, already: tuple) -> List[dict]:
 MOVERS_MIN_QUALITY = 5  # a fetch returning fewer than this is treated as a degraded/
                         # partial Yahoo response (e.g. one screener got throttled)
                         # rather than a genuine "only 1 mover today" result
+# v31d: universe_movers keeps one row per ticker forever, so a stock that left the lists / stopped trading stayed with its
+# last figure as if it were today's (EQR from August). A row older than this next to the newest row is not served.
+# Measured from the newest row, not from now: weekends are fine, and a stopped scanner leaves old data, not an empty map.
+# 4 days: the stocks outside the indexes are refreshed only by the full scan (Friday -> Tuesday after a holiday).
+MOVERS_MAX_AGE_DAYS = 4
 
 
 def _fetch_fallback_movers_from_db(limit: int) -> List[dict]:
@@ -5091,10 +5113,11 @@ def _fetch_fallback_movers_from_db(limit: int) -> List[dict]:
             SELECT ticker, change_pct, close_price
             FROM universe_movers
             WHERE change_pct IS NOT NULL
+              AND timestamp >= (SELECT MAX(timestamp) FROM universe_movers) - make_interval(days => %s)
             ORDER BY ABS(change_pct) DESC
             LIMIT %s
             """,
-            (limit,),
+            (MOVERS_MAX_AGE_DAYS, limit),
         )
         rows = cur.fetchall()
         cur.close()
@@ -5263,8 +5286,10 @@ def get_heatmap(index: str = Query(default="sp500", pattern="^(sp500|nasdaq100)$
             SELECT ticker, change_pct, close_price, market_cap, timestamp
             FROM universe_movers
             WHERE {column} = TRUE AND change_pct IS NOT NULL AND change_pct <> 'NaN'
+              AND timestamp >= (SELECT MAX(timestamp) FROM universe_movers) - make_interval(days => %s)
             ORDER BY change_pct DESC
-            """
+            """,
+            (MOVERS_MAX_AGE_DAYS,),
         )
         rows = cur.fetchall()
     info_map = get_sp500_info_map()
