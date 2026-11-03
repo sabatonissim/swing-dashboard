@@ -1,0 +1,30 @@
+name: Earnings fast
+
+# v33: today's reports only (EPS + revenue from the SEC press release, or Yahoo if it already has them), so results reach
+# the site minutes after the filing. Started by the built-in scheduler on Render (scheduler.py) every 5 minutes around the
+# report hours; can also be run by hand. The 20-minute "Quick refresh" keeps doing everything else.
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: earnings-fast
+  cancel-in-progress: false
+
+# the job only needs to read the code (default token permissions are broader)
+permissions:
+  contents: read
+
+jobs:
+  fast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python pipeline_a_scanner.py --earnings-fast
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}

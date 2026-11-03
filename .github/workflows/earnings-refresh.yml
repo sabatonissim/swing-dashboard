@@ -2,7 +2,7 @@ name: Quick refresh (heatmap + earnings results)
 
 # Heatmap prices + EPS/revenue for companies that already reported. Small and fast (~2-3 min).
 # Started by the API server's built-in scheduler (scheduler.py; see stock-scanner.yml and CLAUDE.md 19.6):
-#     weekdays, every 20 minutes between 06:00 and 20:00 America/New_York.
+#     weekdays, every 30 minutes between 06:00 and 20:00 America/New_York.
 # Manual runs: Actions -> "Run workflow".
 # EMERGENCY FALLBACK: uncomment the schedule below (UTC) if the built-in scheduler is unavailable.
 on:
