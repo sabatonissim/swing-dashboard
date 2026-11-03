@@ -263,14 +263,49 @@ def fetch_extra_universe(core: set) -> Dict[str, dict]:
     return out
 
 
+YF_RETRY_MAX = 20     # more lost than this in one request = Yahoo is refusing (rate limit), a slow retry would not help
+
+
+def _yf_frames(tickers: List[str], **kwargs) -> Dict[str, pd.DataFrame]:
+    """v31c: yf.download for many tickers -> {ticker: its DataFrame}, only tickers with prices. threads=True can lose a
+    random ticker (yfinance's cache: OperationalError 'database is locked', ALGN 3.11), so what came back empty gets one
+    more try, one at a time. A failure of the first request is raised, as with yf.download itself."""
+    def frames(df, names):
+        out = {}
+        if df is None or df.empty:
+            return out
+        for t in names:
+            if isinstance(df.columns, pd.MultiIndex):
+                if t not in df.columns.get_level_values(0):
+                    continue
+                h = df[t]
+            elif len(names) == 1:         # a single ticker can come back with plain columns
+                h = df
+            else:
+                continue
+            if "Close" in h.columns and h["Close"].notna().any():
+                out[t] = h
+        return out
+
+    out = frames(yf.download(tickers, group_by="ticker", auto_adjust=False, progress=False, threads=True, **kwargs), tickers)
+    lost = [t for t in tickers if t not in out]
+    if lost and len(lost) <= YF_RETRY_MAX:
+        time.sleep(1)
+        try:
+            out.update(frames(yf.download(lost, group_by="ticker", auto_adjust=False, progress=False, threads=False, **kwargs), lost))
+        except Exception as e:
+            print(f"[warn] download retry for {len(lost)} ticker(s) failed: {type(e).__name__}: {e}")
+        print(f"[info] download retry: {sum(t in out for t in lost)} of {len(lost)} recovered ({', '.join(lost)})")
+    return out
+
+
 def download_histories(tickers: List[str]) -> Dict[str, pd.DataFrame]:
     """2 years of daily prices for many tickers, EXTRA_CHUNK per request (actual prices, like _fetch_ticker_data)."""
     out = {}
     for i in range(0, len(tickers), EXTRA_CHUNK):
         chunk = tickers[i:i + EXTRA_CHUNK]
         try:
-            df = yf.download(chunk, period="2y", interval="1d", group_by="ticker",
-                             auto_adjust=False, progress=False, threads=True)
+            df = _yf_frames(chunk, period="2y", interval="1d")
         except Exception as e:
             print(f"[warn] extra universe download {i}-{i + len(chunk)}: {type(e).__name__}: {e}")
             continue
@@ -2052,8 +2087,7 @@ def backfill_focus_returns():
     tickers = sorted({t for _, t, _ in todo} | {"SPY"})
     start = (min(d for d, _, _ in todo) - timedelta(days=5)).isoformat()
     try:
-        df = yf.download(tickers, start=start, interval="1d", group_by="ticker", auto_adjust=False,
-                         progress=False, threads=True)
+        df = _yf_frames(tickers, start=start, interval="1d")
     except Exception as e:
         print(f"[warn] focus returns: download failed: {type(e).__name__}: {e}")
         return
@@ -3363,8 +3397,7 @@ def refresh_movers_only():
     for i in range(0, len(universe), 100):
         chunk = universe[i:i + 100]
         try:
-            df = yf.download(chunk, period="5d", interval="1d", group_by="ticker",
-                             auto_adjust=False, progress=False, threads=True)
+            df = _yf_frames(chunk, period="5d", interval="1d")
         except Exception as e:
             print(f"[warn] movers refresh: batch {i // 100} failed: {type(e).__name__}: {e}")
             continue
@@ -3402,8 +3435,7 @@ def check_price_alerts_job():
     for i in range(0, len(tickers), 100):
         chunk = tickers[i:i + 100]
         try:
-            df = yf.download(chunk, period="5d", interval="1d", group_by="ticker",
-                             auto_adjust=False, progress=False, threads=True)
+            df = _yf_frames(chunk, period="5d", interval="1d")
         except Exception as e:
             print(f"[warn] price alerts: download failed: {type(e).__name__}: {e}")
             continue
@@ -3420,8 +3452,7 @@ def check_price_alerts_job():
     for i in range(0, len(tickers), 100):
         chunk = tickers[i:i + 100]
         try:
-            df = yf.download(chunk, period="5d", interval="5m", group_by="ticker",
-                             auto_adjust=False, progress=False, threads=True, prepost=False)
+            df = _yf_frames(chunk, period="5d", interval="5m", prepost=False)
         except Exception as e:
             print(f"[warn] price alerts: 5-minute download failed: {type(e).__name__}: {e}")
             continue
