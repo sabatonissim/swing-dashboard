@@ -1,0 +1,26 @@
+name: Data Health
+
+# v32: read-only check that the data the site shows is fresh and adds up -> its own report in Postgres (data_health),
+# served by /api/data-health. Started by the built-in scheduler on Render (scheduler.py); can also be run by hand.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "45 13 * * 1-5"       # backup only — the scheduler normally starts it
+
+# the job only needs to read the code (default token permissions are broader)
+permissions:
+  contents: read
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: python -u data_health.py
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
