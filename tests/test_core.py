@@ -210,6 +210,8 @@ def test_press_release_eps(scanner):
     assert p("the non-GAAP EPS included $4.57 of charges", 6.35) is None
     assert p("EPS $3.66, down 11%; adjusted EPS $4.59, up 9% YoY", 4.17) == 4.59
     assert p("Earnings per share (non-GAAP) $ 7.48", 6.35) == 7.48
+    assert p("• Non-GAAP EPS increased 14% from $5.64 to $6.45 for the third quarter", 5.78) == 6.45   # not last year's $5.64
+    assert p("raised adjusted EPS guidance from $5.60 to $5.80", 5.7) is None
     assert p("Adjusted earnings for the third quarter were a record $2.21 per diluted share", 2.11) == 2.21
     assert p("Diluted EPS of $0.56 for the quarter", 0.74) is None                 # GAAP only: stays empty
     assert p("expects adjusted EPS of $4.10 next year", 4.0) is None               # guidance

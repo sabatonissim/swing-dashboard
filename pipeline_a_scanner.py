@@ -2711,6 +2711,8 @@ _EPS_PATTERNS = [
     re.compile(r"GAAP\s+and\s+non[-\s]?GAAP\s+(?:diluted\s+)?" + _EPS_NOUN + r"[^$.;]{0,40}?\$\s?[\d.]+\s+and\s+" + _EPS_NUM, re.I),
     # "On a non-GAAP basis, gross margin was 56%, ... and diluted earnings per share was $2.09" (AMD)
     re.compile(r"non[-\s]?GAAP(?:\s*\(\*\))?\s+basis,(?:(?!\.\s).){0,200}?" + _EPS_NOUN + r"\s+(?:was|were|of)\s+" + _EPS_NUM, re.I),
+    # "Non-GAAP EPS increased 14% from $5.64 to $6.45" (Amgen): the figure after "to"
+    re.compile(_EPS_ADJ + r"\s+(?:diluted\s+)?" + _EPS_NOUN + r"[^$.;]{0,40}?\bfrom\s+\(?\$\s?[\d.]+\)?\s+to\s+" + _EPS_NUM, re.I),
     # "Adjusted Diluted EPS of $3.82" / "Non-GAAP EPS was $2.49" / "non-GAAP EPS (a) increased 70% to $20.07"
     re.compile(_EPS_ADJ + r"\s+(?:diluted\s+)?" + _EPS_NOUN + r"(?:\s*\([^)]{0,30}\))?[^$.;]{0,50}?" + _EPS_NUM, re.I),
     # "Earnings per share (non-GAAP) $ 7.48" (Lilly)
@@ -2744,7 +2746,8 @@ def _parse_press_release_eps(text, estimate):
                 val = -val                            # "($0.05)" is a loss
             before = re.split(r"[;.!?]\s", head[max(0, m.start() - 70):m.start()])[-1]
             after = head[m.end():m.end() + 40]
-            if _EPS_BAD.search(before) or _EPS_BAD.search(m.group(0)):
+            inside = re.sub(r"\bfrom\s+\(?\$\s?[\d.]+\)?\s+to\b", " ", m.group(0), flags=re.I)   # "from $A to $B" is fine
+            if _EPS_BAD.search(before) or _EPS_BAD.search(inside):
                 continue
             if _EPS_RANGE_AFTER.match(after) or _EPS_BAD_AFTER.match(after):
                 continue

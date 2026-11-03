@@ -4104,7 +4104,7 @@ function _earnRowHtml(it, todayStr){
   return `<div class="earn-row${open ? ' open' : ''}">
     <div class="earn-row-main" role="button" tabindex="0" aria-expanded="${open}" onclick="toggleEarnDetail('${key}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleEarnDetail('${key}');}">
       <div class="earn-id"><span class="earn-tk">${escH(it.ticker)}</span><span class="earn-name">${escH(it.name || '')}</span>${
-        it.implied_move_pct != null && !it.reported ? `<span class="earn-im">${en ? 'Expected move' : 'תנודה צפויה'} <b dir="ltr">±${Number(it.implied_move_pct).toFixed(1)}%</b></span>` : ''}</div>
+        it.implied_move_pct != null ? `<span class="earn-im">${en ? 'Expected move' : 'תנודה צפויה'} <b dir="ltr">±${Number(it.implied_move_pct).toFixed(1)}%</b></span>` : ''}</div>
       ${_earnFigHtml('EPS', it.eps_actual, it.eps_estimate, it.surprise_pct, _earnUsd, it.reported)}
       ${_earnFigHtml(en ? 'Revenue' : 'הכנסות', it.revenue_actual, it.revenue_estimate, it.revenue_surprise_pct, _earnBig, it.reported)}
       <span class="earn-chev">›</span>
