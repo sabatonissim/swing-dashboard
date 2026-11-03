@@ -863,6 +863,17 @@ window.addEventListener('load', function(){
   .install-steps{margin:10px 0 0;padding:0 18px;line-height:1.9;font-size:13.5px;}
   /* stock analysis: price alert / share */
   .dd-actions{display:flex;gap:8px;margin:-6px 0 14px;flex-wrap:wrap;}
+  /* v30: "about the company" at the top of the stock page — short by default, the rest behind "more about the company" */
+  .dd-profile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:0 0 14px;}
+  .dd-profile .sum{font-size:13.5px;line-height:1.65;color:var(--text);}
+  .dd-profile .facts{font-size:11.5px;color:var(--text-dim);margin-top:6px;line-height:1.5;}
+  .dd-profile details{margin-top:8px;}
+  .dd-profile summary{cursor:pointer;color:var(--amber);font-size:12.5px;font-weight:600;list-style:none;}
+  .dd-profile summary::-webkit-details-marker{display:none;}
+  .dd-profile .k{font-size:12px;font-weight:700;color:var(--text);margin:12px 0 3px;}
+  .dd-profile .v{font-size:13px;line-height:1.65;color:var(--text);}
+  .dd-profile .src{font-size:11px;color:var(--text-dim);margin-top:12px;line-height:1.5;}
+  .dd-profile .src a{color:var(--amber);text-decoration:none;}
   .dd-action-btn{background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px 12px;font-size:12.5px;cursor:pointer;font-family:'Heebo',sans-serif;}
   .dd-action-btn:hover{border-color:var(--amber);}
   /* alerts panel */
@@ -2282,7 +2293,8 @@ async function loadDeepDive(){
   const insiderP = fetchWithTimeout(`${API_BASE}/api/insider/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject());   // v22
   const streetP = fetchWithTimeout(`${API_BASE}/api/street/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject());     // v23
   const aiNoteP = fetchWithTimeout(`${API_BASE}/api/ai-note/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject());   // v25
-  [sectorP, setupP, fundP, insiderP, streetP, aiNoteP].forEach(p => p.catch(() => {}));   // handled below; avoids "unhandled rejection" noise
+  const profileP = fetchWithTimeout(`${API_BASE}/api/company-profile/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject());   // v30
+  [sectorP, setupP, fundP, insiderP, streetP, aiNoteP, profileP].forEach(p => p.catch(() => {}));   // handled below; avoids "unhandled rejection" noise
 
   try {
     const [lookupRes, signalsRes, newsRes] = await Promise.allSettled([
@@ -2342,6 +2354,12 @@ async function loadDeepDive(){
       if(!current()) return;
       st.aiNote = d;
       renderAiNote(d);
+    });
+    _ddProfileOpen = false;
+    profileP.then(v => v, () => null).then(d => {    // v30: the short description stays when there is no profile yet
+      if(!current()) return;
+      st.profile = d;
+      if(d && d.available) renderCompanyProfile(quote, d);
     });
     _ddFundsData = null;
     loadDdFunds(quote.ticker);                        // v25: hidden unless a tracked fund holds it
@@ -2415,6 +2433,8 @@ function renderDeepDive(quote, sector, signals, news){
       <button class="dd-action-btn" onclick="openTradeForm({ticker:'${escH(quote.ticker)}', entry_price:${Number(quote.price)||'null'}})">${t?'Log a trade':'רישום עסקה'}</button>
     </div>
 
+    <div id="dd-profile">${companyProfileHtml(quote, _ddState && _ddState.quote === quote ? _ddState.profile : undefined)}</div>
+
     <div class="dd-chart-wrap"><div class="dd-tv-inner" id="dd-tv-chart"></div></div>
 
     <div class="dd-stats-row">
@@ -2479,19 +2499,7 @@ function renderDeepDive(quote, sector, signals, news){
 
   html += `<div id="dd-street-section"></div>`;    // v23: analyst targets + short interest
 
-  if(quote.sector || quote.sub_industry || quote.description){
-    html += `<div class="dd-section-title">${t?'About the Company':'על החברה'}</div>`;
-    if(quote.sector || quote.sub_industry){
-      html += `<div style="font-size:12.5px;color:var(--text-dim);margin-bottom:8px;">${escH([quote.sector, quote.sub_industry].filter(Boolean).join(' · '))}</div>`;
-    }
-    if(quote.description){
-      const desc = (!t && quote.description_he) || quote.description;
-      html += `<div data-dd-about style="font-size:13px;line-height:1.6;color:var(--text);margin-bottom:6px;">${escH(desc)}</div>`;
-      if(!t && !quote.description_he) setTimeout(() => ddTranslateAbout(quote), 0);
-    } else {
-      html += `<div class="bt-empty" style="padding:10px 0;">${t?'Company description unavailable right now.':'תיאור החברה לא זמין כרגע.'}</div>`;
-    }
-  }
+  // v30: "About the Company" moved to the top of the page (companyProfileHtml)
   html += `</div>`;   // /fund
 
   // --- tab: who buys and sells ---
@@ -4898,6 +4906,54 @@ async function translateHeBrowser(text){
     console.warn('[translate] browser translation failed', e);
     return text;
   }
+}
+
+// v30 (owner: "about the company first, with more detail — how it makes money, its products"): the profile written by
+// company_profiles.py from the company's own annual report to the SEC (not Yahoo — the product must not depend on it),
+// organised by the AI into short parts. Short by default (one or two sentences + key facts), the rest behind
+// "more about the company". Until a profile exists: the short description from /api/lookup (Wikipedia / SEC).
+let _ddProfileOpen = false;
+function companyProfileHtml(quote, prof){
+  const en = lang === 'en';
+  const p = prof && prof.available ? ((en ? prof.en : prof.he) || prof.en) : null;
+  const f = (prof && prof.available && prof.facts) || {};
+  const facts = [
+    [quote.sector, quote.sub_industry].filter(Boolean).join(' · ') || f.industry,
+    f.hq ? (en ? 'HQ: ' : 'מטה: ') + f.hq : '',
+    f.employees ? (en ? `~${Number(f.employees).toLocaleString('en-US')} employees` : `כ-${Number(f.employees).toLocaleString('en-US')} עובדים`) : '',
+  ].filter(Boolean).map(escH).join(' · ');
+  const factsHtml = facts ? `<div class="facts">${facts}</div>` : '';
+  if(!p){
+    if(!quote.description) return factsHtml ? `<div class="dd-profile">${factsHtml}</div>` : '';
+    const desc = (!en && quote.description_he) || quote.description;
+    if(!en && !quote.description_he) setTimeout(() => ddTranslateAbout(quote), 0);
+    return `<div class="dd-profile">
+        <div class="sum" data-dd-about style="display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden"
+             onclick="this.style.display='block'">${escH(desc)}</div>${factsHtml}</div>`;
+  }
+  const part = (k, he, enT) => p[k] ? `<div class="k">${en ? enT : he}</div><div class="v">${escH(p[k])}</div>` : '';
+  const filed = prof.filing_date ? new Date(prof.filing_date + 'T12:00:00').toLocaleDateString(en ? 'en-US' : 'he-IL') : '';
+  const src = prof.source === 'wikipedia'
+    ? (en ? 'Source: Wikipedia' : 'מקור: ויקיפדיה')
+    : (en ? `Source: the company's annual report to the SEC (${prof.source === 'sec-20f' ? '20-F' : '10-K'}${filed ? ', filed ' + filed : ''})`
+          : `מקור: הדוח השנתי של החברה לרשות ניירות הערך האמריקאית (${prof.source === 'sec-20f' ? '20-F' : '10-K'}${filed ? ', הוגש ב-' + filed : ''})`);
+  const link = prof.source_url ? ` · <a href="${escH(safeUrl(prof.source_url))}" target="_blank" rel="noopener noreferrer">${en ? (prof.source === 'wikipedia' ? 'the article' : 'the original report') : (prof.source === 'wikipedia' ? 'לערך' : 'לדוח המקורי')}</a>` : '';
+  return `<div class="dd-profile">
+      <div class="sum">${escH(p.summary)}</div>
+      ${factsHtml}
+      <details ${_ddProfileOpen ? 'open' : ''} ontoggle="_ddProfileOpen = this.open">
+        <summary>${en ? 'More about the company ▾' : 'עוד על החברה ▾'}</summary>
+        ${part('what', 'מה החברה עושה', 'What it does')}
+        ${part('revenue', 'ממה היא מרוויחה', 'How it makes money')}
+        ${part('products', 'מוצרים ושירותים עיקריים', 'Main products and services')}
+        ${part('customers', 'לקוחות ומתחרים', 'Customers and competitors')}
+        <div class="src">${escH(src)}${link}. ${en ? 'Organised by AI from that text — it can be wrong. A description, not a recommendation.' : 'סודר בעזרת AI מתוך הטקסט הזה — עלול לטעות. תיאור, לא המלצה.'}</div>
+      </details>
+    </div>`;
+}
+function renderCompanyProfile(quote, prof){
+  const el = document.querySelector('#deepdive-content #dd-profile');
+  if(el) el.innerHTML = companyProfileHtml(quote, prof);
 }
 
 // v28: the company description comes in English only (Wikipedia / SEC) — on the Hebrew site it is translated in the

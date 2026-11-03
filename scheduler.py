@@ -64,6 +64,10 @@ JOBS = [
     dict(name="ai_notes",    workflow="ai-stock-notes.yml",  kind="daily",    at=(17, 30), weekdays_only=True,  grace_min=240),
     # v25: big-fund 13F holdings — a quick check every morning; funds are re-read only after a new quarterly filing
     dict(name="funds",       workflow="fund-holdings.yml",   kind="daily",    at=(6, 15),  weekdays_only=True,  grace_min=300),
+    # v30: company profiles from the annual report (company_profiles.py) — ~70 companies a run until all are written,
+    # then only newly opened stocks and new annual reports; at quiet hours (no scan / AI-notes run at the same time)
+    dict(name="profiles",    workflow="company-profiles.yml", kind="daily",   at=(2, 30),  weekdays_only=False, grace_min=300),
+    dict(name="profiles_day", workflow="company-profiles.yml", kind="daily",  at=(13, 0),  weekdays_only=False, grace_min=180),
 ]
 
 _done = {}        # slot key -> outcome (this process)

@@ -83,7 +83,9 @@ def decode_google_news_url(url: str, timeout: float = 8.0) -> Optional[str]:
 # ------------------------------------------------------------------
 PROMO_RE = re.compile(r"\b(stocks? to (buy|watch|own|bet on)|to bet on|should you (buy|sell|invest|bet)|buy now|"
                       r"is it (time to buy|a buy)|smart buy|buy the dip|"
-                      r"stocks? (for|to) (retirees|beginners)|our (ai |top )?picks|stock picks)\b"
+                      r"stocks? (for|to) (retirees|beginners)|our (ai |top )?picks|stock picks|"
+                      r"(to )?buy (ahead of|before) (the )?(print|earnings|results|report)|"   # v28d: "To Buy Ahead of the Print or Wait"
+                      r"buy or (sell|wait|hold))\b"
                       r"|^\s*\d+\s+[\w\s&'-]{0,40}\bstocks?\b", re.I)
 _FORMAT_JUNK_RE = re.compile(r"^\s*(watch|video|listen|podcast)\s*[:\-\u2013\u2014]|^\s*q\s*[.:]\s", re.I)
 # Countries whose domestic news rarely moves US stocks — dropped unless the headline also ties it to the US / world markets

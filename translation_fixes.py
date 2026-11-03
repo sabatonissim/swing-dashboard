@@ -48,6 +48,9 @@ EN_REWRITES = [
     (r"\binch(?:es|ed|ing)?\s+(?:lower|down)\b", "fall slightly"),
     (r"\bfan(?:s|ned|ning)?\s+((?:\w+\s+){0,2}?)(fears|concerns|worries|speculation|hopes)\b",
      r"increase \1\2"),                                                     # "strikes fan Fed inflation fears" -> "האוהדים"
+    # v28d: Wall Street slang for an earnings report — "Ahead of the Print" -> "לפני ההדפסה"
+    (r"\b(ahead of|before|after|into|for)\s+(?:the|its|their)\s+(?:earnings\s+)?print\b", r"\1 the earnings report"),
+    (r"\b(earnings|q[1-4])\s+print\b", r"\1 report"),
 ]
 
 HE_FIXES = [

@@ -136,7 +136,7 @@ _RATE_RULES = [
     ("heavy",  ("/api/article-preview", "/api/lookup", "/api/fundamentals", "/api/ticker-search",
                 "/api/stock-news", "/api/technical-setup", "/api/watchlist-setups", "/api/price-compare",
                 "/api/sector-comparison", "/api/signal-history", "/api/backtest", "/api/demo-portfolio",
-                "/api/pattern-stats"), 40, 60),
+                "/api/pattern-stats", "/api/company-profile"), 40, 60),
     ("default", ("/api/",), 240, 60),
 ]
 
@@ -6353,6 +6353,39 @@ def get_ai_note(ticker: str):
         return {"ticker": ticker, "available": False}
     return {"ticker": ticker, "available": True, "he": r["note_he"], "en": r["note_en"],
             "created_at": r["created_at"].isoformat()}
+
+
+@app.get("/api/company-profile/{ticker}")
+def get_company_profile(ticker: str):
+    """v30: "what the company does and how it makes money" — written by company_profiles.py (GitHub Actions) from the
+    business section of the company's annual report to the SEC, organised by the AI. A stock without a profile yet ->
+    available False (the page shows the short description instead) and the ticker is queued, so the next run of the
+    job writes it first (the queue is capped, so random tickers cannot fill it)."""
+    ticker = _canon_ticker(ticker)
+    if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
+        raise HTTPException(status_code=400, detail="bad ticker")
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        if not _table_exists(cur, "company_profiles"):
+            return {"ticker": ticker, "available": False}
+        cur.execute("""SELECT name, profile, facts, source, source_url, filing_date, built_at
+                       FROM company_profiles WHERE ticker = %s""", (ticker,))
+        r = cur.fetchone()
+        if not r:
+            try:
+                cur.execute("""INSERT INTO company_profile_requests (ticker)
+                               SELECT %s WHERE (SELECT COUNT(*) FROM company_profile_requests) < 300
+                               ON CONFLICT (ticker) DO NOTHING""", (ticker,))
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                print(f"[warn] company-profile: could not queue {ticker}: {type(e).__name__}: {e}")
+            return {"ticker": ticker, "available": False}
+    prof = r["profile"] if isinstance(r["profile"], dict) else json.loads(r["profile"])
+    facts = r["facts"] if isinstance(r["facts"], dict) else json.loads(r["facts"] or "{}")
+    return {"ticker": ticker, "available": True, "name": r["name"], "he": prof.get("he"), "en": prof.get("en"),
+            "facts": facts, "source": r["source"], "source_url": r["source_url"],
+            "filing_date": r["filing_date"].isoformat() if r["filing_date"] else None,
+            "built_at": r["built_at"].isoformat() if r["built_at"] else None}
 
 
 # ------------------------------------------------------------------
