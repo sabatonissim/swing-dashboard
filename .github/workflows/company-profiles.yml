@@ -1,0 +1,28 @@
+name: Company Profiles
+
+# v30: "what the company does and how it makes money" for the top of the stock page — the business section of the
+# company's annual report to the SEC (10-K / 20-F), organised by the AI -> Postgres (company_profiles).
+# Started by the built-in scheduler on Render (scheduler.py) twice a day; can also be run by hand.
+# Same AI settings as the daily digest.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  profiles:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: python -u company_profiles.py
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODELS: ${{ vars.LLM_MODELS }}
