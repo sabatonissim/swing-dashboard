@@ -805,6 +805,11 @@ Actions → **AI Digest (manual test)** → Run workflow → `mode = probe` → 
 - **סטטיסטיקה:** `STATS_SINCE = "2026-11-03"` בכל השאילתות של backtest / patterns / pattern-stats / demo-portfolio / signal-context — רק סריקות מהכללים החדשים (הישנות נשארות בטבלה). הודעת "אין עדיין" מסבירה.
 - **ניסוח:** "איתות/איתותים" → "סריקה/סריקות" בכל הטקסטים בעברית (index.html, push_alerts, הסברי Deep Dive: "לא איתות לפעולה" → "לא המלצה לפעולה"); כותרת הסורק "סריקות".
 
+### 27.3ל v28 (3.11.2026) — חדשות בניתוח מניה היו תמיד ריקות
+- **הבעיה (המשתמש: "כל חברה שאני פותח אין אצלה חדשות"):** `/api/stock-news/{t}` החזיר 502 `שגיאה בשליפת חדשות` לכל מניה (AAPL, MSFT; `/api/health` תקין) — `yf.Ticker().news` נכשל מ-Render (Yahoo חוסם את הכתובת, כמו `.info`). הפרונט מציג "לא נמצאו כתבות".
+- **התיקון (`api_server.py`, רק שרת):** `_stock_news_raw` — yfinance → RSS של Yahoo (`feeds.finance.yahoo.com/rss/2.0/headline?s=`, אין בו שם מקור → "Yahoo Finance") → Google News RSS (`"TICKER" stock when:14d`, הסיומת " - Outlet" מוסרת, ממוין לפי תאריך). המקור הראשון שנותן כותרות אחרי `_feed_clean` (בלי "מניות לקנות", בלי כפילויות) מנצח. מטמון 15 דק' לטיקר (תשובה ריקה לא נשמרת); yfinance שנכשל מדולג 15 דק'. שני ה-RSS נבדקו מהבית (KO 19 כתבות, OKLO 100) — מ-Render לא ניתן לבדוק לפני העלאה.
+- **לבדוק אחרי העלאה:** `/api/stock-news/AAPL` מחזיר רשימה (לא 502); בלוג Render — `stock-news yfinance failed ... using RSS`; בניתוח מניה לשונית חדשות מלאה. אם גם ה-RSS נחסמים — בלוג `stock-news RSS failed (host)`.
+
 ### 27.5 כיווני מוצר (סיכום שנמסר למשתמש 27.10.2026)
 1. **אמינות לפני פיצ'רים:** Render חינמי נרדם (טעינה קרה 30–60 שנ') ו-512MB → שרת בתשלום בסיסי (~$7/חודש) הוא השיפור הגדול ביותר לחוויה. ניטור uptime + התראה.
 2. **רישוי נתונים (חוסם משפטי):** yfinance/Yahoo אסור לשימוש מסחרי; TradingView widgets מותרים עם הקרדיט; תרגום Google דרך endpoint לא רשמי; כותרות מו"לים. חלופות: ספק נתונים בתשלום (Polygon/Massive, FMP, Tiingo, EODHD), Google Cloud Translation/DeepL רשמי.

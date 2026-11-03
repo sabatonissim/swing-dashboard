@@ -1674,29 +1674,104 @@ def _translate_headline_free(text: str) -> str:
 
 @app.get("/api/stock-news/{ticker}")
 def stock_news(ticker: str, limit: int = 6, lang: str = Query(default="en", pattern="^(en|he)$")):
-    """Recent headlines for a specific ticker, via yfinance's built-in feed.
-    These are live, per-request titles from yfinance — not pre-translated
+    """Recent headlines for a specific ticker (yfinance, else Yahoo/Google News RSS — see _stock_news_raw).
+    These are live, per-request titles — not pre-translated
     at scan time like the macro news feed — so when lang=he each title is
     run through the same free (no OpenAI cost) translation providers used
     by pipeline_b_news_aggregator.py, with a small in-memory cache since
     the same headline gets requested repeatedly while it's current."""
     ticker = _canon_ticker(ticker)
-    try:
-        raw_items = yf.Ticker(ticker).news or []
-    except Exception:
-        raise HTTPException(status_code=502, detail="שגיאה בשליפת חדשות")
+    limit = max(1, min(limit, 12))
+    raw = _stock_news_raw(ticker)
+    items = []
+    for it in raw[:limit]:
+        display_title = _translate_headline_free(it["title"]) if lang == "he" else it["title"]
+        items.append({**it, "title": display_title})
+    return items
+
+
+# v28 (owner 3.11.2026: "every company I open has no news"): yf.Ticker().news failed from Render for EVERY ticker
+# (502 "שגיאה בשליפת חדשות" — Yahoo blocks Render's address, like .info), so the news tab was always empty.
+# Now: yfinance -> Yahoo's RSS feed (another host) -> Google News search RSS; first one with headlines wins.
+# Cached 15 minutes per ticker; a failing yfinance is skipped for 15 minutes.
+_STOCK_NEWS_CACHE: dict = {}
+_STOCK_NEWS_TTL = 15 * 60
+_yf_news_blocked_until = 0.0
+
+
+def _rss_items(url: str, google: bool = False) -> list:
+    import xml.etree.ElementTree as ET
+    from email.utils import parsedate_to_datetime
+    resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+    resp.raise_for_status()
+    root = ET.fromstring(resp.content)
+    out = []
+    for item in root.iter("item"):
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        publisher = (item.findtext("source") or "").strip() or None
+        if google and publisher and title.endswith(" - " + publisher):
+            title = title[: -len(" - " + publisher)].strip()    # Google appends " - Outlet" to every title
+        if title and link:
+            out.append({"title": title, "link": link, "publisher": publisher or ("Yahoo Finance" if not google else None),
+                        "published": (item.findtext("pubDate") or "").strip() or None})
+
+    def when(it):                   # Google's search feed is ordered by relevance, not date
+        try:
+            return parsedate_to_datetime(it["published"]).timestamp()
+        except Exception:
+            return 0.0
+    out.sort(key=when, reverse=True)
+    return out
+
+
+def _stock_news_raw(ticker: str) -> list:
+    """English headlines for one ticker (title, link, publisher, published), newest first, promo listicles and
+    repeats removed (same rules as the home feed). [] when every source failed."""
+    global _yf_news_blocked_until
+    hit = _STOCK_NEWS_CACHE.get(ticker)
+    if hit and time.time() - hit[0] < _STOCK_NEWS_TTL:
+        return hit[1]
+
+    def clean(items):
+        rows = _feed_clean([{**it, "summary_en": it["title"]} for it in items], set())
+        return [{k: r[k] for k in ("title", "link", "publisher", "published")} for r in rows]
 
     items = []
-    for it in raw_items[:limit]:
-        content = it.get("content", it)  # newer yfinance versions nest under "content"
-        title = content.get("title") or it.get("title")
-        link = (content.get("canonicalUrl") or {}).get("url") or it.get("link")
-        publisher = (content.get("provider") or {}).get("displayName") or it.get("publisher")
-        published = content.get("pubDate") or it.get("providerPublishTime")
-        if title and link:
-            display_title = _translate_headline_free(title) if lang == "he" else title
-            items.append({"title": display_title, "link": link, "publisher": publisher, "published": published})
-    return items
+    if time.time() >= _yf_news_blocked_until:
+        try:
+            for it in yf.Ticker(ticker).news or []:
+                content = it.get("content", it)  # newer yfinance versions nest under "content"
+                title = content.get("title") or it.get("title")
+                link = (content.get("canonicalUrl") or {}).get("url") or it.get("link")
+                publisher = (content.get("provider") or {}).get("displayName") or it.get("publisher")
+                published = content.get("pubDate") or it.get("providerPublishTime")
+                if title and link:
+                    items.append({"title": title, "link": link, "publisher": publisher, "published": published})
+        except Exception as e:
+            _yf_news_blocked_until = time.time() + _STOCK_NEWS_TTL
+            print(f"[warn] stock-news yfinance failed ({type(e).__name__}: {e}) — using RSS for 15 minutes")
+    result = clean(items)
+
+    from urllib.parse import quote
+    google_q = quote('"' + ticker + '" stock when:14d')
+    sources = [
+        (f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={quote(ticker)}&region=US&lang=en-US", False),
+        (f"https://news.google.com/rss/search?q={google_q}&hl=en-US&gl=US&ceid=US:en", True),
+    ]
+    for url, google in sources:
+        if result:
+            break
+        try:
+            result = clean(_rss_items(url, google))
+        except Exception as e:
+            print(f"[warn] stock-news RSS failed ({url.split('/')[2]}): {type(e).__name__}: {e}")
+
+    if result:                      # an empty answer is not cached, so the next request tries again
+        if len(_STOCK_NEWS_CACHE) >= 300:
+            _STOCK_NEWS_CACHE.clear()
+        _STOCK_NEWS_CACHE[ticker] = (time.time(), result)
+    return result
 
 
 
