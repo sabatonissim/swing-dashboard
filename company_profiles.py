@@ -38,37 +38,60 @@ import llm_provider
 
 SEC_HEADERS = {"User-Agent": "SwingDesk-Dashboard admin@swingdesk.app", "Accept-Encoding": "gzip, deflate"}
 SEC_MIN_INTERVAL = 0.15            # SEC fair use: at most 10 requests a second
-SOURCE_MAX_CHARS = 14000           # the start of the business section: overview, segments, products, customers
-MAX_PER_RUN = 70                   # AI calls per run (about 15-25 s each)
+SOURCE_MAX_CHARS = 10000           # the start of the business section: overview, segments, products, customers
+MAX_PER_RUN = 70                   # companies per run
 RUN_BUDGET_SEC = 25 * 60
 RECHECK_DAYS = 30
-FIELD_MAX = {"summary": 300, "what": 600, "revenue": 600, "products": 500, "customers": 500}
+LLM_CALL_BUDGET_SEC = "100"        # per AI request, across its fallback models (llm_provider's LLM_BUDGET_SECONDS)
+PROFILE_VERSION = 2                # stored as profile["v"]; profiles of an older version are written again
+FIELD_MAX = {"summary": 300, "what": 600, "revenue": 650, "products": 500, "customers": 500}
 FIELDS = list(FIELD_MAX)
+REQUIRED = ("summary", "what", "revenue")
 
 # advice / valuation words a profile must never contain (the site describes, it does not recommend)
 _BANNED = re.compile(r"\b(recommend\w*|undervalued|overvalued|attractive (stock|investment|price)|buy the stock|"
                      r"investors should|good investment|price target)\b|כדאי|ממליצ|המלצ|אטרקטיב|הזדמנות השקעה", re.I)
+# sentences about the text instead of the company ("The source does not name specific customers...") — dropped
+_META = re.compile(r"\b(the )?(source|source text|filing|report|document) (does not|doesn't|did not|is not|isn't|"
+                   r"says|states|mentions|notes|indicates)\b|\bnot (specified|mentioned|stated) in the\b|"
+                   r"^\s*it (states|says|notes|mentions|indicates)\b|המקור", re.I)
 
-SYSTEM = (
-    "You write a short company profile for a stock-research website, in English and in Hebrew. "
+# v30b (first run 3.11.2026: 20 written, 18 failed — one long answer in two languages timed out or was thrown away
+# whole; the Hebrew kept "valves", "transcatheter" and called a heart valve "סתימה"): two shorter requests —
+# the English from the report, then the Hebrew from that English with a glossary.
+SYSTEM_EN = (
+    "You write a short company profile for a stock-research website. "
     "Use ONLY the source text you are given (the company's own annual report to the SEC, or an encyclopedia summary). "
     "Never add facts, numbers, names, years or products that are not in the source. No opinions, no advice, no "
-    "forecasts, no marketing adjectives ('leading', 'innovative', 'world-class') unless they describe a fact in the source. "
+    "forecasts, no marketing adjectives ('leading', 'innovative', 'breakthrough') unless they describe a fact in the source. "
+    "Write about the company only — never about the source text itself. "
     "Fields: "
     "summary = 1-2 sentences: what the company is and what it does. "
     "what = 2-3 sentences: how the business works (what it makes or provides, and for whom). "
     "revenue = 2-3 sentences: where the money comes from — its reporting segments or business lines and how each one "
     "earns (sales of products, subscriptions, fees, interest, licensing...). Amounts or percentages ONLY if they are "
-    "written in the source. "
+    "written in the source, with exactly the same digits (\"36,000\", not \"36 thousand\"). "
     "products = the main products, brands, platforms or services, as one sentence listing them. "
-    "customers = who the customers are and, if the source names them, the main competitors; empty string if the source "
-    "says nothing about it. "
-    "Write any number with exactly the same digits as in the source (\"36,000\", not \"36 thousand\"); when unsure, "
-    "leave the number out. "
-    "Hebrew: natural Israeli Hebrew; keep company, product and brand names in English letters exactly as in the source; "
-    "plain words a non-expert understands. "
-    'Answer with JSON only: {"en": {"summary": "", "what": "", "revenue": "", "products": "", "customers": ""}, '
-    '"he": {"summary": "", "what": "", "revenue": "", "products": "", "customers": ""}}'
+    "customers = who the customers are and, only if the source names them, the main competitors; an empty string "
+    "when the source says nothing about customers. "
+    "Each field at most 3 short sentences. "
+    'Answer with JSON only: {"summary": "", "what": "", "revenue": "", "products": "", "customers": ""}'
+)
+SYSTEM_HE = (
+    "Translate this company profile from English into natural, simple Israeli Hebrew for a stock-research website. "
+    "Translate everything except names: company names, product names, brand names and abbreviations of segments stay "
+    "in English letters exactly as written (\"SAPIEN\", \"PASCAL\", \"CUDA\", \"TAVR\"). Ordinary English words must be "
+    "translated — never leave a lowercase English word in the Hebrew. "
+    "Glossary: segment = חטיבה; net sales = מכירות נטו; revenue = הכנסות; subscription = מנוי; license = רישיון; "
+    "data center = מרכז נתונים; cloud = ענן; semiconductor = שבב; chip = שבב; GPU = מעבד גרפי (GPU); "
+    "software = תוכנה; platform = פלטפורמה; customer = לקוח; distributor = מפיץ; retailer = קמעונאי; "
+    "wholesale = סיטונאי; hospital = בית חולים; heart valve = מסתם לב; transcatheter = בצנתר; "
+    "medical device = מכשור רפואי; drug = תרופה; clinical trial = ניסוי קליני; loan = הלוואה; deposit = פיקדון; "
+    "asset management = ניהול נכסים; investment banking = בנקאות השקעות; insurance = ביטוח; reactor = כור; "
+    "fiscal year = שנת כספים; competitor = מתחרה. "
+    "A company is feminine in Hebrew ('החברה היא', 'Nvidia מפתחת'). Keep every number exactly as written. "
+    "Keep the same fields; an empty field stays empty. "
+    'Answer with JSON only: {"summary": "", "what": "", "revenue": "", "products": "", "customers": ""}'
 )
 
 _last_sec = [0.0]
@@ -269,47 +292,105 @@ def _numbers(s):
     return {n.replace(",", "").rstrip(".") for n in re.findall(r"\d[\d,]*(?:\.\d+)?", s or "")}
 
 
-def make_validator(source):
+def _sentences(s):
+    return [x for x in re.split(r"(?<=[.!?;])\s+", s) if x.strip()]
+
+
+def _fit(s, limit):
+    """At most `limit` characters, cut at a sentence end (a too-long field used to throw the whole answer away)."""
+    if len(s) <= limit:
+        return s
+    out = ""
+    for x in _sentences(s):
+        if len(out) + len(x) + 1 > limit:
+            break
+        out = (out + " " + x).strip()
+    return out
+
+
+def _json_fields(text):
+    m = re.search(r"\{.*\}", text, re.S)
+    if not m:
+        raise ValueError("no JSON")
+    d = json.loads(m.group(0))
+    if isinstance(d.get("en"), dict):            # a model that still answers {"en": {...}}
+        d = d["en"]
+    out = {}
+    for f in FIELDS:
+        v = d.get(f, "")
+        if isinstance(v, list) and all(isinstance(x, str) for x in v):     # "products": ["A", "B"]
+            v = "; ".join(v)
+        if v is None:
+            v = ""
+        if not isinstance(v, str):
+            raise ValueError(f"{f} is not text")
+        out[f] = re.sub(r"\s+", " ", v).strip()
+    return out
+
+
+def clean_english(text, source):
+    """The English answer, made safe: sentences with a number that is not in the source or about the source text
+    itself are dropped (not the whole answer), fields cut to their size. Rejected (ValueError -> the next model) only
+    for advice wording or when a required field ends up empty."""
     allowed = _numbers(source)
+    p = _json_fields(text)
+    for f in FIELDS:
+        if _BANNED.search(p[f]):
+            raise ValueError(f"{f}: advice/valuation wording")
+        kept = [x for x in _sentences(p[f]) if not (_numbers(x) - allowed) and not _META.search(x)]
+        p[f] = _fit(" ".join(kept), FIELD_MAX[f])
+    for f in REQUIRED:
+        if len(p[f]) < 20:
+            raise ValueError(f"{f} too short after the checks")
+    return p
 
+
+def clean_hebrew(text, en):
+    """The Hebrew translation: every field Hebrew, no number that is not in the English, no ordinary English word
+    left untranslated (names may stay: they are capitalised / abbreviations and appear in the English)."""
+    allowed = _numbers(" ".join(en.values()))
+    en_words = {w.rstrip(".-") for w in re.findall(r"[A-Za-z][A-Za-z0-9&+.\-]*", " ".join(en.values()))}
+    p = _json_fields(text)
+    for f in FIELDS:
+        if en[f] and not p[f]:
+            raise ValueError(f"he.{f} missing")
+        if not en[f]:
+            p[f] = ""
+            continue
+        if not re.search(r"[א-ת]", p[f]):
+            raise ValueError(f"he.{f} is not in Hebrew")
+        if _BANNED.search(p[f]):
+            raise ValueError(f"he.{f}: advice wording")
+        if _numbers(p[f]) - allowed:
+            raise ValueError(f"he.{f}: a number that is not in the English")
+        for w in re.findall(r"[A-Za-z][A-Za-z0-9&+.\-]*", p[f]):
+            w = w.rstrip(".-")
+            if w.islower() and len(w) > 2:
+                raise ValueError(f"he.{f}: English word left untranslated: {w!r}")
+            if w not in en_words and not (w.isupper() and len(w) <= 6):   # names must come from the English
+                raise ValueError(f"he.{f}: a name that is not in the English: {w!r}")
+        p[f] = _fit(p[f], int(FIELD_MAX[f] * 1.3))
+    return p
+
+
+def write_english(source, name):
     def validate(text):
-        m = re.search(r"\{.*\}", text, re.S)
-        if not m:
-            raise ValueError("no JSON")
-        d = json.loads(m.group(0))
-        for lang in ("en", "he"):
-            p = d.get(lang)
-            if not isinstance(p, dict):
-                raise ValueError(f"no {lang} part")
-            for f in FIELDS:
-                v = p.get(f)
-                if not isinstance(v, str):
-                    raise ValueError(f"{lang}.{f} missing")
-                p[f] = re.sub(r"\s+", " ", v).strip()
-                if len(p[f]) > FIELD_MAX[f]:
-                    raise ValueError(f"{lang}.{f} too long")
-                if _BANNED.search(p[f]):
-                    raise ValueError(f"{lang}.{f}: advice/valuation wording")
-                extra = _numbers(p[f]) - allowed
-                if extra:
-                    raise ValueError(f"{lang}.{f}: number(s) not in the source: {sorted(extra)[:3]}")
-            for f in ("summary", "what", "revenue"):
-                if len(p[f]) < 20:
-                    raise ValueError(f"{lang}.{f} too short")
-        if not re.search(r"[א-ת]", d["he"]["summary"] + d["he"]["what"]):
-            raise ValueError("the Hebrew part is not in Hebrew")
-        return d
-    return validate
-
-
-def write_profile(source, name):
-    validate = make_validator(source)
+        clean_english(text, source)
     text, model = llm_provider.chat(
-        [{"role": "system", "content": SYSTEM},
+        [{"role": "system", "content": SYSTEM_EN},
          {"role": "user", "content": f"Company: {name}\n\nSOURCE TEXT:\n{source}"}],
-        max_tokens=3500, temperature=0.1, validate=validate)
-    d = validate(text)
-    return {"en": d["en"], "he": d["he"]}, model
+        max_tokens=1300, temperature=0.1, validate=validate)
+    return clean_english(text, source), model
+
+
+def write_hebrew(en):
+    def validate(text):
+        clean_hebrew(text, en)
+    text, model = llm_provider.chat(
+        [{"role": "system", "content": SYSTEM_HE},
+         {"role": "user", "content": json.dumps(en, ensure_ascii=False)}],
+        max_tokens=2200, temperature=0.1, validate=validate)
+    return clean_hebrew(text, en), model
 
 
 # ---------------------------------------------------------------- main
@@ -322,14 +403,22 @@ def main() -> int:
     init_db(cur)
     conn.commit()
     candidates = pick_tickers(cur)
-    cur.execute("SELECT ticker, filing_date, checked_at, built_at FROM company_profiles")
+    cur.execute("""SELECT ticker, filing_date, checked_at, COALESCE((profile->>'v')::int, 1) AS v, profile->'en' AS en,
+                          (profile->'he' IS NULL OR jsonb_typeof(profile->'he') = 'null') AS no_he
+                   FROM company_profiles""")
     have = {r["ticker"]: r for r in cur.fetchall()}
     cur.close()
     conn.close()                                   # the AI calls take minutes; the DB is reopened only to write
+    os.environ["LLM_BUDGET_SECONDS"] = LLM_CALL_BUDGET_SEC
+    reasons = {}
 
     now = time.time()
+    # due: no profile, an older version (v30's one-request profiles: weak Hebrew), Hebrew still missing, or time to
+    # look for a newer annual report. Missing Hebrew first — it is one short request each.
     due = [t for t in candidates
-           if t not in have or (now - have[t]["checked_at"].timestamp()) > RECHECK_DAYS * 86400]
+           if t not in have or have[t]["v"] != PROFILE_VERSION or have[t]["no_he"]
+           or (now - have[t]["checked_at"].timestamp()) > RECHECK_DAYS * 86400]
+    due.sort(key=lambda t: 0 if (t in have and have[t]["v"] == PROFILE_VERSION and have[t]["no_he"]) else 1)
     print(f"company profiles: {len(candidates)} candidates, {len(have)} profiles saved, {len(due)} due")
     if not due:
         return 0
@@ -348,7 +437,15 @@ def main() -> int:
                 skipped += 1                                         # not an SEC filer (ETF, foreign without SEC filings)
                 continue
             old = have.get(t)
-            if old and old["filing_date"]:
+            current = bool(old) and old["v"] == PROFILE_VERSION
+            if current and old["no_he"] and isinstance(old["en"], dict):      # only the Hebrew is missing
+                he, model = write_hebrew(old["en"])
+                db_exec("""UPDATE company_profiles SET profile = jsonb_set(profile, '{he}', %s::jsonb), checked_at = NOW()
+                           WHERE ticker = %s""", (json.dumps(he, ensure_ascii=False), t))
+                written += 1
+                print(f"  {t}: Hebrew added ({model})")
+                continue
+            if current and old["filing_date"]:
                 form, filed, _, _ = latest_annual_report(cik)
                 if filed and str(old["filing_date"]) == filed:              # no newer annual report: keep the profile
                     db_exec("UPDATE company_profiles SET checked_at = NOW() WHERE ticker = %s", (t,))
@@ -359,7 +456,14 @@ def main() -> int:
                 skipped += 1
                 print(f"[warn] {t}: no annual report section and no Wikipedia summary")
                 continue
-            profile, model = write_profile(source, meta["name"])
+            en, model = write_english(source, meta["name"])
+            try:
+                he, _ = write_hebrew(en)
+            except (RuntimeError, ValueError) as e:                         # the English is kept; Hebrew next run
+                he = None
+                reasons["hebrew later"] = reasons.get("hebrew later", 0) + 1
+                print(f"[warn] {t}: Hebrew failed, saved in English for now ({str(e)[:150]})")
+            profile = {"v": PROFILE_VERSION, "en": en, "he": he}
             facts = {k: v for k, v in meta["facts"].items() if v}
             db_exec("""INSERT INTO company_profiles (ticker, name, profile, facts, source, source_url, filing_date,
                                                      model, built_at, checked_at)
@@ -378,7 +482,11 @@ def main() -> int:
             break
         except Exception as e:  # noqa: BLE001
             failed += 1
-            print(f"[warn] {t}: {type(e).__name__}: {str(e)[:200]}")
+            msg = str(e)
+            why = ("AI timeout" if "Timeout" in msg else "AI answer rejected" if "rejected" in msg
+                   else "AI unavailable" if "all models failed" in msg else type(e).__name__)
+            reasons[why] = reasons.get(why, 0) + 1
+            print(f"[warn] {t}: {type(e).__name__}: {msg[:200]}")
         finally:
             if done_request:
                 try:
@@ -387,6 +495,8 @@ def main() -> int:
                     pass
     print(f"company profiles: written {written}, unchanged {unchanged}, skipped {skipped}, failed {failed} "
           f"({int(time.time() - started)}s)")
+    if reasons:
+        print("company profiles: problems — " + ", ".join(f"{k}: {v}" for k, v in sorted(reasons.items())))
     return 0
 
 
