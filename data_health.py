@@ -14,6 +14,8 @@ The checks (a problem found = a line in the report, never a stop; a check that c
   * arithmetic: numbers that must add up (breadth: up + down + unchanged = counted, above 50d <= with a 50d average ...)
   * values: impossible figures (a price of 0, a NaN, a one-day move of 50% or more)
   * earnings: the last trading day's reports that still have no result
+  * market cap (v34): the stock page's SEC-based figure against the scanner's (BRK-B showed $540M, Visa's P/E was 9)
+  * size (v34): how much of the database's storage is used, and by which tables
 
 status: ok / info (worth knowing, nothing to fix: KVUE still on the free list) / warn (look at it) / fail (wrong or stopped).
 Exit code 0 even when problems are found (a red run would email the owner, the report is where this is read).
@@ -46,6 +48,8 @@ BREADTH_MIN_PRICED = 0.98       # share of the list with a price on the latest d
 BIG_MOVE_PCT = 50               # a one-day move this big is rare enough to be looked at
 NEWS_MAX_HOURS = 6              # the news job runs every 30 minutes, every day
 MAX_BLANK_REPORTS = 3           # yesterday's reports with no result at all: a few can be a moved date, more = a problem
+FUND_MCAP_MAX_RATIO = 1.5       # wider than the 1.3 fundamentals.py corrects at: the two are built at different prices
+DB_SIZE_WARN_MB, DB_SIZE_FAIL_MB = 700, 900   # the free Neon plan: 1 GB per project (its pricing page, 4.11.2026)
 KEEP_DAYS = 60
 
 # (table, time column, most weekdays since the last change, status when older). Normal = 1 at 07:30 ET (yesterday's
@@ -234,6 +238,31 @@ def check_earnings(cur, now: datetime) -> List[dict]:
                                               f"nothing at all: {', '.join(blank[:20]) or 'none'}", len(blank))]
 
 
+def check_market_caps(cur) -> List[dict]:
+    """v34: the market cap on the stock page (fundamentals_cache, from SEC share counts) next to the scanner's (Yahoo).
+    Far apart = a wrong share count got through, and the P/E computed from it is wrong too."""
+    cur.execute("""SELECT f.ticker, (f.data->>'market_cap')::float8 AS fund, e.market_cap AS ref
+                   FROM fundamentals_cache f JOIN stock_estimates e ON e.ticker = f.ticker
+                   WHERE f.data->>'market_cap' IS NOT NULL AND e.market_cap > 0
+                     AND f.built_at > NOW() - INTERVAL '3 days' AND e.updated_at > NOW() - INTERVAL '3 days'
+                     AND (f.data->>'market_cap')::float8 / e.market_cap NOT BETWEEN %s AND %s""",
+                (1 / FUND_MCAP_MAX_RATIO, FUND_MCAP_MAX_RATIO))
+    odd = cur.fetchall()
+    detail = ", ".join(f"{r['ticker']} ({r['fund'] / r['ref']:.2f}x)" for r in odd[:20])
+    return [_line("value.market_cap", "warn" if odd else "ok", detail or "the stock page's market caps agree with the scanner's", len(odd))]
+
+
+def check_db_size(cur) -> List[dict]:
+    """v34: nothing watched the database's size, and news and scan rows are never deleted."""
+    cur.execute("SELECT pg_database_size(current_database()) / 1048576 AS mb")
+    mb = int(cur.fetchone()["mb"])
+    cur.execute("""SELECT relname, pg_total_relation_size(relid) / 1048576 AS mb FROM pg_stat_user_tables
+                   ORDER BY pg_total_relation_size(relid) DESC LIMIT 5""")
+    top = ", ".join(f"{r['relname']} {int(r['mb'])}" for r in cur.fetchall())
+    status = "fail" if mb >= DB_SIZE_FAIL_MB else "warn" if mb >= DB_SIZE_WARN_MB else "ok"
+    return [_line("size.database", status, f"{mb} MB used (largest, MB: {top})", mb)]
+
+
 # ------------------------------------------------------------------ report
 def save(conn, day: date, status: str, results: List[dict]) -> None:
     cur = conn.cursor()
@@ -260,7 +289,8 @@ def main() -> int:
         results = []
         for name, run in (("freshness", lambda: check_freshness(cur, now)), ("counts", lambda: check_counts(cur, members)),
                           ("arithmetic", lambda: check_arithmetic(cur)), ("values", lambda: check_values(cur)),
-                          ("earnings", lambda: check_earnings(cur, now))):
+                          ("earnings", lambda: check_earnings(cur, now)), ("market caps", lambda: check_market_caps(cur)),
+                          ("size", lambda: check_db_size(cur))):
             try:
                 results += run()
             except Exception as e:

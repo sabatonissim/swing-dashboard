@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+
+Sitemap: https://swing-desk-tau.vercel.app/sitemap.xml

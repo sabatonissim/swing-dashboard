@@ -52,7 +52,11 @@ JOBS = [
     # v33: today's earnings results within minutes — only while companies are actually reporting; a missed slot is not caught up
     dict(name="earn_am",    workflow="earnings-fast.yml",   kind="interval", every_min=5, window=(6 * 60 + 45, 9 * 60), weekdays_only=True, grace_min=3),
     dict(name="earn_pm",    workflow="earnings-fast.yml",   kind="interval", every_min=5, window=(16 * 60 + 5, 18 * 60), weekdays_only=True, grace_min=3),
-    dict(name="news",       workflow="news-aggregator.yml", kind="interval", every_min=30, window=None,               weekdays_only=False, grace_min=35),
+    # v34: every 30 minutes around the market's day, hourly at night and on weekends — each run keeps the database awake for
+    # ~10 minutes, and at 0.25 CU the night and weekend runs alone were ~20 of the 100 free compute-hours a month
+    dict(name="news",       workflow="news-aggregator.yml", kind="interval", every_min=30, window=(6 * 60, 22 * 60),  weekdays_only=True,  grace_min=25),
+    dict(name="news_quiet", workflow="news-aggregator.yml", kind="interval", every_min=60, window=None,               weekdays_only=False, grace_min=50,
+         not_in_weekday_window=(6 * 60, 22 * 60)),
     # economic-calendar numbers (BLS API/FRED -> Postgres): every 30 min 08:00-10:30 ET (08:30 CPI/PPI/jobs, 10:00 JOLTS), plus once in the evening.
     # Kept sparse on purpose: the keyless BLS API allows 25 requests/day per IP.
     dict(name="econ",       workflow="econ-refresh.yml",    kind="interval", every_min=30, window=(8 * 60, 10 * 60 + 30), weekdays_only=True,  grace_min=35),
@@ -79,6 +83,7 @@ JOBS = [
 
 _done = {}        # slot key -> outcome (this process)
 _attempts = {}    # slot key -> failed attempts
+_last_prune = {"at": 0.0}
 _last_error = {"msg": None, "at": None}
 _started = {"thread": None}
 
@@ -96,6 +101,9 @@ def _is_slot(job, t_et):
         return (t_et.hour, t_et.minute) == job["at"]
     mins = t_et.hour * 60 + t_et.minute
     if mins % job["every_min"] != 0:
+        return False
+    off = job.get("not_in_weekday_window")
+    if off and t_et.weekday() < 5 and off[0] <= mins <= off[1]:
         return False
     w = job.get("window")
     return True if not w else (w[0] <= mins <= w[1])
@@ -166,6 +174,21 @@ def _db_update(get_conn, key, status=None, delete=False):
         print(f"[scheduler] bookkeeping for {key} failed: {type(e).__name__}: {e}")
 
 
+def _prune_runs(get_conn):
+    """v34: scheduler_runs grew forever (~100 rows a day). A month is plenty: a slot is claimed once, within hours."""
+    try:
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM scheduler_runs WHERE fired_at < NOW() - INTERVAL '30 days'")
+            conn.commit()
+            cur.close()
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001
+        print(f"[scheduler] pruning old runs failed: {type(e).__name__}: {e}")
+
+
 # ------------------------------------------------------------------ GitHub dispatch
 def _dispatch(workflow):
     r = requests.post(
@@ -207,6 +230,9 @@ def tick(get_conn, now_utc=None):
             late = int((now - slot).total_seconds() // 60)
             print(f"[scheduler] {job['workflow']} dispatched for slot {key}" + (f" ({late} min late — catch-up)" if late >= 3 else ""))
             did.append((key, "dispatched"))
+            if time.time() - _last_prune["at"] > 86400:        # right after a claim: the database is awake anyway
+                _last_prune["at"] = time.time()
+                _prune_runs(get_conn)
         else:
             _attempts[key] = _attempts.get(key, 0) + 1
             _last_error.update(msg=f"{job['workflow']}: HTTP {status} {body}", at=now.isoformat())

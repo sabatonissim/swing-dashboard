@@ -2,7 +2,7 @@
 <html lang="he" dir="ltr">
 <head>
 <meta charset="UTF-8">
-<title>Swing Desk — דשבורד מסחר</title>
+<title>Swing Desk — סורק מניות, ניתוח טכני וחדשות שוק</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
@@ -28,19 +28,19 @@
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="Swing Desk — swing-trading dashboard">
 <meta property="og:site_name" content="Swing Desk">
-<meta property="og:title" content="Swing Desk — דשבורד מסחר">
+<meta property="og:title" content="Swing Desk — סורק מניות, ניתוח טכני וחדשות שוק">
 <meta property="og:description" content="סורק מניות לפי מבנים טכניים, חדשות מאקרו עם סיכום יומי, יומן כלכלי ומפת חום. מידע בלבד, לא ייעוץ השקעות.">
 <meta property="og:locale" content="he_IL">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://swing-desk-tau.vercel.app/og-image.png">
 <meta name="twitter:image:alt" content="Swing Desk — swing-trading dashboard">
-<meta name="twitter:title" content="Swing Desk — דשבורד מסחר">
+<meta name="twitter:title" content="Swing Desk — סורק מניות, ניתוח טכני וחדשות שוק">
 <meta name="twitter:description" content="סורק מניות לפי מבנים טכניים, חדשות מאקרו עם סיכום יומי, יומן כלכלי ומפת חום.">
 <script type="application/ld+json">
 {"@context":"https://schema.org","@graph":[
  {"@type":"Organization","@id":"https://swing-desk-tau.vercel.app/#org","name":"Swing Desk","url":"https://swing-desk-tau.vercel.app/","description":"Swing Desk is an online swing-trading dashboard: a technical-pattern stock scanner, macro news with a daily digest, an economic calendar and a market heatmap. Information only, not investment advice.","logo":{"@type":"ImageObject","url":"https://swing-desk-tau.vercel.app/logo.png","width":512,"height":512}},
  {"@type":"WebSite","@id":"https://swing-desk-tau.vercel.app/#website","url":"https://swing-desk-tau.vercel.app/","name":"Swing Desk","description":"Swing-trading dashboard: technical-pattern stock scanner, macro news with a daily digest, economic calendar and market heatmap.","inLanguage":["he","en"],"publisher":{"@id":"https://swing-desk-tau.vercel.app/#org"}},
- {"@type":"WebPage","@id":"https://swing-desk-tau.vercel.app/#webpage","url":"https://swing-desk-tau.vercel.app/","name":"Swing Desk — דשבורד מסחר","description":"סורק מניות לפי מבנים טכניים, חדשות מאקרו עם סיכום יומי, יומן כלכלי ומפת חום. מידע בלבד, לא ייעוץ השקעות.","inLanguage":"he","isPartOf":{"@id":"https://swing-desk-tau.vercel.app/#website"},"about":{"@id":"https://swing-desk-tau.vercel.app/#app"}},
+ {"@type":"WebPage","@id":"https://swing-desk-tau.vercel.app/#webpage","url":"https://swing-desk-tau.vercel.app/","name":"Swing Desk — סורק מניות, ניתוח טכני וחדשות שוק","description":"סורק מניות לפי מבנים טכניים, חדשות מאקרו עם סיכום יומי, יומן כלכלי ומפת חום. מידע בלבד, לא ייעוץ השקעות.","inLanguage":"he","isPartOf":{"@id":"https://swing-desk-tau.vercel.app/#website"},"about":{"@id":"https://swing-desk-tau.vercel.app/#app"}},
  {"@type":"SoftwareApplication","@id":"https://swing-desk-tau.vercel.app/#app","name":"Swing Desk","applicationCategory":"FinanceApplication","operatingSystem":"Any (web browser)","description":"Information only, not investment advice.","publisher":{"@id":"https://swing-desk-tau.vercel.app/#org"}}
 ]}
 </script>
@@ -1011,7 +1011,7 @@ window.addEventListener('load', function(){
     </div>
   </div>
   <div class="search-wrap">
-    <input type="text" id="search-input" class="search-input mono" placeholder="חיפוש מניה, למשל AAPL" />
+    <input type="text" id="search-input" class="search-input mono" placeholder="חיפוש מניה, למשל AAPL" aria-label="חיפוש מניה / Stock search" />
     <button class="search-btn" onclick="handleSearch()" id="search-btn-label">חפש</button>
   </div>
   <div style="display:flex;flex-direction:row-reverse;align-items:center;gap:12px;">
@@ -1045,7 +1045,7 @@ window.addEventListener('load', function(){
 
 <!-- Mobile Search Bar (visible only on small screens) -->
 <div class="mobile-search">
-  <input type="text" id="search-input-mobile" class="search-input mono" placeholder="חיפוש מניה, למשל AAPL" />
+  <input type="text" id="search-input-mobile" class="search-input mono" placeholder="חיפוש מניה, למשל AAPL" aria-label="חיפוש מניה / Stock search" />
   <button class="search-btn" id="search-btn-mobile" onclick="handleSearchMobile()">חפש</button>
 </div>
 
@@ -1120,7 +1120,7 @@ window.addEventListener('load', function(){
       <button class="daily-digest-btn" id="daily-digest-btn" onclick="openDailyDigest()">סיכום יומי</button>
     </div>
     <div class="news-search-wrap">
-      <input type="text" class="news-search-input" id="news-search-input" placeholder="חיפוש בחדשות" oninput="setNewsSearch(this.value)">
+      <input type="text" class="news-search-input" id="news-search-input" placeholder="חיפוש בחדשות" aria-label="חיפוש בחדשות / News search" oninput="setNewsSearch(this.value)">
       <span class="news-search-icon" id="news-search-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" style="vertical-align:middle"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg></span>
       <button class="news-search-clear" id="news-search-clear" onclick="clearNewsSearch()">✕</button>
     </div>
@@ -1254,7 +1254,7 @@ window.addEventListener('load', function(){
 <div id="page-deepdive" style="display:none;">
   <div class="pulse-page-wrap">
     <div class="dd-search-row">
-      <input type="text" id="dd-ticker-input" class="news-search-input" placeholder="הקלידו טיקר, למשל AAPL" style="max-width:280px;" onkeydown="if(event.key==='Enter') loadDeepDive()">
+      <input type="text" id="dd-ticker-input" class="news-search-input" placeholder="הקלידו טיקר, למשל AAPL" aria-label="טיקר / Ticker" style="max-width:280px;" onkeydown="if(event.key==='Enter') loadDeepDive()">
       <button class="search-btn" id="dd-search-btn" onclick="loadDeepDive()">חפש</button>
     </div>
     <div id="deepdive-content"></div>
@@ -1704,7 +1704,7 @@ function renderMacro(){
   // doesn't apply here — search already looks across everything.
   if(newsSearchResults !== null){
     if(!newsSearchResults.length){
-      const msg = t ? `No news matches "${newsSearchQuery}"` : `אין חדשות התואמות ל"${newsSearchQuery}"`;
+      const msg = t ? `No news matches "${escH(newsSearchQuery)}"` : `אין חדשות התואמות ל"${escH(newsSearchQuery)}"`;
       el.innerHTML = `<div style="color:var(--text-dim);padding:20px;text-align:center;">${msg}</div>`;
       return;
     }
@@ -1888,6 +1888,7 @@ function canonTicker(raw){
   const m = t.match(/^([A-Z]{1,5})\.([A-Z])$/);
   return m ? `${m[1]}-${m[2]}` : t;
 }
+const TICKER_OK = /^[A-Z0-9.\-^=]{1,12}$/;   // the same characters the server accepts in an address
 function tvSymbol(tk){
   const t = String(tk||'').trim().toUpperCase();
   const m = t.match(/^([A-Z]{1,5})-([A-Z])$/);
@@ -2246,15 +2247,19 @@ async function rerenderDeepDiveForLang(){
   // TradingView chart) each time made the chart flash, jump and sometimes freeze half-sized. Only redo it when
   // the language or the theme actually changed since the page was drawn.
   if(_ddRenderedKey === lang + '|' + tvTheme()) return;
-  const st = _ddState, token = ++_ddLangToken;
-  // News titles/summaries come from the API in the requested language, so
-  // fetch them again for the new language; everything else is re-rendered
-  // from the data already on screen (no reload flicker).
-  try {
-    const r = await fetch(`${API_BASE}/api/stock-news/${st.quote.ticker}?lang=${lang}&limit=${STOCK_NEWS_LIMIT}`);
-    if(r.ok) st.news = await r.json();
-  } catch(e) { /* keep the old news list if the refetch fails */ }
-  if(token !== _ddLangToken || _ddState !== st) return; // a newer switch or search took over
+  const st = _ddState, token = ++_ddLangToken, oldNews = st.news;
+  // News titles/summaries come from the API in the requested language, so they are fetched again for the new language;
+  // everything else is re-rendered from the data already on screen (no reload flicker). v34: the page no longer waits for
+  // them — translating 8 headlines takes up to ~12 s — the news list fills in when they arrive.
+  st.news = null;
+  fetch(`${API_BASE}/api/stock-news/${encodeURIComponent(st.quote.ticker)}?lang=${lang}&limit=${STOCK_NEWS_LIMIT}`)
+    .then(r => r.ok ? r.json() : Promise.reject())
+    .catch(() => oldNews)                               // keep the old news list if the refetch fails
+    .then(news => {
+      if(token !== _ddLangToken || _ddState !== st) return; // a newer switch or search took over
+      st.news = news;
+      renderDdNews(news);
+    });
   renderDeepDive(st.quote, st.sector, st.signals, st.news);
   renderTechnicalSetup(st.setupData, 'dd-technical-setup-section');
   if(st.fundData){
@@ -2277,6 +2282,10 @@ async function loadDeepDive(){
     el.innerHTML = `<div class="bt-empty">${t?'Enter a ticker to see full analysis.':'הקלד טיקר כדי לראות ניתוח מלא.'}</div>`;
     return;
   }
+  if(!TICKER_OK.test(ticker)){    // v34: what was typed goes into the page and the address below, so symbols only
+    el.innerHTML = `<div class="bt-empty">${t?'Please enter a stock symbol, for example AAPL.':'יש להקליד סימול של מניה, למשל AAPL.'}</div>`;
+    return;
+  }
 
   _ddState = null;
   _ddRenderedKey = null;
@@ -2294,13 +2303,15 @@ async function loadDeepDive(){
   const streetP = fetchWithTimeout(`${API_BASE}/api/street/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject());     // v23
   const aiNoteP = fetchWithTimeout(`${API_BASE}/api/ai-note/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject());   // v25
   const profileP = fetchWithTimeout(`${API_BASE}/api/company-profile/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject());   // v30
-  [sectorP, setupP, fundP, insiderP, streetP, aiNoteP, profileP].forEach(p => p.catch(() => {}));   // handled below; avoids "unhandled rejection" noise
+  // v34: the news too (BRK-B 4.11: the page stayed on "Loading..." for 12 s while 8 headlines were being translated)
+  const newsLang = lang;
+  const newsP = fetch(`${API_BASE}/api/stock-news/${ticker}?lang=${lang}&limit=${STOCK_NEWS_LIMIT}`).then(r => r.ok ? r.json() : Promise.reject());
+  [sectorP, setupP, fundP, insiderP, streetP, aiNoteP, profileP, newsP].forEach(p => p.catch(() => {}));   // handled below; avoids "unhandled rejection" noise
 
   try {
-    const [lookupRes, signalsRes, newsRes] = await Promise.allSettled([
+    const [lookupRes, signalsRes] = await Promise.allSettled([
       fetch(`${API_BASE}/api/lookup/${ticker}`).then(r => r.ok ? r.json() : Promise.reject(r.status)),
       fetch(`${API_BASE}/api/signal-history/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
-      fetch(`${API_BASE}/api/stock-news/${ticker}?lang=${lang}&limit=${STOCK_NEWS_LIMIT}`).then(r => r.ok ? r.json() : Promise.reject()),
     ]);
     if(loadId !== _ddLoadId) return;   // another ticker was searched meanwhile
 
@@ -2315,11 +2326,15 @@ async function loadDeepDive(){
 
     const quote = lookupRes.value;
     const signals = signalsRes.status === 'fulfilled' ? signalsRes.value : [];
-    const news = newsRes.status === 'fulfilled' ? newsRes.value : [];
 
-    const st = _ddState = {quote, sector: null, signals, news, fundData: null, setupData: null};
+    const st = _ddState = {quote, sector: null, signals, news: null, fundData: null, setupData: null};
     const current = () => loadId === _ddLoadId && _ddState === st;
-    renderDeepDive(quote, null, signals, news);
+    renderDeepDive(quote, null, signals, null);
+    newsP.then(v => v, () => []).then(news => {
+      if(!current() || lang !== newsLang) return;      // after a language switch rerenderDeepDiveForLang fetches its own
+      st.news = news;
+      renderDdNews(news);
+    });
     const loadingHtml = (title) => `<div class="dd-section-title">${title}</div><div class="bt-empty" style="padding:10px 0;">${UI[lang].loading}</div>`;
     const secEl = document.getElementById('dd-sector-compare-section');
     if(secEl) secEl.innerHTML = loadingHtml(t?'Stock vs. Sector':'מניה מול סקטור');
@@ -2513,16 +2528,7 @@ function renderDeepDive(quote, sector, signals, news){
   // --- tab: news ---
   html += pane('news');
   html += `<div class="dd-section-title">${t?'Recent News':'חדשות אחרונות'}</div>`;
-  if(news && news.length){
-    html += news.map(n => `
-      <div class="dd-news-item">
-        <a href="${escH(safeUrl(n.link))}" target="_blank" rel="noopener noreferrer">${escH(n.title)}</a>
-        <div class="meta">${newsMeta(n)}</div>
-      </div>
-    `).join('');
-  } else {
-    html += `<div class="bt-empty">${t?'No recent news found.':'לא נמצאו כתבות עדכניות.'}</div>`;
-  }
+  html += `<div id="dd-news-list">${ddNewsHtml(news)}</div>`;
   html += `</div>`;   // /news
 
   // v26f (owner: "it got stuck again when I switched from English to Hebrew"): a language switch redraws this page,
@@ -2554,6 +2560,23 @@ function renderDeepDive(quote, sector, signals, news){
   _ddRenderedKey = lang + '|' + tvTheme();
   _ddChartTicker = quote.ticker;
   if(typeof TradingView !== 'undefined') _ddMountChart(); else loadTV(_ddMountChart);
+}
+
+// v34: the news list on its own — it arrives after the rest of the page (null = still loading)
+function ddNewsHtml(news){
+  const t = lang === 'en';
+  if(news == null) return `<div class="bt-empty" style="padding:10px 0;">${UI[lang].loading}</div>`;
+  if(!news.length) return `<div class="bt-empty">${t?'No recent news found.':'לא נמצאו כתבות עדכניות.'}</div>`;
+  return news.map(n => `
+      <div class="dd-news-item">
+        <a href="${escH(safeUrl(n.link))}" target="_blank" rel="noopener noreferrer">${escH(n.title)}</a>
+        <div class="meta">${newsMeta(n)}</div>
+      </div>
+    `).join('');
+}
+function renderDdNews(news){
+  const box = document.getElementById('dd-news-list');
+  if(box) box.innerHTML = ddNewsHtml(news);
 }
 
 // v26d: the analysis page's tabs. The last choice is remembered in this browser.
@@ -2738,7 +2761,7 @@ function setStockAddress(ticker){
       if(canon) canon.href = _baseCanonical.replace(/\/$/, '') + path;
     } else if(location.pathname.startsWith('/stock/')){
       history.replaceState(null, '', '/');
-      document.title = typeof lang !== 'undefined' && lang === 'en' ? 'Swing Desk — Real-time trading dashboard' : _baseTitle;
+      document.title = typeof lang !== 'undefined' && lang === 'en' ? 'Swing Desk — Stock Scanner, Technical Analysis & Market News' : _baseTitle;
       if(canon) canon.href = _baseCanonical;
     }
   } catch(e){ /* history API refused — the page itself still works */ }
@@ -2845,8 +2868,8 @@ function renderDemoPortfolio(){
     // v28: the old hint "try a lower minimum score" was wrong — the statistics restarted on 3.11.2026 (STATS_SINCE in
     // api_server.py), when the scanner's quality rules changed, so the page is empty until new scans come in.
     el.innerHTML = `<div class="bt-warn">${en
-      ? `No trades yet for these settings. ${sm.signals_pending_simulation ? `${sm.signals_pending_simulation} scans are still waiting for the scanner to simulate them — they will show up after the next scanner run.` : 'The statistics start on 3.11.2026, when the new quality rules for scans took effect — the first trades appear here after the next scans.'}`
-      : `אין עדיין עסקאות בהגדרות האלה. ${sm.signals_pending_simulation ? `${sm.signals_pending_simulation} סריקות עדיין ממתינות לסימולציה של הסורק — הן יופיעו אחרי הריצה הבאה שלו.` : 'הסטטיסטיקה מתחילה ב-3.11.2026, היום שבו נכנסו כללי האיכות החדשים לסריקות — העסקאות הראשונות יופיעו כאן אחרי הסריקות הבאות.'}`}</div>`;
+      ? `No trades yet for these settings. ${sm.signals_pending_simulation ? `${sm.signals_pending_simulation} scans are waiting: the scanner simulates each scan two days after it was made, and then they show up here.` : 'The statistics start on 3.11.2026, when the new quality rules for scans took effect — the first trades appear here after the next scans.'}`
+      : `אין עדיין עסקאות בהגדרות האלה. ${sm.signals_pending_simulation ? `${sm.signals_pending_simulation} סריקות ממתינות: הסורק מריץ סימולציה יומיים אחרי כל סריקה, ואז הן יופיעו כאן.` : 'הסטטיסטיקה מתחילה ב-3.11.2026, היום שבו נכנסו כללי האיכות החדשים לסריקות — העסקאות הראשונות יופיעו כאן אחרי הסריקות הבאות.'}`}</div>`;
     return;
   }
 
@@ -3140,7 +3163,7 @@ function renderHeatmap(stocks){
     const innerH = showLabel ? sr.h - SECTOR_LABEL_H : sr.h;
     html += `<div class="heatmap-sector-box" style="left:${sr.x}px;top:${sr.y}px;width:${sr.w}px;height:${sr.h}px;"></div>`;
     if(showLabel){
-      html += `<div class="heatmap-sector-label" style="left:${sr.x}px;top:${sr.y}px;width:${sr.w}px;">${sr.sector} ›</div>`;
+      html += `<div class="heatmap-sector-label" style="left:${sr.x}px;top:${sr.y}px;width:${sr.w}px;">${escH(sr.sector)} ›</div>`;
     }
 
     const list = sr.list.slice().sort((a,b) => b.weight - a.weight);
@@ -3754,8 +3777,8 @@ function renderEconFoot(meta){
   if(Object.keys(prov).some(k => k.startsWith('schedule') && prov[k].ok === false)) notes.push(en ? 'The official release calendar is partly unavailable — some dates are estimates.' : 'לוח הפרסומים הרשמי זמין חלקית — חלק מהמועדים הם הערכה.');
   document.getElementById('econ-foot').innerHTML =
     (notes.length ? notes.join(' ') + '<br>' : '') +
-    (en ? `Release dates: BLS, BEA, Census, Federal Reserve. Actuals: FRED.${econHasForecast ? ' Forecasts: third-party market consensus (may differ from other sources).' : ''} Informational only — not investment advice.`
-        : `מועדי פרסום: BLS, BEA, Census והפד. נתוני בפועל: FRED.${econHasForecast ? ' הצפי: קונצנזוס שוק ממקור חיצוני (עשוי להיות שונה ממקורות אחרים).' : ''} למידע בלבד — לא ייעוץ השקעות.`);
+    (en ? `Release dates: BLS, BEA, Census, Federal Reserve. Actuals: the same agencies' public data, the New York Fed and DBnomics.${econHasForecast ? ' Forecasts: third-party market consensus (may differ from other sources).' : ''} Informational only — not investment advice.`
+        : `מועדי פרסום: BLS, BEA, Census והפד. נתוני בפועל: הנתונים הציבוריים של אותם גופים, הפד של ניו יורק ו-DBnomics.${econHasForecast ? ' הצפי: קונצנזוס שוק ממקור חיצוני (עשוי להיות שונה ממקורות אחרים).' : ''} למידע בלבד — לא ייעוץ השקעות.`);
 }
 
 function econCardHtml(e, isNext){
@@ -4504,8 +4527,8 @@ function renderInfoModal(){
   const t = lang==='en';
 
   const pricesBody = t
-    ? `Live prices, daily change %, market cap, and volume come from Yahoo Finance — the same data source used by most free finance sites and apps. The thin ticker strip at the very top of the page (S&P 500, Nasdaq, Dow, VIX, Bitcoin, Ethereum, Gold) comes from the same source.`
-    : `מחירים חיים, שינוי יומי באחוזים, שווי שוק, ונפח מסחר מגיעים מ-Yahoo Finance — אותו מקור נתונים ששימוש בו רוב אתרי/אפליקציות הפיננסים החינמיות. גם שורת המדדים הדקה בראש העמוד (S&P 500, נאסד"ק, דאו ג'ונס, VIX, ביטקוין, את'ריום, זהב) מגיעה מאותו מקור.`;
+    ? `Prices (which can be delayed by up to 15 minutes), daily change %, market cap, and volume come from Yahoo Finance — the same data source used by most free finance sites and apps. The thin ticker strip at the very top of the page (S&P 500, Nasdaq, Dow, VIX, Bitcoin, Ethereum, Gold) comes from the same source.`
+    : `מחירים (עשויים להתעכב עד 15 דקות), שינוי יומי באחוזים, שווי שוק, ונפח מסחר מגיעים מ-Yahoo Finance — אותו מקור נתונים ששימוש בו רוב אתרי/אפליקציות הפיננסים החינמיות. גם שורת המדדים הדקה בראש העמוד (S&P 500, נאסד"ק, דאו ג'ונס, VIX, ביטקוין, את'ריום, זהב) מגיעה מאותו מקור.`;
 
   const fundamentalsBody = t
     ? `Pulled directly from <b>SEC EDGAR</b> — the official U.S. government filing system. These are the exact same numbers the company itself files with the regulator, not a third-party estimate (both standard US-GAAP filers and foreign private issuers filing under IFRS are supported). Every stock's page links directly to the raw filing so you can verify it yourself. When no data is found for a ticker, it's usually a genuine ETF/index, but occasionally it's a very recent IPO or an unusual filer SEC hasn't indexed cleanly yet — a company just not showing up here isn't a guarantee it's a fund.`
@@ -4523,20 +4546,20 @@ function renderInfoModal(){
     : `ניתוח טכני אלגוריתמי בלבד — תבניות מחיר (כוס וידית, תחתית כפולה, דגל שורי, פריצות, קווי מגמה, צלב זהב, RSI, מומנטום ועוד), ממוצעים נעים (50/150/200 יום), תנודתיות ATR, ודירוג עוצמה יחסית (RS) מול S&P 500 — מחושב ישירות מנתוני המחיר/נפח של Yahoo Finance שלמעלה. אותה לוגיקת זיהוי מפעילה גם את "מבנה טכני נוכחי" בעמוד הניתוח המלא למניה (שמזהה גם תבנית שעדיין נבנית/מתקרבת, לא רק כאלה שכבר קרו), וגם את סריקת "מה מתקרב" על כל רשימת המעקב. זו אינה המלצה לקנות או למכור דבר.`;
 
   const fearGreedBody = t
-    ? `The Fear & Greed gauge is CNN's own published index (7 market-momentum/volatility/demand indicators combined into a single 0-100 score), pulled live from CNN's own data feed — not something computed on this site.`
-    : `מד הפחד/תאווה הוא המדד המוכר של CNN עצמו (7 אינדיקטורים של מומנטום שוק/תנודתיות/ביקוש, משולבים לציון אחד בין 0-100), נשלף חי מה-feed הרשמי של CNN — לא משהו שמחושב באתר הזה.`;
+    ? `The Fear & Greed gauge is CNN's own published index (7 market-momentum/volatility/demand indicators combined into a single 0-100 score), read from the data behind CNN's page — not something computed on this site.`
+    : `מד הפחד/תאווה הוא המדד המוכר של CNN עצמו (7 אינדיקטורים של מומנטום שוק/תנודתיות/ביקוש, משולבים לציון אחד בין 0-100), נקרא מהנתונים שמאחורי העמוד של CNN — לא משהו שמחושב באתר הזה.`;
 
   const earningsBody = t
-    ? `The week's earnings dates and EPS/revenue estimate-vs-actual come from Yahoo Finance, limited to notable large-cap names (the full list of every company reporting that week would be mostly noise).`
-    : `תאריכי הדיווחים לשבוע והשוואת התחזית מול הבפועל (EPS והכנסות) מגיעים מ-Yahoo Finance, מוגבל לחברות גדולות ובולטות (רשימה מלאה של כל מי שמדווח באותו שבוע הייתה בעיקר רעש).`;
+    ? `Report dates come from the Nasdaq and Yahoo Finance calendars, limited to the largest companies of each day (the full list of every company reporting would be mostly noise). Estimates and results come from Yahoo Finance and from the company's own press release filed with the SEC. The expected move is computed from option prices.`
+    : `תאריכי הדיווחים מגיעים מלוחות Nasdaq ו-Yahoo Finance, מוגבל לחברות הגדולות של כל יום (רשימה מלאה של כל מי שמדווח הייתה בעיקר רעש). הצפי והתוצאות מגיעים מ-Yahoo Finance ומהודעת החברה עצמה ל-SEC. התנודה הצפויה מחושבת ממחירי האופציות.`;
 
   const digestBody = t
     ? `The top block ("AI summary") is written by a language model from the headlines and labelled as such. The sections below it are deliberately rule-based, not AI-generated: the day's Critical-impact items are shown in full, and the rest are ranked purely by how many separate articles covered the same topic in the last 24 hours (a volume proxy for "what's being talked about"), not by any language model summarizing or judging them.`
     : `הבלוק העליון (\"סיכום AI\") נכתב על ידי מודל שפה מתוך הכותרות ומסומן ככזה. החלקים שמתחתיו מבוססי-כללים בכוונה ולא AI: כל הכתבות שסווגו כ"קריטי" מוצגות במלואן, והשאר מדורגים אך ורק לפי כמה כתבות נפרדות סיקרו את אותו נושא ב-24 השעות האחרונות (מדד נפח כתחליף ל"על מה מדברים") — לא על ידי מודל שפה שמסכם או שופט אותן.`;
 
   const econBody = t
-    ? `Release dates come from the official public calendars of the Bureau of Labor Statistics, the Bureau of Economic Analysis, the Census Bureau and the Federal Reserve; "actual" numbers come from FRED (St. Louis Fed) — no third-party scraping and nothing here needs a subscription. Market-consensus "Forecast" is proprietary data with no free licensed source, so it appears only when a licensed provider is connected. ISM, Conference Board and UMich have no free official source: their dates are estimates and their actuals are not shown.`
-    : `מועדי הפרסום מגיעים מלוחות הזמנים הציבוריים הרשמיים של לשכת סטטיסטיקת העבודה (BLS), הלשכה לניתוח כלכלי (BEA), לשכת המפקד (Census) והפד; נתוני "בפועל" מגיעים מ-FRED (הפד בסנט לואיס) — בלי גרידה ממקורות צד שלישי ובלי שום מנוי. "צפי" השוק (קונצנזוס) הוא מידע בבעלות פרטית שאין לו מקור חינמי ומורשה, ולכן הוא מוצג רק כשמחובר ספק מורשה. ל-ISM, Conference Board ומישיגן אין מקור חינמי רשמי: המועדים שלהם הם הערכה והנתון בפועל לא מוצג.`;
+    ? `Release dates come from the official public calendars of the Bureau of Labor Statistics, the Bureau of Economic Analysis, the Census Bureau and the Federal Reserve; "actual" numbers come from the agencies' own public data (BLS, the Labor Department, Census, the New York Fed) and the DBnomics archive of official statistics — nothing here needs a subscription. Market-consensus "Forecast" is proprietary data with no free licensed source, so it appears only when a licensed provider is connected. ISM, Conference Board and UMich have no free official source: their dates are estimates and their actuals are not shown.`
+    : `מועדי הפרסום מגיעים מלוחות הזמנים הציבוריים הרשמיים של לשכת סטטיסטיקת העבודה (BLS), הלשכה לניתוח כלכלי (BEA), לשכת המפקד (Census) והפד; נתוני "בפועל" מגיעים מהנתונים הציבוריים של הגופים עצמם (BLS, משרד העבודה, Census, הפד של ניו יורק) ומארכיון DBnomics של סטטיסטיקה רשמית — בלי שום מנוי. "צפי" השוק (קונצנזוס) הוא מידע בבעלות פרטית שאין לו מקור חינמי ומורשה, ולכן הוא מוצג רק כשמחובר ספק מורשה. ל-ISM, Conference Board ומישיגן אין מקור חינמי רשמי: המועדים שלהם הם הערכה והנתון בפועל לא מוצג.`;
 
   const disclaimerBody = t
     ? `All content on this site is for informational purposes only and does not constitute investment advice or a recommendation to execute any transaction. Past performance (including any pattern win-rate statistics shown) does not guarantee future results.`
@@ -4544,7 +4567,7 @@ function renderInfoModal(){
 
   document.getElementById('info-modal').innerHTML = `
     <h3>ⓘ ${t?'Where this data comes from':'מאיפה המידע מגיע'}</h3>
-    ${infoAccordionSection('prices', 'מחירים, נתוני שוק ושורת המדדים', 'Live Prices, Market Data & Ticker Strip', pricesBody)}
+    ${infoAccordionSection('prices', 'מחירים, נתוני שוק ושורת המדדים', 'Prices, Market Data & Ticker Strip', pricesBody)}
     ${infoAccordionSection('fundamentals', 'דוחות כספיים (פונדמנטלס)', 'Financial Statements (Fundamentals)', fundamentalsBody)}
     ${infoAccordionSection('news', 'חדשות וסיכום יומי', 'News & Daily Digest', newsBody + '<br><br>' + digestBody)}
     ${infoAccordionSection('scans', 'הסריקה הטכנית, הציונים ומבנה נוכחי', 'Technical Scanning, Scores & Current Setup', scansBody)}
@@ -5594,7 +5617,7 @@ function renderDeepDiveSectorSection(sector){
 
   let cols = `<div class="col"><div class="k">${_dd_lastQuote.ticker}</div><div class="v" style="color:${stockColor}">${sector.stock_return>=0?'+':''}${sector.stock_return}%</div></div>`;
   if(sector.sector_return != null){
-    cols += `<div class="col"><div class="k">${sector.sector_etf||sector.sector||'—'}</div><div class="v" style="color:${secColor}">${sector.sector_return>=0?'+':''}${sector.sector_return}%</div></div>`;
+    cols += `<div class="col"><div class="k">${escH(sector.sector_etf||sector.sector||'—')}</div><div class="v" style="color:${secColor}">${sector.sector_return>=0?'+':''}${sector.sector_return}%</div></div>`;
   }
   if(sector.sub_industry_return != null){
     cols += `<div class="col"><div class="k">${sector.sub_industry_etf}</div><div class="v" style="color:${subSecColor}">${sector.sub_industry_return>=0?'+':''}${sector.sub_industry_return}%</div></div>`;
@@ -5610,7 +5633,7 @@ function renderDeepDiveSectorSection(sector){
 
   if(sector.sub_industry_peers && sector.sub_industry_peers.length){
     html += `
-      <div class="dd-section-title">${t?`Peers in ${sector.sub_industry}`:`מתחרים ב-${sector.sub_industry}`}</div>
+      <div class="dd-section-title">${t?`Peers in ${escH(sector.sub_industry)}`:`מתחרים ב-${escH(sector.sub_industry)}`}</div>
       ${sector.valuation_rank ? `<div style="font-size:12.5px;color:var(--text-dim);margin-bottom:8px;">${
         t
           ? `Trailing P/E ranks ${sector.valuation_rank.rank} of ${sector.valuation_rank.of} in this peer group (1 = cheapest).`
@@ -5986,6 +6009,10 @@ function renderFundamentals(data, containerId){
 
 // ---- Free search ----
 async function showTickerDrawer(ticker){
+  if(!TICKER_OK.test(String(ticker))){    // v34: it is written into the drawer's HTML below, so symbols only
+    alert(lang==='en' ? 'Please enter a stock symbol, for example AAPL.' : 'יש להקליד סימול של מניה, למשל AAPL.');
+    return;
+  }
   const drawer = document.getElementById("drawer");
   drawer.innerHTML = `
     <div class="drawer-head"><h2>${ticker} <span class="watchlist-star ${watchlistTickers.has(ticker)?'active':''}" id="watchlist-star-${ticker}" onclick="toggleWatchlist('${ticker}')" title="${lang==='en'?'Add/remove from watchlist':'הוסף/הסר מרשימת המעקב'}">★</span></h2><button class="close-btn" onclick="closeDrawer()">✕</button></div>
@@ -6018,7 +6045,7 @@ async function showTickerDrawer(ticker){
         <div class="stat"><div class="k">${lang==='en'?'Avg Vol 20d':'נפח ממוצע 20י'}</div><div class="v">${d.avg_volume_20d?Math.round(d.avg_volume_20d/1e6)+'M':'—'}</div></div>
         <div class="stat"><div class="k">${lang==='en'?'52w High':'שיא 52 שבועות'}</div><div class="v">$${d.week52_high??'—'}</div></div>
         <div class="stat"><div class="k">${lang==='en'?'52w Low':'שפל 52 שבועות'}</div><div class="v">$${d.week52_low??'—'}</div></div>
-        <div class="stat"><div class="k">${lang==='en'?'Sector':'סקטור'}</div><div class="v" style="font-size:11px;">${d.sector||'—'}</div></div>
+        <div class="stat"><div class="k">${lang==='en'?'Sector':'סקטור'}</div><div class="v" style="font-size:11px;">${escH(d.sector||'—')}</div></div>
         <div class="stat"><div class="k">${lang==='en'?'P/E Ratio':'מכפיל P/E'}</div><div class="v">${d.pe_ratio?d.pe_ratio.toFixed(1):'—'}</div></div>
       </div>
       <div class="ai-box">
@@ -6454,7 +6481,7 @@ function hookText(m){ return lang==='he' ? (m.hook_he||'') : (HOOK_EN[m.tag]||''
 
 // ==== v14: privacy consent, legal pages, personal-data tools ====
 const LEGAL_CONTACT_EMAIL = '';   // <-- put your contact email here (required for a public product)
-const LEGAL_LAST_UPDATED = '2026-10-18';
+const LEGAL_LAST_UPDATED = '2026-11-04';
 function consentState(){ try{ return localStorage.getItem('swing_consent'); }catch(e){ return null; } }
 function setConsent(v){ try{ localStorage.setItem('swing_consent', v); if(v!=='yes') localStorage.removeItem('swing_sid'); }catch(e){} const b=document.getElementById('consent-banner'); if(b) b.remove(); if(v==='yes') track('page_view', null); }
 function renderConsentBanner(){
@@ -6478,22 +6505,22 @@ function _legalDoc(kind){
   const mail = LEGAL_CONTACT_EMAIL ? escH(LEGAL_CONTACT_EMAIL) : (en?'(contact email not set)':'(כתובת מייל ליצירת קשר טרם הוגדרה)');
   if(kind==='privacy') return en ? `
     <h3>Privacy Policy</h3><p class="lg-dim">Last updated: ${LEGAL_LAST_UPDATED}</p>
-    <p><b>What we collect.</b> (1) If you sign in with Google: your email address, name and profile picture, as provided by Google, plus the tickers on your watchlist and the last-login time. (2) If you allow it in the consent banner: anonymous usage events (page views, tickers or news categories opened) tied to a random identifier stored in your browser, not to your name or email. (3) Technical data processed by our hosting providers (such as IP address in server logs).</p>
-    <p><b>Browser storage.</b> We store in your browser: your language and theme, selected news categories, the sign-in token (needed to keep you signed in), and — only if you allow analytics — the random identifier.</p>
-    <p><b>Why.</b> To operate the site, keep your personal watchlist, secure the service and, with your consent, understand which features are used and improve the service.</p>
+    <p><b>What we collect.</b> (1) If you sign in with Google: your email address, name and profile picture, as provided by Google, and the last-login time. (2) What you add yourself while signed in: your watchlist, the trades you record (prices, quantities, dates, notes), your price alerts, and — if you turn on notifications — your device's notification address and your notification choices. (3) If you allow it in the consent banner: anonymous usage events (page views, tickers or news categories opened) tied to a random identifier stored in your browser, not to your name or email. (4) Technical data processed by our hosting providers (such as IP address in server logs). On a first visit your country, as seen by our hosting provider, chooses the site's language; it is not stored.</p>
+    <p><b>Browser storage.</b> We store in your browser: your language and theme, your filters and selected news categories, recent data so that the site opens quickly, the sign-in token (needed to keep you signed in), and — only if you allow analytics — the random identifier.</p>
+    <p><b>Why.</b> To operate the site, keep your personal watchlist, trades and alerts, send the notifications you asked for, secure the service and, with your consent, understand which features are used and improve the service.</p>
     <p><b>Service providers.</b> Hosting and database (Render, Neon, Vercel — servers may be outside your country, including the US), Google (sign-in, fonts), TradingView (embedded charts), and market-data and news sources listed under "Data sources". These providers may process technical data such as your IP address according to their own policies.</p>
     <p><b>Retention.</b> Account data is kept until you delete your account. Raw anonymous usage events are deleted after 180 days.</p>
-    <p><b>Your rights.</b> From the profile menu you can download a copy of your data and permanently delete your account and watchlist. You may also contact us to request access, correction or deletion.</p>
+    <p><b>Your rights.</b> From the profile menu you can download a copy of your data and permanently delete your account with everything saved in it (watchlist, trades, alerts, notification devices). You may also contact us to request access, correction or deletion.</p>
     <p><b>Security.</b> We use encrypted connections and limit access to the database, but no system is completely secure.</p>
     <p><b>Changes to this policy.</b> We may update this policy as the service develops. Material changes, such as a new use of your data, will be published here with a new "last updated" date and, where required by law, will ask for your consent.</p>
     <p><b>Contact.</b> ${mail}</p>` : `
     <h3>מדיניות פרטיות</h3><p class="lg-dim">עודכן לאחרונה: ${LEGAL_LAST_UPDATED}</p>
-    <p><b>איזה מידע נאסף.</b> (1) אם התחברת עם Google: כתובת המייל, השם ותמונת הפרופיל כפי ש-Google מוסרת, רשימת המעקב שלך וזמן ההתחברות האחרון. (2) אם אישרת בבאנר ההסכמה: אירועי שימוש אנונימיים (צפייה בעמודים, בטיקרים או בקטגוריות חדשות) המקושרים למזהה אקראי בדפדפן, לא לשם או למייל שלך. (3) מידע טכני שמעובד אצל ספקי האחסון (למשל כתובת IP ביומני שרת).</p>
-    <p><b>אחסון בדפדפן.</b> נשמרים בדפדפן שלך: השפה וערכת הנושא, קטגוריות חדשות שנבחרו, אסימון ההתחברות (נדרש כדי להישאר מחובר), ורק אם אישרת סטטיסטיקה — המזהה האקראי.</p>
-    <p><b>למה.</b> להפעלת האתר, לשמירת רשימת המעקב האישית, לאבטחת השירות ו— בהסכמתך — להבין באילו תכונות משתמשים ולשפר את השירות.</p>
+    <p><b>איזה מידע נאסף.</b> (1) אם התחברת עם Google: כתובת המייל, השם ותמונת הפרופיל כפי ש-Google מוסרת, וזמן ההתחברות האחרון. (2) מה שהוספת בעצמך כשאתה מחובר: רשימת המעקב, העסקאות שרשמת (מחירים, כמויות, תאריכים, הערות), התראות המחיר, ואם הפעלת התראות — כתובת ההתראות של המכשיר והבחירות שלך לגביהן. (3) אם אישרת בבאנר ההסכמה: אירועי שימוש אנונימיים (צפייה בעמודים, בטיקרים או בקטגוריות חדשות) המקושרים למזהה אקראי בדפדפן, לא לשם או למייל שלך. (4) מידע טכני שמעובד אצל ספקי האחסון (למשל כתובת IP ביומני שרת). בכניסה הראשונה המדינה שלך, כפי שספק האחסון רואה אותה, קובעת את שפת האתר; היא לא נשמרת.</p>
+    <p><b>אחסון בדפדפן.</b> נשמרים בדפדפן שלך: השפה וערכת הנושא, המסננים וקטגוריות החדשות שבחרת, נתונים אחרונים כדי שהאתר ייפתח מהר, אסימון ההתחברות (נדרש כדי להישאר מחובר), ורק אם אישרת סטטיסטיקה — המזהה האקראי.</p>
+    <p><b>למה.</b> להפעלת האתר, לשמירת רשימת המעקב, העסקאות וההתראות שלך, לשליחת ההתראות שביקשת, לאבטחת השירות ו— בהסכמתך — להבין באילו תכונות משתמשים ולשפר את השירות.</p>
     <p><b>ספקי שירות.</b> אחסון ומסד נתונים (Render, Neon, Vercel — השרתים עשויים להיות מחוץ לישראל, כולל בארה"ב), Google (התחברות, גופנים), TradingView (גרפים משובצים), ומקורות נתוני השוק והחדשות המפורטים תחת "מקורות מידע". ספקים אלה עשויים לעבד מידע טכני כמו כתובת IP לפי מדיניותם.</p>
     <p><b>שמירה.</b> נתוני החשבון נשמרים עד שתמחק את החשבון. אירועי שימוש אנונימיים גולמיים נמחקים לאחר 180 יום.</p>
-    <p><b>הזכויות שלך.</b> מתפריט הפרופיל אפשר להוריד עותק של המידע ולמחוק לצמיתות את החשבון ורשימת המעקב. אפשר גם לפנות אלינו בבקשה לעיון, תיקון או מחיקה.</p>
+    <p><b>הזכויות שלך.</b> מתפריט הפרופיל אפשר להוריד עותק של המידע ולמחוק לצמיתות את החשבון עם כל מה שנשמר בו (רשימת מעקב, עסקאות, התראות, מכשירים להתראות). אפשר גם לפנות אלינו בבקשה לעיון, תיקון או מחיקה.</p>
     <p><b>אבטחה.</b> אנו משתמשים בחיבורים מוצפנים ומגבילים גישה למסד הנתונים, אך אין מערכת מאובטחת לחלוטין.</p>
     <p><b>שינויים במדיניות.</b> ייתכן שנעדכן מדיניות זו ככל שהשירות מתפתח. שינויים מהותיים, כגון שימוש חדש במידע שלך, יפורסמו כאן עם תאריך עדכון חדש, ואם החוק דורש — נבקש את הסכמתך מחדש.</p>
     <p><b>יצירת קשר.</b> ${mail}</p>`;
@@ -6550,7 +6577,7 @@ async function exportMyData(){
 }
 async function deleteMyAccount(){
   closeProfileMenu();
-  if(!confirm(lang==='en'?'Permanently delete your account and watchlist? This cannot be undone.':'למחוק לצמיתות את החשבון ורשימת המעקב? אי אפשר לשחזר.')) return;
+  if(!confirm(lang==='en'?'Permanently delete your account with your watchlist, trades and alerts? This cannot be undone.':'למחוק לצמיתות את החשבון, עם רשימת המעקב, העסקאות וההתראות? אי אפשר לשחזר.')) return;
   try{
     const res = await authFetch(`${API_BASE}/api/auth/me`, {method:'DELETE'});
     if(!res.ok) throw new Error();
@@ -6576,7 +6603,7 @@ window.addEventListener('load', renderConsentBanner);
 
 // ---- Accounts: Sign in with Google ----
 // The Client ID is public by design (not a secret). The server verifies the
-// Google credential and returns its own 30-day token, kept in localStorage
+// Google credential and returns its own 90-day token, kept in localStorage
 // and sent as "Authorization: Bearer ..." on personal endpoints (watchlist).
 const GOOGLE_CLIENT_ID = "99592999743-akoj9qjfku8l6uio597m4dl08shi0onv.apps.googleusercontent.com";
 let authToken = localStorage.getItem('swing_token') || null;
@@ -8297,8 +8324,16 @@ function snapTimeLabel(){
 
 let apiConnected = false;
 let bgRetryTimer = null;
+let _apiBusy = false;           // v34: one load at a time (its retries can last ~40 s; the tab can come back meanwhile)
+let _apiLoadedAt = 0;
 
 async function loadFromApi(){
+  if(_apiBusy) return;
+  _apiBusy = true;
+  try { await _loadFromApi(); if(apiConnected) _apiLoadedAt = Date.now(); } finally { _apiBusy = false; }
+}
+
+async function _loadFromApi(){
   // Attempts spread out to cover a Render cold-start (usually 30-60s):
   // immediate, then +5s, +12s, +20s waits between tries.
   const waits = [0, 5000, 12000, 20000];
@@ -8454,9 +8489,11 @@ function applyLang(){
   document.documentElement.setAttribute('lang', lang === 'he' ? 'he' : 'en');
   // v26: applyLang runs every 20 s — on a stock page (/stock/KO) keep the stock's title, don't reset it
   const _stockPath = location.pathname.match(/^\/stock\/([^\/]+)/);
-  document.title = _stockPath && currentPage === 'deepdive'
-    ? `${decodeURIComponent(_stockPath[1])} — ${lang === 'en' ? 'stock analysis' : 'ניתוח מניה'} · Swing Desk`
-    : (lang==='en' ? 'Swing Desk — Real-time trading dashboard' : 'Swing Desk — דשבורד מסחר');
+  let _stockTk = null;
+  if(_stockPath){ try { _stockTk = decodeURIComponent(_stockPath[1]); } catch(e){ /* a broken address must not stop this function */ } }
+  document.title = _stockTk && currentPage === 'deepdive'
+    ? `${_stockTk} — ${lang === 'en' ? 'stock analysis' : 'ניתוח מניה'} · Swing Desk`
+    : (lang==='en' ? 'Swing Desk — Stock Scanner, Technical Analysis & Market News' : 'Swing Desk — סורק מניות, ניתוח טכני וחדשות שוק');
   document.getElementById('header-sub').textContent = t.sub;
   document.getElementById('search-input').placeholder = t.search_placeholder;
   document.getElementById('search-input-mobile').placeholder = t.search_placeholder;
@@ -8663,15 +8700,25 @@ const hebDir = (function(){
 
 restoreSnapshot();          // v20c: draw the last saved data at once, then refresh from the server
 maybeStartTour();           // v26: the short guide, on the first visit only
+// v34: the scanner and the news used to be asked for every 20 seconds, even in a tab left in the background — all day, for
+// data that changes every 30 minutes at most — and that alone kept the database awake (its monthly compute hours are limited).
+// Now every 5 minutes, only while the tab is on the screen; coming back to the tab after a while refreshes at once.
+const POLL_MAIN_MS = 5 * 60000, POLL_MOVERS_MS = 3 * 60000, POLL_TICKER_MS = 90000;
 loadFromApi();
-setInterval(loadFromApi, 20000);
+setInterval(() => { if(!document.hidden) loadFromApi(); }, POLL_MAIN_MS);
 loadMarketMovers();
-setInterval(loadMarketMovers, 60000);
+setInterval(() => { if(!document.hidden) loadMarketMovers(); }, POLL_MOVERS_MS);
 loadMarketTicker();
-setInterval(loadMarketTicker, 90000);
+setInterval(() => { if(!document.hidden) loadMarketTicker(); }, POLL_TICKER_MS);
+document.addEventListener('visibilitychange', () => {
+  if(document.hidden || Date.now() - _apiLoadedAt < 2 * 60000) return;
+  loadFromApi();
+  loadMarketMovers();
+  loadMarketTicker();
+});
 const econViewActive = () => currentPage==='pulse' && pulseView==='events';
-setInterval(()=>{ if(econLoaded && econViewActive()) loadEconActive(); }, 300000);
-setInterval(()=>{ if(econLoaded && econViewActive()) renderEconActive(); }, 60000);
+setInterval(()=>{ if(!document.hidden && econLoaded && econViewActive()) loadEconActive(); }, 300000);
+setInterval(()=>{ if(!document.hidden && econLoaded && econViewActive()) renderEconActive(); }, 60000);
 refreshWatchlistData();
 loadPatternStats();
 

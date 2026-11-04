@@ -41,7 +41,7 @@ import yfinance as yf
 
 SEC_HEADERS = {"User-Agent": "SwingDesk-Dashboard admin@swingdesk.app"}   # SEC fair-use: a descriptive User-Agent
 
-CACHE_VERSION = 3             # bump when the numbers' logic changes, so stored copies are rebuilt, not served
+CACHE_VERSION = 4             # bump when the numbers' logic changes, so stored copies are rebuilt, not served
 PE_NM_ABOVE = 300              # trailing P/E above this = earnings near zero -> shown as "not meaningful"
 SIDE_CALLS_BUDGET_SEC = 9      # all Yahoo extras together; whatever is slower is skipped (SEC data still returned)
 
@@ -574,6 +574,44 @@ def _drop_if_stale(series: dict, latest_income: str) -> dict:
     return {} if gap > STALE_SERIES_DAYS else series
 
 
+PARTIAL_SHARES_BELOW = 0.6     # v34: a share count under this share of the diluted average covers only part of the stock
+MCAP_REFERENCE_MAX_RATIO = 1.3 # v34: further than this from the stored market cap = the SEC-based figure is the wrong one
+PE_BAND_MIN_CURRENT = 1.0      # v34: a P/E under 1 means the price and the EPS are of different share classes (BRK-B / BRK-A)
+
+
+def pick_shares(shares_s: dict, diluted_s: dict, latest_income: str) -> Optional[float]:
+    """v34: the share count behind the market cap. Companies with several share classes file their cover-page count per
+    class, and those rows are not in the SEC's companyfacts — what is left there can be 15 years old or partial, and it
+    used to be multiplied by today's price as if current (shown on the site, with a P/E computed from it):
+      Visa: 469M shares from 2010 -> $203B instead of $799B, P/E 9. Mastercard: 123M from 2010 -> $82B instead of $576B, P/E 5.
+      Fox: "1" share from 2019 -> a market cap of $69. Nike, Comcast, CME: only one class -> 20-60% of the real figure.
+    So: a count older than the rest of the data is dropped, and one far below the diluted average gives way to that average.
+    None when SEC has nothing usable; apply_stock_estimates then uses the market cap the scanner stored."""
+    shares_s = _drop_if_stale(shares_s, latest_income)
+    diluted_s = _drop_if_stale(diluted_s, latest_income)
+    shares = float(shares_s[max(shares_s)]) if shares_s else None
+    diluted = float(diluted_s[max(diluted_s)]) if diluted_s else None
+    if diluted and diluted > 0 and (not shares or shares < PARTIAL_SHARES_BELOW * diluted):
+        shares = diluted
+    return round(shares, 0) if shares and shares > 0 else None
+
+
+def reconcile_market_cap(data: dict, reference: Optional[float]) -> None:
+    """v34: the SEC-based market cap against the one the scanner stored from Yahoo. Still from SEC when the two agree; no
+    reference = nothing to compare. When they are far apart (BRK-B: $540M vs $1.2T; a count of Class A shares at the price of
+    a Class B share) or SEC has none, the stored figure is used, and the trailing P/E is computed from it."""
+    if not reference or reference <= 0:
+        return
+    current = data.get("market_cap")
+    if current and 1 / MCAP_REFERENCE_MAX_RATIO <= float(current) / float(reference) <= MCAP_REFERENCE_MAX_RATIO:
+        return
+    data["market_cap"] = float(reference)
+    data["market_cap_source"] = "stored"
+    data["latest_shares_outstanding"] = None
+    ni = data.get("net_income_ltm")
+    data["trailing_pe"] = round(float(reference) / ni, 1) if ni and ni > 0 else None
+
+
 def _yf_gross_margin(ticker: str) -> dict:
     """{quarter end: gross margin %} from Yahoo's quarterly income statement (a ratio — currency does not matter)."""
     tk = yf.Ticker(ticker)
@@ -643,6 +681,8 @@ def build_fundamentals(ticker: str, cik_map: dict, info_getter: Optional[Callabl
     # dei:EntityCommonStockSharesOutstanding is on every 10-Q/10-K cover page — the fallback for market cap
     for d, v in sec_quarterly_series(deifacts, ["EntityCommonStockSharesOutstanding"], instant=True).items():
         shares_s.setdefault(d, v)
+    # as filed, not as a flow: a weighted average is never added up or subtracted across quarters
+    diluted_s = sec_quarterly_series(combined, ["WeightedAverageNumberOfDilutedSharesOutstanding"], instant=True)
 
     if not revenue_s and not ni_s:
         print(f"[info] fundamentals({ticker}): SEC facts had no usable quarterly (10-Q/10-K) revenue/net-income — "
@@ -691,9 +731,7 @@ def build_fundamentals(ticker: str, cik_map: dict, info_getter: Optional[Callabl
     diluted_eps_labels = [dt.strptime(d, "%Y-%m-%d").strftime("%b %Y") for d in eps_dates]
     diluted_eps = [round(float(v), 4) if (v := eps_s.get(d)) is not None else None for d in eps_dates]
 
-    latest_shares = None
-    if shares_s:
-        latest_shares = round(float(shares_s[max(shares_s)]), 0)
+    latest_shares = pick_shares(shares_s, diluted_s, latest_income)
     del combined
 
     # Yahoo extras, in parallel, within one time budget (each used to run one after the other)
@@ -801,8 +839,7 @@ def apply_stock_estimates(data: dict, ticker: str, cursor_ctx) -> None:
         row = cur.fetchone()
     if not row:
         return
-    if data.get("market_cap") is None and row["market_cap"]:
-        data["market_cap"] = float(row["market_cap"])
+    reconcile_market_cap(data, row["market_cap"])
     if data.get("trailing_pe") is None and row["trailing_pe"] and not (data.get("net_income_ltm") is not None
                                                                        and data["net_income_ltm"] <= 0):
         data["trailing_pe"] = round(float(row["trailing_pe"]), 1)
@@ -850,6 +887,9 @@ def mark_pe(data: dict) -> dict:
     fpe = data.get("forward_pe")
     if fpe is not None and (fpe <= 0 or fpe > PE_NM_ABOVE):
         data["forward_pe"] = None
+    band = data.get("pe_band")
+    if isinstance(band, dict) and band.get("current") is not None and band["current"] < PE_BAND_MIN_CURRENT:
+        data["pe_band"] = None
     return data
 
 

@@ -548,6 +548,14 @@ def init_db():
     #   1. blank '' source_url values -> NULL (Postgres treats every NULL as
     #      distinct, so they never collide under a UNIQUE constraint)
     #   2. delete older duplicate rows, keeping the earliest id per URL
+    # v34: once the constraint exists all of this is pointless — the DELETE joined the whole table with itself on every
+    # run, every 30 minutes, on a database with a monthly compute limit.
+    cur.execute("SELECT 1 FROM pg_constraint WHERE conname = 'macro_news_source_url_key'")
+    if cur.fetchone():
+        conn.commit()
+        cur.close()
+        conn.close()
+        return
     try:
         cur.execute("UPDATE macro_news SET source_url = NULL WHERE source_url = '';")
         cur.execute("""

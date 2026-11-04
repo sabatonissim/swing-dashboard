@@ -1,0 +1,127 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Python check</title>
+<pre id="out" style="white-space:pre-wrap;font:12px monospace">starting...</pre>
+<script src="https://cdn.jsdelivr.net/pyodide/v0.28.3/full/pyodide.js"></script>
+<script>
+const out = document.getElementById('out');
+const log = s => { out.textContent += '\n' + s; };
+window.__done = false;
+async function main(){
+  const py = await loadPyodide({indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.28.3/full/', stdout: log, stderr: log});
+  log('pyodide ' + py.version);
+  await py.loadPackage(['micropip', 'numpy', 'pandas', 'pydantic', 'pytest', 'requests', 'tzdata']);
+  const names = (await (await fetch('/list')).text()).split('\n').filter(Boolean);
+  py.FS.mkdirTree('/proj/tests/fixtures');
+  for(const n of names){
+    const text = await (await fetch('/src/' + encodeURI(n))).text();
+    py.FS.writeFile('/proj/' + n, text);
+  }
+  log('files: ' + names.length);
+  const micropip = py.pyimport('micropip');
+  await micropip.install(['pyflakes', 'fastapi==0.115.6']);
+  await py.runPythonAsync(await (await fetch('/src/__check__.py').catch(() => null))?.text?.() || CHECK);
+  window.__done = true;
+  log('DONE');
+}
+const CHECK = String.raw`
+import sys, types, os, pathlib, threading, traceback, builtins
+os.chdir('/proj'); sys.path.insert(0, '/proj')
+
+print('--- 1. compile + pyflakes')
+import pyflakes.api, pyflakes.reporter, io
+bad = 0
+for p in sorted(pathlib.Path('/proj').glob('*.py')) + [pathlib.Path('/proj/tests/test_core.py')]:
+    src = p.read_text(encoding='utf-8')
+    try:
+        compile(src, str(p), 'exec')
+    except SyntaxError as e:
+        print('SYNTAX', p.name, e); bad += 1; continue
+    w, e = io.StringIO(), io.StringIO()
+    pyflakes.api.check(src, p.name, pyflakes.reporter.Reporter(w, e))
+    lines = [l for l in w.getvalue().splitlines() if 'imported but unused' not in l and 'unable to detect undefined' not in l
+             and 'redefinition of unused' not in l and 'assigned to but never used' not in l and 'f-string is missing' not in l]
+    for l in lines + e.getvalue().splitlines():
+        print('FLAKE', l)
+print('compile errors:', bad)
+
+print('--- 2. stubs for what is not available here')
+threading.Thread.start = lambda self: None          # no threads in the browser; the server starts its loops at import
+yf = types.ModuleType('yfinance')
+class _T:
+    def __init__(self, *a, **k): pass
+yf.Ticker = _T; yf.download = lambda *a, **k: None; yf.screen = lambda *a, **k: None; yf.Search = _T
+sys.modules['yfinance'] = yf
+pg = types.ModuleType('psycopg2'); ext = types.ModuleType('psycopg2.extras')
+class OperationalError(Exception): pass
+def _connect(*a, **k): raise OperationalError('no database here')
+pg.connect = _connect; pg.OperationalError = OperationalError; pg.Error = Exception; pg.extras = ext
+ext.RealDictCursor = object; ext.Json = lambda x: x; ext.execute_values = lambda *a, **k: None
+sys.modules['psycopg2'] = pg; sys.modules['psycopg2.extras'] = ext
+for name in ('feedparser',):
+    sys.modules.setdefault(name, types.ModuleType(name))
+
+print('--- 3. the real test file')
+import pytest
+rc = pytest.main(['-q', '-x', '--no-header', '-p', 'no:cacheprovider', '--maxfail=8', 'tests/test_core.py'])
+print('pytest exit code:', rc)
+
+print('--- 4. the server through its real middleware')
+import asyncio, json
+import fastapi.routing, fastapi.dependencies.utils
+async def _direct(fn, *a, **k): return fn(*a, **k)
+fastapi.routing.run_in_threadpool = _direct
+fastapi.dependencies.utils.run_in_threadpool = _direct
+import api_server as api
+
+async def call(method, path, headers=None, body=b''):
+    raw = [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
+    path_only, _, qs = path.partition('?')
+    scope = {'type': 'http', 'asgi': {'version': '3.0'}, 'http_version': '1.1', 'method': method, 'scheme': 'https', 'path': path_only,
+             'raw_path': path_only.encode(), 'query_string': qs.encode(), 'root_path': '', 'headers': raw, 'client': ('1.2.3.4', 1), 'server': ('x', 443)}
+    sent = {'status': None, 'headers': {}, 'body': b''}
+    first = {'v': True}
+    async def receive():
+        if first['v']:
+            first['v'] = False
+            return {'type': 'http.request', 'body': body, 'more_body': False}
+        await asyncio.sleep(30)
+        return {'type': 'http.disconnect'}
+    async def send(m):
+        if m['type'] == 'http.response.start':
+            sent['status'] = m['status']; sent['headers'] = {k.decode().lower(): v.decode() for k, v in m['headers']}
+        elif m['type'] == 'http.response.body':
+            sent['body'] += m.get('body', b'')
+    await api.app(scope, receive, send)
+    return sent
+
+SITE = 'https://swing-desk-tau.vercel.app'
+async def run():
+    r = await call('OPTIONS', '/api/trades/1', {'Origin': SITE, 'Access-Control-Request-Method': 'PUT', 'Access-Control-Request-Headers': 'authorization,content-type'})
+    print('preflight PUT:', r['status'], r['headers'].get('access-control-allow-methods'))
+    r = await call('OPTIONS', '/api/trades/1', {'Origin': 'https://evil.example', 'Access-Control-Request-Method': 'PUT'})
+    print('preflight other site:', r['status'], r['body'][:40])
+    r = await call('GET', '/robots.txt')
+    print('robots:', r['status'], r['body'])
+    r = await call('GET', '/api/ping', {'Origin': SITE})
+    print('ping:', r['status'], r['body'], 'noindex=', r['headers'].get('x-robots-tag'), 'cors=', r['headers'].get('access-control-allow-origin'))
+    r = await call('GET', '/api/lookup/<img>', {'Origin': SITE})
+    print('bad ticker:', r['status'], r['body'], 'cors=', r['headers'].get('access-control-allow-origin'))
+    r = await call('POST', '/api/track', {'Content-Type': 'application/json', 'Origin': SITE}, json.dumps({'event_type': 'dd_tab', 'entity_id': 'tech', 'session_id': 'abc-1'}).encode())
+    print('track ok:', r['status'], r['body'], 'buffered=', len(api._track_buffer))
+    r = await call('POST', '/api/track', {'Content-Type': 'application/json'}, json.dumps({'event_type': 'hack'}).encode())
+    print('track bad:', r['status'])
+    r = await call('POST', '/api/track', {'Content-Type': 'application/json', 'Content-Length': '100000'}, b'{}')
+    print('big body:', r['status'], r['body'])
+    r = await call('PUT', '/api/trades/1', {'Content-Type': 'application/json'}, b'{}')
+    print('PUT without login:', r['status'])
+    for i in range(45):
+        r = await call('GET', '/api/lookup/<img>', {'Origin': SITE})
+    print('after 45 heavy calls:', r['status'], r['headers'].get('retry-after'), 'cors=', r['headers'].get('access-control-allow-origin'))
+try:
+    await run()
+except Exception as e:
+    print('ASGI step failed:', type(e).__name__, e); traceback.print_exc()
+`;
+main().catch(e => { log('FAILED: ' + e); window.__done = true; });
+</script>

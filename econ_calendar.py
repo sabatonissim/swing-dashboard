@@ -1196,6 +1196,15 @@ def build_calendar(get_conn=None, days=21, limit=14):
         return _cset(key, res)
 
 
+def cached_calendar(get_conn=None, days=21, limit=14, max_age=6 * 3600):
+    """v34: for the server's alert thread, which looks every 5 minutes day and night: the copy in memory while it is
+    younger than max_age, with no rebuild and no database. Release times are fixed in advance, so hours-old is fine here."""
+    hit = _cache.get(("result", days, limit))
+    if hit and time.time() - hit[0] < max_age:
+        return hit[1]
+    return build_calendar(get_conn, days, limit)
+
+
 def warm_up(get_conn=None):
     """Call once at server start: builds the calendar in a background thread so the
     first visitor does not wait for the government calendars + FRED downloads."""

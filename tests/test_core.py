@@ -244,6 +244,140 @@ def test_data_health_rules(api):
     assert dh.MOVERS_MAX_AGE_DAYS == api.MOVERS_MAX_AGE_DAYS            # the check counts what the site really shows
 
 
+def test_share_count_rules():
+    """v34: the numbers behind the market cap. Real cases of 4.11.2026: the SEC's facts for companies with several share
+    classes end years ago or cover one class only, and they were multiplied by today's price as if current."""
+    import fundamentals as f
+    q = "2026-09-30"
+    assert f.pick_shares({"2010-01-27": 469_280_842}, {}, q) is None                                   # Visa: 2010, no diluted tag
+    assert f.pick_shares({"2010-10-27": 122_530_193}, {q: 884_000_000}, q) == 884_000_000              # Mastercard
+    assert f.pick_shares({"2019-03-18": 1}, {q: 428_000_000}, q) == 428_000_000                        # Fox: "1" share
+    assert f.pick_shares({q: 880_000_000}, {q: 1_480_000_000}, q) == 1_480_000_000                     # one class only (Nike)
+    assert f.pick_shares({q: 4_300_000_000}, {q: 4_310_000_000}, q) == 4_300_000_000                   # KO: the count stays
+    assert f.pick_shares({q: 4_300_000_000}, {}, q) == 4_300_000_000
+    assert f.pick_shares({}, {}, q) is None
+    assert f.pick_shares({q: 1_000}, {"2015-03-31": 9_000_000}, q) == 1_000                            # a stale diluted figure is ignored
+
+
+def test_market_cap_reference():
+    """v34: far from the scanner's stored figure -> the stored figure, and the P/E computed from it."""
+    import fundamentals as f
+    brk = {"market_cap": 540_000_000.0, "net_income_ltm": 80e9, "trailing_pe": 0.0, "latest_shares_outstanding": 941_481}
+    f.reconcile_market_cap(brk, 1.2e12)
+    assert brk["market_cap"] == 1.2e12 and brk["trailing_pe"] == 15.0 and brk["latest_shares_outstanding"] is None
+    v = {"market_cap": None, "net_income_ltm": 20e9, "trailing_pe": None}                              # SEC has no count at all
+    f.reconcile_market_cap(v, 8e11)
+    assert v["market_cap"] == 8e11 and v["trailing_pe"] == 40.0
+    ko = {"market_cap": 4.1e11, "net_income_ltm": 1.5e10, "trailing_pe": 27.3}                         # close enough: SEC's stays
+    f.reconcile_market_cap(ko, 4.0e11)
+    assert ko["market_cap"] == 4.1e11 and ko["trailing_pe"] == 27.3 and "market_cap_source" not in ko
+    loss = {"market_cap": 1.0, "net_income_ltm": -5e8, "trailing_pe": None}
+    f.reconcile_market_cap(loss, 3e10)
+    assert loss["market_cap"] == 3e10 and loss["trailing_pe"] is None
+    same = {"market_cap": 1e9, "net_income_ltm": 1e8, "trailing_pe": 10.0}                             # nothing to compare with
+    f.reconcile_market_cap(same, None)
+    assert same["market_cap"] == 1e9
+    band = f.mark_pe({"net_income_ltm": 1e9, "trailing_pe": 15.0, "pe_band": {"current": 0.03}})       # BRK-B's price / BRK-A's EPS
+    assert band["pe_band"] is None and band["trailing_pe"] == 15.0
+
+
+def test_refresh_mark(api):
+    """v34: answers kept "until the next refresh" run out at hh:07 and hh:37, when the database is awake anyway."""
+    m = lambda s: api._next_refresh_mark(s)
+    assert m(0) == 7 * 60                          # 00:00 -> 00:07
+    assert m(7 * 60 - 1) == 7 * 60
+    assert m(7 * 60) == 37 * 60                    # exactly on the mark -> the next one
+    assert m(36 * 60) == 37 * 60
+    assert m(37 * 60 + 1) == 67 * 60
+
+
+def test_cached_answer(api):
+    """v34: answered from memory, per set of parameters; a failure serves the last good answer; a first failure is an error."""
+    calls = {"n": 0, "fail": False}
+
+    @api._cached_answer(ttl_sec=60, max_keys=2)
+    def fn(a=1):
+        calls["n"] += 1
+        if calls["fail"]:
+            raise RuntimeError("database asleep")
+        return {"a": a, "n": calls["n"]}
+
+    assert fn(a=1)["n"] == 1 and fn(a=1)["n"] == 1      # the second call came from memory
+    assert fn(a=2)["n"] == 2                            # other parameters: computed
+
+    @api._cached_answer(ttl_sec=-1, max_keys=2)         # expired at once
+    def gone(a=1):
+        calls["n"] += 1
+        if calls["fail"]:
+            raise RuntimeError("database asleep")
+        return calls["n"]
+
+    calls["fail"] = False
+    good = gone(a=1)
+    calls["fail"] = True
+    assert gone(a=1) == good                            # the last good answer
+    with pytest.raises(RuntimeError):
+        gone(a=2)                                       # nothing to fall back on
+
+
+def test_cached_endpoints_keep_their_parameters(api):
+    """v34: the decorator must not hide an endpoint's query parameters from FastAPI."""
+    params = {r.path: {p.name for p in r.dependant.query_params} for r in api.app.routes if hasattr(r, "dependant")}
+    assert params["/api/stocks"] == {"limit"}
+    assert params["/api/macro-news/search"] == {"q", "days", "limit"}
+    assert params["/api/daily-digest"] == {"day", "top_n"}
+    assert params["/api/heatmap"] == {"index"}
+    assert params["/api/demo-portfolio"] == {"min_score", "top_per_day", "amount", "capital"}
+    paths = {r.path: {p.name for p in r.dependant.path_params} for r in api.app.routes if hasattr(r, "dependant")}
+    assert paths["/api/lookup/{ticker}"] == {"ticker"}
+    assert paths["/api/sector-comparison/{ticker}"] == {"ticker"}
+
+
+def test_alert_thread_leaves_the_database_asleep(api, monkeypatch):
+    """v34: the check that runs every 5 minutes, day and night, must not touch the database while no release is near —
+    it used to rebuild the calendar each time, so Neon never reached its 5 idle minutes and never slept."""
+    import time
+    import econ_calendar
+
+    def forbidden(*a, **k):
+        raise AssertionError("the alert thread woke the database")
+    monkeypatch.setattr(api, "get_conn", forbidden)
+    monkeypatch.setattr(api.push_alerts, "ready", lambda: True)
+    monkeypatch.setattr(econ_calendar, "build_calendar", forbidden)
+    copy = {"events": [{"impact": "high", "datetime_utc": "2099-01-01T12:00:00Z", "estimated": False, "actual": None}]}
+    monkeypatch.setitem(econ_calendar._cache, ("result", 21, 14), (time.time() - 3600, copy))     # an hour old: still used
+    api._macro_alert_check()
+
+
+def test_put_is_allowed_by_cors(api):
+    """v34: without PUT in the list the browser refuses PUT /api/trades/{id}: no trade could be edited or closed."""
+    cors = next(m for m in api.app.user_middleware if m.cls.__name__ == "CORSMiddleware")
+    args = getattr(cors, "kwargs", None) or getattr(cors, "options", {})
+    assert {"GET", "POST", "PUT", "DELETE"} <= set(args["allow_methods"])
+
+
+def test_news_schedule_never_doubles():
+    """v34: a week of minutes: every 30 minutes on weekdays 06:00-22:00 ET, hourly otherwise, and never both at once."""
+    import datetime as _dt
+    import scheduler as s
+    news = next(j for j in s.JOBS if j["name"] == "news")
+    quiet = next(j for j in s.JOBS if j["name"] == "news_quiet")
+    t = _dt.datetime(2026, 11, 2, 0, 0, tzinfo=s.ET)     # a Monday
+    busy, calm = 0, 0
+    for i in range(7 * 24 * 60):
+        now = t + _dt.timedelta(minutes=i)
+        a, b = s._is_slot(news, now), s._is_slot(quiet, now)
+        assert not (a and b), f"both news jobs at {now}"
+        busy += a
+        calm += b
+    assert busy == 5 * 33                                # 06:00 ... 22:00 = 33 half hours, 5 days
+    assert calm == 5 * 7 + 2 * 24                        # 00:00-05:00 and 23:00 on weekdays, every hour on the weekend
+    weekday_morning = t + _dt.timedelta(hours=8)
+    assert s._is_slot(news, weekday_morning) and not s._is_slot(quiet, weekday_morning)
+    sunday_noon = t + _dt.timedelta(days=6, hours=12)
+    assert s._is_slot(quiet, sunday_noon) and not s._is_slot(news, sunday_noon)
+
+
 def test_nasdaq_numbers(scanner):
     """v27: Nasdaq's calendar / screener text fields (market cap, price, EPS forecast in parentheses = negative)."""
     assert scanner._nasdaq_num("$1,171,562,950,000") == 1171562950000.0

@@ -1323,7 +1323,13 @@ def should_skip_scan(conn):
     return False
 
 
+_db_ready = False     # v34: once per run — a quick refresh called this three times, ~45 statements each
+
+
 def init_db():
+    global _db_ready
+    if _db_ready:
+        return
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
@@ -1422,6 +1428,7 @@ def init_db():
     conn.commit()
     cur.close()
     conn.close()
+    _db_ready = True
 
 
 def _native(v):
@@ -3293,7 +3300,8 @@ IMPLIED_MOVE_MAX_PER_RUN = 60        # v27: per quick run; the least recently pr
 def refresh_earnings_results(fast: bool = False):
     """fast (v33, --earnings-fast, every 5 minutes around the report hours): only today's reports still missing a figure,
     and revenue only from the SEC release (Yahoo's statement lags by days, so asking it the same day is wasted time)."""
-    init_db()
+    if not fast:          # v34: fast runs every 5 minutes; the quick refresh and the scan keep the tables up to date
+        init_db()
     now = datetime.now(timezone.utc)
     today = now.astimezone(ZoneInfo("America/New_York")).date() if fast else now.date()
     start = today if fast else today - timedelta(days=EARNINGS_CALENDAR_WINDOW_PAST_DAYS)

@@ -26,10 +26,10 @@ Endpoints:
     GET /api/ticker-search?q=    -> find any US stock/ETF by ticker or company name (compare picker)
     GET /api/econ-calendar       -> upcoming US economic events (CPI/NFP/FOMC/...) with forecast/previous/actual (econ_calendar.py)
 
-CORS is open for local development. Lock this down (allow_origins) before
-deploying publicly.
+CORS: only the origins in ALLOWED_ORIGINS (see below).
 """
 
+import functools
 import json
 import math
 import os
@@ -50,7 +50,7 @@ import numpy as np
 import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 import yfinance as yf
 import psycopg2
@@ -114,7 +114,8 @@ ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", _default
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_methods=["GET", "POST", "DELETE"],
+    # v34: PUT was missing, so the browser refused PUT /api/trades/{id} — editing or closing a trade always failed
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
     max_age=600,
 )
@@ -137,9 +138,16 @@ _RATE_RULES = [
     ("heavy",  ("/api/article-preview", "/api/lookup", "/api/fundamentals", "/api/ticker-search",
                 "/api/stock-news", "/api/technical-setup", "/api/watchlist-setups", "/api/price-compare",
                 "/api/sector-comparison", "/api/signal-history", "/api/backtest", "/api/demo-portfolio",
-                "/api/pattern-stats", "/api/company-profile"), 40, 60),
+                "/api/pattern-stats", "/api/company-profile", "/api/quotes"), 40, 60),
     ("default", ("/api/",), 240, 60),
 ]
+
+_MAX_BODY_BYTES = 64 * 1024   # v34: the largest real request (a trade with a long note) is ~3 KB
+# v34: the endpoints that take a stock symbol in the path — anything that cannot be a symbol stops here, before Yahoo,
+# the SEC or the database are asked about it
+_TICKER_PATH_RE = re.compile(r"^/api/(?:lookup|technical-setup|fundamentals|stock-news|sector-comparison|signal-history|"
+                             r"insider|street|ai-note|funds/stock|company-profile)/([^/]*)$")
+_TICKER_OK_RE = re.compile(r"^[A-Za-z0-9.\-^=]{1,12}$")
 
 
 def _client_ip(request: Request) -> str:
@@ -167,6 +175,16 @@ def _rate_limited(bucket: str, ip: str, limit: int, window: int) -> bool:
     return False
 
 
+def _refuse(request: Request, status: int, detail: str, headers: Optional[dict] = None) -> JSONResponse:
+    """An answer from the middleware below. It sits outside the CORS layer, so the header is added here — without it the
+    browser reports a network error instead of the status."""
+    headers = dict(headers or {})
+    origin = request.headers.get("origin")
+    if origin in ALLOWED_ORIGINS:
+        headers.update({"Access-Control-Allow-Origin": origin, "Vary": "Origin"})
+    return JSONResponse({"detail": detail}, status_code=status, headers=headers)
+
+
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
     path = request.url.path
@@ -174,18 +192,95 @@ async def security_middleware(request: Request, call_next):
         for name, prefixes, limit, window in _RATE_RULES:
             if path.startswith(prefixes):
                 if _rate_limited(name, _client_ip(request), limit, window):
-                    return JSONResponse({"detail": "too many requests — slow down"}, status_code=429,
-                                        headers={"Retry-After": str(window)})
+                    return _refuse(request, 429, "too many requests — slow down", {"Retry-After": str(window)})
                 break
+    if request.method in ("POST", "PUT", "DELETE"):
+        try:
+            too_big = int(request.headers.get("content-length") or 0) > _MAX_BODY_BYTES
+        except ValueError:
+            too_big = True
+        if too_big:
+            return _refuse(request, 413, "request too large")
+    m = _TICKER_PATH_RE.match(path)
+    if m and not _TICKER_OK_RE.match(m.group(1)):
+        return _refuse(request, 404, "ticker not found")
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
-    if path.startswith("/api/auth") or path.startswith("/api/watchlist"):
+    response.headers.setdefault("X-Robots-Tag", "noindex")     # v34: the API is not a page for search engines
+    if path.startswith(("/api/auth", "/api/watchlist", "/api/trades", "/api/alerts", "/api/push")):
         response.headers.setdefault("Cache-Control", "no-store")
     return response
+
+
+@app.get("/robots.txt", include_in_schema=False)
+def robots_txt():
+    return PlainTextResponse("User-agent: *\nDisallow: /\n")
+
+
+# ------------------------------------------------------------------
+# v34: ANSWERS FROM MEMORY. Every browser used to ask for the scanner + news every 20 seconds, even in a background tab,
+# and each answer opened a database connection — so one open tab kept the database awake all day (the free Neon plan
+# has 100 compute-hours a month; awake around the clock at the smallest size = 180). Most of this data changes only when
+# a GitHub job writes it, and the jobs start at hh:00 and hh:30 and finish within ~5 minutes. So an answer is kept until
+# the next hh:07 / hh:37 — the moment the database is awake anyway — whatever the number of visitors. Faster for
+# them (a database connection costs ~1 s here), and visitors alone can no longer wake the database.
+# Never for answers that depend on the signed-in user.
+# ------------------------------------------------------------------
+_REFRESH_OFFSET_MIN = 7
+
+
+def _next_refresh_mark(now: Optional[float] = None) -> float:
+    """Seconds since 1970 of the next hh:07 / hh:37 (a whole-hour time zone difference does not move them)."""
+    now = time.time() if now is None else now
+    offset = _REFRESH_OFFSET_MIN * 60
+    return ((now - offset) // 1800 + 1) * 1800 + offset
+
+
+def _cached_answer(ttl_sec: Optional[int] = None, max_keys: int = 64):
+    """Keeps an endpoint's answer per set of parameters: ttl_sec seconds, or (None) until the next refresh mark. Only one
+    computation per key at a time — the others wait for it. When it fails (database asleep or over quota, Yahoo down) the
+    last good answer is served, however old it is."""
+    def deco(fn):
+        store, locks, guard = {}, {}, threading.Lock()
+
+        def fresh(key):
+            hit = store.get(key)
+            return hit if hit and time.time() < hit[0] else None
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            key = (args, tuple(sorted(kwargs.items())))
+            hit = fresh(key)
+            if hit:
+                return hit[1]
+            with guard:
+                lock = locks.setdefault(key, threading.Lock())
+            try:
+                with lock:
+                    hit = fresh(key)
+                    if hit:
+                        return hit[1]
+                    try:
+                        value = fn(*args, **kwargs)
+                    except Exception as e:  # noqa: BLE001
+                        stale = store.get(key)
+                        if stale is None:
+                            raise
+                        print(f"[warn] {fn.__name__}: {type(e).__name__} — serving the last good answer")
+                        return stale[1]
+                    if len(store) >= max_keys:
+                        store.clear()
+                    store[key] = (time.time() + ttl_sec if ttl_sec else _next_refresh_mark(), value)
+                    return value
+            finally:
+                with guard:
+                    locks.pop(key, None)
+        return wrapper
+    return deco
 
 
 # Admin-only endpoints (analytics, debug): send header  X-Admin-Token: <ADMIN_TOKEN>.
@@ -375,6 +470,11 @@ def init_db():
     # v18d: real article URL behind a Google News link (filled by the news pipeline / on first preview) — news_links.py
     cur.execute("ALTER TABLE IF EXISTS macro_news ADD COLUMN IF NOT EXISTS article_url TEXT;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sector TEXT;")   # v19 sector filter
+    # v34: the two largest tables had no index on what every page asks for, so each read went through the whole table
+    cur.execute('CREATE INDEX IF NOT EXISTS scanned_stocks_ticker_ts ON scanned_stocks (ticker, "timestamp" DESC);')
+    cur.execute('CREATE INDEX IF NOT EXISTS scanned_stocks_ts ON scanned_stocks ("timestamp" DESC);')
+    cur.execute('CREATE INDEX IF NOT EXISTS macro_news_ts ON macro_news ("timestamp" DESC);')
+    cur.execute("CREATE INDEX IF NOT EXISTS macro_news_article_url ON macro_news (article_url);")
     push_alerts.ensure_tables(cur)                                                     # v19 alerts
     fundlib.ensure_table(cur)                                                          # v21 stored fundamentals
     # v24: the person's own trades — open ones are "my portfolio", closed ones the trade journal
@@ -559,7 +659,8 @@ except Exception as e:
 
 
 @app.get("/api/stocks")
-def get_stocks(limit: int = Query(default=25, le=300)):   # v27: le 100 -> 300 (the scan covers ~2,000 stocks now)
+@_cached_answer(max_keys=12)
+def get_stocks(limit: int = Query(default=25, ge=1, le=300)):   # v27: le 100 -> 300 (the scan covers ~2,000 stocks now)
     """One row per ticker (its most recent signal), not one row per scan
     run. The scan runs twice a day and INSERTs a fresh row for every match
     without deduping — a stock that keeps re-qualifying (e.g. a strong
@@ -577,6 +678,7 @@ def get_stocks(limit: int = Query(default=25, le=300)):   # v27: le 100 -> 300 (
             FROM (
                 SELECT DISTINCT ON (ticker) *
                 FROM scanned_stocks
+                WHERE timestamp >= NOW() - INTERVAL '45 days'
                 ORDER BY ticker, timestamp DESC
             ) s
             LEFT JOIN (
@@ -607,6 +709,7 @@ def get_stocks(limit: int = Query(default=25, le=300)):   # v27: le 100 -> 300 (
 
 
 @app.get("/api/backtest/patterns")
+@_cached_answer(max_keys=2)
 def get_backtest_patterns():
     """Distinct pattern types that have at least one resolved (10d) signal —
     for populating the pattern picker on the backtest page."""
@@ -689,6 +792,7 @@ def _median(vals):
 
 
 @app.get("/api/backtest")
+@_cached_answer(max_keys=64)
 def get_backtest(
     pattern: str = Query(default="all"),
     horizon: int = Query(default=10),
@@ -939,6 +1043,7 @@ def _run_demo_portfolio(rows, min_score, top_per_day, amount, capital):
 
 
 @app.get("/api/demo-portfolio")
+@_cached_answer(max_keys=64)
 def get_demo_portfolio(
     min_score: int = Query(default=80, ge=50, le=100),
     top_per_day: int = Query(default=3, ge=1, le=10),
@@ -1000,6 +1105,7 @@ def get_demo_portfolio(
 
 
 @app.get("/api/focus")
+@_cached_answer(max_keys=2)
 def get_focus():
     """v27 "today's focus": the latest day's picks (pipeline_a_scanner.save_focus_picks — RS >= 90, Stage 2 uptrend,
     ATR >= 3%, no report within 7 days, up to 5) and the public track record of every earlier pick: 10 / 20 trading
@@ -1036,16 +1142,12 @@ def get_focus():
 
 
 @app.get("/api/pattern-stats")
+@_cached_answer(max_keys=2)
 def get_pattern_stats():
     """Win rate and average forward return per pattern type, from independent
     signals only (same ticker+pattern counted once per holding period) and with
     NaN returns excluded — see the backtest note above for why both matter.
-    Patterns with fewer than 5 independent 10d signals are left out.
-    v20b: answered from memory for 10 minutes — it scans the whole signal history (~2.8 s measured) on every page
-    load, while the underlying returns only change when the scanner runs (twice a day)."""
-    cached = _pattern_stats_cache.get("v")
-    if cached and (time.time() - cached[0]) < PATTERN_STATS_CACHE_TTL_SEC:
-        return cached[1]
+    Patterns with fewer than 5 independent 10d signals are left out."""
     with db_cursor(dict_cursor=True) as (conn, cur):
         cur.execute(
             """
@@ -1082,12 +1184,7 @@ def get_pattern_stats():
             "avg_return_20d": round(sum(r20) / len(r20), 2) if r20 else None,
         })
     out.sort(key=lambda x: x["win_rate_10d"], reverse=True)
-    _pattern_stats_cache["v"] = (time.time(), out)
     return out
-
-
-_pattern_stats_cache = {}                 # "v" -> (timestamp, result)
-PATTERN_STATS_CACHE_TTL_SEC = 600
 
 
 # ------------------------------------------------------------------
@@ -1334,7 +1431,7 @@ _KEY_EVENT_RULES = [
 ]
 _KEY_WINDOW_H = 48
 _KEY_MAX = 5
-_key_cache = {"at": 0.0, "events": None}
+_key_cache = {"until": 0.0, "events": None}
 
 
 def _key_event_of(title: str) -> Optional[tuple]:
@@ -1396,14 +1493,14 @@ def _key_events(rows: list, now: Optional[dt] = None, max_events: int = _KEY_MAX
 
 
 def _recent_key_events() -> list:
-    """Key events of the last _KEY_WINDOW_H hours, cached for 5 minutes (the strip is polled by every visitor)."""
-    if _key_cache["events"] is not None and time.time() - _key_cache["at"] < 300:
+    """Key events of the last _KEY_WINDOW_H hours, kept until the next refresh mark (the strip is polled by every visitor)."""
+    if _key_cache["events"] is not None and time.time() < _key_cache["until"]:
         return _key_cache["events"]
     with db_cursor(dict_cursor=True) as (conn, cur):
         cur.execute("SELECT * FROM macro_news WHERE timestamp > NOW() - make_interval(hours => %s)", (_KEY_WINDOW_H,))
         rows = [_tidy_news_row(r) for r in cur.fetchall()]
     events = _key_events(rows)
-    _key_cache.update(at=time.time(), events=events)
+    _key_cache.update(until=_next_refresh_mark(), events=events)
     return events
 
 
@@ -1468,48 +1565,46 @@ def _feed_clean(rows, seen: set, promo_only: bool = False) -> list:
 
 
 @app.get("/api/macro-news")
-def get_macro_news(limit: int = Query(default=25, le=100)):
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+@_cached_answer(max_keys=12)
+def get_macro_news(limit: int = Query(default=25, ge=1, le=100)):
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        # Critical-impact stories (Fed rate decisions, wars, etc.) stay relevant
+        # for days, not just until the next batch of routine updates rolls in
+        # 30 minutes later. Reserve a slice of the response for recent Critical
+        # items specifically, so they don't get pushed out purely by the volume
+        # of newer but less important "High" items — those keep rotating
+        # normally with the per-category diversity cap below.
+        critical_slots = max(3, limit // 5)
+        cur.execute(
+            """
+            SELECT * FROM macro_news
+            WHERE impact_level = 'Critical'
+              AND timestamp > NOW() - INTERVAL '72 hours'
+            ORDER BY timestamp DESC
+            LIMIT %s
+            """,
+            (critical_slots,),
+        )
+        critical_rows = cur.fetchall()
+        critical_ids = [r["id"] for r in critical_rows] or [0]  # guard against an empty array in the NOT IN below
 
-    # Critical-impact stories (Fed rate decisions, wars, etc.) stay relevant
-    # for days, not just until the next batch of routine updates rolls in
-    # 30 minutes later. Reserve a slice of the response for recent Critical
-    # items specifically, so they don't get pushed out purely by the volume
-    # of newer but less important "High" items — those keep rotating
-    # normally with the per-category diversity cap below.
-    critical_slots = max(3, limit // 5)
-    cur.execute(
-        """
-        SELECT * FROM macro_news
-        WHERE impact_level = 'Critical'
-          AND timestamp > NOW() - INTERVAL '72 hours'
-        ORDER BY timestamp DESC
-        LIMIT %s
-        """,
-        (critical_slots,),
-    )
-    critical_rows = cur.fetchall()
-    critical_ids = [r["id"] for r in critical_rows] or [0]  # guard against an empty array in the NOT IN below
-
-    remaining = max(limit - len(critical_rows), 5)
-    per_category_cap = max(3, remaining // 5)
-    cur.execute(
-        """
-        SELECT * FROM (
-            SELECT *, ROW_NUMBER() OVER (PARTITION BY category_tag ORDER BY timestamp DESC) AS rn
-            FROM macro_news
-            WHERE id != ALL(%s)
-        ) ranked
-        WHERE rn <= %s
-        ORDER BY timestamp DESC
-        LIMIT %s
-        """,
-        (critical_ids, per_category_cap, remaining + 20),   # +20: room for the rows _feed_clean drops
-    )
-    other_rows = cur.fetchall()
-    cur.close()
-    conn.close()
+        remaining = max(limit - len(critical_rows), 5)
+        per_category_cap = max(3, remaining // 5)
+        # v34: only the last two weeks are ranked — the window function used to go through the whole table on every call
+        cur.execute(
+            """
+            SELECT * FROM (
+                SELECT *, ROW_NUMBER() OVER (PARTITION BY category_tag ORDER BY timestamp DESC) AS rn
+                FROM macro_news
+                WHERE id != ALL(%s) AND timestamp > NOW() - INTERVAL '14 days'
+            ) ranked
+            WHERE rn <= %s
+            ORDER BY timestamp DESC
+            LIMIT %s
+            """,
+            (critical_ids, per_category_cap, remaining + 20),   # +20: room for the rows _feed_clean drops
+        )
+        other_rows = cur.fetchall()
 
     seen: set = set()
     critical_rows = _feed_clean([_tidy_news_row(r) for r in critical_rows], seen)
@@ -1528,10 +1623,11 @@ def get_macro_news(limit: int = Query(default=25, le=100)):
 
 
 @app.get("/api/macro-news/search")
+@_cached_answer(ttl_sec=300, max_keys=64)
 def search_macro_news(
     q: str = Query(default="", max_length=100),
     days: int = Query(default=7, ge=1, le=30),
-    limit: int = Query(default=60, le=200),
+    limit: int = Query(default=60, ge=1, le=200),
 ):
     """Full search across macro_news, independent of the diversity/rotation
     algorithm the main feed (/api/macro-news) uses. That endpoint only ever
@@ -1541,52 +1637,44 @@ def search_macro_news(
     older-but-relevant stories seemed to "disappear". This endpoint instead
     queries the full macro_news table directly over a wider window (default
     7 days), so search actually has something to find."""
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
     query = q.strip()
-    if not query:
-        cur.execute(
-            """
-            SELECT * FROM macro_news
-            WHERE timestamp > NOW() - make_interval(days => %s)
-            ORDER BY timestamp DESC
-            LIMIT %s
-            """,
-            (days, limit),
-        )
-    else:
-        like_pattern = f"%{query}%"
-        cur.execute(
-            """
-            SELECT * FROM macro_news
-            WHERE timestamp > NOW() - make_interval(days => %s)
-              AND (
-                summary_he ILIKE %s OR
-                summary_en ILIKE %s OR
-                category_tag ILIKE %s OR
-                hook_he ILIKE %s
-              )
-            ORDER BY timestamp DESC
-            LIMIT %s
-            """,
-            (days, like_pattern, like_pattern, like_pattern, like_pattern, limit),
-        )
-
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        if not query:
+            cur.execute(
+                """
+                SELECT * FROM macro_news
+                WHERE timestamp > NOW() - make_interval(days => %s)
+                ORDER BY timestamp DESC
+                LIMIT %s
+                """,
+                (days, limit),
+            )
+        else:
+            like_pattern = f"%{query}%"
+            cur.execute(
+                """
+                SELECT * FROM macro_news
+                WHERE timestamp > NOW() - make_interval(days => %s)
+                  AND (
+                    summary_he ILIKE %s OR
+                    summary_en ILIKE %s OR
+                    category_tag ILIKE %s OR
+                    hook_he ILIKE %s
+                  )
+                ORDER BY timestamp DESC
+                LIMIT %s
+                """,
+                (days, like_pattern, like_pattern, like_pattern, like_pattern, limit),
+            )
+        rows = cur.fetchall()
     return [_tidy_news_row(r) for r in rows]
 
 
 @app.get("/api/ui-strings")
 def get_ui_strings(lang: str = Query(default="he", pattern="^(he|en)$")):
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT string_key, he, en FROM ui_strings")
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute("SELECT string_key, he, en FROM ui_strings")
+        rows = cur.fetchall()
     return {r["string_key"]: r[lang] for r in rows}
 
 
@@ -1597,12 +1685,14 @@ def ping():
 
 
 @app.get("/api/scheduler/status")
+@_cached_answer(ttl_sec=60, max_keys=1)
 def scheduler_status():
     """When each workflow fires next (ET), what the scheduler started recently, and whether it is on. No secrets."""
     return scheduler.status(get_conn)
 
 
 @app.get("/api/data-health")
+@_cached_answer(ttl_sec=60, max_keys=1)
 def get_data_health():
     """v32: the latest report of data_health.py (is the data fresh, does it add up) + the last 14 days' status.
     Read at the start of a work session; the site does not use it. No secrets."""
@@ -1621,11 +1711,8 @@ def get_data_health():
 @app.get("/api/health")
 def health():
     try:
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT 1")
-        cur.close()
-        conn.close()
+        with db_cursor() as (conn, cur):
+            cur.execute("SELECT 1")
         return {"status": "ok", "db": "connected"}
     except Exception as e:
         print(f"[error] health check failed: {type(e).__name__}: {e}")
@@ -2034,6 +2121,7 @@ def _norm_sector(s):
 
 
 @app.get("/api/sector-comparison/{ticker}")
+@_cached_answer(ttl_sec=600, max_keys=128)
 def get_sector_comparison(ticker: str, period: str = Query(default="1Y", pattern="^(1M|3M|YTD|1Y)$")):
     """How has this stock performed vs. the SPDR ETF for its own sector,
     over a selectable window (same 1M/3M/YTD/1Y choices as the home page's
@@ -2182,7 +2270,8 @@ def get_sector_comparison(ticker: str, period: str = Query(default="1Y", pattern
 
 
 @app.get("/api/signal-history/{ticker}")
-def get_signal_history(ticker: str, limit: int = Query(default=20, le=100)):
+@_cached_answer(ttl_sec=600, max_keys=256)
+def get_signal_history(ticker: str, limit: int = Query(default=20, ge=1, le=100)):
     """Every past scan signal for one specific ticker — the pattern that
     fired, when, and (once resolved) how it played out. Powers the
     'has this stock done this before?' section of the stock deep-dive page."""
@@ -4042,16 +4131,13 @@ def _compute_setup_candidates(hist: pd.DataFrame, ticker: str) -> list:
 def _latest_scan_signal(ticker: str) -> Optional[dict]:
     """The most recent scanner row for this ticker, if it is <= 5 days old."""
     try:
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT pattern_type, timestamp, trigger_text_he, trigger_text_en "
-            "FROM scanned_stocks WHERE ticker=%s ORDER BY timestamp DESC LIMIT 1",
-            (ticker,),
-        )
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
+        with db_cursor() as (conn, cur):
+            cur.execute(
+                "SELECT pattern_type, timestamp, trigger_text_he, trigger_text_en "
+                "FROM scanned_stocks WHERE ticker=%s ORDER BY timestamp DESC LIMIT 1",
+                (ticker,),
+            )
+            row = cur.fetchone()
     except Exception as e:
         print(f"[warn] technical-setup: couldn't read scanner signal for {ticker}: {e}")
         return None
@@ -4064,6 +4150,7 @@ def _latest_scan_signal(ticker: str) -> Optional[dict]:
 
 
 @app.get("/api/technical-setup/{ticker}")
+@_cached_answer(ttl_sec=300, max_keys=128)
 def get_technical_setup(ticker: str):
     ticker = _canon_ticker(ticker)
     # 2y, same as the scanner's own fetch, so both run the detectors on
@@ -4236,12 +4323,9 @@ def _fetch_one_watchlist_setup(ticker: str) -> Optional[dict]:
 
 @app.get("/api/watchlist-setups")
 def get_watchlist_setups(user_id: int = Depends(current_user_id)):
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT ticker FROM watchlist WHERE user_id = %s ORDER BY added_at DESC", (user_id,))
-    tickers = [r["ticker"] for r in cur.fetchall()]
-    cur.close()
-    conn.close()
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute("SELECT ticker FROM watchlist WHERE user_id = %s ORDER BY added_at DESC", (user_id,))
+        tickers = [r["ticker"] for r in cur.fetchall()]
 
     if not tickers:
         return {"results": []}
@@ -4269,7 +4353,21 @@ def get_watchlist_setups(user_id: int = Depends(current_user_id)):
     return {"results": results}
 
 
+def _description_quick(ticker: str) -> Optional[str]:
+    """v34: the SEC + Wikipedia description is three slow requests the first time a stock is opened, and the whole stock
+    page waited for it (7 s measured on BRK-B). At most 2.5 s here; what is slower finishes in the background and is kept
+    for the next visitor. Most stocks show their company profile instead anyway."""
+    ex = ThreadPoolExecutor(max_workers=1)
+    try:
+        return ex.submit(_sec_fallback_description, ticker).result(timeout=2.5)
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        ex.shutdown(wait=False)
+
+
 @app.get("/api/lookup/{ticker}")
+@_cached_answer(ttl_sec=60, max_keys=256)
 def lookup_stock(ticker: str):
     ticker = _canon_ticker(ticker)
 
@@ -4290,7 +4388,8 @@ def lookup_stock(ticker: str):
     last_err = None
     for attempt in range(2):
         try:
-            hist = tk.history(period="6mo", interval="1d", auto_adjust=False)   # actual prices, like TradingView (v18)
+            # actual prices, like TradingView (v18). v34: a full year — this also gives the 52-week range below
+            hist = tk.history(period="1y", interval="1d", auto_adjust=False)
             if hist is not None and not hist.empty:
                 break
         except Exception as e:
@@ -4346,9 +4445,11 @@ def lookup_stock(ticker: str):
         "change_pct": change_pct,
         "market_cap": market_cap,
         "avg_volume_20d": round(float(hist["Volume"].tail(20).mean()), 0) if len(hist) >= 20 else None,
-        "week52_high": info.get("fiftyTwoWeekHigh") or round(float(hist["Close"].max()), 2),
-        "week52_low": info.get("fiftyTwoWeekLow") or round(float(hist["Close"].min()), 2),
-        "description": info.get("longBusinessSummary") or _sec_fallback_description(ticker),
+        # v34: with .info blocked this was the highest/lowest CLOSE of the last SIX months, shown as the 52-week range on
+        # every stock page (INTC: "low" $59.29, really $32.89). Now the intraday high/low of the full year, like Yahoo's.
+        "week52_high": info.get("fiftyTwoWeekHigh") or round(float(hist["High"].max()), 2),
+        "week52_low": info.get("fiftyTwoWeekLow") or round(float(hist["Low"].min()), 2),
+        "description": info.get("longBusinessSummary") or _description_quick(ticker),
         "sub_industry": csv_info.get("sub_industry"),
         "exchange": info.get("exchange"),
         "sector": info.get("sector") or csv_info.get("sector"),
@@ -4463,13 +4564,13 @@ def ticker_search(q: str = Query(..., min_length=1, max_length=40)):
 
 @app.get("/api/price-compare")
 def price_compare(
-    tickers: str = Query(..., min_length=1),
+    tickers: str = Query(..., min_length=1, max_length=60),
     period: str = Query(default="6M", pattern="^(1M|3M|6M|YTD|1Y)$"),
 ):
     tks: List[str] = []
     for raw in tickers.split(","):
         t = _canon_ticker(raw)
-        if t and t not in tks:
+        if t and _TICKER_OK_RE.match(t) and t not in tks:
             tks.append(t)
     tks = tks[:3]
     if not tks:
@@ -4506,6 +4607,8 @@ def price_compare(
             "values": [None if pd.isna(v) else round((float(v) / base - 1) * 100, 2) for v in col.values],
         })
     payload = {"period": period, "dates": [d.strftime("%Y-%m-%d") for d in df.index], "series": series}
+    if len(_price_compare_cache) >= 200:     # v34: this cache had no limit (any three symbols = a new entry)
+        _price_compare_cache.clear()
     _price_compare_cache[cache_key] = (time.time(), payload)
     return payload
 
@@ -4537,49 +4640,44 @@ def _compute_atr_pct(hist: pd.DataFrame, period: int = 14) -> Optional[float]:
     return round(atr_val / price * 100, 2)
 
 
+def _watchlist_row(t: str) -> dict:
+    """Price/change/ATR all come from .history() — the call proven reliable from this deployment. The name: the S&P 500
+    list when it has the stock, else .info behind its circuit breaker (v34: .info is blocked from Render, and calling it
+    directly cost a slow failure per stock, one stock after the other)."""
+    row = {"ticker": t, "name": t, "price": None, "change_pct": None, "atr_pct": None}
+    try:
+        tk = yf.Ticker(t)
+        hist = tk.history(period="1mo", interval="1d", auto_adjust=False)   # actual prices, like the rest of the site
+        closes = hist["Close"].dropna()
+        if len(closes) >= 2:
+            price = float(closes.iloc[-1])
+            prev = float(closes.iloc[-2])
+            row["price"] = round(price, 2)
+            row["change_pct"] = round((price / prev - 1) * 100, 2)
+        atr_pct = _compute_atr_pct(hist)
+        if atr_pct is not None:
+            row["atr_pct"] = atr_pct
+        name = (_sp500_map_nowait().get(t) or {}).get("name")
+        if not name:
+            info = _get_info_with_retry(tk, t, "watchlist")
+            name = info.get("longName") or info.get("shortName")
+        if name:
+            row["name"] = name
+    except Exception as e:
+        print(f"[warn] watchlist history fetch failed for {t}: {e}")
+    return row
+
+
 @app.get("/api/watchlist")
 def get_watchlist(user_id: int = Depends(current_user_id)):
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT ticker FROM watchlist WHERE user_id = %s ORDER BY added_at DESC", (user_id,))
-    tickers = [r["ticker"] for r in cur.fetchall()]
-    cur.close()
-    conn.close()
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute("SELECT ticker FROM watchlist WHERE user_id = %s ORDER BY added_at DESC", (user_id,))
+        tickers = [r["ticker"] for r in cur.fetchall()]
 
     if not tickers:
         return []
-
-    # Price/change/ATR all come from .history() — the endpoint already
-    # proven reliable from Railway elsewhere in this file — rather than
-    # fast_info/quoteSummary-style calls. Company name has no way around
-    # needing .info; that call is wrapped separately so a name lookup
-    # failure never costs us the price/ATR data for that same ticker.
-    out = []
-    for t in tickers:
-        row = {"ticker": t, "name": t, "price": None, "change_pct": None, "atr_pct": None}
-        try:
-            tk = yf.Ticker(t)
-            hist = tk.history(period="1mo", interval="1d")
-            closes = hist["Close"].dropna()
-            if len(closes) >= 2:
-                price = float(closes.iloc[-1])
-                prev = float(closes.iloc[-2])
-                row["price"] = round(price, 2)
-                row["change_pct"] = round((price / prev - 1) * 100, 2)
-            atr_pct = _compute_atr_pct(hist)
-            if atr_pct is not None:
-                row["atr_pct"] = atr_pct
-            try:
-                name = tk.info.get("longName") or tk.info.get("shortName")
-                if name:
-                    row["name"] = name
-            except Exception as e:
-                print(f"[warn] watchlist name fetch failed for {t}: {e}")
-        except Exception as e:
-            print(f"[warn] watchlist history fetch failed for {t}: {e}")
-        out.append(row)
-
-    return out
+    with ThreadPoolExecutor(max_workers=4) as pool:      # v34: in parallel (20 stocks took about a minute one by one)
+        return list(pool.map(_watchlist_row, tickers))
 
 
 class WatchlistTicker(BaseModel):
@@ -4606,12 +4704,9 @@ def add_to_watchlist(body: WatchlistTicker, user_id: int = Depends(current_user_
 @app.delete("/api/watchlist/{ticker}")
 def remove_from_watchlist(ticker: str, user_id: int = Depends(current_user_id)):
     ticker = _canon_ticker(ticker)
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM watchlist WHERE ticker = %s AND user_id = %s", (ticker, user_id))
-    conn.commit()
-    cur.close()
-    conn.close()
+    with db_cursor() as (conn, cur):
+        cur.execute("DELETE FROM watchlist WHERE ticker = %s AND user_id = %s", (ticker, user_id))
+        conn.commit()
     return {"ticker": ticker, "removed": True}
 
 
@@ -4734,24 +4829,32 @@ def get_quotes(tickers: str = Query(..., min_length=1, max_length=800)):
     now = time.time()
     out = {t: _quote_cache[t][1] for t in tks if t in _quote_cache and now - _quote_cache[t][0] < _QUOTE_TTL_SEC}
     missing = [t for t in tks if t not in out]
+
+    def fetch(symbols, threads):
+        df = yf.download(symbols, period="7d", interval="1d", group_by="column", auto_adjust=False,
+                         threads=threads, progress=False)
+        close = df["Close"] if df is not None and not df.empty else None
+        if close is not None and isinstance(close, pd.Series):   # a single ticker can come back as one column
+            close = close.to_frame(symbols[0])
+        for t in symbols:
+            if close is None or t not in close.columns:
+                continue
+            s = pd.to_numeric(close[t], errors="coerce").dropna()
+            if s.empty:
+                continue
+            q = {"price": round(float(s.iloc[-1]), 4),
+                 "prev_close": round(float(s.iloc[-2]), 4) if len(s) >= 2 else None,
+                 "day": pd.Timestamp(s.index[-1]).strftime("%Y-%m-%d")}
+            _quote_cache[t] = (now, q)
+            out[t] = q
+
     if missing:
         try:
-            df = yf.download(missing, period="7d", interval="1d", group_by="column", auto_adjust=False,
-                             threads=True, progress=False)
-            close = df["Close"] if df is not None and not df.empty else None
-            if close is not None and isinstance(close, pd.Series):   # a single ticker can come back as one column
-                close = close.to_frame(missing[0])
-            for t in missing:
-                if close is None or t not in close.columns:
-                    continue
-                s = pd.to_numeric(close[t], errors="coerce").dropna()
-                if s.empty:
-                    continue
-                q = {"price": round(float(s.iloc[-1]), 4),
-                     "prev_close": round(float(s.iloc[-2]), 4) if len(s) >= 2 else None,
-                     "day": pd.Timestamp(s.index[-1]).strftime("%Y-%m-%d")}
-                _quote_cache[t] = (now, q)
-                out[t] = q
+            fetch(missing, True)
+            # v34: threads=True can lose a random stock ("database is locked", the same fix as the scanner's _yf_frames)
+            lost = [t for t in missing if t not in out]
+            if lost and len(lost) <= 20:
+                fetch(lost, False)
         except Exception as e:  # noqa: BLE001
             print(f"[warn] /api/quotes download failed for {len(missing)} ticker(s): {type(e).__name__}: {e}")
         if len(_quote_cache) > 2000:
@@ -4912,10 +5015,14 @@ def alert_settings(body: AlertSettings, user_id: int = Depends(current_user_id))
 MACRO_ALERT_CHECK_SEC = 300
 
 
+# v34 (Neon, 4.11.2026): these two checks run every 5 minutes, day and night. They used econ_calendar.build_calendar, whose
+# copy goes stale after 90 seconds — so each check started a rebuild that read and wrote the database. Neon sleeps only
+# after 5 quiet minutes, so the database NEVER slept (0.25 CU x 24 h = 6 compute-hours a day; 180 a month on a free plan
+# of 100). Release times are fixed in advance, so the alert thread now uses the copy in memory, up to 6 hours old.
 def _macro_alert_check():
     if not push_alerts.ready():
         return
-    events = (econ_calendar.build_calendar(get_conn) or {}).get("events") or []
+    events = (econ_calendar.cached_calendar(get_conn) or {}).get("events") or []
     now = dt.now(timezone.utc)             # (datetime is imported as `dt` in this file)
     slots = {}
     for e in events:
@@ -4937,11 +5044,13 @@ def _macro_alert_check():
 
 
 MORNING_BRIEF_WINDOW_ET = (8 * 60, 9 * 60 + 25)    # from 08:00 ET; a server that woke up late still sends until 09:25
+_morning_brief_done = None                         # the ET date the brief went out (v34: one database visit a day)
 
 
 def _morning_brief_check():
     """v23: the morning brief (push_alerts.notify_morning_brief) on weekdays from 08:00 ET. push_log keeps it to once
     per user per day, so checking every 5 minutes inside the window is safe."""
+    global _morning_brief_done
     if not push_alerts.ready():
         return
     from zoneinfo import ZoneInfo
@@ -4949,9 +5058,11 @@ def _morning_brief_check():
     mins = now_et.hour * 60 + now_et.minute
     if now_et.weekday() >= 5 or not (MORNING_BRIEF_WINDOW_ET[0] <= mins <= MORNING_BRIEF_WINDOW_ET[1]):
         return
+    if _morning_brief_done == now_et.date():
+        return
     today = now_et.date().isoformat()
     todays = []
-    for e in (econ_calendar.build_calendar(get_conn) or {}).get("events") or []:
+    for e in (econ_calendar.cached_calendar(get_conn) or {}).get("events") or []:
         if e.get("impact") not in ("high", "medium") or e.get("date_et") != today:
             continue
         try:
@@ -4965,6 +5076,7 @@ def _morning_brief_check():
         push_alerts.notify_morning_brief(conn, now_et.date(), todays)
     finally:
         conn.close()
+    _morning_brief_done = now_et.date()
 
 
 def _macro_alert_loop():
@@ -4978,6 +5090,10 @@ def _macro_alert_loop():
             _morning_brief_check()
         except Exception as e:  # noqa: BLE001
             print(f"[morning brief] check failed: {type(e).__name__}: {e}")
+        try:
+            _track_flush_if_due()
+        except Exception as e:  # noqa: BLE001
+            print(f"[track] flush failed: {type(e).__name__}: {e}")
         time.sleep(MACRO_ALERT_CHECK_SEC)
 
 
@@ -5107,22 +5223,19 @@ def _fetch_fallback_movers_from_db(limit: int) -> List[dict]:
     screener, but it actually returns data when Yahoo blocks/throttles
     the screener endpoint (which uses a different, stricter code path)."""
     try:
-        conn = get_conn()
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute(
-            """
-            SELECT ticker, change_pct, close_price
-            FROM universe_movers
-            WHERE change_pct IS NOT NULL
-              AND timestamp >= (SELECT MAX(timestamp) FROM universe_movers) - make_interval(days => %s)
-            ORDER BY ABS(change_pct) DESC
-            LIMIT %s
-            """,
-            (MOVERS_MAX_AGE_DAYS, limit),
-        )
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
+        with db_cursor(dict_cursor=True) as (conn, cur):
+            cur.execute(
+                """
+                SELECT ticker, change_pct, close_price
+                FROM universe_movers
+                WHERE change_pct IS NOT NULL
+                  AND timestamp >= (SELECT MAX(timestamp) FROM universe_movers) - make_interval(days => %s)
+                ORDER BY ABS(change_pct) DESC
+                LIMIT %s
+                """,
+                (MOVERS_MAX_AGE_DAYS, limit),
+            )
+            rows = cur.fetchall()
         return [{"ticker": r["ticker"], "change_pct": float(r["change_pct"]),
                   "price": float(r["close_price"]) if r["close_price"] is not None else None,
                   "name": ""} for r in rows]
@@ -5132,7 +5245,8 @@ def _fetch_fallback_movers_from_db(limit: int) -> List[dict]:
 
 
 @app.get("/api/market-movers")
-def market_movers(limit: int = Query(default=15, le=50)):
+@_cached_answer(ttl_sec=MOVERS_CACHE_TTL_SEC, max_keys=8)      # v34: also one Yahoo fetch at a time when the copy runs out
+def market_movers(limit: int = Query(default=15, ge=1, le=50)):
     now = time.time()
     if _movers_cache["data"] is not None and (now - _movers_cache["ts"]) < MOVERS_CACHE_TTL_SEC:
         return _movers_cache["data"][:limit]
@@ -5266,6 +5380,7 @@ def _fetch_sector_performance(period: str) -> dict:
 
 
 @app.get("/api/heatmap")
+@_cached_answer(max_keys=4)
 def get_heatmap(index: str = Query(default="sp500", pattern="^(sp500|nasdaq100)$")):
     """Index heatmap data (ticker + today's % change + market cap, for
     treemap tile sizing) for the Market Pulse page. Reuses
@@ -5304,6 +5419,7 @@ def get_heatmap(index: str = Query(default="sp500", pattern="^(sp500|nasdaq100)$
 
 
 @app.get("/api/earnings-calendar")
+@_cached_answer(ttl_sec=120, max_keys=1)     # results arrive every 5 minutes in the report hours (the database is awake then)
 def get_earnings_calendar():
     """This week's earnings calendar — deliberately notable-names-only
     (the scanner keeps just the top ~40 by market cap among tickers
@@ -5481,6 +5597,7 @@ def _fetch_market_ticker_quotes() -> list:
 
 
 @app.get("/api/market-ticker")
+@_cached_answer(ttl_sec=MARKET_TICKER_CACHE_TTL, max_keys=1)   # v34: also one Yahoo fetch at a time when the copy runs out
 def get_market_ticker():
     now = time.time()
     if _market_ticker_cache["data"] and (now - _market_ticker_cache["ts"]) < MARKET_TICKER_CACHE_TTL:
@@ -5555,6 +5672,7 @@ def _digest_ai_for_day(conn, day):
 
 
 @app.get("/api/daily-digest")
+@_cached_answer(max_keys=32)
 def get_daily_digest(day: Optional[str] = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
                      top_n: int = Query(default=6, ge=1, le=15)):
     """Digest of ONE calendar day (DIGEST_TZ, default US Eastern). No `day` -> today, or yesterday while today is
@@ -5582,7 +5700,7 @@ def get_daily_digest(day: Optional[str] = Query(default=None, pattern=r"^\d{4}-\
         start, end = aid.day_bounds(d)
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("SELECT * FROM macro_news WHERE timestamp >= %s AND timestamp < %s ORDER BY timestamp DESC", (start, end))
-        rows = [dict(r) for r in cur.fetchall()]
+        rows = [_tidy_news_row(r) for r in cur.fetchall()]        # v34: tidied like the feed (older rows had HTML codes)
         cur.close()
         try:
             ai_summary = _digest_ai_for_day(conn, d)
@@ -5621,6 +5739,7 @@ def get_daily_digest(day: Optional[str] = Query(default=None, pattern=r"^\d{4}-\
 
 
 @app.get("/api/daily-digest/days")
+@_cached_answer(max_keys=8)
 def get_daily_digest_days(limit: int = Query(default=14, ge=1, le=60)):
     """History: one short card per day that has an AI summary, newest first (overview + topic titles)."""
     out = []
@@ -5983,11 +6102,6 @@ def get_fundamentals(ticker: str):
 # v22: market breadth (market_breadth.py) and insider trades (insider_trades.py, SEC Form 4). Both tables are
 # filled by GitHub Actions; these endpoints only read them (light SQL, cached 5 minutes).
 # ------------------------------------------------------------------
-_V22_TTL_SEC = 300
-_breadth_cache = {"ts": 0.0, "data": None}
-_insider_buys_cache: dict = {}     # (days, min_value) -> (timestamp, data)
-
-
 def _table_exists(cur, name: str) -> bool:
     cur.execute("SELECT to_regclass(%s) IS NOT NULL AS ok", (name,))
     row = cur.fetchone()
@@ -6089,10 +6203,8 @@ def _yields_part(cur) -> Optional[dict]:
 
 
 @app.get("/api/market-breadth")
+@_cached_answer(max_keys=1)
 def get_market_breadth():
-    now = time.time()
-    if _breadth_cache["data"] is not None and now - _breadth_cache["ts"] < _V22_TTL_SEC:
-        return _breadth_cache["data"]
     regime = yields = None
     rows = []
     with db_cursor(dict_cursor=True) as (conn, cur):
@@ -6128,7 +6240,6 @@ def get_market_breadth():
         "regime": regime,
         "yields": yields,
     }
-    _breadth_cache.update(ts=now, data=data)
     return data
 
 
@@ -6141,6 +6252,7 @@ def _insider_role(r) -> dict:
 
 
 @app.get("/api/insider/{ticker}")
+@_cached_answer(ttl_sec=600, max_keys=256)
 def get_insider(ticker: str):
     """Open-market buys (P) and sells (S) by insiders in the last 6 months. One row per filing and direction
     (a sale filled at 12 prices is one row: total shares, weighted average price)."""
@@ -6214,6 +6326,7 @@ _STREET_MAX_AGE_DAYS = 10
 
 
 @app.get("/api/street/{ticker}")
+@_cached_answer(ttl_sec=600, max_keys=256)
 def get_street(ticker: str):
     """v23: analysts' 12-month price targets + short interest, from the scanner's stock_estimates row (Yahoo .info is
     read in GitHub Actions — it is blocked here). Facts only: the site shows the numbers and their source, no rating.
@@ -6348,6 +6461,7 @@ def get_funds():
 
 
 @app.get("/api/funds/stock/{ticker}")
+@_cached_answer(ttl_sec=600, max_keys=256)
 def get_funds_for_stock(ticker: str):
     """v25: which of the tracked funds hold this stock among their top positions (or just sold it)."""
     ticker = _canon_ticker(ticker)
@@ -6368,6 +6482,7 @@ def get_funds_for_stock(ticker: str):
 
 
 @app.get("/api/ai-note/{ticker}")
+@_cached_answer(ttl_sec=600, max_keys=256)
 def get_ai_note(ticker: str):
     """v25: the AI summary of a stock written by ai_stock_notes.py (GitHub Actions, once a day) — at most 4 days old.
     Stocks without one -> available False (the stock page hides the section)."""
@@ -6534,13 +6649,10 @@ def get_signal_context(ticker: str = Query(..., max_length=12), pattern: str = Q
 
 
 @app.get("/api/insider-buys")
+@_cached_answer(max_keys=20)
 def get_insider_buys(days: int = Query(default=30, ge=1, le=90), min_value: float = Query(default=100000, ge=0)):
     """Open-market insider PURCHASES filed in the last `days`, one row per stock (all insiders together),
     newest first. Feeds the home-page list and the scanner tag."""
-    key = (days, float(min_value))
-    hit = _insider_buys_cache.get(key)
-    if hit and time.time() - hit[0] < _V22_TTL_SEC:
-        return hit[1]
     with db_cursor(dict_cursor=True) as (conn, cur):
         if not _table_exists(cur, "insider_trades"):
             return {"available": False, "items": []}
@@ -6571,73 +6683,94 @@ def get_insider_buys(days: int = Query(default=30, ge=1, le=90), min_value: floa
                       "last_trade": g["last_trade"].isoformat() if g["last_trade"] else None})
     items.sort(key=lambda x: (x["last_filed"] or "", x["value"]), reverse=True)
     data = {"available": True, "days": days, "items": items[:60]}
-    if len(_insider_buys_cache) > 20:
-        _insider_buys_cache.clear()
-    _insider_buys_cache[key] = (time.time(), data)
     return data
 
 
+# v34: usage events (only from visitors who allowed them) are written in batches, not one database connection per click —
+# every click woke the database. Up to 30 minutes of anonymous counts can be lost in a restart; nothing depends on them.
+# Four events the site always sent were refused by the old list (a 422 in the browser's console).
+_TRACK_EVENTS = r"^(view_stock|view_macro|page_view|search_stock|watchlist_add|compare_stock|trade_saved|dd_tab)$"
+_TRACK_FLUSH_SEC = 1800
+_TRACK_FLUSH_MAX = 200
+_track_buffer: deque = deque(maxlen=5000)
+_track_flushed_at = time.time()
 
 
 class TrackEvent(BaseModel):
-    event_type: str = Field(pattern=r"^(view_stock|view_macro|page_view|search_stock)$")
+    event_type: str = Field(pattern=_TRACK_EVENTS)
     entity_id: Optional[str] = Field(default=None, max_length=60)
     session_id: Optional[str] = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9-]*$")
 
 
+def _track_flush() -> int:
+    global _track_flushed_at
+    _track_flushed_at = time.time()
+    batch = []
+    while _track_buffer:
+        try:
+            batch.append(_track_buffer.popleft())
+        except IndexError:
+            break
+    if not batch:
+        return 0
+    with db_cursor() as (conn, cur):
+        psycopg2.extras.execute_values(
+            cur, 'INSERT INTO analytics_events (event_type, entity_id, session_id, "timestamp") VALUES %s', batch)
+        cur.execute("DELETE FROM analytics_events WHERE timestamp < NOW() - INTERVAL '180 days'")   # kept 180 days only
+        conn.commit()
+    return len(batch)
+
+
+def _track_flush_if_due() -> None:
+    if _track_buffer and time.time() - _track_flushed_at >= _TRACK_FLUSH_SEC:
+        _track_flush()
+
+
 @app.post("/api/track")
 def track_event(event: TrackEvent):
-    with db_cursor() as (conn, cur):
-        cur.execute(
-            "INSERT INTO analytics_events (event_type, entity_id, session_id) VALUES (%s, %s, %s)",
-            (event.event_type, event.entity_id, event.session_id),
-        )
-        if int(time.time()) % 50 == 0:      # cheap retention: raw events are kept 180 days only
-            cur.execute("DELETE FROM analytics_events WHERE timestamp < NOW() - INTERVAL '180 days'")
-        conn.commit()
+    _track_buffer.append((event.event_type, event.entity_id, event.session_id, dt.now(timezone.utc)))
+    if len(_track_buffer) >= _TRACK_FLUSH_MAX:
+        try:
+            _track_flush()
+        except Exception as e:  # noqa: BLE001 — a lost usage count must never turn into an error for the visitor
+            print(f"[track] flush failed: {type(e).__name__}: {e}")
     return {"status": "logged"}
 
 
 @app.get("/api/analytics/top-interest", dependencies=[Depends(require_admin)])
 def top_interest(
-    event_type: str = Query(default="view_stock", pattern="^(view_stock|view_macro|page_view|search_stock)$"),
+    event_type: str = Query(default="view_stock", pattern=_TRACK_EVENTS),
     days: int = Query(7, ge=1, le=365),
     limit: int = Query(10, ge=1, le=100),
 ):
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(
-        """
-        SELECT entity_id, COUNT(*) as clicks
-        FROM analytics_events
-        WHERE event_type = %s AND timestamp >= NOW() - (%s || ' days')::INTERVAL
-        GROUP BY entity_id
-        ORDER BY clicks DESC
-        LIMIT %s
-        """,
-        (event_type, days, limit),
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute(
+            """
+            SELECT entity_id, COUNT(*) as clicks
+            FROM analytics_events
+            WHERE event_type = %s AND timestamp >= NOW() - (%s || ' days')::INTERVAL
+            GROUP BY entity_id
+            ORDER BY clicks DESC
+            LIMIT %s
+            """,
+            (event_type, days, limit),
+        )
+        rows = cur.fetchall()
     return [dict(r) for r in rows]
 
 
 @app.get("/api/analytics/summary", dependencies=[Depends(require_admin)])
 def analytics_summary(days: int = Query(7, ge=1, le=365)):
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(
-        """
-        SELECT date(timestamp) as day, event_type, COUNT(*) as count
-        FROM analytics_events
-        WHERE timestamp >= NOW() - (%s || ' days')::INTERVAL
-        GROUP BY day, event_type
-        ORDER BY day DESC
-        """,
-        (days,),
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        cur.execute(
+            """
+            SELECT date(timestamp) as day, event_type, COUNT(*) as count
+            FROM analytics_events
+            WHERE timestamp >= NOW() - (%s || ' days')::INTERVAL
+            GROUP BY day, event_type
+            ORDER BY day DESC
+            """,
+            (days,),
+        )
+        rows = cur.fetchall()
     return [dict(r) for r in rows]
