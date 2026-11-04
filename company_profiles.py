@@ -536,10 +536,11 @@ def main() -> int:
     candidates = pick_tickers(cur)
     cur.execute("""SELECT ticker, name, filing_date, checked_at, source, COALESCE((profile->>'v')::int, 1) AS v,
                           COALESCE((profile->>'sv')::int, 1) AS sv, COALESCE((facts->>'fv')::int, 1) AS fv,
-                          profile->'en' AS en,
+                          CASE WHEN profile->'he' IS NULL OR jsonb_typeof(profile->'he') = 'null'
+                                    OR COALESCE((profile->>'hv')::int, 1) < %s THEN profile->'en' END AS en,
                           (profile->'he' IS NULL OR jsonb_typeof(profile->'he') = 'null'
                            OR COALESCE((profile->>'hv')::int, 1) < %s) AS no_he
-                   FROM company_profiles""", (HEBREW_VERSION,))
+                   FROM company_profiles""", (HEBREW_VERSION, HEBREW_VERSION))
     have = {r["ticker"]: r for r in cur.fetchall()}
     cur.close()
     conn.close()                                   # the AI calls take minutes; the DB is reopened only to write

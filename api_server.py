@@ -668,6 +668,10 @@ except Exception as e:
     print(f"Scheduler not started: {e}")
 
 
+STOCKS_REREAD_SEC = 6 * 3600
+_stocks_last: dict = {}      # limit -> (time of the newest scan, when read, the answer)
+
+
 @app.get("/api/stocks")
 @_cached_answer(max_keys=12)
 def get_stocks(limit: int = Query(default=25, ge=1, le=300)):   # v27: le 100 -> 300 (the scan covers ~2,000 stocks now)
@@ -682,6 +686,13 @@ def get_stocks(limit: int = Query(default=25, ge=1, le=300)):   # v27: le 100 ->
     actually shown up in the last 14 days, so repetition is visible
     instead of just felt."""
     with db_cursor(dict_cursor=True) as (conn, cur):
+        # v35: 225 KB from the database for 150 rows, and a new scan comes only a few times a day: read again only after one
+        # (or after STOCKS_REREAD_SEC, for the results added to older rows). Data leaving Neon is limited: see _recent_key_events.
+        cur.execute("SELECT MAX(timestamp) AS t FROM scanned_stocks")
+        newest = cur.fetchone()["t"]
+        prev = _stocks_last.get(limit)
+        if prev and prev[0] == newest and time.time() - prev[1] < STOCKS_REREAD_SEC:
+            return prev[2]
         cur.execute(
             """
             SELECT s.*, COALESCE(rc.repeat_count_14d, 1) AS repeat_count_14d
@@ -715,6 +726,9 @@ def get_stocks(limit: int = Query(default=25, ge=1, le=300)):   # v27: le 100 ->
         except (json.JSONDecodeError, TypeError):
             d["resistance_targets"] = []
         result.append(d)
+    if len(_stocks_last) >= 12:
+        _stocks_last.clear()
+    _stocks_last[limit] = (newest, time.time(), result)
     return result
 
 
@@ -1441,7 +1455,8 @@ _KEY_EVENT_RULES = [
 ]
 _KEY_WINDOW_H = 48
 _KEY_MAX = 5
-_key_cache = {"until": 0.0, "events": None}
+_key_cache = {"until": 0.0, "events": None, "rows": {}, "last_id": 0}
+_key_lock = threading.Lock()
 
 
 def _key_event_of(title: str) -> Optional[tuple]:
@@ -1502,16 +1517,48 @@ def _key_events(rows: list, now: Optional[dt] = None, max_events: int = _KEY_MAX
     return events[:max_events]
 
 
+def _key_merge(cache: dict, rows: list, now: dt) -> None:
+    """Adds newly read headlines to the copy in memory. Only those that name a key event are kept, only for _KEY_WINDOW_H."""
+    for r in rows:
+        cache["last_id"] = max(cache["last_id"], r["id"])
+        r = _tidy_news_row(r)
+        if _key_event_of(r.get("summary_en") or ""):
+            cache["rows"][r["id"]] = r
+    cutoff = now - timedelta(hours=_KEY_WINDOW_H)
+    for i in [i for i, r in cache["rows"].items() if r["timestamp"] <= cutoff]:
+        del cache["rows"][i]
+
+
 def _recent_key_events() -> list:
-    """Key events of the last _KEY_WINDOW_H hours, kept until the next refresh mark (the strip is polled by every visitor)."""
+    """Key events of the last _KEY_WINDOW_H hours, kept until the next refresh mark (the strip is polled by every visitor).
+    v35: Neon's free plan also limits data sent out of the database to 5 GB a month, and 4.14 GB were gone by 4.11. This
+    read every column of ~3,700 rows (77 news items an hour, 48 hours): ~3.5 MB per refresh, ~170 MB a day with the site open
+    (the rest of the month allows ~33 MB a day). Now four columns of the rows added since the last refresh, then the full
+    rows of the few headlines shown. When the database cannot answer, the last events are served."""
     if _key_cache["events"] is not None and time.time() < _key_cache["until"]:
         return _key_cache["events"]
-    with db_cursor(dict_cursor=True) as (conn, cur):
-        cur.execute("SELECT * FROM macro_news WHERE timestamp > NOW() - make_interval(hours => %s)", (_KEY_WINDOW_H,))
-        rows = [_tidy_news_row(r) for r in cur.fetchall()]
-    events = _key_events(rows)
-    _key_cache.update(until=_next_refresh_mark(), events=events)
-    return events
+    with _key_lock:
+        if _key_cache["events"] is not None and time.time() < _key_cache["until"]:
+            return _key_cache["events"]
+        try:
+            with db_cursor(dict_cursor=True) as (conn, cur):
+                cur.execute("""SELECT id, summary_en, source_name, timestamp FROM macro_news
+                               WHERE id > %s AND timestamp > NOW() - make_interval(hours => %s)""",
+                            (_key_cache["last_id"], _KEY_WINDOW_H))
+                _key_merge(_key_cache, cur.fetchall(), dt.now(timezone.utc))
+                events = _key_events(list(_key_cache["rows"].values()))
+                if events:
+                    cur.execute("SELECT * FROM macro_news WHERE id = ANY(%s)", ([e["row"]["id"] for e in events],))
+                    full = {r["id"]: _tidy_news_row(r) for r in cur.fetchall()}
+                    for e in events:
+                        e["row"] = full.get(e["row"]["id"], e["row"])
+        except Exception as e:  # noqa: BLE001
+            if _key_cache["events"] is None:
+                raise
+            print(f"[warn] key events: {type(e).__name__} — serving the last good answer")
+            return _key_cache["events"]
+        _key_cache.update(until=_next_refresh_mark(), events=events)
+        return events
 
 
 @app.get("/api/key-news")
@@ -6547,8 +6594,9 @@ def get_company_profile(ticker: str):
 # a stock page has its own text before any script runs. All the stocks are read at once, at most every 6 hours, and kept in
 # memory: Google asking for 860 pages costs one database read. Facts only, each with its date.
 # ------------------------------------------------------------------
-SEO_TABLE_TTL_SEC = 6 * 3600
-SEO_NUMBERS_MAX_DAYS = 5     # a stock that left the scan: its old prices are not shown as if they were current (v31d)
+SEO_TABLE_TTL_SEC = 12 * 3600
+_seo_profiles = {"rows": {}, "seen": None}   # the profile texts stay here: only rows changed since the last read come from the database
+SEO_NUMBERS_MAX_DAYS = 5    # a stock that left the scan: its old prices are not shown as if they were current (v31d)
 SEO_SCAN_MAX_DAYS = 14
 SEO_EARNINGS_MAX_DAYS = 45
 SEO_PEERS_EACH_SIDE = 3
@@ -6613,8 +6661,12 @@ def _seo_table() -> dict:
                            FROM stock_leaders""")
             leaders = cur.fetchall()
         if _table_exists(cur, "company_profiles"):
-            cur.execute("SELECT ticker, name, profile, facts, source, source_url, filing_date FROM company_profiles")
-            profiles = cur.fetchall()
+            cur.execute("""SELECT ticker, name, profile, facts, source, source_url, filing_date, checked_at FROM company_profiles
+                           WHERE %s::timestamptz IS NULL OR checked_at >= %s""", (_seo_profiles["seen"], _seo_profiles["seen"]))
+            for r in cur.fetchall():
+                _seo_profiles["rows"][r["ticker"]] = r
+                _seo_profiles["seen"] = max(_seo_profiles["seen"] or r["checked_at"], r["checked_at"])
+            profiles = list(_seo_profiles["rows"].values())
         cur.execute("""SELECT DISTINCT ON (ticker) ticker, pattern_type, timestamp FROM scanned_stocks
                        WHERE timestamp > NOW() - make_interval(days => %s) AND pattern_type IS NOT NULL
                        ORDER BY ticker, timestamp DESC""", (SEO_SCAN_MAX_DAYS,))

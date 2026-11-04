@@ -693,8 +693,11 @@ def _known_urls(links: list) -> set:
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT source_url FROM macro_news WHERE source_url = ANY(%s)", (list(set(links)),))
-        return {r[0] for r in cur.fetchall()}
+        # v35: the database answers with the NEW links, a handful. Asking for the known ones sent most of the feed's long
+        # Google addresses back on every run, and data leaving Neon is limited to 5 GB a month.
+        cur.execute("""SELECT u FROM unnest(%s::text[]) AS u
+                       WHERE NOT EXISTS (SELECT 1 FROM macro_news m WHERE m.source_url = u)""", (list(set(links)),))
+        return set(links) - {r[0] for r in cur.fetchall()}
     except Exception as e:  # noqa: BLE001
         conn.rollback()
         print(f"[warn] known-url lookup failed (non-fatal, falling back to ON CONFLICT): {e}")

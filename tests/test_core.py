@@ -472,6 +472,74 @@ def test_seo_endpoints(api, monkeypatch):
     assert listed[2]["day"] == "2026-02-01"
 
 
+class _FakeDb:
+    """db_cursor for one test: answers from a list, and records what was asked."""
+    def __init__(self, answers):
+        self.answers, self.sql = list(answers), []
+
+    def __call__(self, dict_cursor=False):
+        import contextlib
+
+        @contextlib.contextmanager
+        def ctx():
+            yield (None, self)
+        return ctx()
+
+    def execute(self, sql, params=None):
+        self.sql.append((sql, params))
+
+    def fetchall(self):
+        return self.answers.pop(0)
+
+    def fetchone(self):
+        return self.answers.pop(0)
+
+
+def test_key_events_read_only_new_rows(api, monkeypatch):
+    """v35: data leaving Neon is limited: the second refresh must ask only for rows after the last one, and full rows only
+    for the headlines shown."""
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    row = lambda i, title, src: dict(id=i, summary_en=title, source_name=src, timestamp=now - _dt.timedelta(hours=1))
+    first = [row(1, "Fed cuts interest rates by a quarter point", "Reuters"), row(2, "Fed cuts rates again", "CNBC"),
+             row(3, "Fed rate cut lifts stocks", "MarketWatch"), row(4, "A company opened a shop", "Reuters")]
+    monkeypatch.setattr(api, "_key_cache", {"until": 0.0, "events": None, "rows": {}, "last_id": 0})
+    event = api._key_event_of(first[0]["summary_en"])
+    assert event, "the rules changed: pick another headline"
+    db = _FakeDb([first, [dict(first[0], summary_he="הפד")]])
+    monkeypatch.setattr(api, "db_cursor", db)
+    events = api._recent_key_events()
+    assert api._key_cache["last_id"] == 4 and 4 not in api._key_cache["rows"]        # kept in memory: only key-event headlines
+    assert db.sql[0][1][0] == 0 and "SELECT *" not in db.sql[0][0]
+    if events:
+        assert "ANY" in db.sql[1][0] and events[0]["row"].get("summary_he") == "הפד"
+    api._key_cache["until"] = 0.0
+    db2 = _FakeDb([[], []])
+    monkeypatch.setattr(api, "db_cursor", db2)
+    api._recent_key_events()
+    assert db2.sql[0][1][0] == 4
+    old = dict(first[0], id=9, timestamp=now - _dt.timedelta(hours=api._KEY_WINDOW_H + 1))
+    api._key_merge(api._key_cache, [old], now)
+    assert 9 not in api._key_cache["rows"] and api._key_cache["last_id"] == 9
+    api._key_cache["until"] = 0.0
+    monkeypatch.setattr(api, "db_cursor", lambda dict_cursor=False: (_ for _ in ()).throw(RuntimeError("database suspended")))
+    assert api._recent_key_events() == api._key_cache["events"]                      # the last answer, not an error
+
+
+def test_stocks_read_again_only_after_a_scan(api, monkeypatch):
+    import datetime as _dt
+    t1, t2 = _dt.datetime(2026, 11, 4, 20), _dt.datetime(2026, 11, 5, 14)
+    stock = dict(ticker="KO", sector="Energy", resistance_targets="[]", timestamp=t1)
+    get = api.get_stocks.__wrapped__
+    monkeypatch.setattr(api, "_stocks_last", {})
+    db = _FakeDb([{"t": t1}, [stock], {"t": t1}, {"t": t2}, [stock]])
+    monkeypatch.setattr(api, "db_cursor", db)
+    assert get(limit=150)[0]["ticker"] == "KO" and len(db.sql) == 2
+    assert get(limit=150)[0]["ticker"] == "KO" and len(db.sql) == 3      # same scan: only the small question
+    get(limit=150)
+    assert len(db.sql) == 5                                              # a new scan: read
+
+
 def test_api_robots_opens_only_answers_from_memory(api):
     """v35: Google obeys the API's robots.txt when it runs the page. What it may ask for must not reach the database or
     Yahoo on every request (v34 closed everything, and the home page it saw was empty)."""

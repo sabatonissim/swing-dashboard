@@ -1387,13 +1387,12 @@ def series_health():
             conn = _conn_factory()
             try:
                 cur = conn.cursor()
-                cur.execute("SELECT skey, payload, EXTRACT(EPOCH FROM (NOW() - updated_at)) FROM econ_snapshots WHERE skey LIKE 'series-%'")
-                for skey, payload, age in cur.fetchall():
-                    try:
-                        rows = json.loads(payload)
-                    except Exception:  # noqa: BLE001
-                        rows = []
-                    out[skey[len("series-"):]] = {"last_period": rows[-1][0] if rows else None, "points": len(rows),
+                # v35: the database counts, and only the answer travels: data leaving Neon is limited to 5 GB a month
+                cur.execute("""SELECT skey, (payload::json -> -1) ->> 0, json_array_length(payload::json),
+                                      EXTRACT(EPOCH FROM (NOW() - updated_at))
+                               FROM econ_snapshots WHERE skey LIKE 'series-%' AND left(payload, 1) = '['""")
+                for skey, last_period, points, age in cur.fetchall():
+                    out[skey[len("series-"):]] = {"last_period": last_period, "points": points,
                                                   "stored_hours_ago": round(float(age) / 3600.0, 1)}
                 cur.close()
             finally:
