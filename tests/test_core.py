@@ -356,6 +356,134 @@ def test_put_is_allowed_by_cors(api):
     assert {"GET", "POST", "PUT", "DELETE"} <= set(args["allow_methods"])
 
 
+def test_employee_count():
+    """v35: sentences from real 10-Ks (4.11.2026). The first figure found used to be taken: KO showed 400 employees."""
+    import company_profiles as cp
+    n = cp.employees_from
+    assert n("our Company had approximately 65,900 and 69,700 employees, respectively, of which approximately 32,000 were "
+             "located in the United States. As of December 31, 2025, approximately 400 employees in North America were "
+             "covered by collective bargaining agreements.") == 65900
+    assert n("As of June 30, 2026, we employed approximately 223,000 people on a full-time basis, 121,000 in the U.S.") == 223000
+    assert n("the Company had approximately 167,000 full-time equivalent employees.") == 167000
+    assert n("JPMorganChase had 318,512 employees globally.") == 318512
+    assert n("We grew our global workforce from approximately 31,600 in fiscal 2024 to approximately 34,100 employees in fiscal "
+             "2025. As of September 30, 2025, it has been embraced by nearly 26,000 employees launching over 261,000 agents") == 34100
+    assert n("we had more than 390,000 employees, of whom nearly 165,000 were") == 390000
+    assert n("we employ approximately 2.1 million associates worldwide") == 2100000
+    assert n("we employed approximately 440,000 full-time, part-time, and seasonal team members") == 440000
+    assert n("Lowe's employed approximately 167,000 full-time associates and 109,000 part-time associates") == 167000
+    assert n("A contract covering approximately 9,000 employees across 36 states is set to expire") is None      # AT&T
+    assert n("we have reached 5,000,000 people every month") is None           # not the staff
+    assert n("about 400 employees in Canada are represented by a union") is None
+    assert n("The company has 2025 employees programs") is None                # a year
+    assert n("no number here") is None
+
+
+def test_business_heading_in_small_caps():
+    """v35: Microsoft's heading is "B<span>USINESS</span>": read as "B USINESS", no section, and the fallback described a
+    court case. Inline tags do not separate letters; a table cell or a paragraph still separates words."""
+    import company_profiles as cp
+    body = "<p>" + "Microsoft makes software. " * 200 + "</p>"
+    raw = f'<div><span>ITEM 1. B<span style="font-size:8pt">USINESS</span></span></div>{body}<div>ITEM 1A. RISK FACTORS</div>'
+    assert cp.business_section(cp.html_to_text(raw), "10-K").startswith("Microsoft makes software.")
+    assert cp.html_to_text("<table><tr><td>Total</td><td>12</td></tr></table>").strip() == "Total 12"
+    assert "<" not in cp.html_to_text('<ix:nonFraction name="x">5</ix:nonFraction> shares')
+
+
+def test_wikipedia_article_is_about_the_company():
+    import company_profiles as cp
+    ok = cp.is_company_article
+    assert ok("Microsoft", "Microsoft Corporation is an American multinational technology conglomerate in Redmond.", "MICROSOFT")
+    assert not ok("Microsoft Corp. v Commission of the European Communities",
+                  "Microsoft Corp. v Commission of the European Communities (2007) is a case brought by the company.", "MICROSOFT")
+    assert not ok("Microsoft Windows", "Microsoft Windows is a product line of graphical operating systems by Microsoft.", "MICROSOFT")
+    assert not ok("Carnival", "Carnival is a festive season that occurs before Lent in many countries.", "CARNIVAL")
+    assert not ok("Mercury", "Mercury may refer to: a planet, a metal, a company", "MERCURY")
+    assert ok("Shopify", "Shopify Inc., stylized as shopify, is a Canadian multinational e-commerce company in Ottawa.", "SHOPIFY")
+    assert ok("Scotiabank", "The Bank of Nova Scotia, operating as Scotiabank, is a Canadian multinational banking company.", "BANK")
+    assert ok("Acme", "Acme Ltd. is a U.S. holding company based in Ohio.", "ACME")
+    assert not ok("Other Thing", "Other Thing is a company that has a different name altogether.", "ACME")
+
+
+def test_profile_rules():
+    """v35: data_health: what a wrong company profile looks like."""
+    import datetime as _dt
+    import data_health as dh
+    p = dict(name="COCA COLA CO", source="sec-10k", filing_date=_dt.date(2026, 2, 20), summary="Coca-Cola makes drinks.",
+             employees=65900.0, market_cap=3e11)
+    assert dh.profile_problems(p) == []
+    assert dh.profile_problems(dict(p, employees=400.0))                                       # KO, 4.11.2026
+    assert dh.profile_problems(dict(p, employees=400.0, market_cap=2e9)) == []                 # a small company can be small
+    assert dh.profile_problems(dict(p, employees=None)) == []
+    assert dh.profile_problems(dict(p, source="wikipedia")) == []
+    assert dh.profile_problems(dict(p, source="wikipedia", summary="A court case in Europe."))
+
+
+def _seo_inputs():
+    import datetime as _dt
+    ts = lambda m, d: _dt.datetime(2026, m, d, 21, 0, tzinfo=_dt.timezone.utc)
+    leader = dict(sector="Technology", close=100.126, pct_from_high=-3.21, chg_1m=1.5, chg_3m=float("nan"),
+                  stage="Stage 2 - Uptrend", rs_rating=72, market_cap=5e11, updated_at=ts(11, 3))
+    leaders = [dict(leader, ticker="AAA", name="Aaa Corporation", market_cap=9e11),
+               dict(leader, ticker="BBB", name="Bbb Inc.", market_cap=8e11),
+               dict(leader, ticker="CCC", name=None, market_cap=7e11),
+               dict(leader, ticker="OLD", name="Old Co", updated_at=ts(10, 1))]
+    prof = lambda he=True: {"v": 2, "en": {"summary": "It makes things."}, "he": {"summary": "החברה מייצרת."} if he else None}
+    row = dict(source="sec-10k", source_url="https://www.sec.gov/x.htm", filing_date=_dt.date(2026, 2, 1))
+    profiles = [dict(row, ticker="AAA", name="AAA CORP", profile=prof(),
+                     facts={"hq": "Ohio", "employees": 5000, "fv": 2}),
+                dict(row, ticker="BBB", name="BBB INC", profile=prof(False), facts={"employees": 400}),    # before v35
+                dict(row, ticker="WIK", name="WIK LTD", source="wikipedia", profile=prof(), facts={}),     # not checked yet
+                dict(row, ticker="NEW", name="NEW THING CORP", profile='{"en": {"summary": "From JSON."}}', facts=None)]
+    scans = [dict(ticker="AAA", pattern_type="cup_handle", timestamp=ts(11, 2)), dict(ticker="ZZZ", pattern_type="x", timestamp=ts(11, 2))]
+    earn = [dict(ticker="AAA", report_date=_dt.date(2026, 11, 20))]
+    return leaders, profiles, scans, earn, _dt.date(2026, 11, 4)
+
+
+def test_seo_rows(api):
+    """v35: the facts in a stock's page. An old price is not shown as current, a NaN does not break the JSON, a profile
+    from before the fixes is not given to search engines."""
+    import json
+    rows = api._seo_rows(*_seo_inputs())
+    a = rows["AAA"]
+    assert a["known"] and a["name"] == "Aaa Corporation" and a["sector"] == "Information Technology"
+    assert a["numbers"] == {"as_of": "2026-11-03", "close": 100.13, "from_high": -3.2, "chg_1m": 1.5, "chg_3m": None, "rs": 72, "stage": 2}
+    assert a["facts"] == {"hq": "Ohio", "employees": 5000} and a["source"]["filed"] == "2026-02-01"
+    assert a["scan"] == {"pattern": "cup_handle", "day": "2026-11-02"} and a["next_report"] == "2026-11-20"
+    assert a["peers"] == [{"ticker": "BBB", "name": "Bbb Inc.", "langs": ["en"]}]
+    assert "numbers" not in rows["OLD"] and "profile" not in rows["OLD"]
+    assert "employees" not in rows["BBB"]["facts"] and sorted(rows["BBB"]["profile"]) == ["en"]
+    assert "WIK" not in rows and "ZZZ" not in rows
+    assert rows["CCC"]["name"] == "CCC"
+    assert rows["NEW"]["name"] == "New Thing Corp" and rows["NEW"]["profile"]["en"]["summary"] == "From JSON."
+    json.dumps(rows, allow_nan=False)
+
+
+def test_seo_endpoints(api, monkeypatch):
+    rows = api._seo_rows(*_seo_inputs())
+    monkeypatch.setattr(api, "_seo_table", lambda: rows)
+    assert api.get_seo_stock("aaa")["ticker"] == "AAA"
+    assert api.get_seo_stock("NOPE") == {"known": False, "ticker": "NOPE"}
+    assert api._TICKER_PATH_RE.match("/api/seo/stock/KO")
+    listed = api.get_seo_index()["stocks"]
+    assert [s["ticker"] for s in listed] == ["AAA", "BBB", "NEW"]         # only the ones with a profile
+    assert listed[0] == {"ticker": "AAA", "name": "Aaa Corporation", "sector": "Information Technology",
+                         "langs": ["en", "he"], "day": "2026-11-03"}
+    assert listed[2]["day"] == "2026-02-01"
+
+
+def test_api_robots_opens_only_answers_from_memory(api):
+    """v35: Google obeys the API's robots.txt when it runs the page. What it may ask for must not reach the database or
+    Yahoo on every request (v34 closed everything, and the home page it saw was empty)."""
+    body = api.robots_txt().body.decode()
+    assert body.endswith("Disallow: /\n") and "Allow: /api/stocks\n" in body
+    assert "lookup" not in body and "fundamentals" not in body
+    fns = {r.path: r.endpoint for r in api.app.routes if hasattr(r, "endpoint")}
+    for path in api._ROBOTS_ALLOW:
+        fn = fns[path]
+        assert hasattr(fn, "__wrapped__") or path == "/api/key-news", f"{path} is not kept in memory"
+
+
 def test_news_schedule_never_doubles():
     """v34: a week of minutes: every 30 minutes on weekdays 06:00-22:00 ET, hourly otherwise, and never both at once."""
     import datetime as _dt

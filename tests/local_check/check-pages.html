@@ -1,0 +1,108 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Pages check</title>
+<pre id="out" style="white-space:pre-wrap;font:12px monospace">starting...</pre>
+<script>
+// v35: there is no node on the owner's computer, so tests/test_pages.js runs here, in the browser, with a small stand-in for
+// require/fs/path/process. After it passes, real pages are made with api/page.js (facts from the live API where it has them)
+// and stored in serve.ps1, so they can be opened at their real addresses: /stock/KO, /he/stock/KO, /learn/cup-and-handle ...
+const out = document.getElementById('out');
+const log = (s) => { out.textContent += '\n' + s; };
+window.__done = false;
+window.__failed = null;
+const FILES = ['api/page.js', 'api/_content.js', 'api/_learn_patterns.js', 'api/_learn_market.js', 'tests/test_pages.js', 'index.html', 'vercel.json', '.vercelignore', 'robots.txt'];
+const texts = {};
+const norm = (p) => {
+  const parts = [];
+  p.split('/').forEach((x) => { if (x === '..') parts.pop(); else if (x && x !== '.') parts.push(x); });
+  return '/' + parts.join('/');
+};
+const path = { join: (...a) => norm(a.join('/')), dirname: (p) => norm(p).split('/').slice(0, -1).join('/') || '/' };
+const fsShim = { readFileSync(p) { const k = norm(p); if (!(k in texts)) { const e = new Error('no file ' + k); throw e; } return texts[k]; } };
+const cache = {};
+function load(file) {
+  const k = norm(file);
+  if (cache[k]) return cache[k].exports;
+  const module = cache[k] = { exports: {} };
+  const dir = path.dirname(k);
+  const req = (name) => {
+    if (name === 'fs') return fsShim;
+    if (name === 'path') return path;
+    return load(path.join(dir, name));
+  };
+  new Function('require', 'module', 'exports', '__dirname', 'process', 'global', 'console', texts[k])(req, module, module.exports, dir, window.__proc, window, { log, error: log });
+  return module.exports;
+}
+window.__proc = { env: {}, cwd: () => '/', exitCode: 0 };
+
+async function storePages() {
+  // the facts of a real stock: what /api/seo/stock will answer once the new server is up
+  const real = async (ticker) => {
+    const [p, q] = await Promise.all([fetch(`/proxy/api/company-profile/${ticker}`).then((r) => r.json()), fetch(`/proxy/api/lookup/${ticker}`).then((r) => r.ok ? r.json() : {})]);
+    return {
+      known: true, ticker, name: p.name || ticker, sector: q.sector || 'Consumer Staples', market_cap: q.market_cap || null,
+      numbers: { as_of: '2026-11-04', close: q.price || null, from_high: null, chg_1m: 1.5, chg_3m: -2.1, rs: 72, stage: 2 },
+      profile: { en: p.en, he: p.he }, facts: p.facts || {}, source: { kind: p.source, url: p.source_url, filed: p.filing_date },
+      scan: { pattern: 'cup_handle', day: '2026-11-02' }, next_report: '2026-11-20',
+      peers: [{ ticker: 'PEP', name: 'PepsiCo, Inc.', langs: ['en', 'he'] }, { ticker: 'MDLZ', name: 'Mondelez International, Inc.', langs: ['en', 'he'] }],
+    };
+  };
+  const rows = { KO: await real('KO'), AAPL: await real('AAPL') };
+  const realFetch = window.fetch.bind(window);
+  const C = load('/api/_content.js');
+  const index = { stocks: Object.values(rows).map((r) => ({ ticker: r.ticker, name: r.name, sector: r.sector, langs: ['en', 'he'], day: '2026-11-04' })) };
+  window.fetch = async (url) => {
+    const m = /\/api\/seo\/stock\/([^/?]+)/.exec(url);
+    const body = m ? (rows[m[1]] || { known: false, ticker: m[1] }) : index;
+    return { ok: true, status: 200, json: async () => body };
+  };
+  const page = load('/api/page.js');
+  const make = async (query) => {
+    const res = { statusCode: 0, headers: {}, body: '', setHeader(k, v) { this.headers[k.toLowerCase()] = v; }, end(b) { this.body = b || ''; } };
+    await page({ query, url: '/api/page' }, res);
+    return res;
+  };
+  const pages = {
+    '/stock/KO': { kind: 'stock', lang: 'en', ticker: 'KO' }, '/he/stock/KO': { kind: 'stock', lang: 'he', ticker: 'KO' },
+    '/stock/AAPL': { kind: 'stock', lang: 'en', ticker: 'AAPL' }, '/he/stock/AAPL': { kind: 'stock', lang: 'he', ticker: 'AAPL' },
+    '/stock/NOPE': { kind: 'stock', lang: 'en', ticker: 'NOPE' },
+    '/he': { kind: 'home', lang: 'he' }, '/stocks': { kind: 'stocks', lang: 'en' }, '/he/stocks': { kind: 'stocks', lang: 'he' },
+    '/learn': { kind: 'learn-index', lang: 'en' }, '/he/learn': { kind: 'learn-index', lang: 'he' },
+    '/sitemap.xml': { kind: 'sitemap' },
+  };
+  C.ARTICLES.forEach((a) => {
+    pages[`/learn/${a.slug}`] = { kind: 'learn', lang: 'en', slug: a.slug };
+    pages[`/he/learn/${a.slug}`] = { kind: 'learn', lang: 'he', slug: a.slug };
+  });
+  ['about', 'privacy', 'terms'].forEach((doc) => {
+    pages[`/${doc}`] = { kind: 'doc', lang: 'en', doc };
+    pages[`/he/${doc}`] = { kind: 'doc', lang: 'he', doc };
+  });
+  let n = 0;
+  for (const p of Object.keys(pages)) {
+    const res = await make(pages[p]);
+    const type = res.headers['content-type'] || 'text/html; charset=utf-8';
+    await realFetch(`/store?path=${encodeURIComponent(p)}&type=${encodeURIComponent(type)}`, { method: 'POST', body: res.body });
+    n += 1;
+  }
+  window.fetch = realFetch;
+  log(`stored ${n} pages`);
+}
+
+async function main() {
+  for (const f of FILES) {
+    const r = await fetch('/src/' + f);
+    if (!r.ok) throw new Error('could not read ' + f);
+    texts['/' + f] = await r.text();
+  }
+  const realFetch = window.fetch;
+  const failed = await load('/tests/test_pages.js');
+  window.fetch = realFetch;
+  window.__failed = failed;
+  log('test file done, failed = ' + failed);
+  await storePages();
+  window.__done = true;
+  log('DONE');
+}
+main().catch((e) => { log('FAILED: ' + (e && e.stack)); window.__done = true; });
+</script>

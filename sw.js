@@ -3,7 +3,7 @@
 // Rules: only this site's own files are cached. The page itself is "network first" — online you always get the newest
 // version (the owner uploads index.html often); the cached copy is used only when the network fails. Data (the Render
 // API), TradingView and Google are never touched here: they go straight to the network as before.
-const CACHE = 'swingdesk-v26';
+const CACHE = 'swingdesk-v27';
 const SHELL = ['/', '/manifest.json', '/favicon.svg', '/icon-192.png', '/icon-512.png', '/logo.png', '/badge-96.png'];
 
 self.addEventListener('install', (e) => {
@@ -29,7 +29,9 @@ self.addEventListener('fetch', (e) => {
     e.respondWith(
       fetch(req)
         .then((res) => {
-          if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put('/', copy)); }
+          // v35: only the app's own page is the offline copy. Every navigation used to overwrite it, and now an article or
+          // the privacy page is a page of its own, with no app in it.
+          if (res.ok && url.pathname === '/') { const copy = res.clone(); caches.open(CACHE).then((c) => c.put('/', copy)); }
           return res;
         })
         .catch(() => caches.match('/'))

@@ -155,6 +155,7 @@ GitHub Actions מגביל ריפו **פרטי** ל-2,000 דקות ריצה/חו�
 |---|---|
 | `/api/health` | חיות + DB |
 | `/api/stocks` | מניות מסומנות |
+| **`GET /api/seo/stock/{t}`**, **`GET /api/seo/index`** (v35) | העובדות שדף מניה מציג לגוגל (`api/page.js` ב-Vercel) / רשימת המניות עם פרופיל (למפת האתר ול-`/stocks`). שורה אחת למניה, מ-`_seo_table`: קריאה אחת למסד ב-6 שעות, השאר מהזיכרון |
 | **`POST /api/auth/google`** (v13) | מקבל `{credential}` של Google, מאמת מול מפתחות גוגל, יוצר/מעדכן משתמש, מחזיר `{token, user}` (טוקן 90 יום). המשתמש הראשון יורש את רשימת המעקב הישנה |
 | **`POST /api/auth/refresh`**, **`GET /api/auth/me`** (v13) | חידוש הטוקן (נקרא בכל טעינת עמוד — "סשן נגלל") / פרטי המשתמש. דורשים `Authorization: Bearer` |
 | **`GET /api/ping`**, **`GET /api/scheduler/status`** (v13) | `ping` — תשובה מינימלית בלי DB (שמירת השרת ער בלי להעיר את Neon). `scheduler/status` — האם התזמון פעיל, מתי כל workflow ירוץ הבא (ET), ומה הופעל לאחרונה (`scheduler_runs`). בלי סודות |
@@ -250,6 +251,15 @@ S&P 500 + Nasdaq 100 + תוספות. פילטרים: מחיר > $10, נפח 20 �
 ---
 
 ## 9. Frontend — index.html
+
+### כתובות (v35)
+| כתובת | מה מגיש | תוכן |
+|---|---|---|
+| `/` | `index.html` (קובץ) | האפליקציה, ראש אנגלי סטטי |
+| `/he` | `api/page.js`, `kind=home` | האפליקציה עם ראש עברי |
+| `/stock/KO`, `/he/stock/KO` | `kind=stock` | האפליקציה + `#seo-stock` |
+| `/stocks`, `/learn`, `/learn/{slug}`, `/about`, `/privacy`, `/terms` ועם `/he` | `kind=stocks`, `learn-index`, `learn`, `doc` | HTML עצמאי בלי האפליקציה |
+| `/sitemap.xml` | `kind=sitemap` | כל הדפים שמותר לרשום, עם hreflang |
 
 ### ניווט — 4 טאבים
 בית | פעימת השוק | בדיקה היסטורית | ניתוח מניה

@@ -1,6 +1,21 @@
 {
+  "trailingSlash": false,
+  "functions": {
+    "api/page.js": { "includeFiles": "index.html" }
+  },
   "rewrites": [
-    { "source": "/stock/:ticker", "destination": "/index.html" }
+    { "source": "/stock/:ticker", "destination": "/api/page?kind=stock&lang=en&ticker=:ticker" },
+    { "source": "/he/stock/:ticker", "destination": "/api/page?kind=stock&lang=he&ticker=:ticker" },
+    { "source": "/he", "destination": "/api/page?kind=home&lang=he" },
+    { "source": "/stocks", "destination": "/api/page?kind=stocks&lang=en" },
+    { "source": "/he/stocks", "destination": "/api/page?kind=stocks&lang=he" },
+    { "source": "/learn", "destination": "/api/page?kind=learn-index&lang=en" },
+    { "source": "/he/learn", "destination": "/api/page?kind=learn-index&lang=he" },
+    { "source": "/learn/:slug", "destination": "/api/page?kind=learn&lang=en&slug=:slug" },
+    { "source": "/he/learn/:slug", "destination": "/api/page?kind=learn&lang=he&slug=:slug" },
+    { "source": "/:doc(about|privacy|terms)", "destination": "/api/page?kind=doc&lang=en&doc=:doc" },
+    { "source": "/he/:doc(about|privacy|terms)", "destination": "/api/page?kind=doc&lang=he&doc=:doc" },
+    { "source": "/sitemap.xml", "destination": "/api/page?kind=sitemap" }
   ],
   "headers": [
     {
