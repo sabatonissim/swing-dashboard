@@ -40,8 +40,9 @@ jobs:
       - name: Run cleanup script
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CONFIRM: ${{ github.event.inputs.confirm }}   # v34: through the environment, never pasted into the script
         run: |
-          if [ "${{ github.event.inputs.confirm }}" = "true" ]; then
+          if [ "$CONFIRM" = "true" ]; then
             python cleanup_stale_signals.py --confirm
           else
             python cleanup_stale_signals.py

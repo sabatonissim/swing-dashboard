@@ -2,7 +2,7 @@ name: Earnings fast
 
 # v33: today's reports only (EPS + revenue from the SEC press release, or Yahoo if it already has them), so results reach
 # the site minutes after the filing. Started by the built-in scheduler on Render (scheduler.py) every 5 minutes around the
-# report hours; can also be run by hand. The 20-minute "Quick refresh" keeps doing everything else.
+# report hours; can also be run by hand. The 30-minute "Quick refresh" keeps doing everything else.
 on:
   workflow_dispatch: {}
 

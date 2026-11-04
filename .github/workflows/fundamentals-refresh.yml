@@ -5,8 +5,8 @@ name: Fundamentals Refresh
 # Started by the built-in scheduler on Render (scheduler.py) every night; can also be run by hand.
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "15 11 * * *"        # backup only — the scheduler normally starts it
+  # v34: GitHub's own schedule removed (it fired hours late, and every run wakes the database for 5+ minutes of the
+  # monthly compute limit). If the built-in scheduler is ever down for long, add here:  schedule: [{cron: "15 11 * * *"}]
 
 # the job only needs to read the code (default token permissions are broader)
 permissions:

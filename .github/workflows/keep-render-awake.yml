@@ -14,5 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Ping API health endpoint
-        run: curl -sf https://swing-dashboard-3btx.onrender.com/api/health || echo "Ping failed (server may be waking up) — not treated as an error"
+      # v34: /api/ping, not /api/health — that one opens a database connection, and each wake-up of the database costs
+      # 5 idle minutes of the monthly compute limit
+      - name: Ping API (no database)
+        run: curl -sf https://swing-dashboard-3btx.onrender.com/api/ping || echo "Ping failed (server may be waking up) — not treated as an error"
