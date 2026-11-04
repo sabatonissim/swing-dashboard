@@ -16,6 +16,8 @@ The checks (a problem found = a line in the report, never a stop; a check that c
   * earnings: the last trading day's reports that still have no result
   * market cap (v34): the stock page's SEC-based figure against the scanner's (BRK-B showed $540M, Visa's P/E was 9)
   * size (v34): how much of the database's storage is used, and by which tables
+  * company profiles (v35): an impossible staff count, an encyclopedia text that does not name the company (KO's said
+    400 employees, MSFT's described a court case)
 
 status: ok / info (worth knowing, nothing to fix: KVUE still on the free list) / warn (look at it) / fail (wrong or stopped).
 Exit code 0 even when problems are found (a red run would email the owner, the report is where this is read).
@@ -26,6 +28,7 @@ import csv
 import io
 import math
 import os
+import re
 import sys
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Set
@@ -50,6 +53,8 @@ NEWS_MAX_HOURS = 6              # the news job runs every 30 minutes, every day
 MAX_BLANK_REPORTS = 3           # yesterday's reports with no result at all: a few can be a moved date, more = a problem
 FUND_MCAP_MAX_RATIO = 1.5       # wider than the 1.3 fundamentals.py corrects at: the two are built at different prices
 DB_SIZE_WARN_MB, DB_SIZE_FAIL_MB = 700, 900   # the free Neon plan: 1 GB per project (its pricing page, 4.11.2026)
+BIG_COMPANY_CAP = 10e9          # a company this large with under PROFILE_MIN_STAFF employees: the figure is wrong
+PROFILE_MIN_STAFF = 500
 KEEP_DAYS = 60
 
 # (table, time column, most weekdays since the last change, status when older). Normal = 1 at 07:30 ET (yesterday's
@@ -101,6 +106,20 @@ def breadth_problems(r: dict) -> List[str]:
     total = r.get("total")
     if total and n > total:
         out.append(f"counted {n} > list {total}")
+    return out
+
+
+def profile_problems(r: dict) -> List[str]:
+    """What is wrong in one company_profiles row, read with its market cap (empty = fine)."""
+    out = []
+    words =[w for w in re.split(r"[^A-Za-z]+", r["name"] or "") if len(w) >= 3
+             and w.lower() not in ("inc", "corp", "corporation", "company", "the", "ltd", "limited", "plc", "holdings", "group")]
+    summary = (r["summary"] or "").lower()
+    if r["source"] == "wikipedia" and words and summary and not any(w.lower() in summary for w in words):
+        out.append("the summary does not name the company")     # the wrong article
+    staff, cap = r["employees"], r["market_cap"]
+    if staff is not None and staff < PROFILE_MIN_STAFF and (cap or 0) >= BIG_COMPANY_CAP:
+        out.append(f"{staff} employees at a market cap of ${cap / 1e9:.0f}B")
     return out
 
 
@@ -252,6 +271,22 @@ def check_market_caps(cur) -> List[dict]:
     return [_line("value.market_cap", "warn" if odd else "ok", detail or "the stock page's market caps agree with the scanner's", len(odd))]
 
 
+def check_profiles(cur) -> List[dict]:
+    """v35: the text a stock page opens with, and what search engines read. Only rows the job has already redone (facts->>'fv' = 2):
+    until its first run after v35, every older row would be reported."""
+    cur.execute("""SELECT p.ticker, p.name, p.source, p.filing_date, p.profile->'en'->>'summary' AS summary,
+                          (p.facts->>'employees')::float8 AS employees, l.market_cap
+                   FROM company_profiles p LEFT JOIN stock_leaders l ON l.ticker = p.ticker
+                   WHERE p.source = 'wikipedia' OR COALESCE((p.facts->>'fv')::int, 1) >= 2""")
+    rows = cur.fetchall()
+    odd = [f"{r['ticker']} ({'; '.join(p)})" for r in rows for p in [profile_problems(r)] if p]
+    # not an error: GE's 10-K, for one, has only a cross-reference table where the business section would be
+    wiki = sorted(r["ticker"] for r in rows if r["source"] == "wikipedia" and r["filing_date"])
+    return [_line("value.profiles", "warn" if odd else "ok", ", ".join(odd[:15]) or f"{len(rows)} profiles checked", len(odd)),
+            _line("info.profile_source", "info" if wiki else "ok", f"{len(wiki)} files annual reports with no business section found, "
+                                                                   f"encyclopedia text used: {', '.join(wiki[:30]) or 'none'}", len(wiki))]
+
+
 def check_db_size(cur) -> List[dict]:
     """v34: nothing watched the database's size, and news and scan rows are never deleted."""
     cur.execute("SELECT pg_database_size(current_database()) / 1048576 AS mb")
@@ -290,7 +325,7 @@ def main() -> int:
         for name, run in (("freshness", lambda: check_freshness(cur, now)), ("counts", lambda: check_counts(cur, members)),
                           ("arithmetic", lambda: check_arithmetic(cur)), ("values", lambda: check_values(cur)),
                           ("earnings", lambda: check_earnings(cur, now)), ("market caps", lambda: check_market_caps(cur)),
-                          ("size", lambda: check_db_size(cur))):
+                          ("profiles", lambda: check_profiles(cur)), ("size", lambda: check_db_size(cur))):
             try:
                 results += run()
             except Exception as e:

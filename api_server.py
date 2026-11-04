@@ -139,6 +139,7 @@ _RATE_RULES = [
                 "/api/stock-news", "/api/technical-setup", "/api/watchlist-setups", "/api/price-compare",
                 "/api/sector-comparison", "/api/signal-history", "/api/backtest", "/api/demo-portfolio",
                 "/api/pattern-stats", "/api/company-profile", "/api/quotes"), 40, 60),
+    ("seo",    ("/api/seo",), 600, 60),     # v35: asked by the site's own pages (one address); answered from memory
     ("default", ("/api/",), 240, 60),
 ]
 
@@ -146,7 +147,7 @@ _MAX_BODY_BYTES = 64 * 1024   # v34: the largest real request (a trade with a lo
 # v34: the endpoints that take a stock symbol in the path — anything that cannot be a symbol stops here, before Yahoo,
 # the SEC or the database are asked about it
 _TICKER_PATH_RE = re.compile(r"^/api/(?:lookup|technical-setup|fundamentals|stock-news|sector-comparison|signal-history|"
-                             r"insider|street|ai-note|funds/stock|company-profile)/([^/]*)$")
+                             r"insider|street|ai-note|funds/stock|company-profile|seo/stock)/([^/]*)$")
 _TICKER_OK_RE = re.compile(r"^[A-Za-z0-9.\-^=]{1,12}$")
 
 
@@ -216,9 +217,18 @@ async def security_middleware(request: Request, call_next):
     return response
 
 
+# v35: Google runs the site's script when it reads a page, and it obeys this file for every request the script makes. v34's
+# "Disallow: /" left the home page it saw empty. Allowed: what the home page asks for, all kept in memory
+# (_cached_answer), so a crawl does not reach the database. Everything per stock stays closed: a crawl over 860 stocks
+# would wake the database and hit Yahoo. A stock page has its own text in its HTML (api/page.js on Vercel).
+_ROBOTS_ALLOW = ("/api/stocks", "/api/macro-news", "/api/key-news", "/api/market-movers", "/api/market-ticker",
+                 "/api/pattern-stats", "/api/market-breadth", "/api/insider-buys", "/api/focus")
+
+
 @app.get("/robots.txt", include_in_schema=False)
 def robots_txt():
-    return PlainTextResponse("User-agent: *\nDisallow: /\n")
+    allow = "".join(f"Allow: {p}\n" for p in _ROBOTS_ALLOW)
+    return PlainTextResponse(f"User-agent: *\n{allow}Disallow: /\n")
 
 
 # ------------------------------------------------------------------
@@ -6530,6 +6540,105 @@ def get_company_profile(ticker: str):
             "facts": facts, "source": r["source"], "source_url": r["source_url"],
             "filing_date": r["filing_date"].isoformat() if r["filing_date"] else None,
             "built_at": r["built_at"].isoformat() if r["built_at"] else None}
+
+
+# ------------------------------------------------------------------
+# v35: WHAT THE SEARCH-ENGINE PAGES SHOW. api/page.js (Vercel) puts these facts in the HTML of /stock/KO and /he/stock/KO, so
+# a stock page has its own text before any script runs. All the stocks are read at once, at most every 6 hours, and kept in
+# memory: Google asking for 860 pages costs one database read. Facts only, each with its date.
+# ------------------------------------------------------------------
+SEO_TABLE_TTL_SEC = 6 * 3600
+SEO_NUMBERS_MAX_DAYS = 5     # a stock that left the scan: its old prices are not shown as if they were current (v31d)
+SEO_SCAN_MAX_DAYS = 14
+SEO_EARNINGS_MAX_DAYS = 45
+SEO_PEERS_EACH_SIDE = 3
+
+
+def _seo_rows(leaders, profiles, scans, earnings, today) -> dict:
+    """{ticker: what its page shows}, from rows of stock_leaders, company_profiles, scanned_stocks and earnings_calendar."""
+    def num(v, digits=1):
+        return round(float(v), digits) if v is not None and math.isfinite(float(v)) else None
+
+    def as_dict(v):
+        return v if isinstance(v, dict) else json.loads(v or "{}")
+
+    out = {}
+    for r in leaders:
+        row = out[r["ticker"]] = {"known": True, "ticker": r["ticker"], "name": r["name"] or r["ticker"],
+                                  "sector": _norm_sector(r["sector"]), "market_cap": num(r["market_cap"], 0)}
+        day = r["updated_at"].date()
+        if (today - day).days <= SEO_NUMBERS_MAX_DAYS:
+            stage = re.match(r"Stage (\d)", r["stage"] or "")
+            row["numbers"] = {"as_of": day.isoformat(), "close": num(r["close"], 2), "from_high": num(r["pct_from_high"]),
+                              "chg_1m": num(r["chg_1m"]), "chg_3m": num(r["chg_3m"]), "rs": r["rs_rating"],
+                              "stage": int(stage.group(1)) if stage else None}
+    for r in profiles:
+        prof, facts = as_dict(r["profile"]), as_dict(r["facts"])
+        if r["source"] == "wikipedia" and (prof.get("sv") or 1) < 2:
+            continue                    # written before company_profiles.py checked the article (MSFT: a court case)
+        row = out.setdefault(r["ticker"], {"known": True, "ticker": r["ticker"], "sector": None, "market_cap": None})
+        name = r["name"] or r["ticker"]
+        row.setdefault("name", name.title() if name.isupper() else name)
+        row["profile"] = {k: prof[k] for k in ("en", "he") if isinstance(prof.get(k), dict) and prof[k].get("summary")}
+        row["facts"] = {k: facts[k] for k in ("industry", "hq", "fiscal_year_end") if facts.get(k)}
+        if facts.get("employees") and (facts.get("fv") or 1) >= 2:     # before v35 it was the first figure found (KO: 400)
+            row["facts"]["employees"] = facts["employees"]
+        row["source"] = {"kind": r["source"], "url": r["source_url"],
+                         "filed": r["filing_date"].isoformat() if r["filing_date"] else None}
+    for r in scans:
+        if r["ticker"] in out:
+            out[r["ticker"]]["scan"] = {"pattern": r["pattern_type"], "day": r["timestamp"].date().isoformat()}
+    for r in earnings:
+        if r["ticker"] in out:
+            out[r["ticker"]]["next_report"] = r["report_date"].isoformat()
+    # the stocks nearest in size in the same sector: links between the pages, so a search engine can reach all of them
+    sectors = {}
+    for row in out.values():
+        if row.get("sector") and row.get("profile"):
+            sectors.setdefault(row["sector"], []).append(row)
+    for rows in sectors.values():
+        rows.sort(key=lambda x: (-(x.get("market_cap") or 0), x["ticker"]))
+        for i, row in enumerate(rows):
+            near = rows[max(0, i - SEO_PEERS_EACH_SIDE):i] + rows[i + 1:i + 1 + SEO_PEERS_EACH_SIDE]
+            row["peers"] = [{"ticker": x["ticker"], "name": x["name"], "langs": sorted(x["profile"])} for x in near]
+    return out
+
+
+@_cached_answer(ttl_sec=SEO_TABLE_TTL_SEC, max_keys=1)
+def _seo_table() -> dict:
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        leaders, profiles, earnings = [], [], []
+        if _table_exists(cur, "stock_leaders"):
+            cur.execute("""SELECT ticker, name, sector, close, pct_from_high, chg_1m, chg_3m, stage, rs_rating, market_cap, updated_at
+                           FROM stock_leaders""")
+            leaders = cur.fetchall()
+        if _table_exists(cur, "company_profiles"):
+            cur.execute("SELECT ticker, name, profile, facts, source, source_url, filing_date FROM company_profiles")
+            profiles = cur.fetchall()
+        cur.execute("""SELECT DISTINCT ON (ticker) ticker, pattern_type, timestamp FROM scanned_stocks
+                       WHERE timestamp > NOW() - make_interval(days => %s) AND pattern_type IS NOT NULL
+                       ORDER BY ticker, timestamp DESC""", (SEO_SCAN_MAX_DAYS,))
+        scans = cur.fetchall()
+        if _table_exists(cur, "earnings_calendar"):
+            cur.execute("""SELECT ticker, MIN(report_date) AS report_date FROM earnings_calendar
+                           WHERE report_date >= CURRENT_DATE AND report_date <= CURRENT_DATE + %s::int GROUP BY ticker""",
+                        (SEO_EARNINGS_MAX_DAYS,))
+            earnings = cur.fetchall()
+    return _seo_rows(leaders, profiles, scans, earnings, dt.now(timezone.utc).date())
+
+
+@app.get("/api/seo/stock/{ticker}")
+def get_seo_stock(ticker: str):
+    ticker = _canon_ticker(ticker)
+    return _seo_table().get(ticker) or {"known": False, "ticker": ticker}
+
+
+@app.get("/api/seo/index")
+def get_seo_index():
+    """The stocks that have a page worth a search engine's time (a company profile in at least one language)."""
+    return {"stocks": [{"ticker": r["ticker"], "name": r["name"], "sector": r.get("sector"), "langs": sorted(r["profile"]),
+                        "day": (r.get("numbers") or {}).get("as_of") or (r.get("source") or {}).get("filed")}
+                       for _, r in sorted(_seo_table().items()) if r.get("profile")]}
 
 
 # ------------------------------------------------------------------

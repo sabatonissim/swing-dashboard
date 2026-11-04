@@ -45,6 +45,8 @@ RECHECK_DAYS = 30
 LLM_CALL_BUDGET_SEC = "100"        # per AI request, across its fallback models (llm_provider's LLM_BUDGET_SECONDS)
 PROFILE_VERSION = 2                # stored as profile["v"]; profiles of an older version are written again
 HEBREW_VERSION = 2                 # profile["hv"]; an older Hebrew is translated again from the saved English (v30d)
+SOURCE_VERSION = 2                 # profile["sv"]; v35: Wikipedia profiles from before the article was checked are redone
+FACTS_VERSION = 2                  # facts["fv"]; v35: the employee count is read again from the report (no AI needed)
 FIELD_MAX = {"summary": 300, "what": 600, "revenue": 650, "products": 500, "customers": 500}
 FIELDS = list(FIELD_MAX)
 REQUIRED = ("summary", "what", "revenue")
@@ -204,6 +206,9 @@ def html_to_text(raw):
     raw = re.sub(r"(?is)<ix:header>.*?</ix:header>", " ", raw)             # hidden XBRL facts of inline filings
     raw = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", raw)
     raw = re.sub(r"(?i)<(br|/p|/div|/tr|/li|/h\d)\b[^>]*>", "\n", raw)
+    # v35: inline tags do not separate letters. Microsoft's heading is "B<span small-caps>USINESS</span>": it became
+    # "B USINESS", no section was found, and the Wikipedia fallback made a court case its profile (4.11.2026).
+    raw = re.sub(r"(?i)</?(?:span|font|b|i|u|em|strong|small|a|sup|sub|ix:[a-z]+)\b[^>]*>", "", raw)
     text = html.unescape(re.sub(r"<[^>]+>", " ", raw)).replace("\xa0", " ")
     text = re.sub(r"[ \t\r\f\v]+", " ", text)
     return re.sub(r"\n\s*\n+", "\n", text)
@@ -231,34 +236,71 @@ def business_section(text, form):
     return None
 
 
+# v35: "65,900 and 69,700 employees, respectively" (the first is the latest year), "2.1 million associates",
+# "167,000 full-time equivalent employees", "318,512 employees"
+_HEADCOUNT = re.compile(
+    r"(?<![\d,.$])(\d{1,3}(?:,\d{3})+|\d{2,7}|\d+(?:\.\d+)?\s+million)(?:\s+and\s+\d[\d,.]*(?:\s+million)?)?\s+"
+    r"(?:(?:(?:full|part)[- ]time|seasonal|temporary|equivalent|fte|regular|global|worldwide|total|permanent|active|and|or),?\s+){0,5}"
+    r"(employees|associates|team\s*members|teammates|colleagues|workers|persons|people)\b", re.I)
+_HEADCOUNT_CUE = re.compile(r"\b(employ\w*|had|have|has|workforce|headcount|staff|total of|comprised|consisted|grew|increased)\b", re.I)
+_NOT_HEADCOUNT = re.compile(r"\b(cover\w*|represented|unions?|bargaining|councils?|contracts?)\b", re.I)
+
+
 def employees_from(text):
-    m = re.search(r"(?:approximately|about|had|employed)\s+([\d,]{3,9})\s+(?:full[- ]time\s+)?(?:employees|people)",
-                  text, re.I)
-    if not m:
-        return None
-    try:
-        n = int(m.group(1).replace(",", ""))
-        return n if 10 <= n <= 5_000_000 else None
-    except ValueError:
-        return None
+    """The company's headcount: the largest figure in the section, in a sentence that counts its staff. v35: the first match
+    was taken, and for Coca-Cola that was "approximately 400 employees in North America were covered by a union contract".
+    Nothing is better than a wrong number: AT&T's "a contract covering approximately 9,000 employees" must not pass."""
+    best = None
+    for m in _HEADCOUNT.finditer(text):
+        before = text[max(0, m.start() - 120):m.start()].rsplit(". ", 1)[-1]      # the same sentence only
+        after = text[m.end():m.end() + 80].split(". ", 1)[0]
+        if not _HEADCOUNT_CUE.search(before) or _NOT_HEADCOUNT.search(before) or _NOT_HEADCOUNT.search(after):
+            continue
+        if m.group(2).lower() == "people" and not re.search(r"\b(employ|workforce|staff)", before, re.I):
+            continue                                       # "we have reached 5,000,000 people" is not the staff
+        raw = m.group(1).lower()
+        n = round(float(raw.split()[0]) * 1_000_000) if "million" in raw else int(raw.replace(",", ""))
+        if "," not in raw and 1900 <= n <= 2100:           # "in 2025 employees ..." is a year
+            continue
+        if 10 <= n <= 5_000_000 and (best is None or n > best):
+            best = n
+    return best
+
+
+_WIKI_API = "https://en.wikipedia.org/w/api.php"
+_WIKI_COMPANY = re.compile(r"\b(?:is|are|was)\s+(?:an?|the|one of)\b(?:[^.]|(?<=[A-Z])\.){0,160}?\b(?:company|corporation|"
+                           r"conglomerate|bank|banking|holding|manufacturer|producer|retailer|insurer|airline|firm|provider|"
+                           r"operator|developer|trust|REIT|utility|enterprise|business|supplier|maker|chain|group)\b", re.I)
+
+
+def is_company_article(title, text, word):
+    """v35: is this Wikipedia article about the company? The first search result used to be taken as it was:
+    "MICROSOFT CORP" -> "Microsoft Corp. v Commission of the European Communities", a court case, became MSFT's profile."""
+    head = text[:400]
+    if re.search(r"\sv\.?\s", title) or "disambiguation" in title.lower() or "may refer to" in head:
+        return False
+    if word and word.lower() not in f"{title} {head}".lower():
+        return False
+    return bool(_WIKI_COMPANY.search(head))
 
 
 def wikipedia_summary(name):
+    query = " ".join(_NAME_NOISE.sub(" ", re.sub(r"[/\\][A-Z]{2,3}[/\\]?", " ", name or "")).split())
+    query = query.title() if query.isupper() else query                     # "MICROSOFT CORP" -> "Microsoft"
+    word = company_word(name)
     try:
-        s = requests.get("https://en.wikipedia.org/w/api.php", headers=SEC_HEADERS, timeout=10,
-                         params={"action": "opensearch", "search": name, "limit": 1, "namespace": 0, "format": "json"}).json()
-        titles = s[1] if len(s) > 1 else []
-        if not titles:
-            return None, None
-        title = titles[0]
-        j = requests.get("https://en.wikipedia.org/w/api.php", headers=SEC_HEADERS, timeout=10,
-                         params={"action": "query", "prop": "extracts", "exintro": 1, "explaintext": 1,
-                                 "titles": title, "format": "json"}).json()
-        page = next(iter(((j.get("query") or {}).get("pages") or {}).values()), {})
-        text = (page.get("extract") or "").strip()
-        if len(text) < 200:
-            return None, None
-        return text, "https://en.wikipedia.org/wiki/" + title.replace(" ", "_")
+        s = requests.get(_WIKI_API, headers=SEC_HEADERS, timeout=10,
+                         params={"action": "opensearch", "search": query, "limit": 5, "namespace": 0, "format": "json"}).json()
+        for title in (s[1] if len(s) > 1 else []):
+            j = requests.get(_WIKI_API, headers=SEC_HEADERS, timeout=10,
+                             params={"action": "query", "prop": "extracts", "exintro": 1, "explaintext": 1, "redirects": 1,
+                                     "titles": title, "format": "json"}).json()
+            page = next(iter(((j.get("query") or {}).get("pages") or {}).values()), {})
+            text = (page.get("extract") or "").strip()
+            real = page.get("title") or title
+            if len(text) >= 200 and is_company_article(real, text, word):
+                return text, "https://en.wikipedia.org/wiki/" + real.replace(" ", "_")
+        return None, None
     except Exception as e:  # noqa: BLE001
         print(f"[warn] Wikipedia unavailable for {name!r}: {type(e).__name__}: {e}")
         return None, None
@@ -492,7 +534,8 @@ def main() -> int:
     init_db(cur)
     conn.commit()
     candidates = pick_tickers(cur)
-    cur.execute("""SELECT ticker, name, filing_date, checked_at, COALESCE((profile->>'v')::int, 1) AS v,
+    cur.execute("""SELECT ticker, name, filing_date, checked_at, source, COALESCE((profile->>'v')::int, 1) AS v,
+                          COALESCE((profile->>'sv')::int, 1) AS sv, COALESCE((facts->>'fv')::int, 1) AS fv,
                           profile->'en' AS en,
                           (profile->'he' IS NULL OR jsonb_typeof(profile->'he') = 'null'
                            OR COALESCE((profile->>'hv')::int, 1) < %s) AS no_he
@@ -504,10 +547,17 @@ def main() -> int:
     reasons = {}
 
     now = time.time()
+
+    def old_wiki(r):                               # v35: written before the article was checked — may be the wrong article
+        return r["source"] == "wikipedia" and r["sv"] < SOURCE_VERSION
+
+    def old_facts(r):                              # v35: the employee count was the first figure found (KO: 400)
+        return str(r["source"] or "").startswith("sec-") and r["fv"] < FACTS_VERSION
+
     # due: no profile, an older version (v30's one-request profiles: weak Hebrew), Hebrew still missing, or time to
     # look for a newer annual report. Missing Hebrew first — it is one short request each.
     due = [t for t in candidates
-           if t not in have or have[t]["v"] != PROFILE_VERSION or have[t]["no_he"]
+           if t not in have or have[t]["v"] != PROFILE_VERSION or have[t]["no_he"] or old_wiki(have[t]) or old_facts(have[t])
            or (now - have[t]["checked_at"].timestamp()) > RECHECK_DAYS * 86400]
     due.sort(key=lambda t: 0 if (t in have and have[t]["v"] == PROFILE_VERSION and have[t]["no_he"]) else 1)
     print(f"company profiles: {len(candidates)} candidates, {len(have)} profiles saved, {len(due)} due")
@@ -528,7 +578,7 @@ def main() -> int:
                 skipped += 1                                         # not an SEC filer (ETF, foreign without SEC filings)
                 continue
             old = have.get(t)
-            current = bool(old) and old["v"] == PROFILE_VERSION
+            current = bool(old) and old["v"] == PROFILE_VERSION and not old_wiki(old)
             if current and old["no_he"] and isinstance(old["en"], dict):      # only the Hebrew is missing / outdated
                 he, model = write_hebrew(old["en"], old["name"])
                 db_exec("""UPDATE company_profiles SET profile = profile || jsonb_build_object('he', %s::jsonb, 'hv', %s),
@@ -538,15 +588,24 @@ def main() -> int:
                 print(f"  {t}: Hebrew added ({model})")
                 continue
             if current and old["filing_date"]:
-                form, filed, _, _ = latest_annual_report(cik)
+                form, filed, url, _ = latest_annual_report(cik)
                 if filed and str(old["filing_date"]) == filed:              # no newer annual report: keep the profile
-                    db_exec("UPDATE company_profiles SET checked_at = NOW() WHERE ticker = %s", (t,))
+                    if old_facts(old) and url:                              # v35: only the count is read again, no AI
+                        section = business_section(html_to_text(sec_get(url, timeout=90).text), form)
+                        n = employees_from(section) if section else None
+                        db_exec("""UPDATE company_profiles SET checked_at = NOW(),
+                                          facts = (COALESCE(facts, '{}'::jsonb) - 'employees') || %s::jsonb
+                                   WHERE ticker = %s""", (json.dumps({"fv": FACTS_VERSION, **({"employees": n} if n else {})}), t))
+                    else:
+                        db_exec("UPDATE company_profiles SET checked_at = NOW() WHERE ticker = %s", (t,))
                     unchanged += 1
                     continue
             source, meta = gather_source(t, cik)
             if not source:
                 skipped += 1
                 print(f"[warn] {t}: no annual report section and no Wikipedia summary")
+                if old and old_wiki(old):                                   # better no profile than a wrong article
+                    db_exec("DELETE FROM company_profiles WHERE ticker = %s", (t,))
                 continue
             en, model = write_english(source, meta["name"])
             try:
@@ -555,8 +614,9 @@ def main() -> int:
                 he = None
                 reasons["hebrew later"] = reasons.get("hebrew later", 0) + 1
                 print(f"[warn] {t}: Hebrew failed, saved in English for now ({str(e)[:150]})")
-            profile = {"v": PROFILE_VERSION, "en": en, "he": he, "hv": HEBREW_VERSION}
+            profile = {"v": PROFILE_VERSION, "en": en, "he": he, "hv": HEBREW_VERSION, "sv": SOURCE_VERSION}
             facts = {k: v for k, v in meta["facts"].items() if v}
+            facts["fv"] = FACTS_VERSION
             db_exec("""INSERT INTO company_profiles (ticker, name, profile, facts, source, source_url, filing_date,
                                                      model, built_at, checked_at)
                        VALUES (%s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, NOW(), NOW())
