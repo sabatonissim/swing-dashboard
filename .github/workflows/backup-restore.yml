@@ -1,0 +1,38 @@
+name: Restore personal data
+
+# v35c: by hand only. Puts back rows that are MISSING from a copy made by "Backup personal data"; it never changes or deletes
+# anything, so it is safe to run as a drill (a healthy database: "0 were missing and added").
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "The number in the address of the backup run (…/actions/runs/NUMBER)"
+        required: true
+      confirm:
+        description: "Type RESTORE"
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  restore:
+    if: ${{ inputs.confirm == 'RESTORE' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: personal-backup
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - run: python -u backup_personal.py restore personal-backup.enc
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_KEY: ${{ secrets.BACKUP_KEY }}

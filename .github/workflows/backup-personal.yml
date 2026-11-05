@@ -1,0 +1,30 @@
+name: Backup personal data
+
+# v35c: an encrypted copy of users, watchlists, trades and price alerts (backup_personal.py), kept 90 days as a file of the run.
+# The repository is public: the file is unreadable without the secret BACKUP_KEY, and the log shows totals only. Red = no copy today.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -u backup_personal.py backup personal-backup.enc
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_KEY: ${{ secrets.BACKUP_KEY }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: personal-backup
+          path: personal-backup.enc
+          retention-days: 90
+          if-no-files-found: error
