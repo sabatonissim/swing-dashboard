@@ -472,6 +472,77 @@ def test_seo_endpoints(api, monkeypatch):
     assert listed[2]["day"] == "2026-02-01"
 
 
+def test_backup_is_encrypted_and_reads_back():
+    pytest.importorskip("cryptography")
+    import backup_personal as b
+    data = {"made_at": "2026-11-05", "tables": {"users": {"columns": ["id", "email"], "rows": [[1, "someone@example.com"]]}}}
+    blob = b.encrypt(data, "a-long-enough-password")
+    assert b"example.com" not in blob and blob.startswith(b.MAGIC)      # the repository is public
+    assert b.decrypt(blob, "a-long-enough-password") == data
+    with pytest.raises(Exception):
+        b.decrypt(blob, "the-wrong-password-here")
+    with pytest.raises(ValueError):
+        b.encrypt(data, "short")
+    with pytest.raises(ValueError):
+        b.encrypt(data, "")                                             # the secret is not set: red, not an unencrypted file
+
+
+def test_backup_reads_and_restores_only_missing_rows():
+    pytest.importorskip("cryptography")
+    import datetime as _dt
+    import backup_personal as b
+
+    class Cur:
+        def __init__(self):
+            self.sql, self.description, self.rowcount, self._last = [], [("id",), ("opened_on",)], 1, []
+
+        def execute(self, sql, params=None):
+            self.sql.append((sql, params))
+            if "to_regclass" in sql:
+                self._last = [(params[0] != "watchlist",)]              # a table that does not exist is skipped
+            elif "information_schema" in sql:
+                self._last = [("id",), ("email",)]
+            else:
+                self._last = [(1, _dt.date(2026, 11, 5))]
+
+        def fetchone(self):
+            return self._last[0]
+
+        def fetchall(self):
+            return self._last
+
+    data = b.read_tables(Cur())
+    assert list(data["tables"]) == ["users", "trades", "price_alerts"] and data["tables"]["users"]["rows"] == [[1, "2026-11-05"]]
+    assert b.counts(data) == {"users": 1, "trades": 1, "price_alerts": 1}
+    cur = Cur()
+    old = {"tables": {"trades": {"columns": ["id", "dropped_later"], "rows": [[7, "x"]]},
+                      "users": {"columns": ["id", "email"], "rows": [[1, "a@b.c"]]}}}
+    assert b.restore_tables(cur, old) == {"users": 1, "trades": 1}
+    inserts = [s for s in cur.sql if s[0].startswith("INSERT")]
+    assert "INTO users" in inserts[0][0] and "ON CONFLICT DO NOTHING" in inserts[0][0]     # users first
+    assert "dropped_later" not in inserts[1][0] and inserts[1][1] == [7]                   # a column that no longer exists
+    assert not any(s[0].lstrip().upper().startswith(("DELETE", "UPDATE", "DROP", "TRUNCATE")) for s in cur.sql)
+
+
+def test_versions_are_fixed_and_workflows_agree():
+    """v35c: numpy 2.5.4 needs Python 3.12: one workflow on 3.11 would fail at its install step, every run."""
+    req = ROOT / "requirements.txt"
+    flows = ROOT / ".github" / "workflows" if (ROOT / ".github" / "workflows").exists() else ROOT / "WORKFLOW"
+    if not req.exists() or not flows.exists():
+        pytest.skip("not in this copy")
+    lines = [ln.strip() for ln in req.read_text(encoding="utf-8").splitlines() if ln.strip() and not ln.startswith("#")]
+    assert lines and all("==" in ln for ln in lines), "every line of requirements.txt has an exact version"
+    import re
+    for f in flows.glob("*.yml"):
+        assert not re.search(r"python-version:\s*[\"']?3\.11", f.read_text(encoding="utf-8")), f.name
+
+
+def test_backup_is_scheduled_at_a_time_the_database_is_awake():
+    import scheduler as s
+    job = next(j for j in s.JOBS if j["name"] == "backup")
+    assert job["workflow"] == "backup-personal.yml" and job["kind"] == "daily" and job["at"][1] < 35
+
+
 class _FakeDb:
     """db_cursor for one test: answers from a list, and records what was asked."""
     def __init__(self, answers):

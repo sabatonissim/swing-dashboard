@@ -10,7 +10,7 @@ window.__done = false;
 async function main(){
   const py = await loadPyodide({indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.28.3/full/', stdout: log, stderr: log});
   log('pyodide ' + py.version);
-  await py.loadPackage(['micropip', 'numpy', 'pandas', 'pydantic', 'pytest', 'requests', 'tzdata']);
+  await py.loadPackage(['micropip', 'numpy', 'pandas', 'pydantic', 'pytest', 'requests', 'tzdata', 'cryptography']);
   const names = (await (await fetch('/list')).text()).split('\n').filter(Boolean);
   py.FS.mkdirTree('/proj/tests/fixtures');
   for(const n of names){

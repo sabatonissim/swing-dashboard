@@ -79,6 +79,8 @@ JOBS = [
     dict(name="profiles_day", workflow="company-profiles.yml", kind="daily",  at=(13, 0),  weekdays_only=False, grace_min=180),
     # v32: read-only data check (data_health.py) — after the evening jobs and the first quick refresh of the morning
     dict(name="data_health", workflow="data-health.yml",     kind="daily",    at=(7, 30),  weekdays_only=True,  grace_min=300),
+    # v35c: encrypted copy of the personal data, under 1 MB, right after other morning jobs so it wakes nothing up
+    dict(name="backup",      workflow="backup-personal.yml", kind="daily",    at=(7, 32),  weekdays_only=True,  grace_min=300),
 ]
 
 _done = {}        # slot key -> outcome (this process)
