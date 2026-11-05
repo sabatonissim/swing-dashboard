@@ -1,5 +1,8 @@
 name: Keep Render Awake
 
+# v35c: also the site's alarm. A red run here = GitHub emails the owner. It never opens a database connection: each wake-up
+# of the database costs 5 idle minutes of the monthly compute limit (a database that is down fails the jobs, which email too).
+# GitHub starts scheduled runs late (seen: 3 runs in 13 hours), so it can take a few hours to notice. Good enough for now.
 on:
   schedule:
     - cron: '*/13 * * * *'   # every 13 minutes — comfortably under Render's 15-min sleep timer
@@ -8,13 +11,35 @@ on:
 # v18 security: the job only needs to read the code (default token permissions are broader)
 permissions:
   contents: read
+  actions: read
 
 jobs:
   ping:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 8
     steps:
-      # v34: /api/ping, not /api/health — that one opens a database connection, and each wake-up of the database costs
-      # 5 idle minutes of the monthly compute limit
-      - name: Ping API (no database)
-        run: curl -sf https://swing-dashboard-3btx.onrender.com/api/ping || echo "Ping failed (server may be waking up) — not treated as an error"
+      # A free server can take a minute to wake up, so one failed ping is not an alarm
+      - name: The API answers
+        run: |
+          for i in 1 2 3 4 5; do
+            curl -sf --max-time 70 https://swing-dashboard-3btx.onrender.com/api/ping && exit 0
+            sleep 30
+          done
+          echo "::error::The API has not answered for several minutes"
+          exit 1
+      - name: The site answers
+        run: |
+          curl -sf --max-time 40 https://swing-desk-tau.vercel.app/ | grep -q 'Swing Desk'
+          curl -sf --max-time 40 https://swing-desk-tau.vercel.app/learn/atr | grep -q 'ATR'
+      # The scheduler lives inside the API: the API can answer while the jobs have stopped. News runs at least hourly.
+      - name: The jobs are running
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          last=$(gh api "repos/${{ github.repository }}/actions/workflows/news-aggregator.yml/runs?per_page=1" --jq '.workflow_runs[0].created_at')
+          age=$(( $(date +%s) - $(date -d "$last" +%s) ))
+          echo "last news run: $last ($age seconds ago)"
+          if [ "$age" -gt 10800 ]; then
+            echo "::error::No news run for over 3 hours: the scheduler has stopped"
+            exit 1
+          fi
