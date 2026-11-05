@@ -360,6 +360,12 @@ def db_cursor(dict_cursor: bool = False):
             pass
 
 
+def _add_next_report_columns(cur):
+    # v35e: the scanner fills them; here too, so the stock page's question works before its first run
+    cur.execute("ALTER TABLE IF EXISTS stock_estimates ADD COLUMN IF NOT EXISTS next_report DATE;")
+    cur.execute("ALTER TABLE IF EXISTS stock_estimates ADD COLUMN IF NOT EXISTS next_report_est BOOLEAN;")
+
+
 def _sanitize_legacy_earnings(cur):
     """The scanner owns earnings_calendar, but it only runs on a schedule. Doing
     the same one-time cleanup here removes the wrong (unverifiable, previous-
@@ -388,6 +394,7 @@ def init_db():
     cur = conn.cursor()
     try:
         _sanitize_legacy_earnings(cur)
+        _add_next_report_columns(cur)
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -4432,6 +4439,66 @@ def _description_quick(ticker: str) -> Optional[str]:
         ex.shutdown(wait=False)
 
 
+def _nyse_holidays(year: int) -> set:
+    """The days the US stock market is closed by its regular rules (not one-off closures)."""
+    def nth(month, weekday, n):
+        d = date(year, month, 1)
+        return d + timedelta(days=(weekday - d.weekday()) % 7 + 7 * (n - 1))
+
+    def observed(d):
+        return d - timedelta(days=1) if d.weekday() == 5 else d + timedelta(days=1) if d.weekday() == 6 else d
+    a, b, c = year % 19, year // 100, year % 100                       # Easter (the Gregorian computus), for Good Friday
+    h = (19 * a + b - b // 4 - (b - (b + 8) // 25 + 1) // 3 + 15) % 30
+    k = (32 + 2 * (b % 4) + 2 * (c // 4) - h - c % 4) % 7
+    m = (a + 11 * h + 22 * k) // 451
+    month = (h + k - 7 * m + 114) // 31
+    day = (h + k - 7 * m + 114) % 31 + 1
+    last_may = date(year, 5, 31)
+    out = {nth(1, 0, 3), nth(2, 0, 3), date(year, month, day) - timedelta(days=2), last_may - timedelta(days=last_may.weekday()),
+           observed(date(year, 6, 19)), observed(date(year, 7, 4)), nth(9, 0, 1), nth(11, 3, 4), observed(date(year, 12, 25))}
+    new_year = date(year, 1, 1)                                        # on a Saturday it is not moved back into December
+    if new_year.weekday() != 5:
+        out.add(observed(new_year))
+    return out
+
+
+def _trading_days_until(today: date, day: date) -> int:
+    """Trading days after today, up to and including `day`: tomorrow = 1, today = 0."""
+    n, d = 0, today
+    while d < day:
+        d += timedelta(days=1)
+        if d.weekday() < 5 and d not in _nyse_holidays(d.year):
+            n += 1
+    return n
+
+
+def _next_report(ticker: str) -> Optional[dict]:
+    """v35e: for the stock page. earnings_calendar (Nasdaq, only the coming week) first; further ahead stock_estimates, Yahoo's
+    date from the full scan, often its own estimate. A report that already has results does not count. Under 200 bytes from the
+    database, on a page that reads it anyway. Never stops the quote."""
+    from zoneinfo import ZoneInfo
+    today = dt.now(ZoneInfo("America/New_York")).date()
+    try:
+        with db_cursor(dict_cursor=True) as (conn, cur):
+            cur.execute("""SELECT report_date, session FROM earnings_calendar
+                           WHERE ticker = %s AND report_date >= %s AND eps_actual IS NULL AND revenue_actual IS NULL
+                           ORDER BY report_date LIMIT 1""", (ticker, today))
+            r = cur.fetchone()
+            when, session, estimate = (r["report_date"], r["session"], False) if r else (None, None, False)
+            if not when:
+                cur.execute("""SELECT next_report, next_report_est FROM stock_estimates
+                               WHERE ticker = %s AND next_report >= %s AND updated_at > NOW() - INTERVAL '10 days'""", (ticker, today))
+                r = cur.fetchone()
+                if r:
+                    when, estimate = r["next_report"], bool(r["next_report_est"])
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] next report {ticker}: {type(e).__name__}: {e}")
+        return None
+    if not when:
+        return None
+    return {"date": when.isoformat(), "session": session, "estimate": estimate, "trading_days": _trading_days_until(today, when)}
+
+
 @app.get("/api/lookup/{ticker}")
 @_cached_answer(ttl_sec=60, max_keys=256)
 def lookup_stock(ticker: str):
@@ -4506,6 +4573,7 @@ def lookup_stock(ticker: str):
 
     return {
         "ticker": ticker,
+        "next_report": _next_report(ticker),
         "name": info.get("longName") or info.get("shortName") or csv_info.get("name") or ticker,
         "price": round(float(price), 2),
         "change_pct": change_pct,

@@ -351,6 +351,7 @@ window.addEventListener('load', function(){
   .dd-stat-card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;text-align:center;}
   .dd-stat-card .k{font-size:10px;color:var(--text-dim);text-transform:uppercase;margin-bottom:4px;}
   .dd-stat-card .v{font-family:'JetBrains Mono',monospace;font-size:14.5px;font-weight:700;}
+  .dd-stat-card .s{font-size:11px;color:var(--text-dim);margin-top:3px;}
   .dd-section-title{font-size:13px;font-weight:700;margin:20px 0 10px;color:var(--text);}
   .dd-sector-compare{display:flex;gap:14px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:10px;}
   .dd-sector-compare .col{flex:1;text-align:center;}
@@ -2323,6 +2324,23 @@ async function rerenderDeepDiveForLang(){
   renderDdFunds();                              // v25
 }
 
+// v35e (owner's request): when the next report is, and how many trading days until it. A date Yahoo only estimated says so.
+function nextReportCard(r){
+  const en = lang === 'en';
+  const title = en ? 'Next report' : 'הדוח הבא';
+  if(!r || !/^\d{4}-\d{2}-\d{2}$/.test(r.date || '')) return `<div class="dd-stat-card"><div class="k">${title}</div><div class="v">—</div></div>`;
+  const [y, m, d] = r.date.split('-').map(Number);
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const when = en ? `${months[m - 1]} ${d}, ${y}` : `${d}.${m}.${y}`;
+  const n = Number(r.trading_days);
+  const left = n === 0 ? (en ? 'Today' : 'היום')
+    : n === 1 ? (en ? '1 trading day' : 'עוד יום מסחר אחד')
+    : (en ? `${n} trading days` : `עוד ${n} ימי מסחר`);
+  const session = r.session === 'bmo' ? UI[lang].session_bmo : r.session === 'amc' ? UI[lang].session_amc : '';
+  const parts = [left, session, r.estimate ? (en ? 'estimated date' : 'תאריך משוער') : ''].filter(Boolean).join(' · ');
+  return `<div class="dd-stat-card"><div class="k">${title}</div><div class="v">${when}</div><div class="s">${parts}</div></div>`;
+}
+
 async function loadDeepDive(){
   const input = document.getElementById('dd-ticker-input');
   const ticker = canonTicker(input.value);
@@ -2526,6 +2544,7 @@ function renderDeepDive(quote, sector, signals, news){
       <div class="dd-stat-card"><div class="k">${t?'Market Cap':'שווי שוק'}</div><div class="v" id="dd-mcap-val">${formatMarketCap(quote.market_cap)}</div></div>
       <div class="dd-stat-card" id="dd-pe-card"></div>
       <div class="dd-stat-card"><div class="k">${t?'Avg Vol 20d':'ווליום ממוצע'}</div><div class="v">${formatMarketCap(quote.avg_volume_20d)}</div></div>
+      ${nextReportCard(quote.next_report)}
     </div>
   `;
 

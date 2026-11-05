@@ -543,6 +543,47 @@ def test_backup_is_scheduled_at_a_time_the_database_is_awake():
     assert job["workflow"] == "backup-personal.yml" and job["kind"] == "daily" and job["at"][1] < 35
 
 
+def test_market_holidays_and_trading_days(api):
+    """v35e: published NYSE closures."""
+    import datetime as _dt
+    d = _dt.date
+    assert api._nyse_holidays(2026) == {d(2026, 1, 1), d(2026, 1, 19), d(2026, 2, 16), d(2026, 4, 3), d(2026, 5, 25), d(2026, 6, 19),
+                                        d(2026, 7, 3), d(2026, 9, 7), d(2026, 11, 26), d(2026, 12, 25)}
+    h27 = api._nyse_holidays(2027)
+    assert d(2027, 3, 26) in h27 and d(2027, 7, 5) in h27 and d(2027, 12, 24) in h27 and d(2027, 6, 18) in h27
+    assert d(2027, 12, 31) not in h27                       # New Year's Day 2028 is a Saturday: not moved back
+    assert api._nyse_holidays(2025) >= {d(2025, 4, 18), d(2025, 11, 27)}
+    n = api._trading_days_until
+    today = d(2026, 11, 5)                                  # a Thursday
+    assert n(today, today) == 0 and n(today, d(2026, 11, 6)) == 1
+    assert n(today, d(2026, 11, 9)) == 2                    # over the weekend
+    assert n(d(2026, 11, 25), d(2026, 11, 27)) == 1         # over Thanksgiving
+
+
+def test_next_report(api, monkeypatch):
+    import datetime as _dt
+    far = _dt.date.today() + _dt.timedelta(days=60)
+    db = _FakeDb([None, {"next_report": far, "next_report_est": True}])
+    monkeypatch.setattr(api, "db_cursor", db)
+    r = api._next_report("KO")
+    assert r["date"] == far.isoformat() and r["estimate"] is True and r["session"] is None and r["trading_days"] > 30
+    db = _FakeDb([{"report_date": far, "session": "amc"}])
+    monkeypatch.setattr(api, "db_cursor", db)
+    r = api._next_report("KO")
+    assert r["session"] == "amc" and r["estimate"] is False and len(db.sql) == 1      # the calendar comes first
+    monkeypatch.setattr(api, "db_cursor", _FakeDb([None, None]))
+    assert api._next_report("KO") is None
+    monkeypatch.setattr(api, "db_cursor", lambda dict_cursor=False: (_ for _ in ()).throw(RuntimeError("down")))
+    assert api._next_report("KO") is None                                             # the quote still answers
+
+
+def test_estimates_row_carries_the_next_report(scanner):
+    info = {"forwardEps": 3.0, "earningsTimestampStart": 1800000000, "isEarningsDateEstimate": True}
+    row = scanner._estimates_row("KO", info)
+    assert len(row) == 20 and row[18] == "2027-01-15" and row[19] is True
+    assert scanner._estimates_row("KO", {"forwardEps": 3.0})[18] is None
+
+
 class _FakeDb:
     """db_cursor for one test: answers from a list, and records what was asked."""
     def __init__(self, answers):

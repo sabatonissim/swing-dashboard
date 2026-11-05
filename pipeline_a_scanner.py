@@ -2209,7 +2209,10 @@ def _estimates_row(ticker, info):
             num("targetMeanPrice"), num("targetHighPrice"), num("targetLowPrice"), num("numberOfAnalystOpinions"),
             num("shortPercentOfFloat"), num("shortRatio"), num("sharesShort"), num("sharesShortPriorMonth"),
             _epoch_date(info.get("dateShortInterest")),
-            _epoch_date(info.get("exDividendDate")), num("dividendRate"), num("lastDividendValue"))
+            _epoch_date(info.get("exDividendDate")), num("dividendRate"), num("lastDividendValue"),
+            # v35e: the next report, for every stock (earnings_calendar holds only the coming week). Often Yahoo's own guess.
+            _epoch_date(info.get("earningsTimestampStart") or info.get("earningsTimestamp")),
+            bool(info.get("isEarningsDateEstimate")))
 
 
 def save_stock_estimates(rows: List[tuple]):
@@ -2224,16 +2227,17 @@ def save_stock_estimates(rows: List[tuple]):
     for col, typ in (("target_mean", "REAL"), ("target_high", "REAL"), ("target_low", "REAL"), ("num_analysts", "INTEGER"),
                      ("short_pct_float", "REAL"), ("short_ratio", "REAL"), ("shares_short", "DOUBLE PRECISION"),
                      ("shares_short_prior", "DOUBLE PRECISION"), ("short_date", "DATE"),
-                     ("ex_div_date", "DATE"), ("div_rate", "REAL"), ("last_div", "REAL")):      # v25 dividends
+                     ("ex_div_date", "DATE"), ("div_rate", "REAL"), ("last_div", "REAL"),      # v25 dividends
+                     ("next_report", "DATE"), ("next_report_est", "BOOLEAN")):                 # v35e
         cur.execute(f"ALTER TABLE stock_estimates ADD COLUMN IF NOT EXISTS {col} {typ}")   # fixed names, not user input
     for (ticker, eps_cur, eps_next, fy_end, tpe, mcap, t_mean, t_high, t_low, n_an,
-         s_pct, s_ratio, s_sh, s_prior, s_date, ex_div, div_rate, last_div) in rows:
+         s_pct, s_ratio, s_sh, s_prior, s_date, ex_div, div_rate, last_div, next_report, next_est) in rows:
         cur.execute(
             """INSERT INTO stock_estimates (ticker, eps_cur_fy, eps_next_fy, fy_end, trailing_pe, market_cap,
                    target_mean, target_high, target_low, num_analysts,
                    short_pct_float, short_ratio, shares_short, shares_short_prior, short_date,
-                   ex_div_date, div_rate, last_div, updated_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                   ex_div_date, div_rate, last_div, next_report, next_report_est, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                ON CONFLICT (ticker) DO UPDATE SET eps_cur_fy = EXCLUDED.eps_cur_fy, eps_next_fy = EXCLUDED.eps_next_fy,
                    fy_end = EXCLUDED.fy_end, trailing_pe = EXCLUDED.trailing_pe, market_cap = EXCLUDED.market_cap,
                    target_mean = EXCLUDED.target_mean, target_high = EXCLUDED.target_high,
@@ -2241,9 +2245,11 @@ def save_stock_estimates(rows: List[tuple]):
                    short_pct_float = EXCLUDED.short_pct_float, short_ratio = EXCLUDED.short_ratio,
                    shares_short = EXCLUDED.shares_short, shares_short_prior = EXCLUDED.shares_short_prior,
                    short_date = EXCLUDED.short_date, ex_div_date = EXCLUDED.ex_div_date, div_rate = EXCLUDED.div_rate,
-                   last_div = EXCLUDED.last_div, updated_at = NOW()""",
+                   last_div = EXCLUDED.last_div, next_report = EXCLUDED.next_report,
+                   next_report_est = EXCLUDED.next_report_est, updated_at = NOW()""",
             (ticker, eps_cur, eps_next, fy_end, tpe, mcap, t_mean, t_high, t_low,
-             int(n_an) if n_an is not None else None, s_pct, s_ratio, s_sh, s_prior, s_date, ex_div, div_rate, last_div),
+             int(n_an) if n_an is not None else None, s_pct, s_ratio, s_sh, s_prior, s_date, ex_div, div_rate, last_div,
+             next_report, next_est),
         )
     conn.commit()
     cur.close()
@@ -2251,8 +2257,9 @@ def save_stock_estimates(rows: List[tuple]):
     with_ntm = sum(1 for r in rows if r[2] is not None)
     with_tgt = sum(1 for r in rows if r[6] is not None)
     with_short = sum(1 for r in rows if r[10] is not None)
+    with_report = sum(1 for r in rows if r[18] is not None)
     print(f"[info] stock estimates: saved {len(rows)} tickers ({with_ntm} with a next-year EPS estimate, "
-          f"{with_tgt} with a price target, {with_short} with short interest).")
+          f"{with_tgt} with a price target, {with_short} with short interest, {with_report} with a next report date).")
 
 
 def upsert_universe_movers(all_changes: List[tuple]):
