@@ -5108,27 +5108,47 @@ async function ddTranslateAbout(quote){
   document.querySelectorAll('#deepdive-content [data-dd-about]').forEach(el => { el.textContent = he; });
 }
 
-function closeDrawer(){ const o = document.getElementById("overlay"); o.classList.remove("open"); o.style.zIndex = ''; articlePreviewToken++; destroyFundCharts('fundamentals-section'); }
+function closeDrawer(){ const o = document.getElementById("overlay"); o.classList.remove("open"); o.style.zIndex = ''; articlePreviewToken++; _drawerChartToken++; destroyFundCharts('fundamentals-section'); }
 document.getElementById("overlay").addEventListener("click", e=>{ if(e.target.id==="overlay") closeDrawer(); });
 
 // ---- TradingView chart in drawer ----
-function renderTradingViewChart(ticker){
+// v35d (owner's screenshot, 5.11: toolbar and bottom cut off; 3 quick opens left an empty box). The chart was built while the
+// window was still sliding in from off screen, where the browser may hold a foreign frame back, so it could measure itself wrong
+// and stay that way, the same family as the stock page's chart (HISTORY §27.3כג). Now it is built after the slide, only for the
+// window still open, and its frame changes size by 1px twice, which makes the chart inside measure itself again.
+const DRAWER_SLIDE_MS = 320;
+let _drawerChartToken = 0;
+function renderTradingViewChart(ticker, isRetry){
+  const token = ++_drawerChartToken;
   const container = document.getElementById("tv-chart");
   if(!container) return;
-  if(typeof TradingView==="undefined"){ loadTV(() => renderTradingViewChart(ticker)); return; }
+  if(typeof TradingView==="undefined"){ loadTV(() => { if(token === _drawerChartToken) renderTradingViewChart(ticker); }); return; }
   container.innerHTML="";
-  new TradingView.widget({
-    autosize:true, symbol:tvSymbol(ticker), interval:"D",
-    timezone:"Asia/Jerusalem", theme:tvTheme(), style:"1", locale: lang==='en' ? 'en' : 'he_IL',
-    toolbar_bg:tvToolbarBg(), hide_top_toolbar:false, hide_legend:false,
-    save_image:false, container_id:"tv-chart",
-    studies: ["MASimple@tv-basicstudies"],
-    studies_overrides: {
-      "Moving Average.length": 150,
-      "Moving Average.plot.color": "#2962ff",
-      "Moving Average.plot.linewidth": 1,
-    },
-  });
+  const current = () => token === _drawerChartToken && container.isConnected && document.getElementById("overlay").classList.contains("open");
+  setTimeout(() => {
+    if(!current()) return;
+    new TradingView.widget({
+      autosize:true, symbol:tvSymbol(ticker), interval:"D",
+      timezone:"Asia/Jerusalem", theme:tvTheme(), style:"1", locale: lang==='en' ? 'en' : 'he_IL',
+      toolbar_bg:tvToolbarBg(), hide_top_toolbar:false, hide_legend:false,
+      save_image:false, container_id:"tv-chart",
+      studies: ["MASimple@tv-basicstudies"],
+      studies_overrides: {
+        "Moving Average.length": 150,
+        "Moving Average.plot.color": "#2962ff",
+        "Moving Average.plot.linewidth": 1,
+      },
+    });
+    [1500, 4000].forEach(ms => setTimeout(() => {
+      const f = current() && container.querySelector("iframe");
+      if(!f) return;
+      f.style.width = "calc(100% - 1px)";
+      setTimeout(() => { f.style.width = "100%"; }, 80);
+    }, ms));
+    setTimeout(() => {                // never appeared: one more try
+      if(current() && !isRetry && !container.querySelector("iframe")) renderTradingViewChart(ticker, true);
+    }, 8000);
+  }, DRAWER_SLIDE_MS);
 }
 
 // v28: "Yahoo Finance · 3 hours ago" under each stock headline. `published` comes as an ISO date (yfinance),
