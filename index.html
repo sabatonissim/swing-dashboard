@@ -7539,6 +7539,12 @@ function setInsiderBuys(d){
   insiderBuyTickers = new Set((d && d.items || []).map(x => x.ticker));
 }
 
+// v35c: when the server or the database does not answer, this says so instead of "Loading..." for as long as the outage lasts
+function v22WaitMsg(){
+  return v22NextTry || apiLoadState === 'failed'
+    ? (lang==='en' ? 'Not available right now — retrying automatically.' : 'לא זמין כרגע — מנסים שוב אוטומטית.')
+    : UI[lang].loading;
+}
 async function loadV22Data(force){
   const now = Date.now();
   if(v22Busy || (!force && (now - v22LoadedAt < 10*60000 || now < v22NextTry))) return;
@@ -7684,7 +7690,7 @@ function renderBreadthHome(){
   const en = lang==='en', d = breadthData;
   const head = `<div class="hx-head"><span class="hx-title">${en ? 'Market breadth · S&P 500' : 'רוחב השוק · S&P 500'}</span>${d && d.available ? breadthChipHtml(d) : ''}</div>`;
   if(!d || !d.available){
-    el.innerHTML = head + `<div class="movers-empty">${d ? (en ? 'Breadth data is not available yet.' : 'נתוני רוחב השוק עוד לא זמינים.') : UI[lang].loading}</div>`;
+    el.innerHTML = head + `<div class="movers-empty">${d ? (en ? 'Breadth data is not available yet.' : 'נתוני רוחב השוק עוד לא זמינים.') : v22WaitMsg()}</div>`;
     return;
   }
   el.innerHTML = head + breadthStatsHtml(d) +
@@ -7724,7 +7730,7 @@ function renderBreadthFull(){
   if(!el) return;
   const en = lang==='en', d = breadthData;
   if(!d || !d.available){
-    el.innerHTML = `<div class="movers-empty">${d ? (en ? 'Breadth data is not available yet.' : 'נתוני רוחב השוק עוד לא זמינים.') : UI[lang].loading}</div>`;
+    el.innerHTML = `<div class="movers-empty">${d ? (en ? 'Breadth data is not available yet.' : 'נתוני רוחב השוק עוד לא זמינים.') : v22WaitMsg()}</div>`;
     return;
   }
   const legend = `<div class="fund-legend" style="margin:0 0 6px;">
@@ -7858,7 +7864,7 @@ function renderRegimeFull(){
   const en = lang==='en', d = breadthData;
   const r = d && d.regime, y = d && d.yields;
   if(!d || (!r && !y)){
-    el.innerHTML = `<div class="movers-empty">${d ? (en ? 'Market state data is not available yet.' : 'נתוני מצב השוק עוד לא זמינים.') : UI[lang].loading}</div>`;
+    el.innerHTML = `<div class="movers-empty">${d ? (en ? 'Market state data is not available yet.' : 'נתוני מצב השוק עוד לא זמינים.') : v22WaitMsg()}</div>`;
     return;
   }
   const tips = regimeTips(d);
@@ -7887,7 +7893,7 @@ function renderYields(){
   if(!el) return;
   const en = lang==='en', y = breadthData && breadthData.yields;
   if(!y || !y.curve){
-    el.innerHTML = `<div class="movers-empty">${breadthData ? (en ? 'Yield data is not available yet.' : 'נתוני התשואות עוד לא זמינים.') : UI[lang].loading}</div>`;
+    el.innerHTML = `<div class="movers-empty">${breadthData ? (en ? 'Yield data is not available yet.' : 'נתוני התשואות עוד לא זמינים.') : v22WaitMsg()}</div>`;
     return;
   }
   const mats = YC_MATS.filter(m => y.curve[m] != null);
@@ -7924,7 +7930,7 @@ var leadersData = null, leadersSector = 'all', leadersShowAll = false;
 async function loadLeaders(){
   try {
     const r = await fetchWithTimeout(`${API_BASE}/api/leaders`, 25000);
-    leadersData = r.ok ? await r.json() : {available: false};
+    leadersData = r.ok ? await r.json() : {available: false, failed: true};
   } catch(e){ leadersData = {available: false, failed: true}; }
   renderLeaders();
 }
@@ -7934,7 +7940,9 @@ function renderLeaders(){
   if(!el || typeof lang === 'undefined') return;
   const en = lang==='en', d = leadersData;
   if(!d){ el.innerHTML = `<div class="movers-empty">${UI[lang].loading}</div>`; return; }
-  if(!d.available){ el.innerHTML = `<div class="movers-empty">${en ? 'The leading-stocks table fills after the next full scan.' : 'טבלת המניות המובילות תתמלא אחרי הסריקה המלאה הבאה.'}</div>`; return; }
+  if(!d.available){ el.innerHTML = `<div class="movers-empty">${d.failed
+    ? (en ? 'Not available right now — please reload the page later.' : 'לא זמין כרגע — אפשר לרענן את העמוד מאוחר יותר.')
+    : (en ? 'The leading-stocks table fills after the next full scan.' : 'טבלת המניות המובילות תתמלא אחרי הסריקה המלאה הבאה.')}</div>`; return; }
   const sectors = d.sectors || [];
   const chip = (key, label, on) => `<span class="rg-chip" style="cursor:pointer;${on ? 'color:var(--amber);border-color:var(--amber)' : ''}" onclick="leadersSector=${JSON.stringify(key).replace(/"/g, '&quot;')};leadersShowAll=false;renderLeaders()">${label}</span>`;
   const top = sectors.slice(0, 3).map(s => escH(sectorLabel(s.sector))).join(', ');
@@ -8007,7 +8015,9 @@ function renderCorpCalendar(){
   }).join('');
   el.innerHTML = `<div class="hx-card">
       <div class="hx-head"><span class="hx-title">${en ? 'Ex-dividend dates · 30 days' : 'תאריכי אקס-דיבידנד · 30 יום'}</span></div>
-      ${divRows || `<div class="movers-empty">${en ? 'No ex-dividend dates in the next 30 days yet (filled by the full scan).' : 'אין עדיין תאריכי אקס ב-30 הימים הקרובים (מתמלא בסריקה המלאה).'}</div>`}
+      ${divRows || `<div class="movers-empty">${d.failed
+        ? (en ? 'Not available right now — please reload the page later.' : 'לא זמין כרגע — אפשר לרענן את העמוד מאוחר יותר.')
+        : (en ? 'No ex-dividend dates in the next 30 days yet (filled by the full scan).' : 'אין עדיין תאריכי אקס ב-30 הימים הקרובים (מתמלא בסריקה המלאה).')}</div>`}
       ${more('div', divList)}
       <div class="hx-note">${en
         ? 'To get a dividend you must own the stock before the ex-date. Amount = the last declared payment; the % = annual dividend ÷ price. Source: Yahoo Finance.'
@@ -8032,8 +8042,8 @@ var FUND_CHANGE = {new: {he: 'חדשה', en: 'new', c: 'var(--green)'}, added: {
 async function loadFunds(){
   try {
     const r = await fetchWithTimeout(`${API_BASE}/api/funds`, 25000);
-    fundsData = r.ok ? await r.json() : {available: false};
-  } catch(e){ fundsData = {available: false}; }
+    fundsData = r.ok ? await r.json() : {available: false, failed: true};
+  } catch(e){ fundsData = {available: false, failed: true}; }
   renderFunds();
 }
 
@@ -8050,7 +8060,9 @@ function renderFunds(){
   if(!el || typeof lang === 'undefined') return;
   const en = lang==='en', d = fundsData;
   if(!d){ el.innerHTML = `<div class="movers-empty">${UI[lang].loading}</div>`; return; }
-  if(!d.available){ el.innerHTML = `<div class="movers-empty">${en ? 'Fund holdings are not available yet.' : 'נתוני הקרנות עוד לא זמינים.'}</div>`; return; }
+  if(!d.available){ el.innerHTML = `<div class="movers-empty">${d.failed
+    ? (en ? 'Not available right now — please reload the page later.' : 'לא זמין כרגע — אפשר לרענן את העמוד מאוחר יותר.')
+    : (en ? 'Fund holdings are not available yet.' : 'נתוני הקרנות עוד לא זמינים.')}</div>`; return; }
   const chip = (key, label) => `<span class="rg-chip" style="cursor:pointer;${fundsPick === key ? 'color:var(--amber);border-color:var(--amber)' : ''}" onclick="fundsPick='${key}';renderFunds()">${label}</span>`;
   const chips = `<div class="hx-regime" style="margin-bottom:8px">${(d.most_bought || []).length ? chip('most', en ? 'Bought by several funds' : 'נקנו ע"י כמה קרנות') : ''}${
     d.funds.map(f => chip(f.cik, escH(f.fund))).join('')}</div>`;
@@ -8172,7 +8184,7 @@ function renderInsiderHome(){
   const en = lang==='en', d = insiderBuysData;
   const head = `<div class="hx-head"><span class="hx-title">${en ? 'Insider buying · 30 days' : 'קניות בעלי עניין · 30 יום'}</span><span class="hx-note" style="margin:0">${en ? 'open market, over $100K' : 'בשוק, מעל $100K'}</span></div>`;
   if(!d || !d.available){
-    el.innerHTML = head + `<div class="movers-empty">${d ? (en ? 'Insider data is still being collected.' : 'נתוני בעלי העניין עוד נאספים.') : UI[lang].loading}</div>`;
+    el.innerHTML = head + `<div class="movers-empty">${d ? (en ? 'Insider data is still being collected.' : 'נתוני בעלי העניין עוד נאספים.') : v22WaitMsg()}</div>`;
     return;
   }
   const items = (d.items || []).slice(0, 6);

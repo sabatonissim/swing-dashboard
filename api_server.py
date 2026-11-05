@@ -319,8 +319,17 @@ def _canon_ticker(raw: str) -> str:
 
 
 def get_conn():
-    conn = psycopg2.connect(DB_URL)
+    # v35c: without a time limit a database that does not answer holds the request (and a server thread) for minutes
+    conn = psycopg2.connect(DB_URL, connect_timeout=15)
     return conn
+
+
+@app.exception_handler(psycopg2.OperationalError)
+async def _database_unavailable(request: Request, exc):
+    """v35c: the database is suspended or down (over a Neon quota, a restart). A clear 503 with the CORS header, so the page
+    can say "not available right now"; an unhandled error reached the browser as a network failure."""
+    print(f"[warn] database unavailable on {request.url.path}: {str(exc)[:160]}")
+    return JSONResponse({"detail": "database unavailable"}, status_code=503, headers={"Retry-After": "60"})
 
 
 @contextmanager

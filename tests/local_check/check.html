@@ -107,6 +107,8 @@ async def run():
     print('ping:', r['status'], r['body'], 'noindex=', r['headers'].get('x-robots-tag'), 'cors=', r['headers'].get('access-control-allow-origin'))
     r = await call('GET', '/api/lookup/<img>', {'Origin': SITE})
     print('bad ticker:', r['status'], r['body'], 'cors=', r['headers'].get('access-control-allow-origin'))
+    r = await call('GET', '/api/focus', {'Origin': SITE})
+    print('database down:', r['status'], r['body'], 'cors=', r['headers'].get('access-control-allow-origin'), 'retry=', r['headers'].get('retry-after'))
     r = await call('POST', '/api/track', {'Content-Type': 'application/json', 'Origin': SITE}, json.dumps({'event_type': 'dd_tab', 'entity_id': 'tech', 'session_id': 'abc-1'}).encode())
     print('track ok:', r['status'], r['body'], 'buffered=', len(api._track_buffer))
     r = await call('POST', '/api/track', {'Content-Type': 'application/json'}, json.dumps({'event_type': 'hack'}).encode())

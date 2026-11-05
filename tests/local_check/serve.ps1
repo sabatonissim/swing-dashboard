@@ -19,6 +19,7 @@ $csp = ((Get-Content -LiteralPath (Join-Path $Project 'vercel.json') -Raw -Encod
 $types = @{ '.html'='text/html; charset=utf-8'; '.js'='application/javascript'; '.json'='application/json'; '.png'='image/png'; '.svg'='image/svg+xml'; '.xml'='application/xml'; '.txt'='text/plain; charset=utf-8'; '.py'='text/plain; charset=utf-8'; '.csv'='text/plain; charset=utf-8' }
 $stored = @{}
 $block = $false
+$down = ''
 $country = 'IL'
 $started = Get-Date
 while ($l.IsListening -and ((Get-Date) - $started).TotalMinutes -lt 60) {
@@ -41,7 +42,8 @@ while ($l.IsListening -and ((Get-Date) - $started).TotalMinutes -lt 60) {
         elseif ($path -eq '/__set') {
             if ($c.Request.QueryString['block']) { $block = $c.Request.QueryString['block'] -eq '1' }
             if ($c.Request.QueryString['country']) { $country = $c.Request.QueryString['country'] }
-            $bytes = [Text.Encoding]::UTF8.GetBytes("block=$block country=$country")
+            if ($c.Request.QueryString['down']) { $down = $c.Request.QueryString['down'] }
+            $bytes = [Text.Encoding]::UTF8.GetBytes("block=$block country=$country down=$down")
             $c.Response.OutputStream.Write($bytes, 0, $bytes.Length)
             $c.Response.Close()
             continue
@@ -70,6 +72,12 @@ while ($l.IsListening -and ((Get-Date) - $started).TotalMinutes -lt 60) {
         }
         elseif ($path.StartsWith('/proxy/')) {
             # the live API refuses other origins, so the local copy of the page reads it through here (GET only)
+            # v35c: down=db = the database is suspended (only what comes from Yahoo/SEC still answers), down=all = the server is dead
+            if ($down -eq 'all' -or ($down -eq 'db' -and $path -notmatch '^/proxy/api/(lookup|market-ticker|market-movers|technical-setup|stock-news|fear-greed|sector-performance|price-compare|ping)')) {
+                $c.Response.StatusCode = 503
+                $c.Response.Close()
+                continue
+            }
             if ($block -and $path -match '^/proxy/api/(lookup|technical-setup|fundamentals|stock-news|sector-comparison|signal-history|insider|street|ai-note|funds/stock|company-profile)/') {
                 $c.Response.StatusCode = 403
                 $c.Response.Close()
