@@ -560,7 +560,9 @@ def main() -> int:
     due = [t for t in candidates
            if t not in have or have[t]["v"] != PROFILE_VERSION or have[t]["no_he"] or old_wiki(have[t]) or old_facts(have[t])
            or (now - have[t]["checked_at"].timestamp()) > RECHECK_DAYS * 86400]
-    due.sort(key=lambda t: 0 if (t in have and have[t]["v"] == PROFILE_VERSION and have[t]["no_he"]) else 1)
+    # v35b: the employee fix comes first (seconds each, no AI). Behind the new profiles it would have waited for weeks
+    # (~20 AI companies fit in a run), with KO still showing 400.
+    due.sort(key=lambda t: 2 if t not in have or have[t]["v"] != PROFILE_VERSION else 1 if have[t]["no_he"] else 0 if old_facts(have[t]) else 2)
     print(f"company profiles: {len(candidates)} candidates, {len(have)} profiles saved, {len(due)} due")
     if not due:
         return 0
