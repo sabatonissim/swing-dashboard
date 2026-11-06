@@ -40,6 +40,7 @@ from zoneinfo import ZoneInfo
 
 import llm_provider
 from news_links import is_unwanted_headline, LOCAL_RE, GLOBAL_RE
+from translation_fixes import fix_he
 
 MAX_ITEMS = 70          # stories sent to the model
 MAX_EARNINGS = 15       # of them, about one company's results
@@ -177,7 +178,7 @@ def _market_text(market, day):
     if not market:
         return "MARKET NUMBERS: not available. Do not state any index level or move that is not in the news items."
     head = (f"MARKET NUMBERS, real data for the US session of {market['session_day']}"
-            + (" (trading is still open: numbers so far)" if market["intraday"] else "") + ":")
+            + (" (TRADING IS STILL OPEN: numbers so far. Do not write that the market closed or ended)" if market["intraday"] else "") + ":")
     if not market["same_day"]:
         head = (f"The US market has not traded on {day.isoformat()} so far. The numbers below are of the LAST session, "
                 f"{market['session_day']}; say so if you use them.\n" + head)
@@ -185,8 +186,10 @@ def _market_text(market, day):
     for i in market["indices"]:
         if i["symbol"] == "^TNX":
             lines.append(f"{i['name_en']}: {i['close']:.2f}% (change {_signed(i['change_points'])} points)")
-        else:
+        elif i["symbol"] == "^VIX":
             lines.append(f"{i['name_en']}: {_signed(i['change_pct'])}% (at {i['close']})")
+        else:                                              # v37b: with the levels, the overview became a list of "fell 4.36% to 7353.73"
+            lines.append(f"{i['name_en']}: {_signed(i['change_pct'])}%")
     b = market.get("breadth")
     if b:
         lines.append(f"S&P 500 stocks that rose / fell: {b['advancers']} / {b['decliners']}")
@@ -288,6 +291,12 @@ ORDER OF IMPORTANCE:
 STRICT RULES:
 - Base every statement on the MARKET NUMBERS and the items. Never add numbers, names, causes, dates or background that are not there. Every number you write must appear in what you were given. You may round (4.36% to 4.4%).
 - The numbers say what happened; do not let a headline contradict them. "(N outlets)" = how many outlets ran that story; many outlets usually means it matters, and the items come most important first.
+- Never explain a number yourself. A reason comes only from an item. Do not write "suggests", "possibly", "reflecting", "investors sought" or "investors fled" of your own.
+- Keep who did what exactly as the item says. "The Magnificent 7 lost $1 trillion" is not "Nvidia lost $1 trillion".
+- The overview tells the story: the main move, 2 or 3 of the most important numbers, and the reason. The site shows all the numbers next to it, so do not list them, and do not write index levels or dates.
+- The lists of biggest falls and rises give tickers and numbers only. They do not say what a company does or why it moved: do not call them "AI names" or anything else unless an item says so, and do not read a pattern into them.
+- A topic is a news story told by the items. Never a topic that only repeats the market numbers ("gold rose, the VIX rose"). "items" = only items that are about that story.
+- Say "430 of the S&P 500 stocks fell", not "trading was broad".
 - "impact" says why this matters for US stocks, specific to this story, in words such as "may", "could" or "tends to". It is context, NOT a forecast: never predict a price level or a direction. Empty if you have nothing specific to say. Never a sentence that would fit any story.
 - No investment advice: never say or imply that anyone should buy, sell or hold anything.
 - Plain everyday words, one idea per sentence, numbers whenever you have them. No market jargon ("beat", "guidance", "print", "risk-on", "hawkish", "bid"): say what happened ("results were better than forecast"). No filler such as "markets digested", "investors weighed", "mixed picture", "dominated the day". Company names exactly as in the items.
@@ -299,12 +308,20 @@ Exact shape:
 3 to 5 topics, the most important first. Every topic lists the items it comes from."""
 
 SYSTEM_HE = """Translate this market summary from English into natural, simple Israeli Hebrew, as a financial newspaper would write it.
-Glossary: stocks = מניות; sell-off = גל מכירות; index = מדד; chip stocks = מניות השבבים; interest rate = ריבית; rate hike = העלאת ריבית; yield = תשואה; Treasury bond = אג"ח ממשלתי; inflation = אינפלציה; results / earnings = דוחות או רווחים; forecast / outlook = תחזית; oil = נפט; tariffs = מכסים; sanctions = סנקציות; midterm elections = בחירות אמצע הקדנציה; the Fed = הפד; Wall Street = וול סטריט; AI = בינה מלאכותית.
+Keep the meaning exactly: who did what must not change, and add nothing. Never leave an ordinary English word in the Hebrew.
+Glossary: stocks = מניות; sell-off = גל מכירות; safe haven = נכס מפלט; index = מדד; chip stocks = מניות השבבים; interest rate = ריבית; rate hike = העלאת ריבית; yield = תשואה; Treasury bond = אג"ח ממשלתי; inflation = אינפלציה; results / earnings = דוחות או רווחים; forecast / outlook = תחזית; oil = נפט; tariffs = מכסים; sanctions = סנקציות; midterm elections = בחירות אמצע הקדנציה; the Fed = הפד; Wall Street = וול סטריט; AI = בינה מלאכותית.
 Names of companies, indices and people stay in English letters (Nvidia, S&P 500, Nasdaq, VIX). A company is feminine in Hebrew. Keep every number exactly as written.
 Write Hebrew abbreviations with the mark ״ (ארה״ב, נאסד״ק), never with a plain double quote.
 Keep the same fields and the same number of topics; an empty field stays empty. Answer with the JSON only, in the same shape as the input."""
 
 _ADVICE = re.compile(r"\b(you should|we recommend|recommend(?:ed|s)? (?:to )?(?:buy|sell)|should (?:buy|sell|hold)|time to (?:buy|sell)|buy now|sell now)\b", re.I)
+# v37b, seen in the first real answer (5.11.2026): "suggested investors were not fleeing to bonds, possibly reflecting inflation concerns"
+_OWN_GUESS = re.compile(r"\b(suggest(?:s|ed|ing)?|possibly|perhaps|reflect(?:s|ed|ing)?|risk-off|risk-on|investors? (?:sought|fled|fleeing|rushed|were|are)|"
+                        r"profit[- ]taking|rotation|breadth was)\b", re.I)
+_ENDED = re.compile(r"\b(ended|closed|finished|at the close)\b", re.I)    # 14:06 ET on 6.11.2026: "The US market ended mixed"
+_ISO_DATE = re.compile(r"\s*\b(?:on |for )?\d{4}-\d{2}-\d{2}\b")
+MAX_OVERVIEW = 450       # the shape asks for 380; the first real answer wrote 480, a list of every number
+_SHORT_TERMS = re.compile(r"\b(ai|fed|oil|ecb|sox|vix|gdp|cpi|boj|us)\b", re.I)
 
 
 # ------------------------------------------------------------------ database
@@ -509,26 +526,55 @@ def _forced_lead(market):
     return lead[0].upper() + lead[1:]
 
 
+def _topic_words(text):
+    return _words(text) | {w.lower() for w in _SHORT_TERMS.findall(text)}
+
+
+def _sentences_without_guess(text):
+    return " ".join(s for s in re.split(r"(?<=[.!?])\s+", text) if not _OWN_GUESS.search(s)).strip()
+
+
+def _shorter(text, limit):
+    out = ""
+    for s in re.split(r"(?<=[.!?])\s+", text):
+        if out and len(out) + len(s) + 1 > limit:
+            break
+        out = f"{out} {s}".strip()
+    return out
+
+
 def clean_answer(text, items, market, strict=True):
     """The model's answer as the English part of the digest. ValueError (with a reason the model can act on) when rejected.
-    strict=False, after the attempts ran out: what can be saved is saved. A topic with an invented number is dropped, and
-    an overview that left out an extreme move gets the real numbers in front of it."""
+    strict=False, after the attempts ran out: what can be saved is saved. A topic with an invented number is dropped, a
+    sentence with the model's own guess is cut, and an overview that left out an extreme move gets the real numbers in front of it.
+    A source that shares no word with its topic is not shown (v37b: the AI selloff cited "Emirates saw its profits plunge")."""
     raw = _parse(text)
     allowed = allowed_numbers(market, items)
-    overview = str(raw.get("overview", "")).strip()
+    overview = _ISO_DATE.sub("", str(raw.get("overview", ""))).strip()
     topics = []
     for t in (raw.get("topics") or [])[:MAX_TOPICS]:
+        title, summary = _ISO_DATE.sub("", str(t.get("title", ""))).strip(), _ISO_DATE.sub("", str(t.get("summary", ""))).strip()
+        impact = _ISO_DATE.sub("", str(t.get("impact", ""))).strip()
+        about = _topic_words(f"{title} {summary}")
         sources, seen = [], set()
         for n in _ints(t.get("items"), 1, len(items)):
             it = items[n - 1]
             k = it["url"] or it["title"]
-            if k and k not in seen:
+            if k and k not in seen and _topic_words(it["title"]) & about:
                 seen.add(k)
                 sources.append({"title_en": it["title"], "title_he": it["title_he"], "url": it["url"], "category": it["tag"]})
-        title, summary = str(t.get("title", "")).strip(), str(t.get("summary", "")).strip()
-        impact = str(t.get("impact", "")).strip()
         if not (title and summary and sources):
-            continue                                        # no valid source -> dropped
+            if strict and title and summary:
+                raise ValueError(f"the topic '{title}' has no item about that story. A topic must be a story told by the items, "
+                                 "with the numbers of those items; drop it if there is none")
+            continue
+        if _OWN_GUESS.search(f"{summary} {impact}"):
+            if strict:
+                raise ValueError(f"the topic '{title}' explains things on its own ('{_OWN_GUESS.search(f'{summary} {impact}').group(0)}'). "
+                                 "Write only what the items say")
+            summary, impact = _sentences_without_guess(summary), _sentences_without_guess(impact)
+            if not summary:
+                continue
         extra = invented_numbers(f"{title} {summary} {impact}", allowed)
         if extra:
             if strict:
@@ -542,6 +588,15 @@ def clean_answer(text, items, market, strict=True):
     if extra:
         raise ValueError(f"the overview has numbers that are in neither the market numbers nor the items: {extra[:4]}. "
                          "Use only numbers you were given")
+    if strict and _OWN_GUESS.search(overview):
+        raise ValueError(f"the overview explains things on its own ('{_OWN_GUESS.search(overview).group(0)}'). Write only what the items say")
+    if market and market.get("intraday") and _ENDED.search(overview):
+        if strict:
+            raise ValueError("trading is still open, and the overview says the market closed or ended. Write 'so far'")
+        overview = _ENDED.sub("is so far", overview)
+    if strict and len(overview) > MAX_OVERVIEW:
+        raise ValueError(f"the overview is {len(overview)} characters, at most 380. Do not list the numbers: the main move, its reason, nothing else")
+    overview = _shorter(_sentences_without_guess(overview), MAX_OVERVIEW) or overview
     if not opens_with_the_move(overview, market):
         if strict:
             raise ValueError("the MARKET NUMBERS say the day was extreme, and the overview does not say so. Open the overview "
@@ -599,9 +654,18 @@ def clean_hebrew(text, en):
     for field, he, en_text in pairs:
         if en_text and not re.search(r"[א-ת]", he):
             raise ValueError(f"the field '{field}' is not in Hebrew: {en_text[:60]}")
+        if "�" in he:                                  # "המהלך נבע�", the live summary of 6.11.2026
+            raise ValueError(f"the field '{field}' has a broken character. Write the sentence again")
         extra = _numbers(he) - allowed
         if extra:
             raise ValueError(f"the field '{field}' has numbers that are not in the English: {sorted(extra)[:4]}")
+        left = [w for w in re.findall(r"\b[a-z][a-z-]{2,}\b", he)]      # names start with a capital; "typicall risk-off" does not
+        if left:
+            raise ValueError(f"the field '{field}' has English words left: {left[:4]}. Translate them into Hebrew")
+    out["overview"] = fix_he(out["overview"])
+    for t in out["topics"]:
+        for k in t:
+            t[k] = fix_he(t[k])
     return out
 
 

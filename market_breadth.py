@@ -109,12 +109,14 @@ def download(tickers: List[str]):
 def compute(close: pd.DataFrame, high: pd.DataFrame, low: pd.DataFrame) -> pd.DataFrame:
     sma50 = close.rolling(50, min_periods=50).mean()
     sma200 = close.rolling(200, min_periods=200).mean()
-    hh = high.rolling(252, min_periods=252).max()
-    ll = low.rolling(252, min_periods=252).min()
+    # v37b: new highs and lows are by the CLOSE, as the guide on the site always said. By the day's high and low, 5.11.2026 (S&P 500
+    # -4.36%, 430 of 503 down) showed 77 new highs: stocks that touched a high at the open and ended the day far below it.
+    hh = close.rolling(252, min_periods=252).max()
+    ll = close.rolling(252, min_periods=252).min()
     prev = close.shift(1)
 
     has50, has200 = sma50.notna() & close.notna(), sma200.notna() & close.notna()
-    has_hl = hh.notna() & high.notna() & low.notna()
+    has_hl = hh.notna() & close.notna()
     has_chg = close.notna() & prev.notna()
     out = pd.DataFrame({
         "n": close.notna().sum(axis=1),
@@ -123,8 +125,8 @@ def compute(close: pd.DataFrame, high: pd.DataFrame, low: pd.DataFrame) -> pd.Da
         "n200": has200.sum(axis=1),
         "above200": ((close > sma200) & has200).sum(axis=1),
         "n_hl": has_hl.sum(axis=1),
-        "new_highs": ((high >= hh) & has_hl).sum(axis=1),
-        "new_lows": ((low <= ll) & has_hl).sum(axis=1),
+        "new_highs": ((close >= hh) & has_hl).sum(axis=1),
+        "new_lows": ((close <= ll) & has_hl).sum(axis=1),
         "advancers": ((close > prev) & has_chg).sum(axis=1),
         "decliners": ((close < prev) & has_chg).sum(axis=1),
         "unchanged": ((close == prev) & has_chg).sum(axis=1),      # v31: so up + down + unchanged = all counted

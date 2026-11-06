@@ -789,6 +789,69 @@ def test_digest_answer_must_carry_the_move_and_only_given_numbers():
         d.clean_answer(answer("You should buy now."), items, normal)
 
 
+def test_digest_rejects_what_the_first_real_answer_did():
+    """v37b: the rerun of 5.11.2026 had the crash on top, and also these."""
+    import ai_digest as d
+    import json as _json
+    items = [dict(id=1, title="Wall Street falls as AI stocks tumble 7%", tag="שוק", url="https://x.example/1", title_he="", body=""),
+             dict(id=2, title="Emirates saw its profits plunge as the Iran war drives up fuel costs", tag="דוחות", url="https://x.example/2", title_he="", body="")]
+    good = "The S&P 500 fell 4.4%, led by AI stocks."
+
+    def answer(overview=good, summary="AI stocks fell 7% and Wall Street followed.", impact="", nums=(1,)):
+        return _json.dumps({"overview": overview, "topics": [{"title": "AI selloff", "summary": summary, "impact": impact, "items": list(nums)}]})
+    # a source about something else is not shown
+    out = d.clean_answer(answer(nums=(1, 2)), items, _CRASH_MARKET)
+    assert [s["url"] for s in out["topics"][0]["sources"]] == ["https://x.example/1"]
+    # a topic with no item about it
+    gold = _json.dumps({"overview": good, "topics": [{"title": "Gold and safe havens", "summary": "Gold gained.", "impact": "", "items": [2]}]})
+    with pytest.raises(ValueError, match="no item about"):
+        d.clean_answer(gold, items, _CRASH_MARKET)
+    # the model's own explanation
+    with pytest.raises(ValueError, match="on its own"):
+        d.clean_answer(answer(impact="Stable yields suggested investors were not fleeing to bonds."), items, _CRASH_MARKET)
+    saved = d.clean_answer(answer(impact="Stable yields suggested investors were not fleeing to bonds."), items, _CRASH_MARKET, strict=False)
+    assert saved["topics"][0]["impact_en"] == ""
+    # an overview that lists everything, and a date as a machine writes it
+    long = good + " " + "AI stocks fell 7% and Wall Street followed them down all day long. " * 8
+    with pytest.raises(ValueError, match="characters"):
+        d.clean_answer(answer(overview=long), items, _CRASH_MARKET)
+    assert len(d.clean_answer(answer(overview=long), items, _CRASH_MARKET, strict=False)["overview_en"]) <= d.MAX_OVERVIEW
+    dated = d.clean_answer(answer(overview="The S&P 500 fell 4.4% on 2026-11-05."), items, _CRASH_MARKET)
+    assert dated["overview_en"] == "The S&P 500 fell 4.4%."
+    # 14:06 ET on 6.11.2026: "The US market ended mixed"
+    open_market = dict(_CRASH_MARKET, intraday=True)
+    with pytest.raises(ValueError, match="still open"):
+        d.clean_answer(answer(overview="The S&P 500 ended down 4.4%."), items, open_market)
+    assert "so far" in d.clean_answer(answer(overview="The S&P 500 ended down 4.4%."), items, open_market, strict=False)["overview_en"]
+    assert d.clean_answer(answer(overview="The S&P 500 ended down 4.4%."), items, _CRASH_MARKET)     # after the close, it did
+    with pytest.raises(ValueError, match="on its own"):
+        d.clean_answer(answer(summary="AI stocks fell 7% on profit-taking."), items, _CRASH_MARKET)
+
+
+def test_digest_hebrew_has_no_english_words_and_known_fixes():
+    import ai_digest as d
+    import json as _json
+    en = {"overview": "Nvidia fell.", "topics": [{"title": "AI", "summary": "Chips fell.", "impact": ""}]}
+    he = lambda text: _json.dumps({"overview": text, "topics": [{"title": "בינה מלאכותית", "summary": "השבבים ירדו.", "impact": ""}]})
+    with pytest.raises(ValueError, match="English words"):
+        d.clean_hebrew(he("התנהגות typicall risk-off של השוק"), en)
+    assert d.clean_hebrew(he("מניות Nvidia ו-VIX ירדו"), en)["overview"].startswith("מניות Nvidia")
+    with pytest.raises(ValueError, match="broken"):
+        d.clean_hebrew(he("המהלך נבע� מהתאוששות"), en)
+    with pytest.raises(ValueError, match="English words"):
+        d.clean_hebrew(he("אם כי breadth היה צר"), en)
+    assert d.clean_hebrew(he("מכירה חריגה אחרי הבחירות האמצעיות"), en)["overview"] == "גל מכירות חריג אחרי בחירות אמצע הקדנציה"
+
+
+def test_stock_note_numbers_must_be_in_the_facts():
+    import ai_stock_notes as n
+    import json as _json
+    facts = _json.dumps({"rs_rating_1_99": 83, "price": 95.73, "fundamentals": {"market_cap_usd": 2100000000.0, "gross_margin_pct": 61.26}})
+    ok = {"he": "RS 83, מחיר 95.73, שווי 2.1 מיליארד, רווח גולמי 61.3% ב-3 רבעונים", "en": "RS 83, price 95.7, cap 2.1 billion."}
+    assert n.invented_numbers(ok, facts) == []
+    assert n.invented_numbers({"he": "הכנסות עלו 45%", "en": "Revenue rose 45%, price 96.5."}, facts) == ["45", "96.5"]
+
+
 def test_digest_market_text_and_size():
     import ai_digest as d
     text = d._market_text(_CRASH_MARKET, __import__("datetime").date(2026, 11, 5))
@@ -857,6 +920,21 @@ def test_key_events_of_this_round(api):
     assert of("Oil jumps as missiles hit tankers in the Strait of Hormuz")[0].startswith("geo")
     crash = of("A brutal sell-off sends Wall Street reeling, and the S&P 500 tumbles 4.4%")
     assert crash[0] == "market" and crash[1] > of("ECB holds rates steady, Lagarde says")[1]
+
+
+def test_new_highs_are_counted_by_the_close():
+    """v37b: a stock that touches its high at the open and closes far below it is not a new high (77 of them on 5.11.2026)."""
+    import market_breadth as mb
+    days = pd.date_range("2025-01-01", periods=260, freq="B")
+    base = np.linspace(100, 120, 260)
+    close = pd.DataFrame({f"S{i}": base for i in range(mb.MIN_STOCKS)}, index=days)
+    close["TOUCHED"] = base
+    close.loc[days[-1], "TOUCHED"] = base[-1] - 15            # fell hard on the last day...
+    high = close + 1
+    high.loc[days[-1], "TOUCHED"] = 200                       # ...after a new high at the open
+    low = close - 1
+    last = mb.compute(close, high, low).iloc[-1]
+    assert last["new_highs"] == mb.MIN_STOCKS and last["new_lows"] == 0
 
 
 def test_breadth_day_label(api):

@@ -35,7 +35,8 @@ _BANNED = re.compile(r"\b(buy|sell|should|recommend|strong buy|price target of o
 # v25b (seen live 30.10: "the P/E is low", "ריבית short", "מהציפה", "מכירות פנימיות", "Stage 2" in Hebrew): no value
 # judgements about numbers, and the site's own Hebrew terms
 _VALUE_WORDS = re.compile(r"\b(p/?e|multiple|valuation)\b(?:[^.]|\.(?=\d)){0,30}\b(is )?(low|high)\b"   # "PE 14.7 is low"
-                          r"|\b(low|high) (p/?e|multiple|valuation)\b"
+                          r"|\b(low|high) (p/?e|multiple|valuation|short interest)\b"   # v37b: "low short interest", with no number
+                          r"|שורט (נמוך|גבוה)"
                           r"|מכפיל(?:[^.]|\.(?=\d)){0,40}(נמוך|גבוה)", re.I)
 
 SYSTEM = (
@@ -45,7 +46,9 @@ SYSTEM = (
     "being cheap or expensive. Mention what stands out: the trend and the scanner signal if any, strength vs. the "
     "market (RS), notable fundamentals (growth, margins, P/E), and risk facts (earnings within days, high short "
     "interest, insider selling, the market state). 3 to 5 short sentences per language, plain words, no lists, no "
-    "markdown. Never call a number low, high, cheap or expensive (write 'P/E 14.7', not 'a low P/E of 14.7'); "
+    "markdown. If a fact has no number, leave it out ('short interest present' says nothing). "
+    "The Hebrew and the English say exactly the same ('34 sales in 90 days' is not '34 months'). "
+    "Never call a number low, high, cheap or expensive (write 'P/E 14.7', not 'a low P/E of 14.7'); "
     "you may compare only with another number in the facts (e.g. 'RS 83 = stronger than 83% of scanned stocks'). "
     "Hebrew: natural Israeli Hebrew, keep tickers and numbers as they are, and use exactly these terms: "
     "Stage 2 = 'מגמה עולה (שלב 2)', Stage 1 = 'בסיס (שלב 1)', Stage 3 = 'היפוך אפשרי (שלב 3)', "
@@ -192,6 +195,49 @@ def _validate(text):
     return d
 
 
+_NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def invented_numbers(d, facts_json):
+    """v37b: the prompt said "never add numbers", and nothing checked it. Every number must be in the facts, also rounded
+    (2,100,000,000 may be 2.1 billion: large figures are compared by their leading digits). Up to 12 can be a count ("3 days")."""
+    allowed = set()
+    for n in _NUMBER.findall(facts_json):
+        n = n.replace(",", "").rstrip(".")
+        allowed.add(n)
+        x = float(n)
+        for digits in (0, 1, 2):
+            allowed.add(f"{x:.{digits}f}")
+        for scale in (1e3, 1e6, 1e9, 1e12):              # 2,100,000,000 written as 2.1 billion
+            if x >= scale:
+                for digits in (0, 1, 2):
+                    allowed.add(f"{x / scale:.{digits}f}")
+    extra = []
+    for n in _NUMBER.findall(f"{d.get('he', '')} {d.get('en', '')}"):
+        n = n.replace(",", "").rstrip(".")
+        same = {n, n.rstrip("0").rstrip(".")} if "." in n else {n}
+        if not (same & allowed) and not (n.isdigit() and int(n) <= 12):
+            extra.append(n)
+    return sorted(set(extra))
+
+
+def write_note(payload):
+    """One note. A rejected answer goes back to the model with the reason, once: only one free model answers (v30c)."""
+    facts = json.dumps(payload, ensure_ascii=False, default=str)
+    msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": facts}]
+    for attempt in (1, 2):
+        text, model = llm_provider.chat(msgs, max_tokens=900, temperature=0.2, validate=_validate)
+        d = _validate(text)
+        extra = invented_numbers(d, facts)
+        if not extra:
+            return d, model, facts
+        if attempt == 1:
+            print(f"[warn] ai stock note {payload.get('ticker')}: numbers not in the facts: {extra[:4]}; asking again")
+            msgs = msgs[:2] + [{"role": "assistant", "content": text[:3000]},
+                               {"role": "user", "content": f"These numbers are not in the facts: {extra[:6]}. Remove them and answer again with the JSON only."}]
+    raise ValueError(f"numbers not in the facts: {extra[:4]}")
+
+
 def main() -> int:
     if not llm_provider.is_configured():
         print("ai stock notes: LLM_API_KEY is not set — nothing to do")
@@ -220,12 +266,8 @@ def main() -> int:
             break
         payload = dict(facts[t], market=market, today=date.today().isoformat())
         try:
-            text, model = llm_provider.chat(
-                [{"role": "system", "content": SYSTEM},
-                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}],
-                max_tokens=900, temperature=0.2, validate=_validate)
-            d = _validate(text)
-            done.append((t, d["he"].strip(), d["en"].strip(), json.dumps(payload, ensure_ascii=False, default=str), model))
+            d, model, fj = write_note(payload)
+            done.append((t, d["he"].strip(), d["en"].strip(), fj, model))
         except llm_provider.LLMAuthError as e:
             print(f"ai stock notes: the AI key was rejected — stopping ({e})")
             break
