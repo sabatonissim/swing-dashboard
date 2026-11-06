@@ -41,4 +41,5 @@ jobs:
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
           LLM_MODELS: ${{ vars.LLM_MODELS }}
+          LLM_MODELS_DIGEST: ${{ vars.LLM_MODELS_DIGEST }}
         run: python pipeline_b_news_aggregator.py
