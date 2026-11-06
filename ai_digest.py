@@ -1,50 +1,70 @@
-"""AI daily digest — ONE running summary per DAY, updated as the day's news arrives.
+"""AI daily digest — ONE summary per DAY, written again as the day's news arrives.
 
-How it works (v16):
+How it works (v37, 6.11.2026; the day the S&P 500 fell 4.36% its digest opened with "technology and earnings dominated" and
+listed Philippine inflation next to it. The model had no market numbers, and got 80 of 1,564 headlines picked at even
+spacing, two thirds of them small-company earnings):
   * The "day" is a calendar day in DIGEST_TZ (default America/New_York = the US market day; change with the
     DIGEST_TZ variable, e.g. Asia/Jerusalem).
-  * First run of a day: the model summarises the day's headlines so far (Critical first, then spread over the day).
-  * Every later run: the model receives the digest it already wrote + ONLY the headlines that arrived since, and
-    returns the UPDATED digest for the whole day (keeps what is still true, folds in the new, re-ranks topics).
-  * Every REBUILD_EVERY updates the day is rebuilt from scratch from all its headlines, so small drifts cannot
-    pile up over a long day.
+  * market_facts(): the real numbers of the session (indices, VIX, oil, how many stocks rose and fell, the big movers).
+    They go to the model and into the payload, and the site shows them as they are, not through the AI.
+  * rank_items(): the same story from many outlets becomes one item, and items are ranked for a US-market reader.
+    Only the titles of the whole day are read from the database, then the details of those chosen.
+  * Every update is written from the whole day. On an extreme day the overview must open with the move and its number.
+  * The first news run after the close always updates, so a move shows up the same evening.
   * When the day ends, one last update closes it ("final") and it stays in the history table, so earlier days
     can be read later (api_server.py -> /api/daily-digest?day=YYYY-MM-DD and /api/daily-digest/days).
 
 Runs at the end of pipeline_b (GitHub Actions) — NEVER per website visit. The website only READS the stored result.
 
-Safe by design (unchanged from before):
+Safe by design:
   * no LLM_API_KEY            -> does nothing (the site keeps the rule-based digest)
   * AI call fails / bad JSON  -> nothing is saved, the previous digest stays, pipeline_b is unaffected
-  * facts only                -> the model sees ONLY the numbered headlines (and its own previous, already
-                                 validated digest); every topic must cite sources, topics with none are dropped.
-                                 Output that reads like investment advice is rejected.
-  * English first, then Hebrew through the project's existing free translator (passed in by the caller);
-    text that did not change since the last update is NOT translated again.
+  * facts only                -> the model sees ONLY the numbered headlines and the market numbers. Every topic must cite
+                                 sources, every number must appear in what it was given, and a rejected answer goes back
+                                 to it with the reason. Output that reads like investment advice is rejected.
+  * English first, then the model writes the Hebrew; if that fails, the project's free translator (passed in by the caller).
 
-Manual:  python ai_digest.py --force          (rebuild today's digest from scratch now)
-         python ai_digest.py                  (normal update, same as the pipeline does)
-         python ai_digest.py --backfill 7     (create summaries for the last 7 days that have none)
-         python ai_digest.py --probe          (which AI models work for my key right now?)
+Manual:  python ai_digest.py --force                   (write today's digest now)
+         python ai_digest.py --force --day 2026-11-05  (write one earlier day again)
+         python ai_digest.py                           (normal update, same as the pipeline does)
+         python ai_digest.py --backfill 7              (create summaries for the last 7 days that have none)
+         python ai_digest.py --probe                   (which AI models work for my key right now?)
 """
 import json
 import os
 import re
 import sys
+import time
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import llm_provider
+from news_links import is_unwanted_headline, LOCAL_RE, GLOBAL_RE
 
-MAX_ITEMS = 80          # headlines sent when a day is (re)built from scratch
-MAX_NEW = 60            # headlines sent in one incremental update
+MAX_ITEMS = 70          # stories sent to the model
+MAX_EARNINGS = 15       # of them, about one company's results
 MIN_ITEMS = 5           # a day needs at least this many headlines before its first digest
-MIN_NEW = 5             # an incremental update needs at least this many new headlines
-REBUILD_EVERY = 8       # every N-th update rebuilds the day from scratch (prevents drift)
+MIN_NEW = 5             # a normal update needs at least this many new headlines
+MAX_TOPICS = 5
 BODY_CHARS = 240
 MAX_SOURCES = 4
 KEEP_DAYS = 90
 CLOSE_LOOKBACK_DAYS = 3  # past days that are still closed with one last AI update (older ones are just marked final)
+ATTEMPTS = 3            # a rejected answer goes back to the model with the reason, this many times in all
+UPDATE_BUDGET_SEC = 360  # one update (the news job stops at 20 minutes and has done its own work by then)
+BIG_CAP = 50e9          # "large company" for the movers
+MOVERS_SHOWN = 5
+# How big the session was. Extreme: the overview must open with it. Fixed rule, the same one data_health.py checks.
+EXTREME_SP500, EXTREME_NASDAQ = 2.0, 2.5
+NOTABLE_SP500, NOTABLE_NASDAQ = 1.0, 1.5
+
+_ET = ZoneInfo("America/New_York")
+AFTER_CLOSE = dtime(16, 20)   # the scan and the breadth job of the close have saved their numbers by then
+
+MARKET_SYMBOLS = [("^GSPC", "S&P 500", "S&P 500"), ("^IXIC", "Nasdaq", 'נאסד"ק'), ("^DJI", "Dow Jones", "דאו ג'ונס"),
+                  ("^SOX", "Chip stocks (SOX)", "מניות השבבים (SOX)"), ("^VIX", "VIX", "VIX"),
+                  ("CL=F", "Oil (WTI)", "נפט (WTI)"), ("GC=F", "Gold", "זהב"),
+                  ("^TNX", "10-year Treasury yield", "תשואת אג\"ח ל-10 שנים"), ("BTC-USD", "Bitcoin", "ביטקוין")]
 
 
 # ------------------------------------------------------------------ the "day"
@@ -68,45 +88,221 @@ def day_bounds(day):
     return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
 
 
+# ------------------------------------------------------------------ the market's own numbers
+def _history(symbol):
+    """[(date, close)] of the last month. The same yfinance call the jobs in GitHub Actions already make."""
+    import yfinance as yf
+    h = yf.Ticker(symbol).history(period="1mo", interval="1d", auto_adjust=False)
+    return [(i.date(), float(c)) for i, c in zip(h.index, h["Close"]) if c == c]
+
+
+def move_size(indices, same_day):
+    """extreme / notable / normal, from the S&P 500 and the Nasdaq; closed = the market did not trade that day."""
+    if not same_day:
+        return "closed"
+    pct = {i["symbol"]: abs(i["change_pct"]) for i in indices}
+    sp, nq = pct.get("^GSPC", 0), pct.get("^IXIC", 0)
+    if sp >= EXTREME_SP500 or nq >= EXTREME_NASDAQ:
+        return "extreme"
+    return "notable" if sp >= NOTABLE_SP500 or nq >= NOTABLE_NASDAQ else "normal"
+
+
+def _market_from_db(conn, session_day):
+    """How many stocks rose and fell, and the big movers. Under 1 KB. universe_movers holds only the latest prices, so an
+    earlier day written again has no movers (the time filter), never another day's."""
+    out = {}
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT advancers, decliners, new_highs, new_lows FROM market_breadth WHERE day = %s", (session_day,))
+        r = cur.fetchone()
+        if r:
+            out["breadth"] = {"advancers": r[0], "decliners": r[1], "new_highs": r[2], "new_lows": r[3]}
+        start = datetime.combine(session_day, dtime.min, tzinfo=_ET)
+        movers = {}
+        for side, order in (("down", "ASC"), ("up", "DESC")):
+            cur.execute(f"""SELECT ticker, change_pct FROM universe_movers
+                            WHERE market_cap >= %s AND timestamp >= %s AND timestamp < %s AND change_pct <> 'NaN'
+                            ORDER BY change_pct {order} LIMIT %s""",   # fixed words, not input
+                        (BIG_CAP, start, start + timedelta(days=1), MOVERS_SHOWN))
+            movers[side] = [{"ticker": t, "change_pct": round(float(c), 2)} for t, c in cur.fetchall()]
+        movers["down"] = [m for m in movers["down"] if m["change_pct"] < 0]
+        movers["up"] = [m for m in movers["up"] if m["change_pct"] > 0]
+        if movers["down"] or movers["up"]:
+            out["movers"] = movers
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        print(f"[ai_digest] breadth / movers skipped ({type(e).__name__}: {e})")
+    finally:
+        cur.close()
+    return out
+
+
+def market_facts(conn, day, now=None):
+    """The session of `day` (or the last one before it). None when there are no prices: the digest is still written."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        anchor = [b for b in _history("^GSPC") if b[0] <= day]
+    except Exception as e:  # noqa: BLE001
+        print(f"[ai_digest] no market numbers ({type(e).__name__}: {e})")
+        return None
+    if len(anchor) < 2:
+        print("[ai_digest] no market numbers: too few S&P 500 prices came back")
+        return None
+    session_day = anchor[-1][0]
+    indices = []
+    for symbol, name_en, name_he in MARKET_SYMBOLS:
+        try:
+            bars = anchor if symbol == "^GSPC" else [b for b in _history(symbol) if b[0] <= session_day]
+        except Exception as e:  # noqa: BLE001
+            print(f"[warn] {symbol}: {type(e).__name__}: {e}")
+            continue
+        if len(bars) >= 2 and bars[-2][1]:
+            close, prev = bars[-1][1], bars[-2][1]
+            indices.append({"symbol": symbol, "name_en": name_en, "name_he": name_he, "close": round(close, 2),
+                            "change_pct": round((close / prev - 1) * 100, 2), "change_points": round(close - prev, 2)})
+    same_day = session_day == day
+    et = now.astimezone(_ET)
+    market = {"session_day": session_day.isoformat(), "same_day": same_day, "indices": indices,
+              "intraday": same_day and et.date() == day and dtime(9, 30) <= et.time() < dtime(16, 0),
+              "move": move_size(indices, same_day)}
+    market.update(_market_from_db(conn, session_day))
+    return market
+
+
+def _signed(x):
+    return f"{x:+.2f}"
+
+
+def _market_text(market, day):
+    if not market:
+        return "MARKET NUMBERS: not available. Do not state any index level or move that is not in the news items."
+    head = (f"MARKET NUMBERS, real data for the US session of {market['session_day']}"
+            + (" (trading is still open: numbers so far)" if market["intraday"] else "") + ":")
+    if not market["same_day"]:
+        head = (f"The US market has not traded on {day.isoformat()} so far. The numbers below are of the LAST session, "
+                f"{market['session_day']}; say so if you use them.\n" + head)
+    lines = [head]
+    for i in market["indices"]:
+        if i["symbol"] == "^TNX":
+            lines.append(f"{i['name_en']}: {i['close']:.2f}% (change {_signed(i['change_points'])} points)")
+        else:
+            lines.append(f"{i['name_en']}: {_signed(i['change_pct'])}% (at {i['close']})")
+    b = market.get("breadth")
+    if b:
+        lines.append(f"S&P 500 stocks that rose / fell: {b['advancers']} / {b['decliners']}")
+    mv = market.get("movers") or {}
+    for side, label in (("down", "Biggest falls"), ("up", "Biggest rises")):
+        if mv.get(side):
+            lines.append(f"{label} among large companies: " + ", ".join(f"{m['ticker']} {_signed(m['change_pct'])}%" for m in mv[side]))
+    lines.append({"extreme": "SIZE OF THE DAY: EXTREME. This is the main story of the day. The overview must open with it, name the index and give its number.",
+                  "notable": "SIZE OF THE DAY: a clearly large move. The overview must mention it.",
+                  "normal": "SIZE OF THE DAY: ordinary.", "closed": "SIZE OF THE DAY: no session today."}[market["move"]])
+    return "\n".join(lines)
+
+
+# ------------------------------------------------------------------ which headlines the model sees
+_MAJOR = ("reuters", "bloomberg", "cnbc", "wall street journal", "wsj", "associated press", "ap news", "financial times",
+          "marketwatch", "barron", "new york times", "axios", "federal reserve", "bls")
+_MARKET_RE = re.compile(r"\b(wall street|s&p( 500)?|nasdaq|dow( jones)?|stocks?|stock market|equities|sell-?off|rout|crash\w*|"
+                        r"plunge[sd]?|tumble[sd]?|slump\w*|sink[s]?|rall(y|ies|ied)|worst day|best day|record (high|close)|"
+                        r"correction|bear market|volatility|vix)\b", re.I)
+_US_MACRO_RE = re.compile(r"\b(fed|federal reserve|fomc|powell|warsh|cpi|inflation|payrolls?|jobs report|unemployment|jobless|"
+                          r"gdp|pce|treasur\w+|yields?|tariffs?|white house|congress|shutdown|midterms?|recession|consumer)\b", re.I)
+_WORLD_RE = re.compile(r"\b(oil|crude|brent|wti|opec|iran|hormuz|china|ecb|bank of japan|bank of england|dollar|gold|bitcoin)\b", re.I)
+_BIG_NAME_RE = re.compile(r"\b(apple|microsoft|nvidia|alphabet|google|amazon|meta|tesla|broadcom|amd|tsmc|intel|micron|oracle|"
+                          r"netflix|palantir|samsung|sk hynix|jpmorgan|goldman|berkshire|walmart|exxon|chevron|eli lilly|"
+                          r"magnificent|mag 7|data centers?|chips?|semiconductors?|ai stocks?)\b", re.I)
+_EARNINGS_TAG = "דוחות"
+_STOP = {"after", "amid", "with", "from", "that", "this", "than", "into", "over", "what", "when", "will", "says", "said", "have",
+         "their", "they", "more", "about", "stock", "stocks", "shares", "market", "markets", "news", "today", "report",
+         # the same words in the results of any company: two companies' reports are not one story
+         "earnings", "results", "revenue", "revenues", "quarter", "quarterly", "third", "fiscal", "estimates", "miss", "misses",
+         "beat", "beats", "profit", "profits", "forecast", "forecasts", "outlook", "sales", "raises", "cuts", "guidance", "reports"}
+
+
+def _words(title):
+    return {w for w in re.findall(r"[a-z0-9&']{4,}", title.lower()) if w not in _STOP}
+
+
+def item_score(it):
+    """How much one story matters to someone who follows the US market. Fixed rules, so a choice can be explained."""
+    t = it["title"]
+    market, macro, world = bool(_MARKET_RE.search(t)), bool(_US_MACRO_RE.search(t)), bool(_WORLD_RE.search(t))
+    big = bool(_BIG_NAME_RE.search(t))
+    outlet = (it.get("source") or "").lower()
+    score = 6 * market + 5 * macro + 3 * world + 3 * big
+    score += 2 * min(it.get("outlets", 1), 8)
+    score += 3 if any(m in outlet for m in _MAJOR) else 0
+    if it["tag"] == _EARNINGS_TAG and not (big or market or macro):
+        score -= 6                                                  # one smaller company's results
+    if LOCAL_RE.search(t) and not (market or GLOBAL_RE.search(t)):
+        score -= 10                                                 # far-away domestic news
+    return score
+
+
+def rank_items(items, cap=MAX_ITEMS):
+    """One entry per story, the most important first. `outlets` = how many different outlets ran it."""
+    clusters = []
+    for it in items:
+        if is_unwanted_headline(it["title"]):
+            continue
+        words = _words(it["title"])
+        home = None
+        if len(words) >= 3:
+            for c in clusters:
+                shared = len(words & c["words"])
+                if shared >= 3 and shared >= 0.6 * min(len(words), len(c["words"])):
+                    home = c
+                    break
+        if home is None:
+            home = {"words": words, "members": []}
+            clusters.append(home)
+        home["members"].append(it)
+    ranked = []
+    for c in clusters:
+        outlets = len({(m.get("source") or "").lower() for m in c["members"] if m.get("source")}) or 1
+        best = max((dict(m, outlets=outlets) for m in c["members"]), key=lambda m: (item_score(m), m["id"]))
+        ranked.append((item_score(best), best))
+    ranked.sort(key=lambda p: (-p[0], -p[1]["id"]))
+    out, earnings = [], 0
+    for score, it in ranked:
+        if it["tag"] == _EARNINGS_TAG:
+            if earnings >= MAX_EARNINGS:
+                continue
+            earnings += 1
+        out.append(it)
+        if len(out) >= cap:
+            break
+    return out
+
+
 # ------------------------------------------------------------------ prompts
-_RULES = """STRICT RULES:
-- Base every statement on the information you are given. Never add numbers, names, causes, dates or background that are not there.
-- "impact" explains in plain words which parts of the market (sectors, asset classes, currencies, interest rates) this kind of news typically matters for, and why. Word it with "may", "could" or "tends to". It is context, NOT a forecast: never predict a price level or a direction, never give a target.
+SYSTEM = """You are the markets editor of a website for people who follow the US stock market. You write the day's summary. A reader who opens only this must understand what happened to the market today and why.
+
+ORDER OF IMPORTANCE:
+1. What the US market did: the indices, how big the move was, which stocks and sectors led it. If the MARKET NUMBERS say the day was extreme, this is the first thing in the overview and the first topic, with the numbers.
+2. Why it happened, as far as the items say. If several items give the same reason, say it. If no item explains it, say the reason is not clear.
+3. What else can move US stocks: the Fed and rates, US data (inflation, jobs), oil and war, trade and tariffs, US politics, the largest companies.
+4. Other countries only if the item ties them to US stocks, oil, the dollar or world markets. The domestic news of a smaller country (its local inflation or local interest rate) is not a topic and is not in the overview. Results of one smaller company are not a topic unless they moved the market.
+
+STRICT RULES:
+- Base every statement on the MARKET NUMBERS and the items. Never add numbers, names, causes, dates or background that are not there. Every number you write must appear in what you were given. You may round (4.36% to 4.4%).
+- The numbers say what happened; do not let a headline contradict them. "(N outlets)" = how many outlets ran that story; many outlets usually means it matters, and the items come most important first.
+- "impact" says why this matters for US stocks, specific to this story, in words such as "may", "could" or "tends to". It is context, NOT a forecast: never predict a price level or a direction. Empty if you have nothing specific to say. Never a sentence that would fit any story.
 - No investment advice: never say or imply that anyone should buy, sell or hold anything.
-- "takeaways" are neutral observations about the day's themes (what dominated, what is uncertain, where items disagree). They are not recommendations.
-- "watch" lists up to 3 things worth keeping an eye on, taken from the information (for example an upcoming decision or data release mentioned in it). Use an empty list if there are none.
-- If the information is thin or contradicts itself, say so briefly instead of guessing.
-- Group related items into 3 or 4 topics, most important / most covered first. Leave out minor stories.
-- STYLE (v19 — readers want it short and clear, and the text is machine-translated to Hebrew): plain everyday words,
-  one idea per sentence, short sentences, numbers when the items give them. No market jargon ("beat", "guidance",
-  "print", "risk-on", "hawkish", "bid", "rally"): say what happened instead ("results were better than forecast").
-  No filler such as "markets digested", "investors weighed", "mixed picture". Company names exactly as in the items.
-Reply with ONLY a valid JSON object (no markdown, no commentary). Use straight double quotes, no trailing commas, and never put a double quote character inside a text value."""
+- Plain everyday words, one idea per sentence, numbers whenever you have them. No market jargon ("beat", "guidance", "print", "risk-on", "hawkish", "bid"): say what happened ("results were better than forecast"). No filler such as "markets digested", "investors weighed", "mixed picture", "dominated the day". Company names exactly as in the items.
 
-_SHAPE_FULL = """Exact shape:
-{"overview": "the day in ONE or two short sentences, max 220 characters",
- "topics": [{"title": "max 50 characters", "summary": "ONE sentence: what happened, max 200 characters", "impact": "one short sentence, max 140 characters, or empty", "items": [numbers of the supporting items]}],
- "takeaways": ["max 150 characters each, 0 to 2 entries"],
- "watch": ["max 100 characters each, 0 to 3 entries"]}"""
+Reply with ONLY a valid JSON object (no markdown, no commentary). Use straight double quotes, no trailing commas, and never put a double quote character inside a text value.
+Exact shape:
+{"overview": "2 or 3 short sentences, max 380 characters: what the market did and why",
+ "topics": [{"title": "max 60 characters", "summary": "1 or 2 sentences: what happened, with numbers, max 300 characters", "impact": "one sentence, max 180 characters, or empty", "items": [numbers of the supporting items]}]}
+3 to 5 topics, the most important first. Every topic lists the items it comes from."""
 
-_SHAPE_UPDATE = """Exact shape:
-{"overview": "the WHOLE day so far in ONE or two short sentences, max 220 characters",
- "topics": [{"title": "max 50 characters", "summary": "ONE sentence: what happened, max 200 characters", "impact": "one short sentence, max 140 characters, or empty", "from_topics": [numbers of the current-digest topics this builds on, [] if brand new], "items": [numbers of the NEW items that support it, [] if none]}],
- "takeaways": ["max 150 characters each, 0 to 2 entries"],
- "watch": ["max 100 characters each, 0 to 3 entries"]}"""
-
-SYSTEM_FULL = ("You are a neutral news editor for a market-data website. You write a short digest with context of "
-               "everything that happened in one day, from the numbered news items you are given.\n" + _RULES + "\n" + _SHAPE_FULL)
-
-SYSTEM_UPDATE = ("You are a neutral news editor for a market-data website. You maintain ONE running digest for the "
-                 "current day. You are given (A) the digest as written so far, with numbered topics P1, P2..., and "
-                 "(B) NEW numbered news items that arrived since. Produce the UPDATED digest for the whole day.\n"
-                 "UPDATE RULES:\n"
-                 "- Keep what is still true and important from (A); do not drop an earlier major theme just because it is quiet now (you may shorten or merge it).\n"
-                 "- When new items continue a topic, update that topic and say how it developed. New themes become new topics.\n"
-                 "- Re-rank topics by importance and coverage across the whole day. Overview, takeaways and watch must describe the whole day so far, not only the new items.\n"
-                 "- Every topic must list in from_topics the P numbers it builds on and/or in items the NEW item numbers that support it (at least one of them).\n"
-                 + _RULES + "\n" + _SHAPE_UPDATE)
+SYSTEM_HE = """Translate this market summary from English into natural, simple Israeli Hebrew, as a financial newspaper would write it.
+Glossary: stocks = מניות; sell-off = גל מכירות; index = מדד; chip stocks = מניות השבבים; interest rate = ריבית; rate hike = העלאת ריבית; yield = תשואה; Treasury bond = אג"ח ממשלתי; inflation = אינפלציה; results / earnings = דוחות או רווחים; forecast / outlook = תחזית; oil = נפט; tariffs = מכסים; sanctions = סנקציות; midterm elections = בחירות אמצע הקדנציה; the Fed = הפד; Wall Street = וול סטריט; AI = בינה מלאכותית.
+Names of companies, indices and people stay in English letters (Nvidia, S&P 500, Nasdaq, VIX). A company is feminine in Hebrew. Keep every number exactly as written.
+Write Hebrew abbreviations with the mark ״ (ארה״ב, נאסד״ק), never with a plain double quote.
+Keep the same fields and the same number of topics; an empty field stays empty. Answer with the JSON only, in the same shape as the input."""
 
 _ADVICE = re.compile(r"\b(you should|we recommend|recommend(?:ed|s)? (?:to )?(?:buy|sell)|should (?:buy|sell|hold)|time to (?:buy|sell)|buy now|sell now)\b", re.I)
 
@@ -141,55 +337,52 @@ def _load_row(conn, day):
                 since_rebuild=r[4] or 0, is_final=bool(r[5]), model=r[6], payload=json.loads(r[7]), age_h=float(r[8] or 0))
 
 
-def _fetch_items(conn, day, after_id=0):
-    """Headlines that ARRIVED during `day` (macro_news.timestamp = when the pipeline saved them), oldest first."""
+def _count_new(conn, day, after_id):
     start, end = day_bounds(day)
     cur = conn.cursor()
-    cur.execute("""SELECT id, category_tag, impact_level, summary_en, body_en, source_url, summary_he, timestamp
-                   FROM macro_news
-                   WHERE timestamp >= %s AND timestamp < %s AND id > %s
-                   ORDER BY id ASC""", (start, end, after_id))
+    cur.execute("SELECT COUNT(*) FROM macro_news WHERE timestamp >= %s AND timestamp < %s AND id > %s", (start, end, after_id))
+    n = int(cur.fetchone()[0])
+    cur.close()
+    return n
+
+
+def _fetch_titles(conn, day):
+    """Headlines that ARRIVED during `day` (macro_news.timestamp = when the pipeline saved them). Titles only: ~150 bytes a
+    row against ~1.2 KB with the texts, and this runs on every update (Neon's network quota, CLAUDE.md §3)."""
+    start, end = day_bounds(day)
+    cur = conn.cursor()
+    cur.execute("""SELECT id, category_tag, summary_en, source_name, timestamp FROM macro_news
+                   WHERE timestamp >= %s AND timestamp < %s ORDER BY id ASC""", (start, end))
     rows = cur.fetchall()
     cur.close()
-    return [dict(id=r[0], tag=r[1], impact=r[2], title=r[3] or "", body=r[4] or "", url=r[5] or "",
-                 title_he=r[6] or "", ts=r[7]) for r in rows]
+    return [dict(id=r[0], tag=r[1], title=r[2] or "", source=r[3] or "", ts=r[4]) for r in rows]
 
 
-def _select(items, cap):
-    """At most `cap` headlines: all Critical ones first (up to a third of the cap), the rest spread evenly over the
-    period so the whole day is represented — not just its most recent hours."""
-    if len(items) <= cap:
-        return items
-    crit = [i for i in items if i["impact"] == "Critical"][:max(1, cap // 3)]
-    crit_ids = {i["id"] for i in crit}
-    rest = [i for i in items if i["id"] not in crit_ids]
-    slots = cap - len(crit)
-    step = len(rest) / slots
-    picked = [rest[int(k * step)] for k in range(slots)]
-    return sorted(crit + picked, key=lambda i: i["id"])
+def _add_details(conn, items):
+    """The texts and links, only of the stories going to the model."""
+    cur = conn.cursor()
+    cur.execute("SELECT id, body_en, source_url, summary_he FROM macro_news WHERE id = ANY(%s)", ([i["id"] for i in items],))
+    extra = {r[0]: r[1:] for r in cur.fetchall()}
+    cur.close()
+    for it in items:
+        body, url, title_he = extra.get(it["id"], ("", "", ""))
+        it.update(body=body or "", url=url or "", title_he=title_he or "")
+    return items
 
 
 # ------------------------------------------------------------------ prompts' user part
 def _item_lines(items):
     lines = []
     for n, it in enumerate(items, 1):
-        body = re.sub(r"\s+", " ", it["body"]).strip()[:BODY_CHARS]
-        lines.append(f"[{n}] ({it['tag']}, {it['impact']}) {it['title']}" + (f" — {body}" if body else ""))
+        body = re.sub(r"\s+", " ", it.get("body") or "").strip()[:BODY_CHARS]
+        count = it.get("outlets", 1)
+        lines.append(f"[{n}] ({count} outlet{'s' if count != 1 else ''}) {it['title']}" + (f" — {body}" if body else ""))
     return "\n".join(lines)
 
 
-def _prompt_full(items, day):
-    return f"News items from {day.isoformat()} (the whole day so far):\n" + _item_lines(items)
-
-
-def _prompt_update(prev, items, day):
-    tops = "\n".join(f"[P{n}] {t['title_en']} — {t['summary_en']}" + (f" | impact: {t['impact_en']}" if t.get("impact_en") else "")
-                     for n, t in enumerate(prev["topics"], 1))
-    take = "; ".join(prev.get("takeaways_en") or []) or "none"
-    watch = "; ".join(prev.get("watch_en") or []) or "none"
-    return (f"(A) CURRENT DIGEST for {day.isoformat()} (covers {prev.get('item_count', '?')} headlines so far)\n"
-            f"Overview: {prev.get('overview_en', '')}\nTopics:\n{tops}\nTakeaways: {take}\nWatch: {watch}\n\n"
-            f"(B) NEW news items since then:\n" + _item_lines(items))
+def _prompt(items, day, market):
+    return (f"{_market_text(market, day)}\n\nNews items from {day.isoformat()}, the whole day so far, most important first:\n"
+            + _item_lines(items))
 
 
 # ------------------------------------------------------------------ parsing / validation
@@ -198,11 +391,11 @@ def _parse(text):
     m = re.search(r"\{.*\}", text, re.DOTALL)
     if not m:
         raise ValueError("no JSON object in the answer")
-    raw = m.group(0)
+    raw = re.sub(r'(?<=[א-ת])"(?=[א-ת])', "״", m.group(0))      # ארה"ב ends a JSON string early
     try:
         return json.loads(raw)
     except ValueError as first:
-        fixed = (raw.replace("\u201c", '"').replace("\u201d", '"').replace("\u2018", "'").replace("\u2019", "'"))
+        fixed = (raw.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'"))
         fixed = re.sub(r",\s*([}\]])", r"\1", fixed)                    # trailing commas
         fixed = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", fixed)       # stray control characters
         try:
@@ -237,10 +430,6 @@ def _known_translations(prev):
         if en and he and en != he:
             known[en] = he
     add(prev.get("overview_en"), prev.get("overview_he"))
-    for en, he in zip(prev.get("takeaways_en") or [], prev.get("takeaways_he") or []):
-        add(en, he)
-    for en, he in zip(prev.get("watch_en") or [], prev.get("watch_he") or []):
-        add(en, he)
     for t in prev.get("topics") or []:
         for k in ("title", "summary", "impact"):
             add(t.get(k + "_en"), t.get(k + "_he"))
@@ -263,7 +452,7 @@ def _ints(values, lo, hi):
     out = []
     for v in values or []:
         if isinstance(v, str):
-            v = v.strip().lstrip("PpTt")          # accepts "P2" as well as 2
+            v = v.strip().lstrip("PpTt")          # accepts "T2" as well as 2
         try:
             n = int(v)
         except (TypeError, ValueError):
@@ -273,45 +462,168 @@ def _ints(values, lo, hi):
     return out
 
 
-def _build_payload(raw, items, prev, translate_fn, cache_from=None):
-    """raw = the model's JSON; items = the numbered items it was shown; prev = previous payload (update mode) or None."""
-    prev_topics = (prev or {}).get("topics") or []
+_NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def _numbers(text):
+    return {n.replace(",", "").rstrip(".") for n in _NUMBER.findall(text or "")}
+
+
+def allowed_numbers(market, items):
+    """Every number the model was given, also rounded: 4.36 may be written as 4.4 or 4."""
+    source = _market_text(market, date(2000, 1, 1)) + " " + " ".join(f"{i['title']} {i.get('body') or ''}" for i in items)
+    out = set()
+    for n in _numbers(source):
+        out.add(n)
+        try:
+            x = float(n)
+        except ValueError:
+            continue
+        for digits in (0, 1, 2):
+            out.add(f"{x:.{digits}f}")
+        out.add(n.rstrip("0").rstrip(".") if "." in n else n)
+    return out
+
+
+def invented_numbers(text, allowed):
+    """Numbers in the text that the model was not given. Up to 12 can be a count or a quarter ("3 reasons", "Q3")."""
+    return sorted(n for n in _numbers(text) if n not in allowed and not (n.isdigit() and int(n) <= 12))
+
+
+def opens_with_the_move(overview, market):
+    """On an extreme day: does the overview name an index and its number?"""
+    if not market or market.get("move") != "extreme":
+        return True
+    wanted = {i["symbol"]: abs(i["change_pct"]) for i in market["indices"] if i["symbol"] in ("^GSPC", "^IXIC", "^DJI")}
+    numbers = _numbers(overview)
+    if not wanted or not re.search(r"S&P|Nasdaq|Dow\b|Wall Street", overview):
+        return False
+    return any(f"{x:.{d}f}" in numbers for x in wanted.values() for d in (1, 2))
+
+
+def _forced_lead(market):
+    by = {i["symbol"]: i for i in market["indices"]}
+    bits = [f"the {by[s]['name_en']} {'rose' if by[s]['change_pct'] > 0 else 'fell'} {abs(by[s]['change_pct']):.2f}%"
+            for s in ("^GSPC", "^IXIC") if s in by]
+    lead = " and ".join(bits) + "."
+    return lead[0].upper() + lead[1:]
+
+
+def clean_answer(text, items, market, strict=True):
+    """The model's answer as the English part of the digest. ValueError (with a reason the model can act on) when rejected.
+    strict=False, after the attempts ran out: what can be saved is saved. A topic with an invented number is dropped, and
+    an overview that left out an extreme move gets the real numbers in front of it."""
+    raw = _parse(text)
+    allowed = allowed_numbers(market, items)
     overview = str(raw.get("overview", "")).strip()
     topics = []
-    for t in (raw.get("topics") or [])[:4]:          # v19: 4 at most (was 6) — short and clear
-        new_nums = _ints(t.get("items"), 1, len(items))
-        old_nums = _ints(t.get("from_topics"), 1, len(prev_topics)) if prev else []
+    for t in (raw.get("topics") or [])[:MAX_TOPICS]:
         sources, seen = [], set()
-        for n in reversed(new_nums):                       # newest headlines first
+        for n in _ints(t.get("items"), 1, len(items)):
             it = items[n - 1]
-            sources.append({"title_en": it["title"], "title_he": it["title_he"], "url": it["url"], "category": it["tag"]})
-        for n in old_nums:
-            sources.extend(prev_topics[n - 1].get("sources") or [])
-        uniq = []
-        for s in sources:
-            k = s.get("url") or s.get("title_en")
+            k = it["url"] or it["title"]
             if k and k not in seen:
                 seen.add(k)
-                uniq.append(s)
+                sources.append({"title_en": it["title"], "title_he": it["title_he"], "url": it["url"], "category": it["tag"]})
         title, summary = str(t.get("title", "")).strip(), str(t.get("summary", "")).strip()
-        if not (title and summary and uniq):
+        impact = str(t.get("impact", "")).strip()
+        if not (title and summary and sources):
             continue                                        # no valid source -> dropped
-        topics.append({"title_en": title, "summary_en": summary, "impact_en": str(t.get("impact", "")).strip(),
-                       "sources": uniq[:MAX_SOURCES]})
+        extra = invented_numbers(f"{title} {summary} {impact}", allowed)
+        if extra:
+            if strict:
+                raise ValueError(f"the topic '{title}' has numbers that are in neither the market numbers nor the items: "
+                                 f"{extra[:4]}. Use only numbers you were given")
+            continue
+        topics.append({"title_en": title, "summary_en": summary, "impact_en": impact, "sources": sources[:MAX_SOURCES]})
     if not overview or not topics:
-        raise ValueError("answer had no usable overview/topics")
-
-    def _strings(key, n):
-        return [str(x).strip() for x in (raw.get(key) or []) if str(x).strip()][:n]
-    takeaways, watch = _strings("takeaways", 3), _strings("watch", 3)
-    blob = " ".join([overview] + takeaways + watch + [t["title_en"] + " " + t["summary_en"] + " " + t["impact_en"] for t in topics])
+        raise ValueError("the answer has no usable overview or topics: every topic needs the numbers of its items")
+    extra = invented_numbers(overview, allowed)
+    if extra:
+        raise ValueError(f"the overview has numbers that are in neither the market numbers nor the items: {extra[:4]}. "
+                         "Use only numbers you were given")
+    if not opens_with_the_move(overview, market):
+        if strict:
+            raise ValueError("the MARKET NUMBERS say the day was extreme, and the overview does not say so. Open the overview "
+                             "with the index and its number")
+        overview = f"{_forced_lead(market)} {overview}"
+    blob = " ".join([overview] + [f"{t['title_en']} {t['summary_en']} {t['impact_en']}" for t in topics])
     if _ADVICE.search(blob):
-        raise ValueError("answer looked like investment advice — rejected")
-    known = _known_translations(cache_from if cache_from is not None else prev)
-    payload = {"overview_en": overview, "overview_he": _he(overview, translate_fn, known), "topics": topics,
-               "takeaways_en": takeaways, "takeaways_he": [_he(x, translate_fn, known) for x in takeaways],
-               "watch_en": watch, "watch_he": [_he(x, translate_fn, known) for x in watch]}
-    for t in topics:
+        raise ValueError("the answer reads like investment advice. Describe what happened, with no advice")
+    return {"overview_en": overview, "topics": topics}
+
+
+def _ask(system, user, clean, max_tokens, deadline, fallback=None):
+    """A rejected answer goes back to the model with the reason (only one free model works at a time: v30c)."""
+    msgs = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    last, last_text = "no answer", None
+    for _ in range(ATTEMPTS):
+        if time.time() > deadline:
+            last = f"time budget used up — last: {last}"
+            break
+        try:
+            text, model = llm_provider.chat(msgs, max_tokens=max_tokens, temperature=0.1)
+        except RuntimeError as e:                    # timeout / the provider is busy — ask again
+            last = str(e)
+            continue
+        last_text = text
+        try:
+            return clean(text), model
+        except ValueError as e:
+            last = f"answer rejected — {e}"
+            print(f"[ai_digest] {model}: {last}")
+            msgs = msgs[:2] + [{"role": "assistant", "content": text[:6000]},
+                               {"role": "user", "content": f"Problem: {e}. Fix that and answer again with the complete JSON, nothing else."}]
+    if fallback and last_text:
+        return fallback(last_text), model
+    raise RuntimeError(f"no usable answer — last: {last}")
+
+
+def _english_blob(payload):
+    return {"overview": payload["overview_en"],
+            "topics": [{"title": t["title_en"], "summary": t["summary_en"], "impact": t["impact_en"]} for t in payload["topics"]]}
+
+
+def clean_hebrew(text, en):
+    raw = _parse(text)
+    topics = raw.get("topics") or []
+    if len(topics) != len(en["topics"]):
+        raise ValueError(f"there are {len(en['topics'])} topics in the English and {len(topics)} in the answer: keep them all")
+    allowed = _numbers(json.dumps(en, ensure_ascii=False))
+    pairs = [("overview", str(raw.get("overview", "")).strip(), en["overview"])]
+    out = {"overview": pairs[0][1], "topics": []}
+    for he_t, en_t in zip(topics, en["topics"]):
+        row = {k: str(he_t.get(k, "")).strip() for k in ("title", "summary", "impact")}
+        out["topics"].append(row)
+        pairs += [(k, row[k], en_t[k]) for k in ("title", "summary", "impact")]
+    for field, he, en_text in pairs:
+        if en_text and not re.search(r"[א-ת]", he):
+            raise ValueError(f"the field '{field}' is not in Hebrew: {en_text[:60]}")
+        extra = _numbers(he) - allowed
+        if extra:
+            raise ValueError(f"the field '{field}' has numbers that are not in the English: {sorted(extra)[:4]}")
+    return out
+
+
+def _add_hebrew(payload, translate_fn, cache_from, deadline):
+    """The model writes the Hebrew; the translator made "מכירת מניות שבבי לחץ" of a sell-off and "תעריפים" of rates.
+    Same English as the last update -> no request. The free translator only if the model fails."""
+    known = _known_translations(cache_from)
+    en = _english_blob(payload)
+    texts = [en["overview"]] + [t[k] for t in en["topics"] for k in ("title", "summary", "impact") if t[k]]
+    he = None
+    if not all(x in known for x in texts):
+        try:
+            he, _ = _ask(SYSTEM_HE, json.dumps(en, ensure_ascii=False), lambda t: clean_hebrew(t, en), 3000, deadline)
+        except RuntimeError as e:
+            print(f"[ai_digest] the Hebrew falls back to the translator ({e})")
+    if he:
+        payload["overview_he"] = he["overview"]
+        for t, h in zip(payload["topics"], he["topics"]):
+            t["title_he"], t["summary_he"], t["impact_he"] = h["title"], h["summary"], h["impact"]
+        return payload
+    payload["overview_he"] = _he(payload["overview_en"], translate_fn, known)
+    for t in payload["topics"]:
         t["title_he"] = _he(t["title_en"], translate_fn, known)
         t["summary_he"] = _he(t["summary_en"], translate_fn, known)
         t["impact_he"] = _he(t["impact_en"], translate_fn, known)
@@ -319,79 +631,75 @@ def _build_payload(raw, items, prev, translate_fn, cache_from=None):
 
 
 # ------------------------------------------------------------------ one day
+def after_close_update_due(row, day, now=None):
+    """The first run after the close always updates, whatever the time since the last one."""
+    et = (now or datetime.now(timezone.utc)).astimezone(_ET)
+    if et.date() != day or et.weekday() >= 5 or et.time() < AFTER_CLOSE:
+        return False
+    return row["updated_at"].astimezone(_ET) < datetime.combine(day, AFTER_CLOSE, tzinfo=_ET)
+
+
 def _update_day(conn, day, translate_fn, force=False, final=False):
     """Create / update / close the digest of one day. Returns True if a new AI digest was saved."""
     min_hours = float(os.environ.get("AI_DIGEST_MIN_HOURS") or 3)
     row = _load_row(conn, day)
     if row and row["is_final"] and not force:
         return False
-    if row and not force and not final and row["age_h"] < min_hours:
+    close_due = bool(row) and after_close_update_due(row, day)
+    if row and not force and not final and not close_due and row["age_h"] < min_hours:
         print(f"[ai_digest] {day}: last update is {row['age_h']:.1f}h old (< {min_hours}h) — skipping")
         return False
+    if row and not force and not close_due:
+        new = _count_new(conn, day, row["last_item_id"])
+        if new < (1 if final else MIN_NEW):
+            if final:
+                _mark_final(conn, day)
+                print(f"[ai_digest] {day}: closed (no new headlines since the last update)")
+            else:
+                print(f"[ai_digest] {day}: only {new} new headlines (< {MIN_NEW}) — skipping")
+            return False
 
-    rebuild = force or row is None or row["since_rebuild"] >= REBUILD_EVERY
-    if rebuild:
-        all_items = _fetch_items(conn, day, 0)
-        fetched = all_items
-        need = MIN_ITEMS
-    else:
-        fetched = _fetch_items(conn, day, row["last_item_id"])
-        need = 1 if final else MIN_NEW
-    if not rebuild and len(fetched) < need:
-        if final:
-            _mark_final(conn, day)
-            print(f"[ai_digest] {day}: closed (no new headlines since the last update)")
-        else:
-            print(f"[ai_digest] {day}: only {len(fetched)} new headlines (< {need}) — skipping")
-        return False
-    if rebuild and len(fetched) < need:
+    fetched = _fetch_titles(conn, day)
+    if len(fetched) < MIN_ITEMS:
         print(f"[ai_digest] {day}: only {len(fetched)} headlines — too few for a digest")
         return False
+    sel = _add_details(conn, rank_items(fetched))
+    if not sel:
+        print(f"[ai_digest] {day}: no headline left after the filters")
+        return False
+    market = market_facts(conn, day)
+    print(f"[ai_digest] {day}: {len(fetched)} headlines, sending {len(sel)} stories, market move: "
+          f"{market['move'] if market else 'no numbers'}; first: {sel[0]['title'][:80]}")
 
-    if rebuild:
-        sel = _select(fetched, MAX_ITEMS)
-        messages = [{"role": "system", "content": SYSTEM_FULL}, {"role": "user", "content": _prompt_full(sel, day)}]
-        prev = None
-    else:
-        sel = _select(fetched, MAX_NEW)
-        prev = dict(row["payload"], item_count=row["item_count"])
-        messages = [{"role": "system", "content": SYSTEM_UPDATE}, {"role": "user", "content": _prompt_update(prev, sel, day)}]
-    mode = "rebuild" if rebuild else f"update (+{len(fetched)} new)"
-    print(f"[ai_digest] {day}: {mode}, sending {len(sel)} headlines")
-
-    cache_from = row["payload"] if row else None          # Hebrew of unchanged sentences is reused
-    text, model = llm_provider.chat(
-        messages, max_tokens=2500, temperature=0.1,
-        validate=lambda t: _build_payload(_parse(t), sel, prev, lambda x: x))
-    payload = _build_payload(_parse(text), sel, prev, translate_fn, cache_from)
+    deadline = time.time() + UPDATE_BUDGET_SEC
+    payload, model = _ask(SYSTEM, _prompt(sel, day, market), lambda t: clean_answer(t, sel, market), 3000, deadline,
+                          fallback=lambda t: clean_answer(t, sel, market, strict=False))
+    payload = _add_hebrew(payload, translate_fn, row["payload"] if row else None, deadline + 120)
+    payload["market"] = market
 
     stamps = [it["ts"] for it in fetched if it.get("ts")]
-    prev_from = (row["payload"].get("covers_from") if row and not rebuild else None)
-    prev_to = (row["payload"].get("covers_to") if row and not rebuild else None)
     if stamps:
-        cf, ct = min(stamps).isoformat(), max(stamps).isoformat()
-        payload["covers_from"] = min(x for x in (prev_from, cf) if x)
-        payload["covers_to"] = max(x for x in (prev_to, ct) if x)
+        payload["covers_from"], payload["covers_to"] = min(stamps).isoformat(), max(stamps).isoformat()
     payload["day"] = day.isoformat()
-    item_count = len(fetched) if rebuild else row["item_count"] + len(fetched)
+    item_count = len(fetched)
     last_id = max(it["id"] for it in fetched)
-    updates = 1 if rebuild and (row is None or force) else (row["updates"] + 1 if row else 1)
-    since_rebuild = 0 if rebuild else row["since_rebuild"] + 1
+    updates = row["updates"] + 1 if row else 1
     payload["item_count"] = item_count
     payload["updates"] = updates
 
     cur = conn.cursor()
     cur.execute("""INSERT INTO ai_daily_digests (day, updated_at, item_count, last_item_id, updates, since_rebuild, is_final, model, payload)
-                   VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s, %s)
+                   VALUES (%s, NOW(), %s, %s, %s, 0, %s, %s, %s)
                    ON CONFLICT (day) DO UPDATE SET updated_at = NOW(), item_count = EXCLUDED.item_count,
                        last_item_id = EXCLUDED.last_item_id, updates = EXCLUDED.updates,
                        since_rebuild = EXCLUDED.since_rebuild, is_final = EXCLUDED.is_final,
                        model = EXCLUDED.model, payload = EXCLUDED.payload""",
-                (day, item_count, last_id, updates, since_rebuild, bool(final), model, json.dumps(payload, ensure_ascii=False)))
+                (day, item_count, last_id, updates, bool(final), model, json.dumps(payload, ensure_ascii=False)))
     conn.commit()
     cur.close()
     print(f"[ai_digest] {day}: saved{' (FINAL)' if final else ''} — {item_count} headlines, {len(payload['topics'])} topics, "
           f"update #{updates}, model {model}")
+    print(f"[ai_digest] overview: {payload['overview_en']}")
     return True
 
 
@@ -439,6 +747,19 @@ def maybe_generate(get_conn, translate_fn, force=False):
     return False
 
 
+def one_day(get_conn, translate_fn, day):
+    """Write one earlier day again (manual, to see a change on a day that already happened). Closed again when done."""
+    if not llm_provider.is_configured():
+        print("[ai_digest] off (LLM_API_KEY is not set)")
+        return False
+    conn = get_conn()
+    try:
+        ensure_table(conn)
+        return _update_day(conn, day, translate_fn, force=True, final=day < today_local())
+    finally:
+        conn.close()
+
+
 def backfill(get_conn, translate_fn, days=7):
     """Create a (final) digest for each of the last `days` days that has headlines but no digest yet."""
     if not llm_provider.is_configured():
@@ -475,5 +796,7 @@ if __name__ == "__main__":
         i = sys.argv.index("--backfill")
         n = int(sys.argv[i + 1]) if len(sys.argv) > i + 1 and sys.argv[i + 1].isdigit() else 7
         sys.exit(0 if backfill(pb.get_conn, pb.translate_to_hebrew, n) else 1)
+    if "--day" in sys.argv and len(sys.argv) > sys.argv.index("--day") + 1 and sys.argv[sys.argv.index("--day") + 1]:
+        sys.exit(0 if one_day(pb.get_conn, pb.translate_to_hebrew, date.fromisoformat(sys.argv[sys.argv.index("--day") + 1])) else 1)
     ok = maybe_generate(pb.get_conn, pb.translate_to_hebrew, force="--force" in sys.argv)
     sys.exit(0 if ok else 1)

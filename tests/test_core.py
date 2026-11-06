@@ -739,6 +739,134 @@ def test_news_uses_one_connection_and_reopens_a_dropped_one(monkeypatch):
     assert opened[1].closed and pb._run_conn["conn"] is None
 
 
+_CRASH_MARKET = {"session_day": "2026-11-05", "same_day": True, "intraday": False, "move": "extreme",
+                 "indices": [{"symbol": "^GSPC", "name_en": "S&P 500", "close": 7353.73, "change_pct": -4.36, "change_points": -334.89},
+                             {"symbol": "^IXIC", "name_en": "Nasdaq", "close": 24315.0, "change_pct": -5.52, "change_points": -1421.51},
+                             {"symbol": "^TNX", "name_en": "10-year Treasury yield", "close": 4.5, "change_pct": -1.0, "change_points": -0.05}],
+                 "breadth": {"advancers": 73, "decliners": 430}, "movers": {"down": [{"ticker": "NVDA", "change_pct": -9.1}], "up": []}}
+
+
+def test_digest_ranks_the_market_above_small_company_earnings_and_far_away_news():
+    """v37: 5.11.2026. 80 of 1,564 headlines at even spacing, two thirds of them earnings, and Philippine inflation in the overview."""
+    import ai_digest as d
+    item = lambda i, title, src="Yahoo Finance", tag="שוק": dict(id=i, title=title, source=src, tag=tag)
+    items = [item(1, "Philippine Inflation Surges to 7.8%, Boosting Case for Rate Hike", "Bloomberg.com", "אינפלציה"),
+             item(2, "Magal: Q3 Earnings Snapshot", "KTVB", "דוחות"),
+             item(3, "What Wendy's (WEN) Said on Its Q3 Earnings Call", tag="דוחות"),
+             item(4, "Docebo Inc. (DCBO) Q3 Earnings and Revenues Surpass Estimates", tag="דוחות"),
+             item(5, "A brutal sell-off for AI stocks sends Wall Street reeling, and the S&P 500 tumbles 4.4%", "AP News"),
+             item(6, "A brutal sell-off for AI stocks sends Wall Street reeling; S&P 500 sees worst day since 2025", "WAFB"),
+             item(7, "Brutal sell-off for AI stocks sends Wall Street reeling as S&P 500 tumbles", "CNBC"),
+             item(8, "Fed's Hammack favors gradual rate-hike path to lower inflation", "Reuters", "ריבית")]
+    ranked = d.rank_items(items)
+    titles = [r["title"] for r in ranked]
+    assert "sell-off" in titles[0] and ranked[0]["outlets"] == 3
+    assert not any("Philippine" in t or "Snapshot" in t or "Said on Its" in t for t in titles)
+    assert titles.index(next(t for t in titles if "Docebo" in t)) > titles.index(next(t for t in titles if "Hammack" in t))
+    many = [item(100 + i, f"Northwind{i} Holdings{i} Q3 earnings beat estimates on higher quarterly revenue", tag="דוחות") for i in range(40)]
+    assert sum(r["tag"] == "דוחות" for r in d.rank_items(many)) == d.MAX_EARNINGS          # also: two companies are two stories
+
+
+def test_digest_answer_must_carry_the_move_and_only_given_numbers():
+    import ai_digest as d
+    import json as _json
+    items = [dict(id=1, title="Wall Street falls as AI stocks tumble 7%", tag="שוק", url="https://x.example/1", title_he="", body="")]
+    answer = lambda overview, summary="AI stocks fell 7%.": _json.dumps(
+        {"overview": overview, "topics": [{"title": "AI selloff", "summary": summary, "impact": "", "items": [1]}]})
+    good = d.clean_answer(answer("The S&P 500 fell 4.4% and the Nasdaq 5.52%, led by AI stocks."), items, _CRASH_MARKET)
+    assert good["topics"][0]["sources"][0]["url"] == "https://x.example/1"
+    with pytest.raises(ValueError, match="extreme"):
+        d.clean_answer(answer("Technology and earnings dominated the day."), items, _CRASH_MARKET)
+    saved = d.clean_answer(answer("Technology and earnings dominated the day."), items, _CRASH_MARKET, strict=False)
+    assert saved["overview_en"].startswith("The S&P 500 fell 4.36% and the Nasdaq fell 5.52%.")
+    with pytest.raises(ValueError, match="numbers"):
+        d.clean_answer(answer("The S&P 500 fell 4.4%, the worst since 1987."), items, _CRASH_MARKET)
+    with pytest.raises(ValueError, match="numbers"):
+        d.clean_answer(answer("The S&P 500 fell 4.4%.", "AI stocks fell 31%."), items, _CRASH_MARKET)
+    normal = dict(_CRASH_MARKET, move="normal")
+    assert d.clean_answer(answer("Stocks moved little."), items, normal)
+    with pytest.raises(ValueError, match="advice"):
+        d.clean_answer(answer("You should buy now."), items, normal)
+
+
+def test_digest_market_text_and_size():
+    import ai_digest as d
+    text = d._market_text(_CRASH_MARKET, __import__("datetime").date(2026, 11, 5))
+    assert "S&P 500: -4.36%" in text and "73 / 430" in text and "NVDA -9.10%" in text and "EXTREME" in text and "4.50% (change -0.05" in text
+    closed = dict(_CRASH_MARKET, same_day=False, move="closed")
+    assert "LAST session" in d._market_text(closed, __import__("datetime").date(2026, 11, 7))
+    assert "not available" in d._market_text(None, __import__("datetime").date(2026, 11, 7))
+    size = lambda sp, nq: d.move_size([{"symbol": "^GSPC", "change_pct": sp}, {"symbol": "^IXIC", "change_pct": nq}], True)
+    assert size(-4.36, -5.52) == "extreme" and size(-0.5, 2.6) == "extreme" and size(1.2, 1.0) == "notable" and size(0.2, 0.3) == "normal"
+    assert d.move_size([], False) == "closed"
+
+
+def test_digest_updates_after_the_close_once():
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+    import ai_digest as d
+    et = ZoneInfo("America/New_York")
+    day = _dt.date(2026, 11, 5)
+    at = lambda h, m: _dt.datetime(2026, 11, 5, h, m, tzinfo=et)
+    assert d.after_close_update_due({"updated_at": at(15, 0)}, day, at(16, 30))
+    assert not d.after_close_update_due({"updated_at": at(16, 31)}, day, at(17, 0))     # already done
+    assert not d.after_close_update_due({"updated_at": at(13, 0)}, day, at(15, 30))     # still open
+    assert not d.after_close_update_due({"updated_at": at(13, 0)}, _dt.date(2026, 11, 4), at(16, 30))
+
+
+def test_digest_hebrew_check():
+    import ai_digest as d
+    import json as _json
+    en = {"overview": "The S&P 500 fell 4.36%.", "topics": [{"title": "AI selloff", "summary": "Chips fell.", "impact": ""}]}
+    good = _json.dumps({"overview": "מדד S&P 500 ירד 4.36% בארה״ב.", "topics": [{"title": "גל מכירות", "summary": "השבבים ירדו.", "impact": ""}]})
+    assert d.clean_hebrew(good, en)["topics"][0]["title"] == "גל מכירות"
+    plain_quote = good.replace("ארה״ב", 'ארה"ב')                                        # would end the JSON string
+    assert "S&P" in d.clean_hebrew(plain_quote, en)["overview"]
+    with pytest.raises(ValueError, match="numbers"):
+        d.clean_hebrew(good.replace("4.36", "5.0"), en)
+    with pytest.raises(ValueError, match="Hebrew"):
+        d.clean_hebrew(_json.dumps({"overview": "The S&P fell 4.36%.", "topics": en["topics"]}), en)
+    with pytest.raises(ValueError, match="topics"):
+        d.clean_hebrew(_json.dumps({"overview": "ירידה", "topics": []}), en)
+
+
+def test_digest_health_rule():
+    import data_health as dh
+    assert dh.digest_problems({"overview_en": "Technology dominated.", "market": _CRASH_MARKET})
+    assert dh.digest_problems({"overview_en": "The S&P 500 fell 4.4%.", "market": _CRASH_MARKET}) == []
+    assert dh.digest_problems({"overview_en": "Technology dominated.", "market": dict(_CRASH_MARKET, move="normal")}) == []
+    assert dh.digest_problems({"overview_en": "An older day."}) == []
+
+
+def test_headline_filters_of_this_round():
+    from news_links import is_unwanted_headline as bad
+    assert bad("Philippine Inflation Surges to 7.8%, Boosting Case for Rate Hike")
+    assert bad("Magal: Q3 Earnings Snapshot") and bad("Under Armour: Fiscal Q2 Earnings Snapshot")
+    assert bad("Aflac Q3 Earnings Call Highlights") and bad("What Wendy's (WEN) Said on Its Q3 Earnings Call")
+    assert not bad("ConocoPhillips Q3 Earnings Beat Estimates on Higher Commodity Prices")
+    assert not bad("Asian stocks fall as India and Indonesia follow Wall Street lower")
+
+
+def test_key_events_of_this_round(api):
+    of = api._key_event_of
+    assert of("Stray Drones Spawn a Growing Area of the Insurance Market") is None
+    assert of("A prolonged war in Iran is the market's real black swan, says this strategist") is None
+    assert of("Dollar edges up as oil prices bounce, payrolls eyed") is None
+    assert of("What CPI Card Group (PMTS) said on its earnings call") is None
+    assert of("US payrolls rose by 150,000 in October")[0] == "jobs"
+    assert of("Oil jumps as missiles hit tankers in the Strait of Hormuz")[0].startswith("geo")
+    crash = of("A brutal sell-off sends Wall Street reeling, and the S&P 500 tumbles 4.4%")
+    assert crash[0] == "market" and crash[1] > of("ECB holds rates steady, Lagarde says")[1]
+
+
+def test_breadth_day_label(api):
+    """v37: 5.11.2026: S&P 500 -4.36%, 73 up, 430 down, and the chip said "broad participation" in green."""
+    f = api._breadth_day_label
+    assert f(73, 430) == "broad_decline" and f(430, 73) == "broad_rise"
+    assert f(250, 250) is None and f(0, 0) is None and f(None, None) is None
+    assert f(151, 349) is None and f(150, 350) == "broad_decline"              # exactly 70%
+
+
 def test_api_robots_opens_only_answers_from_memory(api):
     """v35: Google obeys the API's robots.txt when it runs the page. What it may ask for must not reach the database or
     Yahoo on every request (v34 closed everything, and the home page it saw was empty)."""

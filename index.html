@@ -704,6 +704,8 @@ window.addEventListener('load', function(){
   .dg-num{flex:none;width:22px;height:22px;border-radius:50%;background:var(--panel-2);border:1px solid var(--line);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;color:var(--amber);}
   .dg-topic-title{font-weight:700;font-size:14.5px;margin-bottom:2px;}
   .dg-topic-text{font-size:14px;line-height:1.55;}
+  .dg-topic-why{font-size:13px;line-height:1.5;color:var(--text-dim);margin-top:4px;}
+  .dg-session{font-size:12px;line-height:1.6;color:var(--text-dim);margin:-8px 0 16px;}
   .dg-src{margin-top:5px;font-size:12px;}
   .dg-src summary{cursor:pointer;color:var(--teal);list-style:none;display:inline;}
   .dg-src summary::-webkit-details-marker{display:none;}
@@ -3691,6 +3693,7 @@ function aiSummaryHtml(ai, opts){
       <div style="min-width:0;flex:1;">
         <div class="dg-topic-title">${pick(tp.title_en, tp.title_he)}</div>
         <div class="dg-topic-text">${pick(tp.summary_en, tp.summary_he)}</div>
+        ${tp.impact_en ? `<div class="dg-topic-why">${pick(tp.impact_en, tp.impact_he)}</div>` : ''}
         ${src.length ? `<details class="dg-src"><summary>${t?`Sources (${src.length})`:`מקורות (${src.length})`}</summary>${src.map(s =>
           `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc((t ? s.title_en : (s.title_he||s.title_en))||s.url)}</a>`).join('')}</details>` : ''}
       </div></div>`;
@@ -3699,19 +3702,47 @@ function aiSummaryHtml(ai, opts){
     <div class="dg-lead">${pick(ai.overview_en, ai.overview_he)}</div>
     ${opts.marketHtml || ''}
     <div class="dg-h">${t?'What moved the market':'מה הזיז את השוק'}</div>
-    ${ai.topics.slice(0, 4).map(topicRow).join('')}`;
+    ${ai.topics.slice(0, 5).map(topicRow).join('')}`;
 }
 
 // real numbers from the market strip (today only — the strip is live data, not the day being looked at)
-function digestMarketHtml(){
-  if(!Array.isArray(lastMarketTicker) || !lastMarketTicker.length) return '';
+function digestMarketHtml(ai){
   const t = lang==='en';
-  const items = lastMarketTicker.filter(it => it && typeof it.change_pct === 'number').slice(0, 5);
-  if(!items.length) return '';
-  return `<div class="dg-market">${items.map(it => {
-    const up = it.change_pct >= 0;
-    return `<div class="dg-chip"><span>${escH(t ? it.name_en : it.name_he)}</span><b class="${up?'pct-up':'pct-down'}" dir="ltr">${up?'+':''}${it.change_pct.toFixed(2)}%</b></div>`;
-  }).join('')}</div>`;
+  const chipOf = (name, pct) => {
+    const up = pct >= 0;
+    return `<div class="dg-chip"><span>${escH(name)}</span><b class="${up?'pct-up':'pct-down'}" dir="ltr">${up?'+':''}${pct.toFixed(2)}%</b></div>`;
+  };
+  const live = (Array.isArray(lastMarketTicker) ? lastMarketTicker : []).filter(it => it && typeof it.change_pct === 'number').slice(0, 5);
+  return live.length ? `<div class="dg-market">${live.map(it => chipOf(t ? it.name_en : it.name_he, it.change_pct)).join('')}</div>${digestSessionHtml(ai)}` : digestStoredMarketHtml(ai);
+}
+
+// v37: the numbers of the session the summary was written from, saved with it (ai_digest.py -> market), so an earlier day shows its own
+function digestStoredMarketHtml(ai){
+  const m = ai && ai.market;
+  const list = (m && Array.isArray(m.indices) ? m.indices : []).filter(i => typeof i.change_pct === 'number');
+  if(!list.length) return '';
+  const t = lang==='en';
+  const chips = list.map(i => {
+    const name = escH(t ? i.name_en : i.name_he);
+    if(i.symbol === '^TNX') return `<div class="dg-chip"><span>${name}</span><b dir="ltr">${Number(i.close).toFixed(2)}%</b></div>`;
+    const up = i.change_pct >= 0;
+    return `<div class="dg-chip"><span>${name}</span><b class="${up?'pct-up':'pct-down'}" dir="ltr">${up?'+':''}${i.change_pct.toFixed(2)}%</b></div>`;
+  }).join('');
+  const other = m.same_day ? '' : `<div class="dg-session">${t ? 'Last session' : 'יום המסחר האחרון'}: ${escH(_ddmm(m.session_day))}</div>`;
+  return `${other}<div class="dg-market">${chips}</div>${digestSessionHtml(ai)}`;
+}
+
+// how many stocks rose and fell, and the big movers
+function digestSessionHtml(ai){
+  const m = ai && ai.market;
+  if(!m) return '';
+  const t = lang==='en', lines = [];
+  if(m.breadth && m.breadth.advancers != null) lines.push(t ? `S&P 500 stocks: ${m.breadth.advancers} rose, ${m.breadth.decliners} fell` : `מניות S&P 500: ${m.breadth.advancers} עלו, ${m.breadth.decliners} ירדו`);
+  const mv = m.movers || {};
+  const names = (arr) => (arr || []).map(x => `${escH(x.ticker)} <span dir="ltr">${x.change_pct > 0 ? '+' : ''}${Number(x.change_pct).toFixed(1)}%</span>`).join(', ');
+  if(mv.down && mv.down.length) lines.push(`${t ? 'Biggest falls among large companies' : 'הירידות הגדולות בחברות הגדולות'}: ${names(mv.down)}`);
+  if(mv.up && mv.up.length) lines.push(`${t ? 'Biggest rises' : 'העליות הגדולות'}: ${names(mv.up)}`);
+  return lines.length ? `<div class="dg-session">${lines.join('<br>')}</div>` : '';
 }
 
 // "what's next": the next important events of the economic calendar (real dates), in the viewer's own time zone
@@ -3782,7 +3813,7 @@ function renderDailyDigest(data, picked){
     </div>
     <div id="digest-body">
       ${picked ? `<div class="digest-note" style="margin:0 0 10px;"><a href="#" onclick="openDailyDigest();return false;" style="color:var(--teal);">${t?'Back to the latest summary':'חזרה לסיכום האחרון'}</a></div>` : ''}
-      ${hasAi ? aiSummaryHtml(ai, {marketHtml: data.is_today ? digestMarketHtml() : ''}) : (data.is_today ? digestMarketHtml() : '') + fallback}
+      ${hasAi ? aiSummaryHtml(ai, {marketHtml: data.is_today ? digestMarketHtml(ai) : digestStoredMarketHtml(ai)}) : (data.is_today ? digestMarketHtml(ai) : '') + fallback}
       <div id="digest-next"></div>
       <div class="dg-foot">${t
         ? 'Written automatically by AI from the day\'s headlines and may contain mistakes. Information only, not investment advice.'
@@ -7692,13 +7723,28 @@ var BREADTH_LABELS = {
   mixed:  {he: 'השתתפות מעורבת', en: 'Mixed participation',  color: 'var(--amber)'},
   narrow: {he: 'השתתפות חלשה',  en: 'Narrow participation', color: 'var(--red)'},
 };
+// v37: the label above reads ~10 weeks, and stayed a green "broad" on the day the S&P 500 fell 4.36% with 430 of 503 stocks down.
+// When 70% or more of the stocks moved the same way (_breadth_day_label in api_server.py), the chip says that.
+var BREADTH_DAY_LABELS = {
+  broad_decline: {he: 'ירידה רחבה', en: 'Broad decline', color: 'var(--red)'},
+  broad_rise:    {he: 'עלייה רחבה', en: 'Broad rise',    color: 'var(--green)'},
+};
+function breadthTip(){
+  return lang==='en'
+    ? 'When 70% or more of the S&P 500 stocks that moved went the same way: broad decline or broad rise, for that day. Otherwise the share of stocks above their 50-day average: 60% or more = broad, under 40% = narrow.'
+    : 'כש-70% ומעלה מהמניות ב-S&P 500 שזזו הלכו לאותו כיוון: ירידה רחבה או עלייה רחבה, לאותו יום. אחרת, אחוז המניות מעל ממוצע 50 יום: 60% ומעלה = רחבה, מתחת ל-40% = חלשה.';
+}
+function breadthChipText(d, withPct){
+  const en = lang==='en', day = BREADTH_DAY_LABELS[d && d.day_label];
+  if(day) return {text: `${en ? day.en : day.he} · ${_ddmm(d.day)}`, color: day.color};
+  const l = BREADTH_LABELS[d && d.label];
+  return l ? {text: `${en ? l.en : l.he}${withPct && d.pct50 != null ? ` <b>${Math.round(d.pct50)}%</b>` : ''}`, color: l.color} : null;
+}
 
 function breadthChipHtml(d){
-  const l = BREADTH_LABELS[d && d.label];
+  const l = breadthChipText(d, false);
   if(!l) return '';
-  const tip = lang==='en' ? 'Share of S&P 500 stocks above their 50-day average: 60% or more = broad, under 40% = narrow'
-                          : 'אחוז מניות S&P 500 מעל ממוצע 50 יום: 60% ומעלה = רחבה, מתחת ל-40% = חלשה';
-  return `<span class="hx-chip" style="color:${l.color};border-color:${l.color}" title="${tip}">${lang==='en' ? l.en : l.he}</span>`;
+  return `<span class="hx-chip" style="color:${l.color};border-color:${l.color}" title="${breadthTip()}">${l.text}</span>`;
 }
 
 function _ddmm(iso){
@@ -7826,8 +7872,7 @@ function regimeTips(d){
             : 'VIX = התנודתיות שהאופציות מצפות לה ב-S&P 500 ב-30 הימים הבאים. מתחת ל-15 = נמוכה, 15–20 = רגילה, 20–30 = גבוהה, 30 ומעלה = גבוהה מאוד.',
     curve: en ? '10-year Treasury yield minus the 2-year yield, in percentage points. Below 0 = inverted (short-term rates above long-term), 0–0.5 = flat, above 0.5 = upward. Source: US Treasury.'
               : 'התשואה על אג״ח ממשלתי אמריקאי ל-10 שנים פחות התשואה ל-2 שנים, בנקודות אחוז. מתחת ל-0 = הפוך (ריבית קצרה גבוהה מארוכה), 0–0.5 = שטוח, מעל 0.5 = עולה. מקור: משרד האוצר האמריקאי.',
-    breadth: en ? 'Share of S&P 500 stocks above their 50-day average: 60% or more = broad, under 40% = narrow.'
-                : 'אחוז מניות S&P 500 מעל ממוצע 50 יום: 60% ומעלה = רחבה, מתחת ל-40% = חלשה.',
+    breadth: breadthTip(),
   };
 }
 
@@ -7840,10 +7885,8 @@ function regimeChipsHtml(d){
     const t = REGIME_TEXT.trend[r.trend];
     out.push(chip(`S&P 500: ${en ? t.en : t.he}`, t.c, tips.trend));
   }
-  if(d.available && BREADTH_LABELS[d.label]){
-    const l = BREADTH_LABELS[d.label];
-    out.push(chip(`${en ? l.en : l.he} <b>${Math.round(d.pct50)}%</b>`, l.color, tips.breadth));
-  }
+  const bl = d.available ? breadthChipText(d, true) : null;
+  if(bl) out.push(chip(bl.text, bl.color, tips.breadth));
   if(r && r.vix != null && REGIME_TEXT.vix[r.vix_label]){
     const v = REGIME_TEXT.vix[r.vix_label];
     out.push(chip(`VIX <b>${r.vix.toFixed(1)}</b> · ${en ? v.en : v.he}`, v.c, tips.vix));

@@ -180,6 +180,7 @@ module.exports = [
 <li><b>Mixed:</b> between 40% and 60%.</li>
 <li><b>Narrow:</b> under 40%.</li>
 </ul>
+<p>That share changes slowly, so it can stay high on a day when almost everything falls. When 70% or more of the stocks that moved went the same way, the label says so for that day instead: <b>broad decline</b> or <b>broad rise</b>.</p>
 <p>The label is a description of today's figure only. It is not a forecast and it does not change anything else on the site.</p>
 <h2>How it is commonly read</h2>
 <p>Traders often watch for a gap between an index and its breadth. An index at a new high while the share of stocks above their averages keeps falling means that fewer companies are carrying the rise. The reverse can also happen near the end of a decline. These are observations that can persist for months: such a gap does not time a turn.</p>
@@ -206,6 +207,7 @@ module.exports = [
 <li><b>מעורב:</b> בין 40% ל-60%.</li>
 <li><b>צר:</b> מתחת ל-40%.</li>
 </ul>
+<p>החלק הזה משתנה לאט, ולכן הוא יכול להישאר גבוה ביום שבו כמעט הכל יורד. כש-70% ומעלה מהמניות שזזו הלכו לאותו כיוון, התווית אומרת את זה לאותו יום: <b>ירידה רחבה</b> או <b>עלייה רחבה</b>.</p>
 <p>התווית היא תיאור של הנתון של היום בלבד. היא לא תחזית, והיא לא משנה דבר אחר באתר.</p>
 <h2>איך נוהגים לקרוא את זה</h2>
 <p>סוחרים מסתכלים לעיתים קרובות על פער בין מדד לרוחב שלו. מדד בשיא חדש בזמן שחלק המניות מעל הממוצעים ממשיך לרדת אומר שפחות חברות נושאות את העלייה. גם ההפך יכול לקרות לקראת סוף ירידה. אלה תצפיות שיכולות להימשך חודשים: פער כזה לא מתזמן תפנית.</p>

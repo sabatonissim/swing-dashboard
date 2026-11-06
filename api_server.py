@@ -1443,7 +1443,10 @@ _KEY_NON_US = re.compile(r"\b(uk|u\.k\.|britain|british|euro ?zone|europe|europe
 # report" was shown as the key CPI event) — that weaker wording now needs a US / market word next to it.
 _KEY_US_MARKET = r"\b(u\.s\.|us|america|american|fed|treasur\w*|wall street|stocks?|markets?|s&p|nasdaq|dow)\b"
 _KEY_JUNK = re.compile(r"^\s*\d+\s|\b(stocks? to (buy|watch|own)|should you|is it time|smart buy|buy now|"
-                       r"dividend stocks?|what to expect|things to watch|how to|here'?s|according to analysts)\b", re.I)
+                       r"dividend stocks?|what to expect|things to watch|how to|here'?s|according to analysts|"
+                       r"this strategist|strategist says|cpi card group)\b", re.I)    # v37: a company, not the inflation report
+# v37: a data release that is still to come is not the event ("Dollar edges up as oil prices bounce, payrolls eyed", 5.11.2026)
+_KEY_PREVIEW = re.compile(r"\b(eyed|on tap|in focus|looms?|awaits?|ahead|before|week ahead|due)\b", re.I)
 _KEY_RATE_WORDS = r"\b(rates?|decision|meeting|hikes?|hiked|hiking|cuts?|holds?|pause[sd]?|minutes|statement|chair)\b"
 _KEY_GEO_REGIONS = (("mideast", r"\b(iran|iranian|tehran|khamenei|israel|houthis?|gaza|lebanon|hezbollah|saudi|yemen|hormuz|red sea|middle east|mideast)\b"),
                     ("russia", r"\b(russia|russian|ukraine|ukrainian|kremlin)\b"),
@@ -1451,6 +1454,9 @@ _KEY_GEO_REGIONS = (("mideast", r"\b(iran|iranian|tehran|khamenei|israel|houthis
 # (event key, weight, regex that must match, second regex that must ALSO match or None, US-only data release?)
 _KEY_EVENT_RULES = [
     ("fed", 10, r"\b(fed|federal reserve|fomc|powell|warsh)\b", _KEY_RATE_WORDS, False),
+    # v37: was weight 6, so the worst day since April 2025 ranked behind a Fed speaker and the ECB
+    ("market", 9, r"\b(plunge[sd]?|crash(es|ed)?|sell-?off|tumble[sd]?|rout|record high|worst day|best day)\b",
+     r"\b(s&p 500|s&p|dow|nasdaq|wall street)\b", False),
     ("cpi", 9, r"\b(cpi|consumer price index|consumer prices)\b", None, True),
     ("cpi", 9, r"\binflation (report|data|reading)\b", _KEY_US_MARKET, True),
     ("jobs", 9, r"\b(nonfarm|non-farm|payrolls?|jobs report|unemployment rate|employment report)\b", None, True),
@@ -1458,14 +1464,13 @@ _KEY_EVENT_RULES = [
     ("systemic", 8, r"\b(bank (collapse|failure|run)|debt ceiling|government shutdown|credit downgrade|sovereign default)\b", None, False),
     ("ppi", 7, r"\b(ppi|producer prices?|producer price index)\b", None, True),
     ("gdp", 7, r"\b(gdp|gross domestic product)\b", None, True),
+    # v37: "markets" only, not "market": "Stray Drones Spawn a Growing Area of the Insurance Market" was a key event
     ("geo", 7, r"\b(war|attacks?|strikes?|missiles?|drones?|invasion|escalat\w*|ceasefire|blockade)\b",
-     r"\b(oil|crude|brent|wti|markets?|stocks|shipping|strait|energy)\b", False),
+     r"\b(oil|crude|brent|wti|markets|stocks|shipping|strait|energy)\b", False),
     ("cb-other", 6, r"\b(ecb|european central bank|bank of england|bank of japan|boj|bank of canada|pboc|snb)\b",
      _KEY_RATE_WORDS, False),
     ("retail", 6, r"\bretail sales\b", None, True),
     ("trade", 6, r"\b(tariffs?|trade war|trade deal)\b", None, False),
-    ("market", 6, r"\b(plunge[sd]?|crash(es|ed)?|sell-?off|tumble[sd]?|rout|record high|worst day|best day)\b",
-     r"\b(s&p 500|s&p|dow|nasdaq|wall street)\b", False),
     ("opec", 6, r"\bopec\+?", None, False),
     ("claims", 5, r"\b(jobless claims|initial claims)\b", None, True),
 ]
@@ -1484,7 +1489,7 @@ def _key_event_of(title: str) -> Optional[tuple]:
         hit = re.search(must, title, re.I)
         if not hit or (also and not re.search(also, title, re.I)):
             continue
-        if us_only and _KEY_NON_US.search(title):
+        if us_only and (_KEY_NON_US.search(title) or _KEY_PREVIEW.search(title)):
             continue
         if key == "geo":
             key = next((f"geo-{name}" for name, rx in _KEY_GEO_REGIONS if re.search(rx, title, re.I)), "geo-other")
@@ -6294,6 +6299,21 @@ def _breadth_label(pct50: Optional[float]) -> Optional[str]:
     return "broad" if pct50 >= 60 else ("narrow" if pct50 < 40 else "mixed")
 
 
+BREADTH_DAY_SHARE = 70       # %
+
+
+def _breadth_day_label(advancers, decliners) -> Optional[str]:
+    """v37: the label above reads the last ~10 weeks, so it stayed a green "broad" on 5.11.2026: S&P 500 -4.36%, 73 stocks up
+    and 430 down, with 62% still above their 50-day average. When at least BREADTH_DAY_SHARE% of the stocks moved the same
+    way, the day itself is what the chip says. Fixed rule, a description (api/_learn_market.js says the same)."""
+    moved = (advancers or 0) + (decliners or 0)
+    if not moved:
+        return None
+    if decliners * 100 / moved >= BREADTH_DAY_SHARE:
+        return "broad_decline"
+    return "broad_rise" if advancers * 100 / moved >= BREADTH_DAY_SHARE else None
+
+
 def _trend_label(close, sma50, sma200) -> Optional[str]:
     """v23, fixed rule (a description, not advice): S&P 500 (SPY) above both averages with the 50 above the 200 = up;
     below both with the 50 under the 200 = down; anything else = mixed."""
@@ -6410,6 +6430,7 @@ def get_market_breadth():
         "unchanged": last.get("unchanged"),          # v31 (None until market_breadth.py has run once)
         "total": last.get("total"),                  # v31: member-list size (503 shares of ~500 companies)
         "label": _breadth_label(pct50),
+        "day_label": _breadth_day_label(last["advancers"], last["decliners"]),
         "history": [{"d": r["day"].isoformat(), "p50": _pct(r["above50"], r["n50"]),
                      "p200": _pct(r["above200"], r["n200"])} for r in rows],
         "regime": regime,

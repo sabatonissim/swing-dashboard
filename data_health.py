@@ -26,6 +26,7 @@ Each new "wrong number" found on the site should become a new rule here.
 
 import csv
 import io
+import json
 import math
 import os
 import re
@@ -108,6 +109,18 @@ def breadth_problems(r: dict) -> List[str]:
     if total and n > total:
         out.append(f"counted {n} > list {total}")
     return out
+
+
+def digest_problems(payload: dict) -> List[str]:
+    """v37: the day's AI summary against the day's real numbers, written by ai_digest.py. A large move the overview does not name
+    = the summary missed the main story (5.11.2026: S&P 500 -4.36%, and the overview spoke of "technology and earnings")."""
+    market = payload.get("market") or {}
+    if market.get("move") != "extreme":
+        return []
+    if re.search(r"S&P|Nasdaq|Dow\b|Wall Street", payload.get("overview_en") or ""):
+        return []
+    sp = next((i["change_pct"] for i in market.get("indices") or [] if i.get("symbol") == "^GSPC"), None)
+    return [f"S&P 500 {sp}% and the overview names no index"]
 
 
 def profile_problems(r: dict) -> List[str]:
@@ -272,6 +285,18 @@ def check_market_caps(cur) -> List[dict]:
     return [_line("value.market_cap", "warn" if odd else "ok", detail or "the stock page's market caps agree with the scanner's", len(odd))]
 
 
+def check_digest(cur) -> List[dict]:
+    """The last closed summary. ~10 KB, once a day."""
+    cur.execute("SELECT day, payload FROM ai_daily_digests WHERE is_final ORDER BY day DESC LIMIT 1")
+    r = cur.fetchone()
+    if not r:
+        return [_line("digest.main_story", "warn", "no closed daily summary")]
+    p = json.loads(r["payload"])
+    odd = digest_problems(p)
+    move = (p.get("market") or {}).get("move") or "no numbers saved"
+    return [_line("digest.main_story", "warn" if odd else "ok", f"{r['day']}: {'; '.join(odd) or 'market move: ' + move}", len(odd))]
+
+
 def check_profiles(cur) -> List[dict]:
     """v35: the text a stock page opens with, and what search engines read. Only rows the job has already redone (facts->>'fv' = 2):
     until its first run after v35, every older row would be reported."""
@@ -326,7 +351,8 @@ def main() -> int:
         for name, run in (("freshness", lambda: check_freshness(cur, now)), ("counts", lambda: check_counts(cur, members)),
                           ("arithmetic", lambda: check_arithmetic(cur)), ("values", lambda: check_values(cur)),
                           ("earnings", lambda: check_earnings(cur, now)), ("market caps", lambda: check_market_caps(cur)),
-                          ("profiles", lambda: check_profiles(cur)), ("size", lambda: check_db_size(cur))):
+                          ("profiles", lambda: check_profiles(cur)), ("digest", lambda: check_digest(cur)),
+                          ("size", lambda: check_db_size(cur))):
             try:
                 results += run()
             except Exception as e:

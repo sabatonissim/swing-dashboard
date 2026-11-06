@@ -88,23 +88,30 @@ PROMO_RE = re.compile(r"\b(stocks? to (buy|watch|own|bet on)|to bet on|should yo
                       r"buy or (sell|wait|hold))\b"
                       r"|^\s*\d+\s+[\w\s&'-]{0,40}\bstocks?\b", re.I)
 _FORMAT_JUNK_RE = re.compile(r"^\s*(watch|video|listen|podcast)\s*[:\-\u2013\u2014]|^\s*q\s*[.:]\s", re.I)
+# v37: machine-made pages about one company's report: 1,029 of the 1,564 headlines of 5.11.2026 were tagged as earnings, most
+# of them these. The stock's own page finds its company's news separately (_feed_clean with promo_only).
+EARNINGS_CHATTER_RE = re.compile(r":\s*(fiscal\s+)?q[1-4]\s+earnings snapshot\s*$|\bearnings call (highlights|transcript|is live)\b|"
+                                 r"\bsaid on its q[1-4] earnings call\b|\breleases? (first|second|third|fourth)[- ]quarter earnings\b", re.I)
 # Countries whose domestic news rarely moves US stocks — dropped unless the headline also ties it to the US / world markets
-_LOCAL_RE = re.compile(r"\b(india|indian|russians?|ethiopia|ethiopian|pakistan|nigeria|kenya|bangladesh|sri lanka|"
-                       r"philippines|indonesia|vietnam|thailand|malaysia|argentina|egypt|south africa|ghana|zimbabwe|"
-                       r"uganda|tanzania|sudan|myanmar|nepal|peru|colombia)\b", re.I)
-_GLOBAL_RE = re.compile(r"\bU\.?S\.?\b|(?i:\b(america|american|fed|wall street|trump|washington|oil|crude|opec|global|"
-                        r"world|stocks?|markets?|shares|dollar|treasur(y|ies)|tariffs?|sanctions?|nasdaq|s&p|chips?)\b)")
+# v37: also the adjectives. "Philippine Inflation Surges to 7.8%" passed and made the overview of a day the S&P 500 fell 4.36%.
+LOCAL_RE = re.compile(r"\b(india|indian|russians?|ethiopia|ethiopian|pakistan|pakistani|nigeria|nigerian|kenya|kenyan|bangladesh|"
+                      r"sri lanka|philippines?|filipino|indonesia|indonesian|vietnam|vietnamese|thailand|thai|malaysia|malaysian|"
+                      r"argentina|argentine|egypt|egyptian|south africa|south african|ghana|zimbabwe|uganda|tanzania|sudan|"
+                      r"myanmar|nepal|peru|peruvian|colombia|colombian)\b", re.I)
+GLOBAL_RE = re.compile(r"\bU\.?S\.?\b|(?i:\b(america|american|fed|wall street|trump|washington|oil|crude|opec|global|"
+                       r"world|dollar|treasur(y|ies)|tariffs?|sanctions?|nasdaq|s&p|chips?)\b)")
+_LOCAL_MARKET_RE = re.compile(r"\b(stocks?|markets?|shares)\b", re.I)
 _SUBSTANCE_RE = re.compile(r"\d|%|\$|\b(stocks?|shares|markets?|fed|rates?|earnings|oil|gold|bitcoin|economy)\b", re.I)
 
 
 def is_unwanted_headline(title: str) -> bool:
     """True for promotional listicles, video/Q&A items, too-short meaningless titles and far-away domestic news."""
     t = (title or "").strip()
-    if not t or PROMO_RE.search(t) or _FORMAT_JUNK_RE.search(t):
+    if not t or PROMO_RE.search(t) or _FORMAT_JUNK_RE.search(t) or EARNINGS_CHATTER_RE.search(t):
         return True
     if len(t.split()) < 5 and not _SUBSTANCE_RE.search(t):
         return True
-    return bool(_LOCAL_RE.search(t)) and not _GLOBAL_RE.search(t)
+    return bool(LOCAL_RE.search(t)) and not GLOBAL_RE.search(t) and not _LOCAL_MARKET_RE.search(t)
 
 
 def clean_publisher(name: str) -> str:
