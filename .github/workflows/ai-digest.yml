@@ -2,7 +2,7 @@ name: AI Digest (manual test)
 
 # Manual only: Actions -> "AI Digest (manual test)" -> Run workflow, then pick a mode:
 #   probe  = test which AI models really work for your key right now (prints a ready LLM_MODELS value) ~2 min
-#   digest = generate the AI digest now (forced) ~1 min
+#   digest = generate the AI digest now (forced) ~2 min. With a day (2026-11-05): that earlier day is written again
 # Uses the same settings as news-aggregator.yml (LLM_API_KEY secret, optional LLM_BASE_URL / LLM_MODELS variables).
 on:
   workflow_dispatch:
@@ -14,6 +14,10 @@ on:
           - probe
           - digest
         default: probe
+      day:
+        description: "digest only: an earlier day to write again, as 2026-11-05 (empty = today)"
+        type: string
+        required: false
 
 # v18 security: the job only needs to read the code (default token permissions are broader)
 permissions:
@@ -42,4 +46,5 @@ jobs:
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
           LLM_MODELS: ${{ vars.LLM_MODELS }}
-        run: python ai_digest.py --${{ inputs.mode == 'digest' && 'force' || 'probe' }}
+          DIGEST_DAY: ${{ inputs.day }}
+        run: python ai_digest.py --${{ inputs.mode == 'digest' && 'force' || 'probe' }} --day "$DIGEST_DAY"
