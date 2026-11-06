@@ -841,6 +841,38 @@ def test_digest_rejects_what_the_first_real_answer_did():
         d.clean_answer(answer(summary="AI stocks fell 7% on profit-taking."), items, _CRASH_MARKET)
 
 
+def test_digest_does_not_tell_yesterdays_move_as_todays():
+    """v37c: 5.11.2026: "Oil prices tumbled", from headlines about 4.11 (-8.29%), and oil +2.72% on the same screen."""
+    import ai_digest as d
+    import json as _json
+    market = dict(_CRASH_MARKET, indices=_CRASH_MARKET["indices"] + [{"symbol": "CL=F", "name_en": "Oil (WTI)", "close": 90.5, "change_pct": 2.72, "change_points": 2.4}])
+    f = d.contradicts_market
+    assert "Oil prices tumbled" in f("Oil prices tumbled as the results sparked bets.", market)
+    assert "2.72" in f("WTI crude fell sharply.", market)
+    assert f("Oil rose 2.72%.", market) is None and f("Energy stocks fell while oil rose.", market) is None
+    assert "Nasdaq" in f("The Nasdaq surged.", market)
+    assert f("Oil prices tumbled.", dict(market, same_day=False)) is None and f("Oil prices tumbled.", None) is None
+    items = [dict(id=1, title="Oil prices tumble after midterms", tag="אנרגיה", url="https://x.example/1", title_he="", body=""),
+             dict(id=2, title="Wall Street falls as AI stocks tumble 7%", tag="שוק", url="https://x.example/2", title_he="", body="")]
+    topic = lambda title, summary, n: {"title": title, "summary": summary, "impact": "", "items": [n]}
+    text = _json.dumps({"overview": "The S&P 500 fell 4.4%.", "topics": [topic("Oil", "Oil prices tumbled after the midterms.", 1), topic("AI", "AI stocks fell 7% on Wall Street.", 2)]})
+    with pytest.raises(ValueError, match="earlier day"):
+        d.clean_answer(text, items, market)
+    assert [t["title_en"] for t in d.clean_answer(text, items, market, strict=False)["topics"]] == ["AI"]
+
+
+def test_digest_guess_words_are_fine_when_the_item_says_them():
+    """v37c: "Housing Stocks Jumped on Tariff Relief Hopes" is a headline, and three good answers were rejected over "relief"."""
+    import ai_digest as d
+    import json as _json
+    items = [dict(id=1, title="Housing Stocks Jumped on Tariff Relief Hopes", tag="שוק", url="https://x.example/1", title_he="", body="")]
+    answer = lambda s: _json.dumps({"overview": "Stocks moved little.", "topics": [{"title": "Housing stocks", "summary": s, "impact": "", "items": [1]}]})
+    normal = dict(_CRASH_MARKET, move="normal")
+    assert d.clean_answer(answer("Housing stocks jumped on tariff relief hopes."), items, normal)
+    with pytest.raises(ValueError, match="on its own"):
+        d.clean_answer(answer("Housing stocks jumped, possibly on tariffs."), items, normal)
+
+
 def test_digest_saves_on_a_new_connection_after_the_ai(monkeypatch):
     """v37c: the AI takes minutes, and Neon closed the connection opened before it: the finished digest was lost at the INSERT."""
     import datetime as _dt

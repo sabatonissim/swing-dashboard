@@ -293,6 +293,8 @@ def check_digest(cur) -> List[dict]:
         return [_line("digest.main_story", "warn", "no closed daily summary")]
     p = json.loads(r["payload"])
     odd = digest_problems(p)
+    if not p.get("market"):                # v37c: the market prices did not come back, or the old code is still running
+        odd.append("the summary was written without market numbers")
     move = (p.get("market") or {}).get("move") or "no numbers saved"
     return [_line("digest.main_story", "warn" if odd else "ok", f"{r['day']}: {'; '.join(odd) or 'market move: ' + move}", len(odd))]
 

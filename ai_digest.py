@@ -294,7 +294,8 @@ ORDER OF IMPORTANCE:
 
 STRICT RULES:
 - Base every statement on the MARKET NUMBERS and the items. Never add numbers, names, causes, dates or background that are not there. Every number you write must appear in what you were given. You may round (4.36% to 4.4%).
-- The numbers say what happened; do not let a headline contradict them. "(N outlets)" = how many outlets ran that story; many outlets usually means it matters, and the items come most important first.
+- The numbers say what happened; do not let a headline contradict them. Headlines saved today can tell yesterday's move: if a headline says oil tumbled and the numbers say oil rose today, that is yesterday's story, so do not tell it as today's.
+- One story per topic: do not attach an unrelated story (a central bank's decision does not belong in a topic about Asian stocks). "(N outlets)" = how many outlets ran that story; many outlets usually means it matters, and the items come most important first.
 - Never explain a number yourself. A reason comes only from an item. Do not write "suggests", "possibly", "reflecting", "investors sought" or "investors fled" of your own.
 - Keep who did what exactly as the item says. "The Magnificent 7 lost $1 trillion" is not "Nvidia lost $1 trillion".
 - The overview tells the story: the main move, 2 or 3 of the most important numbers, and the reason. The site shows all the numbers next to it, so do not list them, and do not write index levels or dates.
@@ -314,7 +315,7 @@ Exact shape:
 
 SYSTEM_HE = """Translate this market summary from English into natural, simple Israeli Hebrew, as a financial newspaper would write it.
 Keep the meaning exactly: who did what must not change, and add nothing. Never leave an ordinary English word in the Hebrew.
-Glossary: stocks = מניות; sell-off or rout = גל מכירות (never "מסלול"); safe haven = נכס מפלט; crypto = קריפטו; 10-year Treasury yield = תשואת אג"ח ממשלתי ל-10 שנים; index = מדד; chip stocks = מניות השבבים; interest rate = ריבית; rate hike = העלאת ריבית; yield = תשואה; Treasury bond = אג"ח ממשלתי; inflation = אינפלציה; results / earnings = דוחות או רווחים; forecast / outlook = תחזית; oil = נפט; tariffs = מכסים; sanctions = סנקציות; midterm elections = בחירות אמצע הקדנציה; the Fed = הפד; Wall Street = וול סטריט; AI = בינה מלאכותית.
+Glossary: stocks = מניות; session = יום מסחר (never "מפגש"); sell-off or rout = גל מכירות (never "מסלול"); safe haven = נכס מפלט; crypto = קריפטו; 10-year Treasury yield = תשואת אג"ח ממשלתי ל-10 שנים; index = מדד; chip stocks = מניות השבבים; interest rate = ריבית; rate hike = העלאת ריבית; yield = תשואה; Treasury bond = אג"ח ממשלתי; inflation = אינפלציה; results / earnings = דוחות או רווחים; forecast / outlook = תחזית; oil = נפט; tariffs = מכסים; sanctions = סנקציות; midterm elections = בחירות אמצע הקדנציה; the Fed = הפד; Wall Street = וול סטריט; AI = בינה מלאכותית.
 Names of companies, indices and people stay in English letters (Nvidia, S&P 500, Nasdaq, VIX). A company is feminine in Hebrew. Keep every number exactly as written.
 Write Hebrew abbreviations with the mark ״ (ארה״ב, נאסד״ק), never with a plain double quote.
 Keep the same fields and the same number of topics; an empty field stays empty. Answer with the JSON only, in the same shape as the input."""
@@ -542,12 +543,45 @@ def _forced_lead(market):
     return lead[0].upper() + lead[1:]
 
 
+_PRICE_NAMES = (("^GSPC", r"s&p(?: 500)?"), ("^IXIC", r"nasdaq"), ("^DJI", r"dow(?: jones)?"), ("CL=F", r"oil|crude|wti|brent"),
+                ("GC=F", r"gold"), ("BTC-USD", r"bitcoin"))
+_FELL = r"fell|falls?|falling|drop(?:s|ped)?|tumbl\w+|plung\w+|slid|slump\w*|sank|sink\w*|declin\w+|lost|los(?:es|ing)"
+_ROSE = r"rose|rises?|rising|climb\w*|jump\w*|surg\w+|soar\w*|gain\w*|rall\w+|advanc\w+"
+MOVE_THAT_COUNTS = 1.0  # %; smaller, and "slipped" can be fair in a day that ended up
+
+
+def contradicts_market(text, market):
+    """v37c: what the text says against the day's numbers. 5.11.2026: "Oil prices tumbled" from headlines saved that day about the
+    day before (-8.29% on 4.11), when oil rose 2.72%, on the same screen. Only the name right before the verb."""
+    if not market or not market.get("same_day"):
+        return None
+    changes = {i["symbol"]: i["change_pct"] for i in market.get("indices") or []}
+    for symbol, name in _PRICE_NAMES:
+        pct = changes.get(symbol)
+        if pct is None or abs(pct) < MOVE_THAT_COUNTS:
+            continue
+        verbs = _FELL if pct > 0 else _ROSE
+        m = re.search(rf"\b(?:{name})\b(?:\s+\w+){{0,2}}\s+(?:{verbs})\b", text, re.I)
+        if m:
+            return f"'{m.group(0)}', and the MARKET NUMBERS say {pct:+.2f}% that day"
+    return None
+
+
 def _topic_words(text):
     return _words(text) | {w.lower() for w in _SHORT_TERMS.findall(text)}
 
 
-def _sentences_without_guess(text):
-    return " ".join(s for s in re.split(r"(?<=[.!?])\s+", text) if not _OWN_GUESS.search(s)).strip()
+def _own_guess(text, source_text=""):
+    """The first word of the model's own explanations that is not in what it cites. v37c: "tariff relief hopes" was a headline's,
+    and three good answers were rejected for it."""
+    for m in _OWN_GUESS.finditer(text):
+        if m.group(0).lower() not in source_text.lower():
+            return m.group(0)
+    return None
+
+
+def _sentences_without_guess(text, source_text=""):
+    return " ".join(s for s in re.split(r"(?<=[.!?])\s+", text) if not _own_guess(s, source_text)).strip()
 
 
 def _shorter(text, limit):
@@ -589,13 +623,20 @@ def clean_answer(text, items, market, strict=True):
                 raise ValueError(f"the topic '{title}' has no item about that story. A topic must be a story told by the items, "
                                  "with the numbers of those items; drop it if there is none")
             continue
-        if _OWN_GUESS.search(f"{summary} {impact}"):
+        cited = " ".join(s["title_en"] for s in sources)
+        guess = _own_guess(f"{summary} {impact}", cited)
+        if guess:
             if strict:
-                raise ValueError(f"the topic '{title}' explains things on its own ('{_OWN_GUESS.search(f'{summary} {impact}').group(0)}'). "
-                                 "Write only what the items say")
-            summary, impact = _sentences_without_guess(summary), _sentences_without_guess(impact)
+                raise ValueError(f"the topic '{title}' explains things on its own ('{guess}'). Write only what the items say")
+            summary, impact = _sentences_without_guess(summary, cited), _sentences_without_guess(impact, cited)
             if not summary:
                 continue
+        against = contradicts_market(f"{title}. {summary}", market)
+        if against:
+            if strict:
+                raise ValueError(f"the topic '{title}' says {against}. That headline may be about an earlier day. "
+                                 "Tell what happened on this day, or drop the topic")
+            continue
         extra = invented_numbers(f"{title} {summary} {impact}", allowed)
         if extra:
             if strict:
@@ -615,15 +656,21 @@ def clean_answer(text, items, market, strict=True):
     if extra:
         raise ValueError(f"the overview has numbers that are in neither the market numbers nor the items: {extra[:4]}. "
                          "Use only numbers you were given")
-    if strict and _OWN_GUESS.search(overview):
-        raise ValueError(f"the overview explains things on its own ('{_OWN_GUESS.search(overview).group(0)}'). Write only what the items say")
+    all_titles = " ".join(i["title"] for i in items)
+    if strict and _own_guess(overview, all_titles):
+        raise ValueError(f"the overview explains things on its own ('{_own_guess(overview, all_titles)}'). Write only what the items say")
+    against = contradicts_market(overview, market)
+    if against:
+        if strict:
+            raise ValueError(f"the overview says {against}. That headline may be about an earlier day")
+        overview = " ".join(s for s in re.split(r"(?<=[.!?])\s+", overview) if not contradicts_market(s, market))
     if market and market.get("intraday") and _ENDED.search(overview):
         if strict:
             raise ValueError("trading is still open, and the overview says the market closed or ended. Write 'so far'")
         overview = _ENDED.sub("is so far", overview)
     if strict and len(overview) > MAX_OVERVIEW:
         raise ValueError(f"the overview is {len(overview)} characters, at most 380. Do not list the numbers: the main move, its reason, nothing else")
-    overview = _shorter(_sentences_without_guess(overview), MAX_OVERVIEW) or overview
+    overview = _shorter(_sentences_without_guess(overview, all_titles), MAX_OVERVIEW) or overview
     if not opens_with_the_move(overview, market):
         if strict:
             raise ValueError("the MARKET NUMBERS say the day was extreme, and the overview does not say so. Open the overview "
