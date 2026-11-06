@@ -841,6 +841,61 @@ def test_digest_rejects_what_the_first_real_answer_did():
         d.clean_answer(answer(summary="AI stocks fell 7% on profit-taking."), items, _CRASH_MARKET)
 
 
+def test_digest_saves_on_a_new_connection_after_the_ai(monkeypatch):
+    """v37c: the AI takes minutes, and Neon closed the connection opened before it: the finished digest was lost at the INSERT."""
+    import datetime as _dt
+    import ai_digest as d
+
+    class Conn:
+        def __init__(self):
+            self.closed, self.wrote = False, False
+
+        def cursor(self):
+            conn = self
+
+            class Cur:
+                def execute(self, sql, params=None):
+                    assert not conn.closed
+                    if "INSERT INTO ai_daily_digests" in sql:
+                        conn.wrote = True
+
+                def close(self):
+                    pass
+            return Cur()
+
+        def commit(self):
+            pass
+
+        def close(self):
+            self.closed = True
+    conns = []
+
+    def connect():
+        conns.append(Conn())
+        return conns[-1]
+    titles = [dict(id=i, tag="שוק", title=f"Wall Street headline number {i}", source="Reuters", ts=_dt.datetime(2026, 11, 5, 20, tzinfo=_dt.timezone.utc)) for i in range(1, 7)]
+    monkeypatch.setattr(d, "_load_row", lambda conn, day: None)
+    monkeypatch.setattr(d, "_fetch_titles", lambda conn, day: titles)
+    monkeypatch.setattr(d, "_add_details", lambda conn, items: items)
+    monkeypatch.setattr(d, "market_facts", lambda conn, day: None)
+
+    def ai(*a, **k):
+        assert all(c.closed for c in conns), "a connection stays open during the AI"
+        return {"overview_en": "x", "topics": []}, "model"
+    monkeypatch.setattr(d, "_ask", ai)
+    monkeypatch.setattr(d, "_add_hebrew", lambda payload, *a: payload)
+    assert d._update_day(connect, _dt.date(2026, 11, 5), lambda x: x, force=True, final=True)
+    assert len(conns) == 2 and conns[1].wrote and all(c.closed for c in conns)
+
+
+def test_digest_numbers_may_be_rounded_either_way():
+    import ai_digest as d
+    allowed = d.allowed_numbers(dict(_CRASH_MARKET, indices=[{"symbol": "^SOX", "name_en": "SOX", "close": 9011.14, "change_pct": -12.25, "change_points": -1}]), [])
+    assert d.invented_numbers("SOX fell 12.3%, or 12.25%, or 12.2%, or 12%", allowed) == []
+    assert d.invented_numbers("SOX fell 13.1%", allowed) == ["13.1"]
+    assert d.opens_with_the_move("The Nasdaq fell 5.5%.", _CRASH_MARKET) and not d.opens_with_the_move("The Nasdaq fell 6%.", _CRASH_MARKET)
+
+
 def test_digest_models_only_for_the_digest(monkeypatch):
     import ai_digest as d
     import os as _os

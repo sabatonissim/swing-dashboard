@@ -19,6 +19,7 @@ import re
 import sys
 import time
 from datetime import date, datetime, timezone
+from decimal import Decimal, ROUND_HALF_EVEN, ROUND_HALF_UP
 
 import psycopg2
 import psycopg2.extras
@@ -205,13 +206,12 @@ def invented_numbers(d, facts_json):
     for n in _NUMBER.findall(facts_json):
         n = n.replace(",", "").rstrip(".")
         allowed.add(n)
-        x = float(n)
-        for digits in (0, 1, 2):
-            allowed.add(f"{x:.{digits}f}")
-        for scale in (1e3, 1e6, 1e9, 1e12):              # 2,100,000,000 written as 2.1 billion
-            if x >= scale:
-                for digits in (0, 1, 2):
-                    allowed.add(f"{x / scale:.{digits}f}")
+        x = Decimal(n)
+        for scale in (1, 1000, 10**6, 10**9, 10**12):    # 2,100,000,000 written as 2.1 billion
+            if scale == 1 or x >= scale:
+                for digits in ("1", "0.1", "0.01"):      # both ways of rounding: 12.25 as 12.3 or 12.2
+                    for rounding in (ROUND_HALF_UP, ROUND_HALF_EVEN):
+                        allowed.add(str((x / scale).quantize(Decimal(digits), rounding=rounding)))
     extra = []
     for n in _NUMBER.findall(f"{d.get('he', '')} {d.get('en', '')}"):
         n = n.replace(",", "").rstrip(".")

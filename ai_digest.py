@@ -37,6 +37,7 @@ import sys
 import time
 from contextlib import contextmanager
 from datetime import date, datetime, time as dtime, timedelta, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 
 import llm_provider
@@ -492,18 +493,27 @@ def _numbers(text):
     return {n.replace(",", "").rstrip(".") for n in _NUMBER.findall(text or "")}
 
 
+def _rounded(n):
+    """A number as it may be written: 4.36 as 4.4 or 4. As taught at school: 12.25 is 12.3 (Python's own format says 12.2,
+    which rejected a right answer on 5.11.2026). Both are accepted."""
+    out = set()
+    try:
+        x = Decimal(n)
+        for digits in (Decimal("1"), Decimal("0.1"), Decimal("0.01")):
+            out.add(str(x.quantize(digits, rounding=ROUND_HALF_UP)))
+            out.add(str(x.quantize(digits, rounding=ROUND_HALF_EVEN)))
+    except InvalidOperation:           # not a number after all, or far too long to matter
+        pass
+    return out
+
+
 def allowed_numbers(market, items):
-    """Every number the model was given, also rounded: 4.36 may be written as 4.4 or 4."""
+    """Every number the model was given, also rounded."""
     source = _market_text(market, date(2000, 1, 1)) + " " + " ".join(f"{i['title']} {i.get('body') or ''}" for i in items)
     out = set()
     for n in _numbers(source):
         out.add(n)
-        try:
-            x = float(n)
-        except ValueError:
-            continue
-        for digits in (0, 1, 2):
-            out.add(f"{x:.{digits}f}")
+        out |= _rounded(n)
         out.add(n.rstrip("0").rstrip(".") if "." in n else n)
     return out
 
@@ -521,7 +531,7 @@ def opens_with_the_move(overview, market):
     numbers = _numbers(overview)
     if not wanted or not re.search(r"S&P|Nasdaq|Dow\b|Wall Street", overview):
         return False
-    return any(f"{x:.{d}f}" in numbers for x in wanted.values() for d in (1, 2))
+    return any(numbers & _rounded(str(x)) - {str(round(x))} for x in wanted.values())       # with its decimals, not just "4"
 
 
 def _forced_lead(market):
@@ -739,35 +749,47 @@ def after_close_update_due(row, day, now=None):
     return row["updated_at"].astimezone(_ET) < datetime.combine(day, AFTER_CLOSE, tzinfo=_ET)
 
 
-def _update_day(conn, day, translate_fn, force=False, final=False):
-    """Create / update / close the digest of one day. Returns True if a new AI digest was saved."""
-    min_hours = float(os.environ.get("AI_DIGEST_MIN_HOURS") or 3)
-    row = _load_row(conn, day)
-    if row and row["is_final"] and not force:
-        return False
-    close_due = bool(row) and after_close_update_due(row, day)
-    if row and not force and not final and not close_due and row["age_h"] < min_hours:
-        print(f"[ai_digest] {day}: last update is {row['age_h']:.1f}h old (< {min_hours}h) — skipping")
-        return False
-    if row and not force and not close_due:
-        new = _count_new(conn, day, row["last_item_id"])
-        if new < (1 if final else MIN_NEW):
-            if final:
-                _mark_final(conn, day)
-                print(f"[ai_digest] {day}: closed (no new headlines since the last update)")
-            else:
-                print(f"[ai_digest] {day}: only {new} new headlines (< {MIN_NEW}) — skipping")
-            return False
+@contextmanager
+def _connected(get_conn):
+    conn = get_conn()
+    try:
+        yield conn
+    finally:
+        conn.close()
 
-    fetched = _fetch_titles(conn, day)
-    if len(fetched) < MIN_ITEMS:
-        print(f"[ai_digest] {day}: only {len(fetched)} headlines — too few for a digest")
-        return False
-    sel = _add_details(conn, rank_items(fetched))
-    if not sel:
-        print(f"[ai_digest] {day}: no headline left after the filters")
-        return False
-    market = market_facts(conn, day)
+
+def _update_day(get_conn, day, translate_fn, force=False, final=False):
+    """Create / update / close the digest of one day. Returns True if a new AI digest was saved.
+    v37c: a connection for the reads and another for the write. The AI takes minutes and Neon suspends after 5 quiet ones:
+    "SSL connection has been closed unexpectedly" at the INSERT threw the finished digest away (5.11.2026, manual run)."""
+    min_hours = float(os.environ.get("AI_DIGEST_MIN_HOURS") or 3)
+    with _connected(get_conn) as conn:
+        row = _load_row(conn, day)
+        if row and row["is_final"] and not force:
+            return False
+        close_due = bool(row) and after_close_update_due(row, day)
+        if row and not force and not final and not close_due and row["age_h"] < min_hours:
+            print(f"[ai_digest] {day}: last update is {row['age_h']:.1f}h old (< {min_hours}h) — skipping")
+            return False
+        if row and not force and not close_due:
+            new = _count_new(conn, day, row["last_item_id"])
+            if new < (1 if final else MIN_NEW):
+                if final:
+                    _mark_final(conn, day)
+                    print(f"[ai_digest] {day}: closed (no new headlines since the last update)")
+                else:
+                    print(f"[ai_digest] {day}: only {new} new headlines (< {MIN_NEW}) — skipping")
+                return False
+
+        fetched = _fetch_titles(conn, day)
+        if len(fetched) < MIN_ITEMS:
+            print(f"[ai_digest] {day}: only {len(fetched)} headlines — too few for a digest")
+            return False
+        sel = _add_details(conn, rank_items(fetched))
+        if not sel:
+            print(f"[ai_digest] {day}: no headline left after the filters")
+            return False
+        market = market_facts(conn, day)
     print(f"[ai_digest] {day}: {len(fetched)} headlines, sending {len(sel)} stories, market move: "
           f"{market['move'] if market else 'no numbers'}; first: {sel[0]['title'][:80]}")
 
@@ -788,16 +810,17 @@ def _update_day(conn, day, translate_fn, force=False, final=False):
     payload["item_count"] = item_count
     payload["updates"] = updates
 
-    cur = conn.cursor()
-    cur.execute("""INSERT INTO ai_daily_digests (day, updated_at, item_count, last_item_id, updates, since_rebuild, is_final, model, payload)
-                   VALUES (%s, NOW(), %s, %s, %s, 0, %s, %s, %s)
-                   ON CONFLICT (day) DO UPDATE SET updated_at = NOW(), item_count = EXCLUDED.item_count,
-                       last_item_id = EXCLUDED.last_item_id, updates = EXCLUDED.updates,
-                       since_rebuild = EXCLUDED.since_rebuild, is_final = EXCLUDED.is_final,
-                       model = EXCLUDED.model, payload = EXCLUDED.payload""",
-                (day, item_count, last_id, updates, bool(final), model, json.dumps(payload, ensure_ascii=False)))
-    conn.commit()
-    cur.close()
+    with _connected(get_conn) as conn:
+        cur = conn.cursor()
+        cur.execute("""INSERT INTO ai_daily_digests (day, updated_at, item_count, last_item_id, updates, since_rebuild, is_final, model, payload)
+                       VALUES (%s, NOW(), %s, %s, %s, 0, %s, %s, %s)
+                       ON CONFLICT (day) DO UPDATE SET updated_at = NOW(), item_count = EXCLUDED.item_count,
+                           last_item_id = EXCLUDED.last_item_id, updates = EXCLUDED.updates,
+                           since_rebuild = EXCLUDED.since_rebuild, is_final = EXCLUDED.is_final,
+                           model = EXCLUDED.model, payload = EXCLUDED.payload""",
+                    (day, item_count, last_id, updates, bool(final), model, json.dumps(payload, ensure_ascii=False)))
+        conn.commit()
+        cur.close()
     print(f"[ai_digest] {day}: saved{' (FINAL)' if final else ''} — {item_count} headlines, {len(payload['topics'])} topics, "
           f"update #{updates}, model {model}")
     print(f"[ai_digest] overview: {payload['overview_en']}")
@@ -818,28 +841,27 @@ def maybe_generate(get_conn, translate_fn, force=False):
         if not llm_provider.is_configured():
             print("[ai_digest] off (LLM_API_KEY is not set)")
             return False
-        conn = get_conn()
         saved = False
-        try:
+        today = today_local()
+        with _connected(get_conn) as conn:
             ensure_table(conn)
-            today = today_local()
             # 1) finish earlier days that were still open (normally just yesterday, once, right after midnight)
             cur = conn.cursor()
             cur.execute("SELECT day FROM ai_daily_digests WHERE NOT is_final AND day < %s ORDER BY day", (today,))
             open_days = [r[0] for r in cur.fetchall()]
             cur.close()
-            for d in open_days:
-                if (today - d).days <= CLOSE_LOOKBACK_DAYS:
-                    saved |= _update_day(conn, d, translate_fn, final=True)
+        for d in open_days:
+            if (today - d).days <= CLOSE_LOOKBACK_DAYS:
+                saved |= _update_day(get_conn, d, translate_fn, final=True)
+            with _connected(get_conn) as conn:
                 _mark_final(conn, d)
-            # 2) today
-            saved |= _update_day(conn, today, translate_fn, force=force)
+        # 2) today
+        saved |= _update_day(get_conn, today, translate_fn, force=force)
+        with _connected(get_conn) as conn:
             cur = conn.cursor()
             cur.execute("DELETE FROM ai_daily_digests WHERE day < %s", (today - timedelta(days=KEEP_DAYS),))
             conn.commit()
             cur.close()
-        finally:
-            conn.close()
         return saved
     except llm_provider.LLMAuthError as e:
         print(f"[ai_digest] KEY REJECTED — check LLM_API_KEY ({e})")
@@ -853,12 +875,9 @@ def one_day(get_conn, translate_fn, day):
     if not llm_provider.is_configured():
         print("[ai_digest] off (LLM_API_KEY is not set)")
         return False
-    conn = get_conn()
-    try:
+    with _connected(get_conn) as conn:
         ensure_table(conn)
-        return _update_day(conn, day, translate_fn, force=True, final=day < today_local())
-    finally:
-        conn.close()
+    return _update_day(get_conn, day, translate_fn, force=True, final=day < today_local())
 
 
 def backfill(get_conn, translate_fn, days=7):
@@ -866,25 +885,24 @@ def backfill(get_conn, translate_fn, days=7):
     if not llm_provider.is_configured():
         print("[ai_digest] off (LLM_API_KEY is not set)")
         return False
-    conn = get_conn()
     made = 0
-    try:
+    today = today_local()
+    with _connected(get_conn) as conn:
         ensure_table(conn)
-        today = today_local()
-        for k in range(days, 0, -1):
-            d = today - timedelta(days=k)
-            if _load_row(conn, d):
-                print(f"[ai_digest] {d}: already has a digest — skipped")
-                continue
-            try:
-                if _update_day(conn, d, translate_fn, force=True, final=True):
-                    made += 1
-            except llm_provider.LLMAuthError:
-                raise
-            except Exception as e:  # noqa: BLE001
-                print(f"[ai_digest] {d}: failed (non-fatal): {type(e).__name__}: {e}")
-    finally:
-        conn.close()
+    for k in range(days, 0, -1):
+        d = today - timedelta(days=k)
+        with _connected(get_conn) as conn:
+            exists = _load_row(conn, d)
+        if exists:
+            print(f"[ai_digest] {d}: already has a digest — skipped")
+            continue
+        try:
+            if _update_day(get_conn, d, translate_fn, force=True, final=True):
+                made += 1
+        except llm_provider.LLMAuthError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            print(f"[ai_digest] {d}: failed (non-fatal): {type(e).__name__}: {e}")
     print(f"[ai_digest] backfill done — {made} day(s) created")
     return made > 0
 
