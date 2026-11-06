@@ -1637,6 +1637,23 @@ def _feed_clean(rows, seen: set, promo_only: bool = False) -> list:
     return out
 
 
+_news_rows = {"at": 0.0, "rows": {}}     # id -> full macro_news row
+
+
+def _news_rows_by_id(cur, ids: list) -> list:
+    """v36: the full rows, in the order of `ids`. A refresh asks the database only for what is not in memory yet: ~1 KB a row, and
+    most of the list is the same as half an hour ago. Read fresh every STOCKS_REREAD_SEC: links and translations are added to rows later."""
+    if time.time() - _news_rows["at"] > STOCKS_REREAD_SEC:
+        _news_rows.update(at=time.time(), rows={})
+    rows = _news_rows["rows"]
+    missing = [i for i in ids if i not in rows]
+    if missing:
+        cur.execute("SELECT * FROM macro_news WHERE id = ANY(%s)", (missing,))
+        for r in cur.fetchall():
+            rows[r["id"]] = dict(r)
+    return [rows[i] for i in ids if i in rows]
+
+
 @app.get("/api/macro-news")
 @_cached_answer(max_keys=12)
 def get_macro_news(limit: int = Query(default=25, ge=1, le=100)):
@@ -1650,7 +1667,7 @@ def get_macro_news(limit: int = Query(default=25, ge=1, le=100)):
         critical_slots = max(3, limit // 5)
         cur.execute(
             """
-            SELECT * FROM macro_news
+            SELECT id FROM macro_news
             WHERE impact_level = 'Critical'
               AND timestamp > NOW() - INTERVAL '72 hours'
             ORDER BY timestamp DESC
@@ -1666,8 +1683,8 @@ def get_macro_news(limit: int = Query(default=25, ge=1, le=100)):
         # v34: only the last two weeks are ranked — the window function used to go through the whole table on every call
         cur.execute(
             """
-            SELECT * FROM (
-                SELECT *, ROW_NUMBER() OVER (PARTITION BY category_tag ORDER BY timestamp DESC) AS rn
+            SELECT id FROM (
+                SELECT id, timestamp, ROW_NUMBER() OVER (PARTITION BY category_tag ORDER BY timestamp DESC) AS rn
                 FROM macro_news
                 WHERE id != ALL(%s) AND timestamp > NOW() - INTERVAL '14 days'
             ) ranked
@@ -1677,14 +1694,16 @@ def get_macro_news(limit: int = Query(default=25, ge=1, le=100)):
             """,
             (critical_ids, per_category_cap, remaining + 20),   # +20: room for the rows _feed_clean drops
         )
-        other_rows = cur.fetchall()
+        other_ids = [r["id"] for r in cur.fetchall()]
+        critical_rows = _news_rows_by_id(cur, [r["id"] for r in critical_rows])
+        other_rows = _news_rows_by_id(cur, other_ids)
 
     seen: set = set()
     critical_rows = _feed_clean([_tidy_news_row(r) for r in critical_rows], seen)
     other_rows = _feed_clean([_tidy_news_row(r) for r in other_rows], seen)[:remaining]
     combined = list(critical_rows) + list(other_rows)
     combined.sort(key=lambda r: r["timestamp"], reverse=True)
-    out = [{k: v for k, v in dict(r).items() if k != "rn"} for r in combined]
+    out = [dict(r) for r in combined]
     # v18d: "Critical" on the site = part of a KEY event (see KEY NEWS above), not the old loose keyword label
     try:
         key_ids = {i for e in _recent_key_events() for i in e["ids"]}
@@ -4475,7 +4494,9 @@ def _trading_days_until(today: date, day: date) -> int:
 def _next_report(ticker: str) -> Optional[dict]:
     """v35e: for the stock page. earnings_calendar (Nasdaq, only the coming week) first; further ahead stock_estimates, Yahoo's
     date from the full scan, often its own estimate. A report that already has results does not count. Under 200 bytes from the
-    database, on a page that reads it anyway. Never stops the quote."""
+    database, on a page that reads it anyway. Never stops the quote.
+    v36: {"date": None} = the company reports, but Yahoo still lists the report it just gave (half of 126 stocks on 6.11);
+    None = nothing known (an ETF, or the database is down)."""
     from zoneinfo import ZoneInfo
     today = dt.now(ZoneInfo("America/New_York")).date()
     try:
@@ -4487,8 +4508,10 @@ def _next_report(ticker: str) -> Optional[dict]:
             when, session, estimate = (r["report_date"], r["session"], False) if r else (None, None, False)
             if not when:
                 cur.execute("""SELECT next_report, next_report_est FROM stock_estimates
-                               WHERE ticker = %s AND next_report >= %s AND updated_at > NOW() - INTERVAL '10 days'""", (ticker, today))
+                               WHERE ticker = %s AND next_report IS NOT NULL AND updated_at > NOW() - INTERVAL '10 days'""", (ticker,))
                 r = cur.fetchone()
+                if r and r["next_report"] < today:
+                    return {"date": None}
                 if r:
                     when, estimate = r["next_report"], bool(r["next_report_est"])
     except Exception as e:  # noqa: BLE001
@@ -5513,6 +5536,9 @@ def _fetch_sector_performance(period: str) -> dict:
     return {"period": period, "dates": all_dates, "series": series, "table": table}
 
 
+_heatmap_last: dict = {}     # index -> (time of the newest prices, when read, the answer)
+
+
 @app.get("/api/heatmap")
 @_cached_answer(max_keys=4)
 def get_heatmap(index: str = Query(default="sp500", pattern="^(sp500|nasdaq100)$")):
@@ -5531,6 +5557,12 @@ def get_heatmap(index: str = Query(default="sp500", pattern="^(sp500|nasdaq100)$
     """
     column = "in_sp500" if index == "sp500" else "in_nasdaq100"
     with db_cursor(dict_cursor=True) as (conn, cur):
+        # v36: 500 rows from the database, and no new prices at night or on a weekend: read again only after new ones (see get_stocks)
+        cur.execute("SELECT MAX(timestamp) AS t FROM universe_movers")
+        newest = cur.fetchone()["t"]
+        prev = _heatmap_last.get(index)
+        if prev and prev[0] == newest and time.time() - prev[1] < STOCKS_REREAD_SEC:
+            return prev[2]
         cur.execute(
             f"""
             SELECT ticker, change_pct, close_price, market_cap, timestamp
@@ -5549,7 +5581,15 @@ def get_heatmap(index: str = Query(default="sp500", pattern="^(sp500|nasdaq100)$
         sector = info_map.get(d["ticker"], {}).get("sector")
         d["sector"] = sector or "Other"
         stocks.append(d)
-    return {"index": index, "count": len(stocks), "stocks": stocks}
+    answer = {"index": index, "count": len(stocks), "stocks": stocks}
+    _heatmap_last[index] = (newest, time.time(), answer)
+    return answer
+
+
+_EARNINGS_COLUMNS = """ticker, report_date, session, market_cap, eps_estimate, eps_actual, surprise_pct,
+                       revenue_estimate, revenue_actual, revenue_surprise_pct, implied_move_pct, implied_move_expiry,
+                       company_name, eps_from_release"""
+_earnings_last: dict = {"fingerprint": None, "answer": None}
 
 
 @app.get("/api/earnings-calendar")
@@ -5564,15 +5604,14 @@ def get_earnings_calendar():
     (one extra yfinance call per notable ticker only — not the whole
     universe) so beat/miss results show up here too, not just the date."""
     with db_cursor(dict_cursor=True) as (conn, cur):
-        cur.execute(
-            """
-            SELECT ticker, report_date, session, market_cap, eps_estimate, eps_actual, surprise_pct,
-                   revenue_estimate, revenue_actual, revenue_surprise_pct, implied_move_pct, implied_move_expiry,
-                   company_name, eps_from_release
-            FROM earnings_calendar
-            ORDER BY report_date ASC, market_cap DESC
-            """
-        )
+        # v36: the table can be asked for every 2 minutes (the site refreshes it on screen) and ~50 KB comes back. The database
+        # first answers with a 32-letter summary of those columns, and the rows are read only when it changed.
+        cur.execute(f"""SELECT md5(string_agg(t::text, ',' ORDER BY t::text)) AS fp
+                        FROM (SELECT {_EARNINGS_COLUMNS} FROM earnings_calendar) t""")
+        fingerprint = cur.fetchone()["fp"]
+        if _earnings_last["answer"] is not None and _earnings_last["fingerprint"] == fingerprint:
+            return _earnings_last["answer"]
+        cur.execute(f"SELECT {_EARNINGS_COLUMNS} FROM earnings_calendar ORDER BY report_date ASC, market_cap DESC")
         rows = cur.fetchall()
     info_map = get_sp500_info_map()
     items = []
@@ -5585,7 +5624,9 @@ def get_earnings_calendar():
         # v33: revenue alone counts — it was stored but hidden until Yahoo listed the EPS, hours later
         d["reported"] = d["eps_actual"] is not None or d["revenue_actual"] is not None
         items.append(d)
-    return {"count": len(items), "items": items}
+    answer = {"count": len(items), "items": items}
+    _earnings_last.update(fingerprint=fingerprint, answer=answer)
+    return answer
 
 
 # ------------------------------------------------------------------

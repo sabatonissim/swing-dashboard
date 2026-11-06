@@ -55,7 +55,8 @@ sys.modules['yfinance'] = yf
 pg = types.ModuleType('psycopg2'); ext = types.ModuleType('psycopg2.extras')
 class OperationalError(Exception): pass
 def _connect(*a, **k): raise OperationalError('no database here')
-pg.connect = _connect; pg.OperationalError = OperationalError; pg.Error = Exception; pg.extras = ext
+class InterfaceError(Exception): pass
+pg.connect = _connect; pg.OperationalError = OperationalError; pg.InterfaceError = InterfaceError; pg.Error = Exception; pg.extras = ext
 ext.RealDictCursor = object; ext.Json = lambda x: x; ext.execute_values = lambda *a, **k: None
 sys.modules['psycopg2'] = pg; sys.modules['psycopg2.extras'] = ext
 for name in ('feedparser',):

@@ -55,6 +55,7 @@ FUND_MCAP_MAX_RATIO = 1.5       # wider than the 1.3 fundamentals.py corrects at
 DB_SIZE_WARN_MB, DB_SIZE_FAIL_MB = 700, 900   # the free Neon plan: 1 GB per project (its pricing page, 4.11.2026)
 BIG_COMPANY_CAP = 10e9          # a company this large with under PROFILE_MIN_STAFF employees: the figure is wrong
 PROFILE_MIN_STAFF = 500
+PROFILE_STAFF_CHECKED = {"RGLD"}   # read in the annual report: Royal Gold owns royalties and really has 39 employees (6.11.2026)
 KEEP_DAYS = 60
 
 # (table, time column, most weekdays since the last change, status when older). Normal = 1 at 07:30 ET (yesterday's
@@ -118,7 +119,7 @@ def profile_problems(r: dict) -> List[str]:
     if r["source"] == "wikipedia" and words and summary and not any(w.lower() in summary for w in words):
         out.append("the summary does not name the company")     # the wrong article
     staff, cap = r["employees"], r["market_cap"]
-    if staff is not None and staff < PROFILE_MIN_STAFF and (cap or 0) >= BIG_COMPANY_CAP:
+    if staff is not None and staff < PROFILE_MIN_STAFF and (cap or 0) >= BIG_COMPANY_CAP and r.get("ticker") not in PROFILE_STAFF_CHECKED:
         out.append(f"{staff} employees at a market cap of ${cap / 1e9:.0f}B")
     return out
 

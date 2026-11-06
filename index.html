@@ -2328,6 +2328,8 @@ async function rerenderDeepDiveForLang(){
 function nextReportCard(r){
   const en = lang === 'en';
   const title = en ? 'Next report' : 'הדוח הבא';
+  // v36: the company reports, the date is just not out yet (Yahoo still lists the report it has just given)
+  if(r && r.date === null) return `<div class="dd-stat-card"><div class="k">${title}</div><div class="v" style="font-size:14px;">${en ? 'Not announced yet' : 'טרם פורסם'}</div></div>`;
   if(!r || !/^\d{4}-\d{2}-\d{2}$/.test(r.date || '')) return `<div class="dd-stat-card"><div class="k">${title}</div><div class="v">—</div></div>`;
   const [y, m, d] = r.date.split('-').map(Number);
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -4126,9 +4128,20 @@ async function loadEarningsCalendar(silent){
 }
 
 // v33: new results appear while the calendar is on the screen, without reloading the page
+// v36: every 3 minutes only while results arrive (the hours of earn_am/earn_pm in scheduler.py); otherwise every 30, so a calendar left open does not keep the database awake
+let lastEarningsCalRefresh = 0;
+function earningsResultsHours(){
+  const p = new Intl.DateTimeFormat('en-US', {timeZone:'America/New_York', weekday:'short', hour:'2-digit', minute:'2-digit', hourCycle:'h23'}).formatToParts(new Date());
+  const get = t => p.find(x => x.type === t).value;
+  const mins = Number(get('hour')) * 60 + Number(get('minute'));
+  return !['Sat','Sun'].includes(get('weekday')) && ((mins >= 405 && mins <= 545) || (mins >= 965 && mins <= 1085));
+}
 setInterval(() => {
   const el = document.getElementById('earnings-cal-wrap');
-  if(lastEarningsCalItems && el && el.offsetParent !== null && !document.hidden) loadEarningsCalendar(true);
+  if(!lastEarningsCalItems || !el || el.offsetParent === null || document.hidden) return;
+  if(!earningsResultsHours() && Date.now() - lastEarningsCalRefresh < 1800000) return;
+  lastEarningsCalRefresh = Date.now();
+  loadEarningsCalendar(true);
 }, 180000);
 
 function renderEarningsCalendar(items){

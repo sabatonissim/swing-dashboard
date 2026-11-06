@@ -511,6 +511,33 @@ def get_conn():
     return psycopg2.connect(DB_URL)
 
 
+_run_conn = {"conn": None}
+
+
+def _with_run_conn(work):
+    """v36: one connection for the run's writes. Each saved headline used to open its own, and every connection costs Neon's
+    network quota (~5 KB, an estimate) on 1,000+ headlines a day. If the database dropped it while idle: reopen, try once more."""
+    for attempt in (1, 2):
+        conn = _run_conn["conn"]
+        if conn is None or conn.closed:
+            conn = _run_conn["conn"] = get_conn()
+        try:
+            return work(conn)
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            _close_run_conn()
+            if attempt == 2:
+                raise
+
+
+def _close_run_conn():
+    conn, _run_conn["conn"] = _run_conn["conn"], None
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
@@ -603,7 +630,12 @@ def upsert_macro_news(category_tag: str, summary_he: str,
     e.g. init_db's cleanup above hit an edge case — falls back to a plain
     check-then-insert instead of crashing the run on every single item.
     """
-    conn = get_conn()
+    return _with_run_conn(lambda conn: _upsert_macro_news(conn, category_tag, summary_he, summary_en, impact_level, source_url,
+                                                          hook_he, body_en, body_he, source_name, article_url))
+
+
+def _upsert_macro_news(conn, category_tag, summary_he, summary_en, impact_level, source_url,
+                       hook_he, body_en, body_he, source_name, article_url) -> bool:
     cur = conn.cursor()
     try:
         cur.execute(
@@ -637,7 +669,6 @@ def upsert_macro_news(category_tag: str, summary_he: str,
         conn.commit()
     finally:
         cur.close()
-        conn.close()
     return inserted
 
 
@@ -723,17 +754,21 @@ def backfill_article_urls(budget: int) -> int:
     cur.close()
     conn.close()
     done = 0
+
+    def save_link(conn, real, row_id):
+        cur = conn.cursor()
+        try:
+            cur.execute("UPDATE macro_news SET article_url = %s WHERE id = %s", (real, row_id))
+            conn.commit()
+        finally:
+            cur.close()
+
     for row_id, url in rows:
         real = decode_google_news_url(url)
         time.sleep(random.uniform(0.3, 0.8))
         if not real:
             continue
-        conn = get_conn()   # Neon: open right next to the write (auto-suspend)
-        cur = conn.cursor()
-        cur.execute("UPDATE macro_news SET article_url = %s WHERE id = %s", (real, row_id))
-        conn.commit()
-        cur.close()
-        conn.close()
+        _with_run_conn(lambda conn: save_link(conn, real, row_id))
         done += 1
     print(f"[info] article links: backfilled {done}/{len(rows)} older Google News rows.")
     return done
@@ -803,6 +838,7 @@ def run_pipeline_b():
             backfill_article_urls(min(40, decode_budget))
     except Exception as e:  # noqa: BLE001
         print(f"[warn] article link backfill failed (non-fatal): {type(e).__name__}: {e}")
+    _close_run_conn()
 
     # AI daily digest (optional): only runs when LLM_API_KEY is set, at most every few hours,
     # and can never break this pipeline. See ai_digest.py / llm_provider.py.

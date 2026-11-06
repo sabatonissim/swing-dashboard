@@ -46,7 +46,7 @@ LLM_CALL_BUDGET_SEC = "100"        # per AI request, across its fallback models 
 PROFILE_VERSION = 2                # stored as profile["v"]; profiles of an older version are written again
 HEBREW_VERSION = 2                 # profile["hv"]; an older Hebrew is translated again from the saved English (v30d)
 SOURCE_VERSION = 2                 # profile["sv"]; v35: Wikipedia profiles from before the article was checked are redone
-FACTS_VERSION = 2                  # facts["fv"]; v35: the employee count is read again from the report (no AI needed)
+FACTS_VERSION = 3                  # facts["fv"]; v35: the employee count is read again from the report (no AI needed); v36: AES
 FIELD_MAX = {"summary": 300, "what": 600, "revenue": 650, "products": 500, "customers": 500}
 FIELDS = list(FIELD_MAX)
 REQUIRED = ("summary", "what", "revenue")
@@ -240,7 +240,7 @@ def business_section(text, form):
 # "167,000 full-time equivalent employees", "318,512 employees"
 _HEADCOUNT = re.compile(
     r"(?<![\d,.$])(\d{1,3}(?:,\d{3})+|\d{2,7}|\d+(?:\.\d+)?\s+million)(?:\s+and\s+\d[\d,.]*(?:\s+million)?)?\s+"
-    r"(?:(?:(?:full|part)[- ]time|seasonal|temporary|equivalent|fte|regular|global|worldwide|total|permanent|active|and|or),?\s+){0,5}"
+    r"(?:(?:(?:full|part)[- ]time|seasonal|temporary|equivalent|fte|regular|global|worldwide|total|permanent|active|and|or)(?:,?\s+|/)){0,5}"
     r"(employees|associates|team\s*members|teammates|colleagues|workers|persons|people)\b", re.I)
 _HEADCOUNT_CUE = re.compile(r"\b(employ\w*|had|have|has|workforce|headcount|staff|total of|comprised|consisted|grew|increased)\b", re.I)
 _NOT_HEADCOUNT = re.compile(r"\b(cover\w*|represented|unions?|bargaining|councils?|contracts?)\b", re.I)

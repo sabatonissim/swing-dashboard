@@ -377,6 +377,8 @@ def test_employee_count():
     assert n("about 400 employees in Canada are represented by a union") is None
     assert n("The company has 2025 employees programs") is None                # a year
     assert n("no number here") is None
+    # v36: AES's report (6.11.2026). The slash hid the real figure, and a smaller one elsewhere was shown: 100
+    assert n("the Company and its subsidiaries had 8,336 full time/permanent employees. We have 100 employees in Ohio") == 8336
 
 
 def test_business_heading_in_small_caps():
@@ -414,6 +416,7 @@ def test_profile_rules():
     assert dh.profile_problems(p) == []
     assert dh.profile_problems(dict(p, employees=400.0))                                       # KO, 4.11.2026
     assert dh.profile_problems(dict(p, employees=400.0, market_cap=2e9)) == []                 # a small company can be small
+    assert dh.profile_problems(dict(p, employees=39.0, ticker="RGLD")) == []                   # checked in its report
     assert dh.profile_problems(dict(p, employees=None)) == []
     assert dh.profile_problems(dict(p, source="wikipedia")) == []
     assert dh.profile_problems(dict(p, source="wikipedia", summary="A court case in Europe."))
@@ -573,6 +576,9 @@ def test_next_report(api, monkeypatch):
     assert r["session"] == "amc" and r["estimate"] is False and len(db.sql) == 1      # the calendar comes first
     monkeypatch.setattr(api, "db_cursor", _FakeDb([None, None]))
     assert api._next_report("KO") is None
+    past = _dt.date.today() - _dt.timedelta(days=10)                                  # v36: reports, next date not out yet
+    monkeypatch.setattr(api, "db_cursor", _FakeDb([None, {"next_report": past, "next_report_est": False}]))
+    assert api._next_report("KO") == {"date": None}
     monkeypatch.setattr(api, "db_cursor", lambda dict_cursor=False: (_ for _ in ()).throw(RuntimeError("down")))
     assert api._next_report("KO") is None                                             # the quote still answers
 
@@ -650,6 +656,87 @@ def test_stocks_read_again_only_after_a_scan(api, monkeypatch):
     assert get(limit=150)[0]["ticker"] == "KO" and len(db.sql) == 3      # same scan: only the small question
     get(limit=150)
     assert len(db.sql) == 5                                              # a new scan: read
+
+
+def test_heatmap_read_again_only_after_new_prices(api, monkeypatch):
+    """v36: the same idea as /api/stocks."""
+    import datetime as _dt
+    t1, t2 = _dt.datetime(2026, 11, 6, 20), _dt.datetime(2026, 11, 9, 11)
+    row = dict(ticker="KO", change_pct=1.0, close_price=95.0, market_cap=4e11, timestamp=t1)
+    get = api.get_heatmap.__wrapped__
+    monkeypatch.setattr(api, "_heatmap_last", {})
+    monkeypatch.setattr(api, "get_sp500_info_map", lambda: {})
+    db = _FakeDb([{"t": t1}, [row], {"t": t1}, {"t": t2}, [row]])
+    monkeypatch.setattr(api, "db_cursor", db)
+    assert get(index="sp500")["count"] == 1 and len(db.sql) == 2
+    assert get(index="sp500")["count"] == 1 and len(db.sql) == 3         # nothing new: only the small question
+    get(index="sp500")
+    assert len(db.sql) == 5
+
+
+def test_earnings_calendar_read_again_only_when_it_changed(api, monkeypatch):
+    """v36: the database compares; the rows (~50 KB) come back only after a change."""
+    import datetime as _dt
+    row = dict(ticker="KO", report_date=_dt.date(2026, 11, 6), session="bmo", market_cap=4e11, eps_estimate=1.0, eps_actual=None,
+               surprise_pct=None, revenue_estimate=None, revenue_actual=None, revenue_surprise_pct=None, implied_move_pct=None,
+               implied_move_expiry=None, company_name="Coca-Cola", eps_from_release=False)
+    get = api.get_earnings_calendar.__wrapped__
+    monkeypatch.setattr(api, "_earnings_last", {"fingerprint": None, "answer": None})
+    monkeypatch.setattr(api, "get_sp500_info_map", lambda: {})
+    db = _FakeDb([{"fp": "a"}, [row], {"fp": "a"}, {"fp": "b"}, [dict(row, eps_actual=1.1)]])
+    monkeypatch.setattr(api, "db_cursor", db)
+    assert get()["items"][0]["reported"] is False and len(db.sql) == 2
+    assert get()["count"] == 1 and len(db.sql) == 3                      # same summary: no rows read
+    assert get()["items"][0]["reported"] is True and len(db.sql) == 5    # a result arrived
+
+
+def test_macro_news_reads_only_rows_not_in_memory(api, monkeypatch):
+    """v36: a refresh asks for the ids, and for full rows only of those it does not hold yet. The order stays the database's."""
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    full = lambda i: dict(id=i, summary_en=f"A long enough headline about the economy number {i}", summary_he="כותרת", source_name="Reuters",
+                          impact_level="High", category_tag="Macro", timestamp=now - _dt.timedelta(minutes=i))
+    get = api.get_macro_news.__wrapped__
+    monkeypatch.setattr(api, "_news_rows", {"at": 0.0, "rows": {}})
+    monkeypatch.setattr(api, "_recent_key_events", lambda: [])
+    db = _FakeDb([[], [{"id": 1}, {"id": 2}], [full(1), full(2)],                       # first refresh: both rows
+                  [], [{"id": 3}, {"id": 1}, {"id": 2}], [full(3)]])                    # second: only the new one
+    monkeypatch.setattr(api, "db_cursor", db)
+    assert [r["id"] for r in get(limit=25)] == [1, 2] and all("SELECT id" in s for s, _ in db.sql[:2])
+    assert db.sql[2][1] == ([1, 2],)
+    second = get(limit=25)
+    assert db.sql[-1][1] == ([3],) and {r["id"] for r in second} == {1, 2, 3}
+    assert second[0] is not api._news_rows["rows"].get(second[0]["id"])                 # the answer's rows are copies
+
+
+def test_news_uses_one_connection_and_reopens_a_dropped_one(monkeypatch):
+    """v36: every saved headline used to open a connection (~5 KB of Neon's monthly quota each)."""
+    pb = importlib.import_module("pipeline_b_news_aggregator")
+    import psycopg2
+
+    class Conn:
+        closed = 0
+
+        def close(self):
+            self.closed = 1
+    opened = []
+
+    def connect():
+        opened.append(Conn())
+        return opened[-1]
+    monkeypatch.setattr(pb, "get_conn", connect)
+    monkeypatch.setattr(pb, "_run_conn", {"conn": None})
+    assert [pb._with_run_conn(lambda c: "saved") for _ in range(3)] == ["saved"] * 3 and len(opened) == 1
+    calls = []
+
+    def drops_once(conn):
+        calls.append(conn)
+        if len(calls) == 1:
+            raise psycopg2.OperationalError("SSL connection has been closed unexpectedly")
+        return "saved"
+    assert pb._with_run_conn(drops_once) == "saved" and len(opened) == 2 and opened[0].closed
+    pb._close_run_conn()
+    assert opened[1].closed and pb._run_conn["conn"] is None
 
 
 def test_api_robots_opens_only_answers_from_memory(api):
