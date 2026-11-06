@@ -35,6 +35,7 @@ import os
 import re
 import sys
 import time
+from contextlib import contextmanager
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -52,7 +53,9 @@ MAX_SOURCES = 4
 KEEP_DAYS = 90
 CLOSE_LOOKBACK_DAYS = 3  # past days that are still closed with one last AI update (older ones are just marked final)
 ATTEMPTS = 3            # a rejected answer goes back to the model with the reason, this many times in all
-UPDATE_BUDGET_SEC = 360  # one update (the news job stops at 20 minutes and has done its own work by then)
+UPDATE_BUDGET_SEC = 480  # one update (the news job stops at 20 minutes and has done its own work by then)
+# v37c: a larger model only for this text, read by everyone. The other jobs make dozens of requests a run and keep LLM_MODELS.
+DIGEST_CALL_TIMEOUT_SEC, DIGEST_CALL_BUDGET_SEC = "120", "240"
 BIG_CAP = 50e9          # "large company" for the movers
 MOVERS_SHOWN = 5
 # How big the session was. Extreme: the overview must open with it. Fixed rule, the same one data_health.py checks.
@@ -299,7 +302,8 @@ STRICT RULES:
 - Say "430 of the S&P 500 stocks fell", not "trading was broad".
 - "impact" says why this matters for US stocks, specific to this story, in words such as "may", "could" or "tends to". It is context, NOT a forecast: never predict a price level or a direction. Empty if you have nothing specific to say. Never a sentence that would fit any story.
 - No investment advice: never say or imply that anyone should buy, sell or hold anything.
-- Plain everyday words, one idea per sentence, numbers whenever you have them. No market jargon ("beat", "guidance", "print", "risk-on", "hawkish", "bid"): say what happened ("results were better than forecast"). No filler such as "markets digested", "investors weighed", "mixed picture", "dominated the day". Company names exactly as in the items.
+- The first topic is the story behind the day's main move, built on item [1] when the day was large.
+- Plain everyday words (write "sell-off", never "rout"), one idea per sentence, numbers whenever you have them. No market jargon ("beat", "guidance", "print", "risk-on", "hawkish", "bid"): say what happened ("results were better than forecast"). No filler such as "markets digested", "investors weighed", "mixed picture", "dominated the day". Company names exactly as in the items.
 
 Reply with ONLY a valid JSON object (no markdown, no commentary). Use straight double quotes, no trailing commas, and never put a double quote character inside a text value.
 Exact shape:
@@ -309,7 +313,7 @@ Exact shape:
 
 SYSTEM_HE = """Translate this market summary from English into natural, simple Israeli Hebrew, as a financial newspaper would write it.
 Keep the meaning exactly: who did what must not change, and add nothing. Never leave an ordinary English word in the Hebrew.
-Glossary: stocks = מניות; sell-off = גל מכירות; safe haven = נכס מפלט; index = מדד; chip stocks = מניות השבבים; interest rate = ריבית; rate hike = העלאת ריבית; yield = תשואה; Treasury bond = אג"ח ממשלתי; inflation = אינפלציה; results / earnings = דוחות או רווחים; forecast / outlook = תחזית; oil = נפט; tariffs = מכסים; sanctions = סנקציות; midterm elections = בחירות אמצע הקדנציה; the Fed = הפד; Wall Street = וול סטריט; AI = בינה מלאכותית.
+Glossary: stocks = מניות; sell-off or rout = גל מכירות (never "מסלול"); safe haven = נכס מפלט; crypto = קריפטו; 10-year Treasury yield = תשואת אג"ח ממשלתי ל-10 שנים; index = מדד; chip stocks = מניות השבבים; interest rate = ריבית; rate hike = העלאת ריבית; yield = תשואה; Treasury bond = אג"ח ממשלתי; inflation = אינפלציה; results / earnings = דוחות או רווחים; forecast / outlook = תחזית; oil = נפט; tariffs = מכסים; sanctions = סנקציות; midterm elections = בחירות אמצע הקדנציה; the Fed = הפד; Wall Street = וול סטריט; AI = בינה מלאכותית.
 Names of companies, indices and people stay in English letters (Nvidia, S&P 500, Nasdaq, VIX). A company is feminine in Hebrew. Keep every number exactly as written.
 Write Hebrew abbreviations with the mark ״ (ארה״ב, נאסד״ק), never with a plain double quote.
 Keep the same fields and the same number of topics; an empty field stays empty. Answer with the JSON only, in the same shape as the input."""
@@ -317,7 +321,9 @@ Keep the same fields and the same number of topics; an empty field stays empty. 
 _ADVICE = re.compile(r"\b(you should|we recommend|recommend(?:ed|s)? (?:to )?(?:buy|sell)|should (?:buy|sell|hold)|time to (?:buy|sell)|buy now|sell now)\b", re.I)
 # v37b, seen in the first real answer (5.11.2026): "suggested investors were not fleeing to bonds, possibly reflecting inflation concerns"
 _OWN_GUESS = re.compile(r"\b(suggest(?:s|ed|ing)?|possibly|perhaps|reflect(?:s|ed|ing)?|risk-off|risk-on|investors? (?:sought|fled|fleeing|rushed|were|are)|"
-                        r"profit[- ]taking|rotation|breadth was)\b", re.I)
+                        r"profit[- ]taking|rotation|breadth was|reacted|relief|safe[- ]haven|across (?:all )?sectors)\b", re.I)
+# v37c: more than one of these in a topic = a list of the market numbers the site shows anyway, not a story
+_ASSET_WORDS = (r"\boil\b|\bwti\b|\bcrude\b", r"\byields?\b|\btreasur", r"\bgold\b", r"\bvix\b", r"\bbitcoin\b|\bcrypto")
 _ENDED = re.compile(r"\b(ended|closed|finished|at the close)\b", re.I)    # 14:06 ET on 6.11.2026: "The US market ended mixed"
 _ISO_DATE = re.compile(r"\s*\b(?:on |for )?\d{4}-\d{2}-\d{2}\b")
 MAX_OVERVIEW = 450       # the shape asks for 380; the first real answer wrote 480, a list of every number
@@ -556,13 +562,18 @@ def clean_answer(text, items, market, strict=True):
         title, summary = _ISO_DATE.sub("", str(t.get("title", ""))).strip(), _ISO_DATE.sub("", str(t.get("summary", ""))).strip()
         impact = _ISO_DATE.sub("", str(t.get("impact", ""))).strip()
         about = _topic_words(f"{title} {summary}")
-        sources, seen = [], set()
+        sources, seen, rank = [], set(), len(items) + 1
         for n in _ints(t.get("items"), 1, len(items)):
             it = items[n - 1]
             k = it["url"] or it["title"]
             if k and k not in seen and _topic_words(it["title"]) & about:
                 seen.add(k)
+                rank = min(rank, n)
                 sources.append({"title_en": it["title"], "title_he": it["title_he"], "url": it["url"], "category": it["tag"]})
+        if sum(bool(re.search(w, summary, re.I)) for w in _ASSET_WORDS) >= 2:
+            if strict:
+                raise ValueError(f"the topic '{title}' only lists market numbers. The site shows them already; a topic must be a news story from the items")
+            continue
         if not (title and summary and sources):
             if strict and title and summary:
                 raise ValueError(f"the topic '{title}' has no item about that story. A topic must be a story told by the items, "
@@ -581,9 +592,15 @@ def clean_answer(text, items, market, strict=True):
                 raise ValueError(f"the topic '{title}' has numbers that are in neither the market numbers nor the items: "
                                  f"{extra[:4]}. Use only numbers you were given")
             continue
-        topics.append({"title_en": title, "summary_en": summary, "impact_en": impact, "sources": sources[:MAX_SOURCES]})
+        topics.append({"title_en": title, "summary_en": summary, "impact_en": impact, "sources": sources[:MAX_SOURCES], "_rank": rank})
     if not overview or not topics:
         raise ValueError("the answer has no usable overview or topics: every topic needs the numbers of its items")
+    # v37c: the items come most important first, so the order of the topics follows them. 5.11.2026 opened with oil and bonds.
+    topics.sort(key=lambda t: t["_rank"])
+    if strict and market and market.get("move") in ("extreme", "notable") and topics[0]["_rank"] != 1:
+        raise ValueError("the day's move was large and no topic tells item [1], the most covered story. Make it the first topic")
+    for t in topics:
+        del t["_rank"]
     extra = invented_numbers(overview, allowed)
     if extra:
         raise ValueError(f"the overview has numbers that are in neither the market numbers nor the items: {extra[:4]}. "
@@ -695,6 +712,25 @@ def _add_hebrew(payload, translate_fn, cache_from, deadline):
 
 
 # ------------------------------------------------------------------ one day
+@contextmanager
+def _digest_models():
+    """LLM_MODELS_DIGEST (a GitHub variable), if set, and a longer wait: a large model can take more than the usual minute."""
+    names = {"LLM_TIMEOUT_SECONDS": DIGEST_CALL_TIMEOUT_SEC, "LLM_BUDGET_SECONDS": DIGEST_CALL_BUDGET_SEC}
+    models = (os.environ.get("LLM_MODELS_DIGEST") or "").strip()
+    if models:
+        names["LLM_MODELS"] = models
+    saved = {k: os.environ.get(k) for k in names}
+    os.environ.update(names)
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 def after_close_update_due(row, day, now=None):
     """The first run after the close always updates, whatever the time since the last one."""
     et = (now or datetime.now(timezone.utc)).astimezone(_ET)
@@ -736,9 +772,10 @@ def _update_day(conn, day, translate_fn, force=False, final=False):
           f"{market['move'] if market else 'no numbers'}; first: {sel[0]['title'][:80]}")
 
     deadline = time.time() + UPDATE_BUDGET_SEC
-    payload, model = _ask(SYSTEM, _prompt(sel, day, market), lambda t: clean_answer(t, sel, market), 3000, deadline,
-                          fallback=lambda t: clean_answer(t, sel, market, strict=False))
-    payload = _add_hebrew(payload, translate_fn, row["payload"] if row else None, deadline + 120)
+    with _digest_models():
+        payload, model = _ask(SYSTEM, _prompt(sel, day, market), lambda t: clean_answer(t, sel, market), 3000, deadline,
+                              fallback=lambda t: clean_answer(t, sel, market, strict=False))
+        payload = _add_hebrew(payload, translate_fn, row["payload"] if row else None, deadline + 120)
     payload["market"] = market
 
     stamps = [it["ts"] for it in fetched if it.get("ts")]

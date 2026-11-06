@@ -818,6 +818,19 @@ def test_digest_rejects_what_the_first_real_answer_did():
     assert len(d.clean_answer(answer(overview=long), items, _CRASH_MARKET, strict=False)["overview_en"]) <= d.MAX_OVERVIEW
     dated = d.clean_answer(answer(overview="The S&P 500 fell 4.4% on 2026-11-05."), items, _CRASH_MARKET)
     assert dated["overview_en"] == "The S&P 500 fell 4.4%."
+    # the third answer: a topic that only lists the numbers, and the main story last
+    lists = _json.dumps({"overview": good, "topics": [{"title": "Wall Street moves", "summary": "On Wall Street oil rose 2.72% and gold 0.99%.", "impact": "", "items": [1]}]})
+    with pytest.raises(ValueError, match="lists market numbers"):
+        d.clean_answer(lists, items, _CRASH_MARKET)
+    with pytest.raises(ValueError, match="no usable"):
+        d.clean_answer(lists, items, _CRASH_MARKET, strict=False)
+    two = [dict(items[0]), dict(id=3, title="Oil climbs on Iran worries as tankers wait", tag="אנרגיה", url="https://x.example/3", title_he="", body="")]
+    topic = lambda title, summary, n: {"title": title, "summary": summary, "impact": "", "items": [n]}
+    oil_first = [topic("Oil climbs", "Oil climbs on Iran worries.", 2), topic("AI selloff", "AI stocks fell 7% on Wall Street.", 1)]
+    assert [t["title_en"] for t in d.clean_answer(_json.dumps({"overview": good, "topics": oil_first}), two, _CRASH_MARKET)["topics"]] == ["AI selloff", "Oil climbs"]
+    with pytest.raises(ValueError, match="item \\[1\\]"):
+        d.clean_answer(_json.dumps({"overview": good, "topics": oil_first[:1]}), two, _CRASH_MARKET)
+    assert d.clean_answer(_json.dumps({"overview": good, "topics": oil_first[:1]}), two, dict(_CRASH_MARKET, move="normal"))
     # 14:06 ET on 6.11.2026: "The US market ended mixed"
     open_market = dict(_CRASH_MARKET, intraday=True)
     with pytest.raises(ValueError, match="still open"):
@@ -826,6 +839,20 @@ def test_digest_rejects_what_the_first_real_answer_did():
     assert d.clean_answer(answer(overview="The S&P 500 ended down 4.4%."), items, _CRASH_MARKET)     # after the close, it did
     with pytest.raises(ValueError, match="on its own"):
         d.clean_answer(answer(summary="AI stocks fell 7% on profit-taking."), items, _CRASH_MARKET)
+
+
+def test_digest_models_only_for_the_digest(monkeypatch):
+    import ai_digest as d
+    import os as _os
+    monkeypatch.setenv("LLM_MODELS", "small")
+    monkeypatch.setenv("LLM_MODELS_DIGEST", "large,small")
+    monkeypatch.delenv("LLM_TIMEOUT_SECONDS", raising=False)
+    with d._digest_models():
+        assert _os.environ["LLM_MODELS"] == "large,small" and _os.environ["LLM_TIMEOUT_SECONDS"] == d.DIGEST_CALL_TIMEOUT_SEC
+    assert _os.environ["LLM_MODELS"] == "small" and "LLM_TIMEOUT_SECONDS" not in _os.environ
+    monkeypatch.delenv("LLM_MODELS_DIGEST")
+    with d._digest_models():
+        assert _os.environ["LLM_MODELS"] == "small"          # not set: the same models as the other jobs
 
 
 def test_digest_hebrew_has_no_english_words_and_known_fixes():

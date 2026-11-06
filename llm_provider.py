@@ -102,7 +102,8 @@ def _try_model(base, key, model, messages, max_tokens, temperature):
     thinking_off = True
     for attempt in (1, 2, 3):
         try:
-            r = _post(base, key, model, messages, max_tokens, temperature, TIMEOUT_SECONDS, thinking_off)
+            r = _post(base, key, model, messages, max_tokens, temperature,
+                      float(_setting("LLM_TIMEOUT_SECONDS", str(TIMEOUT_SECONDS))), thinking_off)
         except Exception as e:  # noqa: BLE001
             raise _Skip(f"{model}: {type(e).__name__}: {str(e)[:120]}")
         if r.status_code in (401, 403):
