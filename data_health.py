@@ -111,6 +111,15 @@ def breadth_problems(r: dict) -> List[str]:
     return out
 
 
+MOVERS_MAX_GAP = 60             # stocks. The two are computed apart, and a real gap of a few comes from timing
+
+
+def movers_gap(up, down, advancers, decliners) -> int:
+    """v37e: the heatmap against the breadth of the last session. A wide gap = the heatmap holds another day's moves, with a fresh
+    time on its rows (7.11.2026: 73 up and 430 down from Thursday, on a Friday with 184 up and 318 down)."""
+    return max(abs((up or 0) - (advancers or 0)), abs((down or 0) - (decliners or 0)))
+
+
 def digest_problems(payload: dict) -> List[str]:
     """v37: the day's AI summary against the day's real numbers, written by ai_digest.py. A large move the overview does not name
     = the summary missed the main story (5.11.2026: S&P 500 -4.36%, and the overview spoke of "technology and earnings")."""
@@ -243,6 +252,15 @@ def check_values(cur) -> List[dict]:
     odd = cur.fetchall()
     detail = ", ".join(f"{r['ticker']} ({r['change_pct']}%, ${r['close_price']})" for r in odd[:20])
     out = [_line("value.movers", "warn" if odd else "ok", detail or f"no price of 0, no NaN, no move of {BIG_MOVE_PCT}%+", len(odd))]
+    cur.execute("""SELECT COUNT(*) FILTER (WHERE change_pct > 0) AS up, COUNT(*) FILTER (WHERE change_pct < 0) AS down
+                   FROM universe_movers WHERE in_sp500 AND change_pct <> 'NaN'""")
+    m = cur.fetchone()
+    cur.execute("SELECT day, advancers, decliners FROM market_breadth ORDER BY day DESC LIMIT 1")
+    b = cur.fetchone()
+    if b:
+        gap = movers_gap(m["up"], m["down"], b["advancers"], b["decliners"])
+        out.append(_line("value.movers_session", "warn" if gap > MOVERS_MAX_GAP else "ok",
+                         f"heatmap {m['up']} up, {m['down']} down; breadth of {b['day']} {b['advancers']} up, {b['decliners']} down", gap))
     cur.execute("SELECT day, spy_close, spy_sma50, spy_sma200, vix FROM market_regime ORDER BY day DESC LIMIT 1")
     r = cur.fetchone()
     if r:

@@ -38,7 +38,10 @@ import time
 from contextlib import contextmanager
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN, ROUND_HALF_UP
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
+
+import requests
 
 import llm_provider
 from news_links import is_unwanted_headline, LOCAL_RE, GLOBAL_RE
@@ -94,8 +97,28 @@ def day_bounds(day):
 
 
 # ------------------------------------------------------------------ the market's own numbers
+def bars_from_chart(data):
+    """[(UTC date, close)] from Yahoo's chart answer: one bar a date, in order, without an empty last bar."""
+    r = data["chart"]["result"][0]
+    bars = {}
+    for ts, c in zip(r["timestamp"], r["indicators"]["quote"][0]["close"]):
+        if c is not None:
+            bars[datetime.fromtimestamp(ts, tz=timezone.utc).date()] = float(c)
+    return sorted(bars.items())
+
+
 def _history(symbol):
-    """[(date, close)] of the last month. The same yfinance call the jobs in GitHub Actions already make."""
+    """[(date, close)] of the last month. v37e: the chart answer itself first: for Bitcoin, yfinance's history gave Thursday's
+    -5.55% as Friday's move (the real one: -0.26%). yfinance only if that fails, as the jobs in GitHub Actions already call it."""
+    try:
+        r = requests.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(symbol, safe='')}", params={"range": "1mo", "interval": "1d"},
+                         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0 Safari/537.36"}, timeout=20)
+        r.raise_for_status()
+        bars = bars_from_chart(r.json())
+        if len(bars) >= 2:
+            return bars
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] {symbol}: chart answer failed ({type(e).__name__}), using yfinance")
     import yfinance as yf
     h = yf.Ticker(symbol).history(period="1mo", interval="1d", auto_adjust=False)
     return [(i.date(), float(c)) for i, c in zip(h.index, h["Close"]) if c == c]

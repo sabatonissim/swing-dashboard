@@ -3511,6 +3511,16 @@ def refresh_implied_moves():
           + (f" (e.g. {results[0][2]} ±{results[0][0]}% to {results[0][1]})" if results else ""))
 
 
+def movers_row(closes, newest_session):
+    """(change %, last close) of one ticker, or None. v37e: a download without the latest session must not overwrite the table:
+    the runs of 7.11.2026 00:00-01:00 UTC wrote Thursday's moves over Friday's (AMD -17.26% for +11.04%), and the heatmap and the
+    day's summary showed them, with a fresh time on the row, until Monday morning."""
+    if len(closes) < 2 or (newest_session and closes.index[-1].date() < newest_session):
+        return None
+    last, prev = float(closes.iloc[-1]), float(closes.iloc[-2])
+    return (round((last - prev) / prev * 100, 2), round(last, 2)) if prev else None
+
+
 def refresh_movers_only():
     init_db()
     universe = build_scan_universe()
@@ -3518,14 +3528,24 @@ def refresh_movers_only():
     cur = conn.cursor()
     cur.execute("SELECT ticker, market_cap FROM universe_movers")
     mcaps = {r[0]: r[1] for r in cur.fetchall()}
+    newest_session = None
+    try:
+        cur.execute("SELECT MAX(day) FROM market_breadth")      # saved right after the close
+        newest_session = cur.fetchone()[0]
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        print(f"[warn] movers refresh: no last session to compare with: {type(e).__name__}: {e}")
     cur.close()
     conn.close()
 
-    changes = []
+    # dates, not period="5d": what the download returns for a period was the suspect in the case above (not proven)
+    now = datetime.now(timezone.utc)
+    start, end = (now - timedelta(days=10)).date().isoformat(), (now + timedelta(days=2)).date().isoformat()
+    changes, behind = [], 0
     for i in range(0, len(universe), 100):
         chunk = universe[i:i + 100]
         try:
-            df = _yf_frames(chunk, period="5d", interval="1d")
+            df = _yf_frames(chunk, start=start, end=end, interval="1d")
         except Exception as e:
             print(f"[warn] movers refresh: batch {i // 100} failed: {type(e).__name__}: {e}")
             continue
@@ -3534,13 +3554,14 @@ def refresh_movers_only():
                 closes = df[t]["Close"].dropna()
             except Exception:
                 continue
-            if len(closes) < 2:
+            row = movers_row(closes, newest_session)
+            if row is None:
+                behind += len(closes) >= 2
                 continue
-            last, prev = float(closes.iloc[-1]), float(closes.iloc[-2])
-            if not prev:
-                continue
-            changes.append((t, round((last - prev) / prev * 100, 2), round(last, 2), mcaps.get(t)))
+            changes.append((t, row[0], row[1], mcaps.get(t)))
         time.sleep(1.0)
+    if behind:
+        print(f"[warn] movers refresh: {behind} ticker(s) came back without the session of {newest_session}; their rows were kept.")
     if len(changes) < 50:
         print(f"[warn] movers refresh: only {len(changes)} prices came back — not overwriting the table.")
         return

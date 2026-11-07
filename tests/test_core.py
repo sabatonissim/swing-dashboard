@@ -841,6 +841,33 @@ def test_digest_rejects_what_the_first_real_answer_did():
         d.clean_answer(answer(summary="AI stocks fell 7% on profit-taking."), items, _CRASH_MARKET)
 
 
+def test_movers_refresh_keeps_a_row_when_the_session_is_missing(scanner):
+    """v37e: the 01:00 UTC run wrote Thursday's moves over Friday's."""
+    import datetime as _dt
+    idx = pd.to_datetime(["2026-11-04", "2026-11-05", "2026-11-06"])
+    closes = pd.Series([488.78, 404.40, 449.04], index=idx)
+    assert scanner.movers_row(closes, _dt.date(2026, 11, 6)) == (11.04, 449.04)
+    assert scanner.movers_row(closes.iloc[:2], _dt.date(2026, 11, 6)) is None             # no Friday: keep what is there
+    assert scanner.movers_row(closes.iloc[:2], None) == (-17.26, 404.4)                    # nothing to compare with
+    assert scanner.movers_row(closes.iloc[:1], None) is None
+
+
+def test_movers_gap_in_health():
+    import data_health as dh
+    assert dh.movers_gap(73, 430, 184, 318) > dh.MOVERS_MAX_GAP                            # 7.11.2026
+    assert dh.movers_gap(180, 320, 184, 318) <= dh.MOVERS_MAX_GAP
+
+
+def test_chart_bars_by_date():
+    """v37e: Friday's move of Bitcoin came out as Thursday's -5.55%."""
+    import ai_digest as d
+    import datetime as _dt
+    day = lambda s: int(_dt.datetime.fromisoformat(s).replace(tzinfo=_dt.timezone.utc).timestamp())
+    data = {"chart": {"result": [{"timestamp": [day("2026-11-05T00:00:00"), day("2026-11-06T00:00:00"), day("2026-11-06T18:00:00"), day("2026-11-07T00:00:00")],
+                                  "indicators": {"quote": [{"close": [100.0, 99.0, 99.74, None]}]}}]}}
+    assert d.bars_from_chart(data) == [(_dt.date(2026, 11, 5), 100.0), (_dt.date(2026, 11, 6), 99.74)]
+
+
 def test_digest_does_not_tell_yesterdays_move_as_todays():
     """v37c: 5.11.2026: "Oil prices tumbled", from headlines about 4.11 (-8.29%), and oil +2.72% on the same screen."""
     import ai_digest as d
