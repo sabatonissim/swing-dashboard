@@ -33,3 +33,11 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}   # v19 price alerts (push notifications)
+      # v40: guidance outside the fast hours (late filings) + the consensus for the next days' reports
+      - run: python -u earnings_guidance.py
+        if: ${{ !cancelled() }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODELS: ${{ vars.LLM_MODELS }}

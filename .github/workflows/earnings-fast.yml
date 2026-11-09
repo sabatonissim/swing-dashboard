@@ -17,7 +17,7 @@ permissions:
 jobs:
   fast:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 9
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -28,3 +28,11 @@ jobs:
       - run: python pipeline_a_scanner.py --earnings-fast
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # v40: the company's guidance from the same press release + the consensus saved before upcoming reports (at most ~2.5 min)
+      - run: python -u earnings_guidance.py
+        if: ${{ !cancelled() }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODELS: ${{ vars.LLM_MODELS }}
