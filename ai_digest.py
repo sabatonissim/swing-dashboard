@@ -136,8 +136,9 @@ def move_size(indices, same_day):
 
 
 def _market_from_db(conn, session_day):
-    """How many stocks rose and fell, and the big movers. Under 1 KB. universe_movers holds only the latest prices, so an
-    earlier day written again has no movers (the time filter), never another day's."""
+    """How many stocks rose and fell, and the big movers. Under 1 KB. universe_movers holds only the latest session, so an
+    earlier day written again has no movers, never another day's. v37f: not by the row's date. A refresh on Saturday stamps the
+    rows of Friday's prices with Saturday, and a filter on the date left only the stocks it does not refresh: no AMD (+11%)."""
     out = {}
     cur = conn.cursor()
     try:
@@ -145,18 +146,20 @@ def _market_from_db(conn, session_day):
         r = cur.fetchone()
         if r:
             out["breadth"] = {"advancers": r[0], "decliners": r[1], "new_highs": r[2], "new_lows": r[3]}
-        start = datetime.combine(session_day, dtime.min, tzinfo=_ET)
-        movers = {}
-        for side, order in (("down", "ASC"), ("up", "DESC")):
-            cur.execute(f"""SELECT ticker, change_pct FROM universe_movers
-                            WHERE market_cap >= %s AND timestamp >= %s AND timestamp < %s AND change_pct <> 'NaN'
-                            ORDER BY change_pct {order} LIMIT %s""",   # fixed words, not input
-                        (BIG_CAP, start, start + timedelta(days=1), MOVERS_SHOWN))
-            movers[side] = [{"ticker": t, "change_pct": round(float(c), 2)} for t, c in cur.fetchall()]
-        movers["down"] = [m for m in movers["down"] if m["change_pct"] < 0]
-        movers["up"] = [m for m in movers["up"] if m["change_pct"] > 0]
-        if movers["down"] or movers["up"]:
-            out["movers"] = movers
+        cur.execute("SELECT MAX(day) FROM market_breadth")
+        if cur.fetchone()[0] == session_day:
+            start = datetime.combine(session_day, dtime.min, tzinfo=_ET)
+            movers = {}
+            for side, order in (("down", "ASC"), ("up", "DESC")):
+                cur.execute(f"""SELECT ticker, change_pct FROM universe_movers
+                                WHERE market_cap >= %s AND timestamp >= %s AND change_pct <> 'NaN'
+                                ORDER BY change_pct {order} LIMIT %s""",   # fixed words, not input
+                            (BIG_CAP, start, MOVERS_SHOWN))
+                movers[side] = [{"ticker": t, "change_pct": round(float(c), 2)} for t, c in cur.fetchall()]
+            movers["down"] = [m for m in movers["down"] if m["change_pct"] < 0]
+            movers["up"] = [m for m in movers["up"] if m["change_pct"] > 0]
+            if movers["down"] or movers["up"]:
+                out["movers"] = movers
     except Exception as e:  # noqa: BLE001
         conn.rollback()
         print(f"[ai_digest] breadth / movers skipped ({type(e).__name__}: {e})")
