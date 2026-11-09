@@ -4327,9 +4327,18 @@ function renderEarningsCalendar(items){
 let _earnStripCentered = false;
 const EARN_SESSION_SHOWN = 12;
 const _earnShowAll = new Set();   // "day|session" groups opened in full
-const _earnSessionClosed = new Set();   // v40c: "day|session" lists the user closed (owner: "in the evening, without scrolling past the morning")
+// v40c: "day|session" lists the user closed (owner: "in the evening, without scrolling past the morning"); v40d: kept in this
+// browser across reloads (two weeks back at most, so the list does not grow)
+const EARN_CLOSED_KEY = 'swing_earn_closed';
+const _earnSessionClosed = new Set((() => {
+  try {
+    const cut = _earnLocalDate(-14);
+    return (JSON.parse(localStorage.getItem(EARN_CLOSED_KEY) || '[]') || []).filter(k => typeof k === 'string' && k.slice(0, 10) >= cut);
+  } catch(e){ return []; }
+})());
 function toggleEarnSession(key){
   if(_earnSessionClosed.has(key)) _earnSessionClosed.delete(key); else _earnSessionClosed.add(key);
+  try { localStorage.setItem(EARN_CLOSED_KEY, JSON.stringify([..._earnSessionClosed])); } catch(e){}
   if(_earnOpen && _earnSessionClosed.has(key) && lastEarningsCalItems){   // closing the list closes the company open in it
     const it = lastEarningsCalItems.find(x => `${x.ticker}|${x.report_date}` === _earnOpen);
     if(it && `${it.report_date}|${it.session in { bmo:1, amc:1 } ? it.session : 'unknown'}` === key) _earnOpen = null;
@@ -4405,9 +4414,19 @@ function _earnRowHtml(it, todayStr){
   </div>`;
 }
 
+function _earnRowTop(key){
+  const row = [...document.querySelectorAll('#earnings-cal-wrap .earn-row')].find(r => r.dataset.key === key);
+  return row ? row.getBoundingClientRect().top : null;
+}
+
 function toggleEarnDetail(key){
+  // v40d (owner): opening a company further down closes the one above it, and everything below jumped up with it, so
+  // the clicked row left the screen. The clicked row now stays exactly where it was clicked.
+  const before = _earnRowTop(key);
   _earnOpen = _earnOpen === key ? null : key;
   if(lastEarningsCalItems) renderEarningsCalendar(lastEarningsCalItems);
+  const after = before == null ? null : _earnRowTop(key);
+  if(after != null && Math.abs(after - before) > 1) window.scrollBy(0, after - before);
   if(!_earnOpen) return;
   const ticker = key.split('|')[0];
   if(_earnDetail[ticker]) return;                       // already loaded / loading
