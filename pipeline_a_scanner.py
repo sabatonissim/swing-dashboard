@@ -2802,6 +2802,21 @@ def _latest_statement_revenue(inc):
         return None
 
 
+# v38c: a quarter's revenue above 10 times the company's whole market value is in another currency (Yahoo gives Honda's and KT's
+# in yen / won; the site showed "$5,816B"), and 0 = no analyst estimate. Neither is stored. TWIN of api_server._REV_MCAP_MAX.
+REV_MCAP_MAX = 10
+
+
+def _usable_revenue(ticker, value, market_cap):
+    if value is None:
+        return None
+    if value <= 0 or (market_cap and value > REV_MCAP_MAX * market_cap):
+        print(f"[info] earnings {ticker}: revenue figure {value:,.0f} against a market cap of {market_cap or 0:,.0f} — not stored "
+              "(no estimate, or another currency)")
+        return None
+    return value
+
+
 def _fetch_revenue_result(ticker: str, report_dt, stored_estimate=None) -> tuple:
     """Returns (revenue_estimate, revenue_actual, revenue_period_end).
 
@@ -2998,6 +3013,9 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
             time.sleep(INTER_TICKER_DELAY_SEC)
             rev_est, rev_actual, rev_period_end = _fetch_revenue_result(ticker, dt_utc, stored_rev_est.get(key))
             time.sleep(INTER_TICKER_DELAY_SEC)
+            rev_est, rev_actual = _usable_revenue(ticker, rev_est, mcap), _usable_revenue(ticker, rev_actual, mcap)
+            if rev_actual is None:
+                rev_period_end = None
         if eps_est is None and dt_utc > now_utc and nasdaq_eps.get(key) is not None:
             # Nasdaq's consensus until Yahoo's is fetched; its "source date" is this report (init_db clears
             # estimates that have none)

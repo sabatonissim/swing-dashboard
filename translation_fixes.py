@@ -51,6 +51,10 @@ EN_REWRITES = [
     # v28d: Wall Street slang for an earnings report — "Ahead of the Print" -> "לפני ההדפסה"
     (r"\b(ahead of|before|after|into|for)\s+(?:the|its|their)\s+(?:earnings\s+)?print\b", r"\1 the earnings report"),
     (r"\b(earnings|q[1-4])\s+print\b", r"\1 report"),
+    # v38c: "Visa slips" -> "תלושי ויזה"
+    (r"\bslips\b", "falls slightly"),
+    (r"\bslipped\b", "fell slightly"),
+    (r"\bslip(?=\s+(?:as|after|on|in|amid|while)\b)", "fall slightly"),
 ]
 
 HE_FIXES = [
@@ -96,6 +100,48 @@ HE_FIXES = [
     ("חוזים עתידיים אנוסים", "חוזים עתידיים על קריפטו"),
 ]
 
+# v38c: company names that are ordinary English words, which Google translates ("Ball" -> "כדור", "Visa slips" -> "תלושי ויזה",
+# "First Solar" -> "פירסט סולאר", "Southern Company" -> "חברת דרום"). With the legal suffix after them ("Ball Corp") Google keeps
+# them in English letters (tested 9.11.2026); fix_he takes the suffix off again. Not placeholders: a real English sentence.
+# Add a name here when it comes out translated on the site. Multi-word names count anywhere; a one-word name only where it reads
+# as the company (_NAME_CONTEXT), so "the Fed's inflation target" stays a word.
+COMPANY_WORD_NAMES = [
+    "Target", "Visa", "Block", "Ball", "Progressive", "Gap", "Carnival", "Caterpillar", "Carrier", "Waters", "Travelers",
+    "Snowflake", "Shell", "Discover", "Mosaic", "Coherent", "Unity", "Snap", "Lucid", "Diamondback", "Corning", "Paramount",
+    "Southern Company", "Public Storage", "First Solar", "General Mills", "Monster Beverage", "Best Buy", "Dollar General",
+    "Dollar Tree", "Home Depot", "Applied Materials", "Texas Instruments", "Analog Devices", "Global Payments", "State Street",
+    "Northern Trust", "Interactive Brokers", "Iron Mountain", "Genuine Parts", "Tractor Supply", "General Dynamics", "Air Products",
+    "International Paper", "Sealed Air", "Electronic Arts", "Live Nation", "Fair Isaac", "Realty Income", "Extra Space Storage",
+    "Digital Realty", "American Tower", "Crown Castle", "Boston Scientific", "Intuitive Surgical", "Marathon Petroleum",
+    "Steel Dynamics", "Vulcan Materials", "Republic Services", "Waste Management", "Quest Diagnostics", "Cardinal Health",
+    "Southwest Airlines", "United Airlines", "American Airlines", "Delta Air Lines", "Principal Financial", "Constellation Brands",
+    "Constellation Energy", "Dominion Energy", "Duke Energy", "Charter Communications", "Church & Dwight", "Brown & Brown",
+]
+_SUFFIX = "Inc"
+_NAME_CONTEXT_AFTER = (r"(?i:'s|’s|\s*\(|,|\s+(?:shares?|stock|stocks|earnings|results|revenue|sales|profits?|Q[1-4]|CEO|"
+                       r"forecasts?|outlook|guidance|beats?|miss(?:es)?|tops?|cuts?|raises?|lifts?|slips?|jumps?|falls?|rises?|"
+                       r"sinks?|soars?|surges?|drops?|plunges?|gains?|rall(?:y|ies)|tumbles?|reports?|posts?|came|says|to|will|is|and|or)\b)")
+_NAME_BAD_BEFORE = re.compile(r"(?:inflation|price|rate|rates|policy|profit|sales|earnings|its|the|a|an|aircraft|oil|fed|fed's|"
+                              r"credit|debit|travel|student|work|year)\s+$", re.I)
+_LEGAL = r"\s+(?:Inc|Corp|Corporation|Co|Company|Ltd|plc|Group|Holdings)\b"
+
+
+def _name_re(name):
+    word = r"(?<![\w&'’-])" + re.escape(name) + r"(?![\w&-])(?!" + _LEGAL + ")"
+    return re.compile(word + ("" if " " in name else "(?=" + _NAME_CONTEXT_AFTER + "|\\s*$)"))
+
+
+_NAME_RES = [(n, _name_re(n)) for n in COMPANY_WORD_NAMES]
+_NAME_BACK = re.compile(r"\b(" + "|".join(re.escape(n) for n in sorted(COMPANY_WORD_NAMES, key=len, reverse=True)) + r") " + _SUFFIX + r"\b\.?")
+
+
+def keep_company_names(text: str) -> str:
+    """The names above, with " Inc" after them where they are the company, so the translator keeps them in English."""
+    for name, rx in _NAME_RES:
+        text = rx.sub(lambda m: m.group(0) if _NAME_BAD_BEFORE.search(text[:m.start()]) else f"{m.group(0)} {_SUFFIX}", text)
+    return text
+
+
 # Google sometimes adds vowel points to single words ("לִחיוֹת"). Points and accents only — not the maqaf (U+05BE) or
 # the Hebrew punctuation marks U+05C0 / U+05C3 / U+05C6.
 _NIQQUD = re.compile(r"[֑-ׇֽֿׁׂׅׄ]")
@@ -105,7 +151,7 @@ def prep_en(text: str) -> str:
     """English text as it should be sent to the translator."""
     for pat, rep in EN_REWRITES:
         text = re.sub(pat, rep, text, flags=re.IGNORECASE)
-    return text
+    return keep_company_names(text)
 
 
 def fix_he(text: str) -> str:
@@ -114,4 +160,5 @@ def fix_he(text: str) -> str:
     text = _NIQQUD.sub("", html.unescape(text or ""))
     for bad, good in HE_FIXES:
         text = text.replace(bad, good)
-    return text
+    text = _NAME_BACK.sub(r"\1", text)          # v38c: "Ball Inc" -> "Ball" (keep_company_names added the suffix)
+    return re.sub(r'(?<=\S) בע["״]מ(?=[\s,.;:]|$)', "", text)    # "בלוק בע"מ": the same suffix, translated

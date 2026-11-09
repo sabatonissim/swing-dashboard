@@ -774,6 +774,25 @@ def backfill_article_urls(budget: int) -> int:
     return done
 
 
+NEWS_KEEP_DAYS = 90       # v38c: as long as the daily summaries (ai_digest.KEEP_DAYS); a day's summary page reads that day's news
+NEWS_PRUNE_BATCH = 2000   # a run deletes at most this many: the first runs clear the backlog in small steps
+
+
+def prune_old_news(conn):
+    """v38c: macro_news was 115 of the database's 182 MB on 9.11.2026 and only grew (~400 headlines a day). Nothing is read
+    back to the runner: no network cost. Returns how many rows went."""
+    cur = conn.cursor()
+    cur.execute("""DELETE FROM macro_news WHERE id IN (
+                       SELECT id FROM macro_news WHERE "timestamp" < NOW() - make_interval(days => %s) ORDER BY id LIMIT %s)""",
+                (NEWS_KEEP_DAYS, NEWS_PRUNE_BATCH))
+    n = cur.rowcount
+    conn.commit()
+    cur.close()
+    if n:
+        print(f"[info] old news: deleted {n} headline(s) older than {NEWS_KEEP_DAYS} days")
+    return n
+
+
 def run_pipeline_b():
     import random, time
     from news_links import is_google_news, decode_google_news_url
@@ -838,6 +857,10 @@ def run_pipeline_b():
             backfill_article_urls(min(40, decode_budget))
     except Exception as e:  # noqa: BLE001
         print(f"[warn] article link backfill failed (non-fatal): {type(e).__name__}: {e}")
+    try:
+        _with_run_conn(prune_old_news)
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] old news cleanup failed (non-fatal): {type(e).__name__}: {e}")
     _close_run_conn()
 
     # AI daily digest (optional): only runs when LLM_API_KEY is set, at most every few hours,

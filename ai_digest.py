@@ -172,11 +172,38 @@ MARKET_OPEN = dtime(9, 30)
 FIRST_BAR_BY = dtime(10, 0)   # Yahoo has the day's bar by then; no bar after it on a weekday = no trading that day
 
 
+def nyse_holidays(year):
+    """The days the US stock market is closed by its regular rules. TWIN of api_server._nyse_holidays (a test keeps them equal):
+    the server is not imported by the jobs."""
+    def nth(month, weekday, n):
+        d = date(year, month, 1)
+        return d + timedelta(days=(weekday - d.weekday()) % 7 + 7 * (n - 1))
+
+    def observed(d):
+        return d - timedelta(days=1) if d.weekday() == 5 else d + timedelta(days=1) if d.weekday() == 6 else d
+    a, b, c = year % 19, year // 100, year % 100                       # Easter (the Gregorian computus), for Good Friday
+    h = (19 * a + b - b // 4 - (b - (b + 8) // 25 + 1) // 3 + 15) % 30
+    k = (32 + 2 * (b % 4) + 2 * (c // 4) - h - c % 4) % 7
+    m = (a + 11 * h + 22 * k) // 451
+    month = (h + k - 7 * m + 114) // 31
+    day = (h + k - 7 * m + 114) % 31 + 1
+    last_may = date(year, 5, 31)
+    out = {nth(1, 0, 3), nth(2, 0, 3), date(year, month, day) - timedelta(days=2), last_may - timedelta(days=last_may.weekday()),
+           observed(date(year, 6, 19)), observed(date(year, 7, 4)), nth(9, 0, 1), nth(11, 3, 4), observed(date(year, 12, 25))}
+    new_year = date(year, 1, 1)                                        # on a Saturday it is not moved back into December
+    if new_year.weekday() != 5:
+        out.add(observed(new_year))
+    return out
+
+
 def no_session_reason(day, now):
-    """Why `day` has no session of its own: weekend / pre_open (later today) / holiday. v38b: on Saturday, Sunday and Monday
-    morning (7-9.11.2026) the digest told Friday's moves as the day's, and Monday's gave AMD's +11.04% to Nvidia."""
+    """Why `day` has no session of its own: weekend / holiday / pre_open (later today). v38b: on Saturday, Sunday and Monday
+    morning (7-9.11.2026) the digest told Friday's moves as the day's, and Monday's gave AMD's +11.04% to Nvidia.
+    v38c: the holidays by the calendar first; before that, Thanksgiving morning read as "opens at 9:30"."""
     if day.weekday() >= 5:
         return "weekend"
+    if day in nyse_holidays(day.year):
+        return "holiday"
     et = now.astimezone(_ET)
     if et.date() < day or (et.date() == day and et.time() < FIRST_BAR_BY):
         return "pre_open"
@@ -664,6 +691,24 @@ def session_told(text, market):
     return None
 
 
+def misattributed_move(text, market, items):
+    """v38c: a biggest mover's number in a sentence that does not name that ticker. 9.11.2026: "Nvidia led large-cap gains with an
+    11.04% rise", AMD's number. A number that is also in the items may be another story's, so it is not checked."""
+    mv = (market or {}).get("movers") or {}
+    item_text = " ".join(f"{i['title']} {i.get('body') or ''}" for i in items)
+    item_numbers = _numbers(item_text)
+    for side in ("up", "down"):
+        for m in mv.get(side) or []:
+            exact = f"{abs(m['change_pct']):.2f}"
+            shown = {x for x in _rounded(exact) | {exact} if "." in x}      # 11.04 or 11.0; a bare "11" is too common
+            if shown & item_numbers:
+                continue
+            for s in re.split(r"(?<=[.!?])\s+", text or ""):
+                if shown & _numbers(s) and not re.search(rf"\b{re.escape(m['ticker'])}\b", s):
+                    return f"{abs(m['change_pct']):.2f}% is the move of {m['ticker']}, and the sentence does not name {m['ticker']}"
+    return None
+
+
 def _sentences_without_session(text, market):
     return " ".join(s for s in re.split(r"(?<=[.!?])\s+", text) if not session_told(s, market)).strip()
 
@@ -746,6 +791,14 @@ def clean_answer(text, items, market, strict=True):
                 raise ValueError(f"the topic '{title}' says {against}. That headline may be about an earlier day. "
                                  "Tell what happened on this day, or drop the topic")
             continue
+        wrong = misattributed_move(f"{title}. {summary} {impact}", market, items)
+        if wrong:
+            if strict:
+                raise ValueError(f"in the topic '{title}', {wrong}. Give each number to its own company, or leave it out")
+            keep = lambda x: " ".join(s for s in re.split(r"(?<=[.!?])\s+", x) if not misattributed_move(s, market, items)).strip()
+            summary, impact = keep(summary), keep(impact)
+            if not summary or misattributed_move(title, market, items):
+                continue
         extra = invented_numbers(f"{title} {summary} {impact}", allowed)
         if extra:
             if strict:
@@ -776,6 +829,11 @@ def clean_answer(text, items, market, strict=True):
         overview = _sentences_without_session(overview, market)
         if not overview:
             raise ValueError("the overview only told a session, on a day with no trading")
+    wrong = misattributed_move(overview, market, items)
+    if wrong:
+        if strict:
+            raise ValueError(f"in the overview, {wrong}. Give each number to its own company, or leave it out")
+        overview = " ".join(s for s in re.split(r"(?<=[.!?])\s+", overview) if not misattributed_move(s, market, items)).strip() or overview
     against = contradicts_market(overview, market)
     if against:
         if strict:

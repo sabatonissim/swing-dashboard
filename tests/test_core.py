@@ -561,6 +561,8 @@ def test_market_holidays_and_trading_days(api):
     assert n(today, today) == 0 and n(today, d(2026, 11, 6)) == 1
     assert n(today, d(2026, 11, 9)) == 2                    # over the weekend
     assert n(d(2026, 11, 25), d(2026, 11, 27)) == 1         # over Thanksgiving
+    import ai_digest                                         # v38c: the twin in the daily summary
+    assert all(ai_digest.nyse_holidays(y) == api._nyse_holidays(y) for y in range(2024, 2036))
 
 
 def test_next_report(api, monkeypatch):
@@ -1053,6 +1055,7 @@ def test_digest_on_a_day_without_a_session():
     assert d.no_session_reason(sat, _dt.datetime(2026, 11, 7, 12, 0, tzinfo=et)) == "weekend"
     assert d.no_session_reason(mon, _dt.datetime(2026, 11, 9, 7, 41, tzinfo=et)) == "pre_open"
     assert d.no_session_reason(_dt.date(2026, 11, 26), _dt.datetime(2026, 11, 26, 13, 0, tzinfo=et)) == "holiday"
+    assert d.no_session_reason(_dt.date(2026, 11, 26), _dt.datetime(2026, 11, 26, 7, 0, tzinfo=et)) == "holiday"   # v38c: Thanksgiving morning
     # the numbers: Friday's stay for the site, the model gets none, Bitcoin's own day is kept
     friday = [(_dt.date(2026, 11, 5), 7353.73), (_dt.date(2026, 11, 6), 7376.86)]
     btc = [(_dt.date(2026, 11, 6), 75746.93), (_dt.date(2026, 11, 7), 76504.4), (_dt.date(2026, 11, 8), 76000.0)]
@@ -1107,6 +1110,84 @@ def test_digest_on_a_day_without_a_session():
     told = {"overview_en": "The US market fell, with the Dow Jones dropping 0.46% while the S&P 500 rose 0.31%.", "market": m}
     assert dh.digest_problems(told) and "S&P 500 0.31%" in dh.digest_problems(told)[0]
     assert dh.digest_problems({"overview_en": "China extended its tariff suspension.", "market": m}) == []
+
+
+def test_digest_gives_each_move_to_its_own_company():
+    """v38c: 9.11.2026, "Nvidia led large-cap gains with an 11.04% rise": AMD's number."""
+    import json as _json
+    import ai_digest as d
+    market = dict(_CRASH_MARKET, move="normal", movers={"up": [{"ticker": "AMD", "change_pct": 11.04}], "down": [{"ticker": "NTRA", "change_pct": -14.59}]})
+    items = [dict(id=1, title="Nvidia board launches probe into CEO", tag="שוק", url="https://x.example/1", title_he="", body=""),
+             dict(id=2, title="Chip stocks rally as AMD jumps on data center deal", tag="שוק", url="https://x.example/2", title_he="", body="")]
+    answer = lambda summary: _json.dumps({"overview": "Stocks moved little.", "topics": [
+        {"title": "Nvidia board probe", "summary": summary, "impact": "", "items": [1]}]})
+    with pytest.raises(ValueError, match="AMD"):
+        d.clean_answer(answer("Nvidia led large-cap gains with an 11.04% rise. Its board launched a probe."), items, market)
+    with pytest.raises(ValueError, match="AMD"):
+        d.clean_answer(answer("Nvidia rose 11.0%. Its board launched a probe."), items, market)
+    assert d.clean_answer(answer("AMD rose 11.04%. Nvidia's board launched a probe into its CEO."), items, market)
+    saved = d.clean_answer(answer("Nvidia led gains with an 11.04% rise. Its board launched a probe."), items, market, strict=False)
+    assert saved["topics"][0]["summary_en"] == "Its board launched a probe."
+    # the same number in an item belongs to that item's story, and is not checked
+    with_number = items + [dict(id=3, title="Nvidia shares up 11.04% in a month", tag="שוק", url="https://x.example/3", title_he="", body="")]
+    assert d.misattributed_move("Nvidia is up 11.04% in a month.", market, with_number) is None
+    assert "NTRA" in d.misattributed_move("Natera fell 14.59%.", market, items)
+
+
+def test_revenue_in_another_currency_or_zero_is_not_shown(scanner, api):
+    """v38c: 6.11.2026, Honda's revenue estimate in yen shown as "$5,816B", and 0 for companies no analyst covers."""
+    honda_cap = 46425510000.0
+    for f in (lambda v, c: api._usable_revenue(v, c), lambda v, c: scanner._usable_revenue("X", v, c)):
+        assert f(5816042000000.0, honda_cap) is None and f(0.0, 3e9) is None and f(None, 3e9) is None
+        assert f(38e9, honda_cap) == 38e9 and f(12e9, None) == 12e9
+    assert api._REV_MCAP_MAX == scanner.REV_MCAP_MAX
+    import datetime as _dt
+    import data_health as dh
+
+    class Cur:
+        def execute(self, *a): pass
+        def fetchall(self):
+            row = lambda t, eps, cov: {"ticker": t, "eps_actual": eps, "revenue_actual": None, "rel": False, "covered": cov}
+            return [row("AAPL", 1.2, True), row("NHC", None, False), row("HMC", None, False), row("XYZ", None, True)]
+    line = dh.check_earnings(Cur(), _dt.datetime(2026, 11, 9, 12, 0, tzinfo=_dt.timezone.utc))[0]
+    assert line["value"] == 1 and "nothing at all: XYZ" in line["detail"] and "not counted): NHC, HMC" in line["detail"]
+
+
+def test_old_news_is_deleted_in_small_steps():
+    """v38c: 90 days, like the daily summaries; at most NEWS_PRUNE_BATCH rows a run."""
+    import pipeline_b_news_aggregator as pb
+    import ai_digest
+    seen = {}
+
+    class Cur:
+        rowcount = 2000
+        def execute(self, sql, params):
+            seen.update(sql=sql, params=params)
+        def close(self): pass
+
+    class Conn:
+        def cursor(self): return Cur()
+        def commit(self): seen["committed"] = True
+    assert pb.prune_old_news(Conn()) == 2000 and seen["committed"]
+    assert seen["params"] == (pb.NEWS_KEEP_DAYS, pb.NEWS_PRUNE_BATCH) and "LIMIT" in seen["sql"] and "DELETE FROM macro_news" in seen["sql"]
+    assert pb.NEWS_KEEP_DAYS == ai_digest.KEEP_DAYS
+
+
+def test_company_names_stay_in_english():
+    """v38c: Google made "כדור" of Ball and "תלושי ויזה" of "Visa slips"; with " Inc" after the name it keeps it (9.11.2026)."""
+    import translation_fixes as tf
+    p = tf.prep_en
+    assert p("Ball and Progressive beat estimates") == "Ball Inc and Progressive Inc came in above estimates"
+    assert p("Visa slips after earnings") == "Visa Inc falls slightly after earnings"
+    assert p("First Solar jumps; Public Storage to buy rival") == "First Solar Inc jumps; Public Storage Inc to buy rival"
+    assert p("Target Cuts Forecast As Shoppers Pull Back").startswith("Target Inc Cuts")
+    assert p("Shares of Carnival") == "Shares of Carnival Inc"
+    # a word, not the company; and a name that already has its suffix
+    for same in ("Fed's Target Rate Holds", "the inflation target is 2%", "Fed Holds Rate Target", "Ball Corp beats", "an aircraft Carrier sails",
+                 "Gaps in the market", "Shell company deals"):
+        assert p(same) == same, same
+    assert tf.fix_he("מניות Ball Inc ו-Progressive Inc עלו") == "מניות Ball ו-Progressive עלו"
+    assert tf.fix_he('אפל ובלוק בע"מ עולות') == "אפל ובלוק עולות"
 
 
 def test_digest_updates_after_the_close_once():

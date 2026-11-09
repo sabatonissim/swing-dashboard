@@ -5653,6 +5653,15 @@ _EARNINGS_COLUMNS = """ticker, report_date, session, market_cap, eps_estimate, e
                        revenue_estimate, revenue_actual, revenue_surprise_pct, implied_move_pct, implied_move_expiry,
                        company_name, eps_from_release"""
 _earnings_last: dict = {"fingerprint": None, "answer": None}
+# v38c: a quarter's revenue above 10 times the company's whole market value is in another currency (Yahoo gives Honda's in yen:
+# the site showed "$5,816B"), and 0 = no analyst estimate at all. Both are shown as empty. TWIN of pipeline_a_scanner.REV_MCAP_MAX.
+_REV_MCAP_MAX = 10
+
+
+def _usable_revenue(value, market_cap):
+    if value is None or value <= 0:
+        return None
+    return None if market_cap and value > _REV_MCAP_MAX * market_cap else value
 
 
 @app.get("/api/earnings-calendar")
@@ -5684,6 +5693,10 @@ def get_earnings_calendar():
         d["implied_move_expiry"] = d["implied_move_expiry"].isoformat() if d.get("implied_move_expiry") else None
         d["name"] = info_map.get(d["ticker"], {}).get("name") or d.pop("company_name", None)   # v27: non-S&P names
         d.pop("company_name", None)
+        for k in ("revenue_estimate", "revenue_actual"):
+            d[k] = _usable_revenue(d[k], d.get("market_cap"))
+        if d["revenue_estimate"] is None or d["revenue_actual"] is None:
+            d["revenue_surprise_pct"] = None
         # v33: revenue alone counts — it was stored but hidden until Yahoo listed the EPS, hours later
         d["reported"] = d["eps_actual"] is not None or d["revenue_actual"] is not None
         items.append(d)

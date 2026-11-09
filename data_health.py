@@ -306,17 +306,26 @@ def check_earnings(cur, now: datetime) -> List[dict]:
     day = now.astimezone(ET).date() - timedelta(days=1)
     while day.weekday() >= 5:
         day -= timedelta(days=1)
-    cur.execute("""SELECT ticker, eps_actual, revenue_actual, COALESCE(eps_from_release, FALSE) AS rel
+    # v38c: revenue_estimate in [0, 10 x market cap] = a real estimate (api_server._usable_revenue): 0 = none, above = another currency
+    cur.execute("""SELECT ticker, eps_actual, revenue_actual, COALESCE(eps_from_release, FALSE) AS rel,
+                          (eps_estimate IS NOT NULL OR (revenue_estimate > 0 AND (market_cap IS NULL OR revenue_estimate <= 10 * market_cap)))
+                          AS covered
                    FROM earnings_calendar WHERE report_date = %s""", (day,))
     rows = cur.fetchall()
     if not rows:
         return [_line("earnings.results", "info", f"no reports on {day}")]
-    blank = [r["ticker"] for r in rows if r["eps_actual"] is None and r["revenue_actual"] is None]
+    empty = [r for r in rows if r["eps_actual"] is None and r["revenue_actual"] is None]
+    # v38c: no estimate at all = no analyst follows it, and Yahoo has no results for it either (6.11.2026: NHC, FRHC, BH, and
+    # Honda / KT in their own currency). Listed, not counted: only a covered company without results is a missing result.
+    blank = [r["ticker"] for r in empty if r["covered"]]
+    uncovered = [r["ticker"] for r in empty if not r["covered"]]
     no_eps = sum(1 for r in rows if r["eps_actual"] is None)
     rel = sum(1 for r in rows if r["rel"])
     status = "ok" if not blank else ("info" if len(blank) <= MAX_BLANK_REPORTS else "warn")
     return [_line("earnings.results", status, f"{day}: {len(rows)} reports, no EPS: {no_eps}, EPS still from the release: {rel}, "
-                                              f"nothing at all: {', '.join(blank[:20]) or 'none'}", len(blank))]
+                                              f"nothing at all: {', '.join(blank[:20]) or 'none'}"
+                                              + (f"; no estimate and no results (not counted): {', '.join(uncovered[:20])}" if uncovered else ""),
+                  len(blank))]
 
 
 def check_market_caps(cur) -> List[dict]:
