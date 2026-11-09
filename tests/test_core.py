@@ -212,6 +212,52 @@ def test_earnings_move_states(api):
     assert mv(daily_mon, ticks, D(2026, 11, 10), "bmo", at(mon, 18)) is None   # tomorrow's report
 
 
+def test_guidance_figures_are_checked_against_the_release():
+    """v40: what the AI copies out of a press release is taken only when the release says it (checked 9.11.2026 on the real
+    releases of AMD, ANET, DDOG, NET, UBER, QCOM, EMR, CEG, ABNB and MCD; these lines are shortened from them)."""
+    import datetime as _d
+    import json as _j
+    import earnings_guidance as eg
+    rel = ("Third Quarter Financial Highlights Revenue of $3.66 billion, an increase of 20.5% compared to the second quarter. "
+           "Financial Outlook For the fourth quarter of 2026, we expect: Revenue of $3.9 - $4.0 billion; Non-GAAP diluted net "
+           "income per share of $1.26 - $1.30. Gross Bookings of $63.25 billion to $65.25 billion. Raising full-year revenue "
+           "guidance to $14.5 - $14.6 billion. Net sales in Japan are expected to reach 950 billion.")
+    ref, day = {"revenue_estimate": 3.33e9, "eps_estimate": 1.08}, _d.date(2026, 11, 3)
+
+    def ask(**kw):
+        it = dict(period="quarter", quarter=4, fiscal_year=2026, metric="revenue", basis=None, low="3.9", high="4.0",
+                  unit="billion", change=None, quote="Revenue of $3.9 - $4.0 billion;")
+        it.update(kw)
+        return eg.clean_guidance(_j.dumps({"guidance": [it]}), rel, ref, day)
+
+    got = ask()
+    assert got[0]["low"] == 3.9e9 and got[0]["high"] == 4.0e9
+    assert ask(metric="eps", low="1.26", high="1.30", unit="dollars", quote="Non-GAAP diluted net income per share of $1.26 - $1.30.")[0]["basis"] == "adjusted"
+    year = ask(period="year", quarter=None, low="14.5", high="14.6", change="raised", quote="Raising full-year revenue guidance to $14.5 - $14.6 billion.")
+    assert year[0]["change"] == "raised"
+    for bad in (dict(quote="Revenue of $4.1 - $4.2 billion;", low="4.1", high="4.2"),          # not in the release
+                dict(low="3.85", high="4.05"),                                               # numbers it computed itself
+                dict(quote="Revenue of $3.66 billion, an increase of 20.5%", low="3.66", high="3.66"),   # this quarter's result
+                dict(quote="Gross Bookings of $63.25 billion to $65.25 billion.", low="63.25", high="65.25"),   # not revenue
+                dict(unit="million"),                                                        # wrong unit
+                dict(quote="Net sales in Japan are expected to reach 950 billion.", low="950", high="950")):  # no dollar sign
+        with pytest.raises(ValueError):
+            ask(**bad)
+    assert eg.clean_guidance('{"guidance": []}', rel, ref, day) == []          # no guidance = a real answer
+    assert eg.guidance_source("Revenue was $5 billion. Net income was $1 billion.") == ""   # nothing to ask the AI
+    # the consensus of the same period: quarter = next quarter, year = by the fiscal year's end
+    items = eg.with_estimates(got + year, {"est_nq_rev": 3.9e9, "est_fy0_rev": 14.0e9, "fy_end": _d.date(2026, 12, 31)})
+    assert items[0]["est"] == 3.9e9 and items[0]["vs_pct"] == 1.28 and items[1]["vs_pct"] == round((14.55 / 14.0 - 1) * 100, 2)
+
+
+def test_guidance_health_rule():
+    import data_health
+    rows = [{"ticker": t, "status": "found", "items": [{"metric": "revenue", "vs_pct": 2.0}]} for t in "ABCD"]
+    assert data_health.guidance_problems(rows + [{"ticker": "E", "status": "none", "items": []}]) == []
+    assert data_health.guidance_problems(rows + [{"ticker": x, "status": None, "items": None} for x in "EFG"])
+    assert data_health.guidance_problems([{"ticker": "Z", "status": "found", "items": [{"metric": "eps", "vs_pct": -70.0}]}])
+
+
 def test_fundamentals_stale_series():
     """v27: a series the company stopped reporting (JPM debt 2014, BRK EPS 2013) is dropped, a recent one is kept."""
     import fundamentals

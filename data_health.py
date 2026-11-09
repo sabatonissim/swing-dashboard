@@ -329,6 +329,44 @@ def check_earnings(cur, now: datetime) -> List[dict]:
                   len(blank))]
 
 
+GUIDANCE_MISSING_SHARE = 0.3       # v40: more than this share of a day's reports without an answer = the job is not working
+GUIDANCE_ODD_PCT = 40              # a guidance this far from the consensus = most likely another period or unit
+
+
+def guidance_problems(rows: List[dict]) -> List[str]:
+    """rows: {ticker, status, items} of one day's reported companies (status None = never read)."""
+    out = []
+    unread = [r["ticker"] for r in rows if r["status"] in (None, "failed")]
+    if len(rows) >= 5 and len(unread) > GUIDANCE_MISSING_SHARE * len(rows):
+        out.append(f"{len(unread)} of {len(rows)} reports without an answer: {', '.join(unread[:12])}")
+    odd = [f"{r['ticker']} {x.get('metric')} {x['vs_pct']:+.0f}%" for r in rows for x in (r["items"] or [])
+           if x.get("vs_pct") is not None and abs(x["vs_pct"]) > GUIDANCE_ODD_PCT]
+    if odd:
+        out.append("far from the consensus (check the period / unit): " + ", ".join(odd[:8]))
+    return out
+
+
+def check_guidance(cur, now: datetime) -> List[dict]:
+    """v40: the last trading day's reports should all have been read for guidance by the next morning."""
+    day = now.astimezone(ET).date() - timedelta(days=1)
+    while day.weekday() >= 5:
+        day -= timedelta(days=1)
+    cur.execute("SELECT to_regclass('earnings_guidance') IS NOT NULL AS ok")
+    if not cur.fetchone()["ok"]:
+        return [_line("earnings.guidance", "info", "no table yet (earnings_guidance.py: from its first run)")]
+    cur.execute("""SELECT c.ticker, g.status, g.items FROM earnings_calendar c
+                   LEFT JOIN earnings_guidance g USING (ticker, report_date)
+                   WHERE c.report_date = %s AND (c.eps_actual IS NOT NULL OR c.revenue_actual IS NOT NULL)""", (day,))
+    rows = cur.fetchall()
+    if not rows:
+        return [_line("earnings.guidance", "info", f"no reports on {day}")]
+    odd = guidance_problems(rows)
+    found = sum(1 for r in rows if r["status"] == "found")
+    none = sum(1 for r in rows if r["status"] == "none")
+    return [_line("earnings.guidance", "warn" if odd else "ok",
+                  f"{day}: {len(rows)} reports, {found} with guidance, {none} without" + (f"; {'; '.join(odd)}" if odd else ""), len(odd))]
+
+
 def check_market_caps(cur) -> List[dict]:
     """v34: the market cap on the stock page (fundamentals_cache, from SEC share counts) next to the scanner's (Yahoo).
     Far apart = a wrong share count got through, and the P/E computed from it is wrong too."""
@@ -442,7 +480,8 @@ def main() -> int:
         results = []
         for name, run in (("freshness", lambda: check_freshness(cur, now)), ("counts", lambda: check_counts(cur, members)),
                           ("arithmetic", lambda: check_arithmetic(cur)), ("values", lambda: check_values(cur)),
-                          ("earnings", lambda: check_earnings(cur, now)), ("market caps", lambda: check_market_caps(cur)),
+                          ("earnings", lambda: check_earnings(cur, now)), ("guidance", lambda: check_guidance(cur, now)),
+                          ("market caps", lambda: check_market_caps(cur)),
                           ("profiles", lambda: check_profiles(cur)), ("digest", lambda: check_digest(cur)),
                           ("ratings", lambda: check_ratings(cur, now)),
                           ("size", lambda: check_db_size(cur)), ("usage", lambda: check_db_usage(cur, now))):

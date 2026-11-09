@@ -6949,6 +6949,27 @@ def get_ai_note(ticker: str):
             "created_at": r["created_at"].isoformat()}
 
 
+_GUIDANCE_MAX_ATTEMPTS = 6     # earnings_guidance.MAX_ATTEMPTS: after that a "failed" row is final
+
+
+@app.get("/api/earnings-guidance")
+@_cached_answer(ttl_sec=300, max_keys=16)
+def get_earnings_guidance(day: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$")):
+    """v40: the companies' own guidance for one report day (earnings_guidance.py reads it from the press release), each
+    figure with the analysts' consensus for the same period from before the report. Asked by the earnings calendar only
+    for the day on the screen, while it has reports; a row is ~0.5 KB."""
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        if not _table_exists(cur, "earnings_guidance"):
+            return {"day": day, "guidance": {}}
+        cur.execute("""SELECT ticker, status, items, attempts FROM earnings_guidance
+                       WHERE report_date = %s AND status IS NOT NULL""", (day,))
+        rows = cur.fetchall()
+    return {"day": day, "guidance": {
+        r["ticker"]: {"status": r["status"], "items": r["items"] or [],
+                      "final": r["status"] != "failed" or (r["attempts"] or 0) >= _GUIDANCE_MAX_ATTEMPTS}
+        for r in rows}}
+
+
 @app.get("/api/company-profile/{ticker}")
 def get_company_profile(ticker: str):
     """v30: "what the company does and how it makes money" — written by company_profiles.py (GitHub Actions) from the
