@@ -168,8 +168,33 @@ def _market_from_db(conn, session_day):
     return out
 
 
+MARKET_OPEN = dtime(9, 30)
+FIRST_BAR_BY = dtime(10, 0)   # Yahoo has the day's bar by then; no bar after it on a weekday = no trading that day
+
+
+def no_session_reason(day, now):
+    """Why `day` has no session of its own: weekend / pre_open (later today) / holiday. v38b: on Saturday, Sunday and Monday
+    morning (7-9.11.2026) the digest told Friday's moves as the day's, and Monday's gave AMD's +11.04% to Nvidia."""
+    if day.weekday() >= 5:
+        return "weekend"
+    et = now.astimezone(_ET)
+    if et.date() < day or (et.date() == day and et.time() < FIRST_BAR_BY):
+        return "pre_open"
+    return "holiday"
+
+
+def _bar_of(bars, day):
+    """(change %, close) of `day`'s own bar, or None."""
+    for k in range(1, len(bars)):
+        if bars[k][0] == day and bars[k - 1][1]:
+            return round((bars[k][1] / bars[k - 1][1] - 1) * 100, 2), round(bars[k][1], 2)
+    return None
+
+
 def market_facts(conn, day, now=None):
-    """The session of `day` (or the last one before it). None when there are no prices: the digest is still written."""
+    """The session of `day` (or the last one before it). None when there are no prices: the digest is still written.
+    No session that day: `status` says why, the last session's numbers stay in the payload for the site (with its date), and
+    the model is not given them (_market_text). Bitcoin trades every day, so its own move of the day is in `today`."""
     now = now or datetime.now(timezone.utc)
     try:
         anchor = [b for b in _history("^GSPC") if b[0] <= day]
@@ -180,22 +205,29 @@ def market_facts(conn, day, now=None):
         print("[ai_digest] no market numbers: too few S&P 500 prices came back")
         return None
     session_day = anchor[-1][0]
-    indices = []
+    same_day = session_day == day
+    indices, today = [], []
     for symbol, name_en, name_he in MARKET_SYMBOLS:
         try:
-            bars = anchor if symbol == "^GSPC" else [b for b in _history(symbol) if b[0] <= session_day]
+            full = anchor if symbol == "^GSPC" else _history(symbol)
         except Exception as e:  # noqa: BLE001
             print(f"[warn] {symbol}: {type(e).__name__}: {e}")
             continue
+        bars = [b for b in full if b[0] <= session_day]
         if len(bars) >= 2 and bars[-2][1]:
             close, prev = bars[-1][1], bars[-2][1]
             indices.append({"symbol": symbol, "name_en": name_en, "name_he": name_he, "close": round(close, 2),
                             "change_pct": round((close / prev - 1) * 100, 2), "change_points": round(close - prev, 2)})
-    same_day = session_day == day
+        own = None if same_day or symbol != "BTC-USD" else _bar_of(full, day)
+        if own:
+            today.append({"symbol": symbol, "name_en": name_en, "name_he": name_he, "change_pct": own[0], "close": own[1]})
     et = now.astimezone(_ET)
-    market = {"session_day": session_day.isoformat(), "same_day": same_day, "indices": indices,
-              "intraday": same_day and et.date() == day and dtime(9, 30) <= et.time() < dtime(16, 0),
+    intraday = same_day and et.date() == day and MARKET_OPEN <= et.time() < dtime(16, 0)
+    market = {"day": day.isoformat(), "session_day": session_day.isoformat(), "same_day": same_day, "indices": indices, "intraday": intraday,
+              "status": ("open" if intraday else "traded") if same_day else no_session_reason(day, now),
               "move": move_size(indices, same_day)}
+    if today:
+        market["today"] = today
     market.update(_market_from_db(conn, session_day))
     return market
 
@@ -204,14 +236,33 @@ def _signed(x):
     return f"{x:+.2f}"
 
 
+_NO_SESSION_TEXT = {
+    "weekend": "It is the weekend: the US stock market does not trade today.",
+    "holiday": "It is a US market holiday: the US stock market does not trade today.",
+    "pre_open": "The US stock market has not opened yet today (it opens at 9:30 New York time).",
+}
+
+
+def _no_session_text(market, day):
+    """v38b: no session that day -> no index numbers for the model at all. With the last session's numbers it wrote them as the
+    day's on Saturday, Sunday and Monday morning (7-9.11.2026); that session has its own summary."""
+    lines = [f"MARKET: {_NO_SESSION_TEXT.get(market.get('status'), _NO_SESSION_TEXT['holiday'])} "
+             f"The last session was {market['session_day']} and has its own summary. So on {day.isoformat()} there are NO index "
+             "moves, no VIX, no biggest movers and no count of stocks that rose or fell. Do not write that the market, an index or a "
+             "stock rose, fell, closed or ended, except what an item says about futures, pre-market trading or the past week.",
+             "Write about the news of this day: what happened and what may matter for US stocks when trading resumes."]
+    for a in market.get("today") or []:
+        lines.append(f"{a['name_en']}, which trades every day: {_signed(a['change_pct'])}% on this day so far")
+    return "\n".join(lines)
+
+
 def _market_text(market, day):
     if not market:
         return "MARKET NUMBERS: not available. Do not state any index level or move that is not in the news items."
+    if not market["same_day"]:
+        return _no_session_text(market, day)
     head = (f"MARKET NUMBERS, real data for the US session of {market['session_day']}"
             + (" (TRADING IS STILL OPEN: numbers so far. Do not write that the market closed or ended)" if market["intraday"] else "") + ":")
-    if not market["same_day"]:
-        head = (f"The US market has not traded on {day.isoformat()} so far. The numbers below are of the LAST session, "
-                f"{market['session_day']}; say so if you use them.\n" + head)
     lines = [head]
     for i in market["indices"]:
         if i["symbol"] == "^TNX":
@@ -316,6 +367,7 @@ ORDER OF IMPORTANCE:
 1. What the US market did: the indices, how big the move was, which stocks and sectors led it. If the MARKET NUMBERS say the day was extreme, this is the first thing in the overview and the first topic, with the numbers.
 2. Why it happened, as far as the items say. If several items give the same reason, say it. If no item explains it, say the reason is not clear.
 3. What else can move US stocks: the Fed and rates, US data (inflation, jobs), oil and war, trade and tariffs, US politics, the largest companies.
+On a day the MARKET part says the US market did not trade (weekend, holiday, before the open), there is no point 1: the overview opens with the most important news of the day, and no topic tells index or stock moves of any session, unless an item tells futures, pre-market trading or the past week.
 4. Other countries only if the item ties them to US stocks, oil, the dollar or world markets. The domestic news of a smaller country (its local inflation or local interest rate) is not a topic and is not in the overview. Results of one smaller company are not a topic unless they moved the market.
 
 STRICT RULES:
@@ -593,6 +645,29 @@ def contradicts_market(text, market):
     return None
 
 
+_SESSION_NAMES = r"S&P(?: 500)?|Nasdaq|Dow(?: Jones)?|Wall Street|(?:the )?(?:US )?(?:stock )?market|US stocks|chip stocks|VIX"
+_SESSION_MOVE = re.compile(rf"\b(?:{_SESSION_NAMES})\b(?:\s+[\w()]+){{0,2}}\s+(?:{_FELL}|{_ROSE}|closed|ended|finished|led|surged)\b"
+                           r"|\b(?:led|leading) (?:the )?(?:gains|losses|declines)\b|\bamong (?:the )?(?:large|big)(?:st)?[- ]?(?:cap|companies)\b", re.I)
+_OTHER_TIME = re.compile(r"\b(?:futures|pre-?market|premarket|after-?hours|week(?:ly)?|friday|thursday|last|previous|earlier|"
+                         r"since|year|month|ahead of)\b", re.I)
+
+
+def session_told(text, market):
+    """v38b: on a day with no session, the first sentence that tells one as if it happened that day. A sentence about futures,
+    pre-market trading or the past week is fine: those are in the items."""
+    if not market or market.get("same_day"):
+        return None
+    for s in re.split(r"(?<=[.!?])\s+", text or ""):
+        m = _SESSION_MOVE.search(s)
+        if m and not _OTHER_TIME.search(s):
+            return m.group(0)
+    return None
+
+
+def _sentences_without_session(text, market):
+    return " ".join(s for s in re.split(r"(?<=[.!?])\s+", text) if not session_told(s, market)).strip()
+
+
 def _topic_words(text):
     return _words(text) | {w.lower() for w in _SHORT_TERMS.findall(text)}
 
@@ -657,6 +732,14 @@ def clean_answer(text, items, market, strict=True):
             summary, impact = _sentences_without_guess(summary, cited), _sentences_without_guess(impact, cited)
             if not summary:
                 continue
+        told = session_told(f"{title}. {summary} {impact}", market)
+        if told:
+            if strict:
+                raise ValueError(f"the topic '{title}' says '{told}', and the US market did not trade on this day. "
+                                 "Tell the news of the day, without index or stock moves")
+            summary, impact = _sentences_without_session(summary, market), _sentences_without_session(impact, market)
+            if not summary or session_told(title, market):
+                continue
         against = contradicts_market(f"{title}. {summary}", market)
         if against:
             if strict:
@@ -685,6 +768,14 @@ def clean_answer(text, items, market, strict=True):
     all_titles = " ".join(i["title"] for i in items)
     if strict and _own_guess(overview, all_titles):
         raise ValueError(f"the overview explains things on its own ('{_own_guess(overview, all_titles)}'). Write only what the items say")
+    told = session_told(overview, market)
+    if told:
+        if strict:
+            raise ValueError(f"the overview says '{told}', and the US market did not trade on this day. "
+                             "Open with the most important news of the day instead")
+        overview = _sentences_without_session(overview, market)
+        if not overview:
+            raise ValueError("the overview only told a session, on a day with no trading")
     against = contradicts_market(overview, market)
     if against:
         if strict:
@@ -822,6 +913,13 @@ def after_close_update_due(row, day, now=None):
     return row["updated_at"].astimezone(_ET) < datetime.combine(day, AFTER_CLOSE, tzinfo=_ET)
 
 
+def after_open_update_due(row, day, now=None):
+    """v38b: a digest written before the open has no session in it; the first run after the open writes it again with one."""
+    et = (now or datetime.now(timezone.utc)).astimezone(_ET)
+    market = (row.get("payload") or {}).get("market") or {}
+    return et.date() == day and et.weekday() < 5 and et.time() >= FIRST_BAR_BY and market.get("status") == "pre_open"
+
+
 @contextmanager
 def _connected(get_conn):
     conn = get_conn()
@@ -840,7 +938,7 @@ def _update_day(get_conn, day, translate_fn, force=False, final=False):
         row = _load_row(conn, day)
         if row and row["is_final"] and not force:
             return False
-        close_due = bool(row) and after_close_update_due(row, day)
+        close_due = bool(row) and (after_close_update_due(row, day) or after_open_update_due(row, day))
         if row and not force and not final and not close_due and row["age_h"] < min_hours:
             print(f"[ai_digest] {day}: last update is {row['age_h']:.1f}h old (< {min_hours}h) — skipping")
             return False

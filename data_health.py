@@ -130,6 +130,12 @@ def digest_problems(payload: dict) -> List[str]:
     """v37: the day's AI summary against the day's real numbers, written by ai_digest.py. A large move the overview does not name
     = the summary missed the main story (5.11.2026: S&P 500 -4.36%, and the overview spoke of "technology and earnings")."""
     market = payload.get("market") or {}
+    overview = payload.get("overview_en") or ""
+    if market and market.get("same_day") is False:
+        # v38b: 7-9.11.2026, a weekend and a Monday morning told with Friday's +0.31% / +1.09% / -0.46%
+        told = [f"{i['name_en']} {i['change_pct']}%" for i in market.get("indices") or []
+                if i.get("symbol") in ("^GSPC", "^IXIC", "^DJI") and f"{abs(i['change_pct']):.2f}%" in overview]
+        return [f"no session that day, and the overview tells the last one: {', '.join(told)}"] if told else []
     if market.get("move") != "extreme":
         return []
     if re.search(r"S&P|Nasdaq|Dow\b|Wall Street", payload.get("overview_en") or ""):

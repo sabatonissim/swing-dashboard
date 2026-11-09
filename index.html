@@ -3713,6 +3713,8 @@ function digestMarketHtml(ai){
     return `<div class="dg-chip"><span>${escH(name)}</span><b class="${up?'pct-up':'pct-down'}" dir="ltr">${up?'+':''}${pct.toFixed(2)}%</b></div>`;
   };
   const live = (Array.isArray(lastMarketTicker) ? lastMarketTicker : []).filter(it => it && typeof it.change_pct === 'number').slice(0, 5);
+  // v38b: no session today (weekend, holiday, before the open): the strip still shows the last session's changes, without saying so
+  if(ai && ai.market && ai.market.same_day === false) return digestStoredMarketHtml(ai);
   return live.length ? `<div class="dg-market">${live.map(it => chipOf(t ? it.name_en : it.name_he, it.change_pct)).join('')}</div>${digestSessionHtml(ai)}` : digestStoredMarketHtml(ai);
 }
 
@@ -3728,8 +3730,37 @@ function digestStoredMarketHtml(ai){
     const up = i.change_pct >= 0;
     return `<div class="dg-chip"><span>${name}</span><b class="${up?'pct-up':'pct-down'}" dir="ltr">${up?'+':''}${i.change_pct.toFixed(2)}%</b></div>`;
   }).join('');
-  const other = m.same_day ? '' : `<div class="dg-session">${t ? 'Last session' : 'יום המסחר האחרון'}: ${escH(_ddmm(m.session_day))}</div>`;
-  return `${other}<div class="dg-market">${chips}</div>${digestSessionHtml(ai)}`;
+  const other = m.same_day ? '' : `<div class="dg-session">${digestNoSessionNote(m)}</div>`;
+  const today = (Array.isArray(m.today) ? m.today : []).filter(i => typeof i.change_pct === 'number').map(i => {
+    const up = i.change_pct >= 0;
+    return `<div class="dg-chip"><span>${escH(t ? i.name_en : i.name_he)} ${t ? 'today' : 'היום'}</span><b class="${up?'pct-up':'pct-down'}" dir="ltr">${up?'+':''}${i.change_pct.toFixed(2)}%</b></div>`;
+  }).join('');
+  return `${today ? `<div class="dg-market">${today}</div>` : ''}${other}<div class="dg-market">${chips}</div>${digestSessionHtml(ai)}`;
+}
+
+// v38b: why there are no numbers of the day itself, and which day the numbers below are of
+function digestNoSessionNote(m){
+  const t = lang==='en';
+  const last = new Date(m.session_day + 'T12:00:00').toLocaleDateString(t?'en-GB':'he-IL', {weekday:'long', day:'2-digit', month:'2-digit'});
+  let why = t ? 'No US trading on this day' : 'לא היה מסחר בארה״ב ביום הזה';
+  if(m.status === 'weekend') why = t ? 'Weekend: the US market is closed' : 'סוף שבוע: המסחר בארה״ב סגור';
+  else if(m.status === 'holiday') why = t ? 'US market holiday: no trading' : 'חג בארה״ב: אין מסחר';
+  else if(m.status === 'pre_open'){
+    // 9:30 New York time on that day, in the viewer's own time zone
+    const open = m.day ? _nyOpenLocal(m.day) : '';
+    why = t ? `Trading has not opened yet${open ? ` (opens at ${open} your time)` : ''}` : `המסחר עוד לא נפתח${open ? ` (נפתח ב-${open} לפי השעה אצלך)` : ''}`;
+  }
+  return `${escH(why)}. ${t ? 'Numbers of the last session' : 'הנתונים של יום המסחר האחרון'}: ${escH(last)}`;
+}
+
+// 9:30 in New York on `iso` (YYYY-MM-DD) as the viewer's local time, "16:30"; '' if the browser cannot tell
+function _nyOpenLocal(iso){
+  try {
+    const guess = new Date(iso + 'T14:30:00Z');            // 9:30 EST; one hour off in summer time, corrected below
+    const nyHour = Number(new Intl.DateTimeFormat('en-US', {timeZone:'America/New_York', hour:'numeric', hour12:false}).format(guess));
+    const at = new Date(guess.getTime() - (nyHour - 9) * 3600e3);
+    return at.toLocaleTimeString(lang==='en'?'en-GB':'he-IL', {hour:'2-digit', minute:'2-digit'});
+  } catch(e){ return ''; }
 }
 
 // how many stocks rose and fell, and the big movers

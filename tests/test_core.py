@@ -1032,12 +1032,81 @@ def test_digest_market_text_and_size():
     import ai_digest as d
     text = d._market_text(_CRASH_MARKET, __import__("datetime").date(2026, 11, 5))
     assert "S&P 500: -4.36%" in text and "73 / 430" in text and "NVDA -9.10%" in text and "EXTREME" in text and "4.50% (change -0.05" in text
-    closed = dict(_CRASH_MARKET, same_day=False, move="closed")
-    assert "LAST session" in d._market_text(closed, __import__("datetime").date(2026, 11, 7))
+    closed = dict(_CRASH_MARKET, same_day=False, move="closed", status="weekend")
+    weekend = d._market_text(closed, __import__("datetime").date(2026, 11, 7))
+    assert "weekend" in weekend and "4.36" not in weekend and "NVDA" not in weekend and "73 / 430" not in weekend
     assert "not available" in d._market_text(None, __import__("datetime").date(2026, 11, 7))
     size = lambda sp, nq: d.move_size([{"symbol": "^GSPC", "change_pct": sp}, {"symbol": "^IXIC", "change_pct": nq}], True)
     assert size(-4.36, -5.52) == "extreme" and size(-0.5, 2.6) == "extreme" and size(1.2, 1.0) == "notable" and size(0.2, 0.3) == "normal"
     assert d.move_size([], False) == "closed"
+
+
+def test_digest_on_a_day_without_a_session():
+    """v38b: 7-9.11.2026. Saturday, Sunday and Monday morning told Friday's +0.31% / +1.09% / -0.46% as the day's,
+    and Monday's gave AMD's +11.04% to Nvidia."""
+    import datetime as _dt
+    import json as _json
+    from zoneinfo import ZoneInfo
+    import ai_digest as d
+    et = ZoneInfo("America/New_York")
+    sat, mon = _dt.date(2026, 11, 7), _dt.date(2026, 11, 9)
+    assert d.no_session_reason(sat, _dt.datetime(2026, 11, 7, 12, 0, tzinfo=et)) == "weekend"
+    assert d.no_session_reason(mon, _dt.datetime(2026, 11, 9, 7, 41, tzinfo=et)) == "pre_open"
+    assert d.no_session_reason(_dt.date(2026, 11, 26), _dt.datetime(2026, 11, 26, 13, 0, tzinfo=et)) == "holiday"
+    # the numbers: Friday's stay for the site, the model gets none, Bitcoin's own day is kept
+    friday = [(_dt.date(2026, 11, 5), 7353.73), (_dt.date(2026, 11, 6), 7376.86)]
+    btc = [(_dt.date(2026, 11, 6), 75746.93), (_dt.date(2026, 11, 7), 76504.4), (_dt.date(2026, 11, 8), 76000.0)]
+    hist = lambda s: btc if s == "BTC-USD" else friday
+
+    class NoTables:                      # breadth and movers are not what this test is about
+        def cursor(self):
+            return self
+        def execute(self, *a):
+            raise RuntimeError("no table")
+        def rollback(self): pass
+        def close(self): pass
+    real = d._history
+    d._history = hist
+    try:
+        m = d.market_facts(NoTables(), sat, now=_dt.datetime(2026, 11, 7, 12, 0, tzinfo=et))
+    finally:
+        d._history = real
+    assert m["same_day"] is False and m["status"] == "weekend" and m["session_day"] == "2026-11-06" and m["day"] == "2026-11-07"
+    assert next(i for i in m["indices"] if i["symbol"] == "^GSPC")["change_pct"] == 0.31
+    assert m["today"] == [{"symbol": "BTC-USD", "name_en": "Bitcoin", "name_he": "ביטקוין", "change_pct": 1.0, "close": 76504.4}]
+    assert "+1.00% on this day" in d._market_text(m, sat) and "0.31" not in d._market_text(m, sat)
+    # the answer
+    items = [dict(id=1, title="China extends tariff suspension on US goods to January", tag="מכסים", url="https://x.example/1", title_he="", body=""),
+             dict(id=2, title="Nvidia shares fall 5% in premarket after board probe", tag="שוק", url="https://x.example/2", title_he="", body="")]
+    answer = lambda overview, summary: _json.dumps({"overview": overview, "topics": [
+        {"title": "China extends tariff suspension", "summary": summary, "impact": "", "items": [1]},
+        {"title": "Nvidia board probe", "summary": "Nvidia shares fell 5% in premarket trading after a board probe.", "impact": "", "items": [2]}]})
+    good = d.clean_answer(answer("China extended its tariff suspension on US goods to January. Nvidia fell 5% in premarket trading.",
+                                 "China extended the suspension of tariffs on US goods to January."), items, m)
+    assert len(good["topics"]) == 2
+    with pytest.raises(ValueError, match="did not trade"):
+        d.clean_answer(answer("The US market fell, with the Dow down. China extended its tariff suspension.",
+                              "China extended the suspension of tariffs on US goods."), items, m)
+    with pytest.raises(ValueError, match="numbers"):      # Friday's numbers are not in what it was given any more
+        d.clean_answer(answer("Chip stocks rose 4.21% on Friday. China extended its tariff suspension.",
+                              "China extended the suspension of tariffs on US goods."), items, m)
+    with pytest.raises(ValueError, match="did not trade"):
+        d.clean_answer(answer("China extended its tariff suspension on US goods.",
+                              "China extended the tariff suspension. Chip stocks surged and Nvidia led gains among large companies."), items, m)
+    saved = d.clean_answer(answer("The US market fell. China extended its tariff suspension on US goods.",
+                                  "China extended the tariff suspension. Nvidia led gains among large companies."), items, m, strict=False)
+    assert saved["overview_en"] == "China extended its tariff suspension on US goods." and "led gains" not in saved["topics"][0]["summary_en"]
+    assert d.session_told("The S&P 500 fell 2% last week.", m) is None and d.session_told("Stock futures rose on Sunday.", m) is None
+    assert d.session_told("The US market fell.", dict(m, same_day=True)) is None
+    # written before the open -> written again once after it; and the health check sees the old mistake
+    row = {"payload": {"market": {"status": "pre_open"}}}
+    assert d.after_open_update_due(row, mon, _dt.datetime(2026, 11, 9, 10, 5, tzinfo=et))
+    assert not d.after_open_update_due(row, mon, _dt.datetime(2026, 11, 9, 9, 40, tzinfo=et))
+    assert not d.after_open_update_due({"payload": {"market": {"status": "open"}}}, mon, _dt.datetime(2026, 11, 9, 11, 0, tzinfo=et))
+    import data_health as dh
+    told = {"overview_en": "The US market fell, with the Dow Jones dropping 0.46% while the S&P 500 rose 0.31%.", "market": m}
+    assert dh.digest_problems(told) and "S&P 500 0.31%" in dh.digest_problems(told)[0]
+    assert dh.digest_problems({"overview_en": "China extended its tariff suspension.", "market": m}) == []
 
 
 def test_digest_updates_after_the_close_once():
