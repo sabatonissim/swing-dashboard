@@ -1173,6 +1173,52 @@ def test_old_news_is_deleted_in_small_steps():
     assert pb.NEWS_KEEP_DAYS == ai_digest.KEEP_DAYS
 
 
+def test_analyst_rating_changes(api):
+    """v39: Yahoo's rating history -> rows; what the daily summary sends; the health check."""
+    import datetime as _dt
+    import pandas as pd
+    import analyst_ratings as ar
+    utc = _dt.timezone.utc
+    # AMD's history as Yahoo gave it on 9.11.2026 (yfinance names: GradeDate index, Firm, ToGrade ...)
+    df = pd.DataFrame({"Firm": ["Oppenheimer", "UBS", "RBC Capital", "Old Firm"],
+                       "ToGrade": ["Outperform", "Buy", "Sector Perform", "Buy"], "FromGrade": ["Perform", "Buy", "Sector Perform", ""],
+                       "Action": ["up", "main", "reit", "init"], "priceTargetAction": ["Announces", "Lowers", "Maintains", "Announces"],
+                       "currentPriceTarget": [600.0, 700.0, 540.0, 100.0], "priorPriceTarget": [0.0, 730.0, 540.0, 0.0]},
+                      index=pd.DatetimeIndex([_dt.datetime(2026, 11, 9, 10, 17), _dt.datetime(2026, 11, 8, 22, 46),
+                                              _dt.datetime(2026, 11, 8, 15, 44), _dt.datetime(2026, 10, 1, 12, 0)], name="GradeDate"))
+    rows = ar.rows_from_history("AMD", df, 4e11, _dt.datetime(2026, 11, 6, tzinfo=utc))
+    assert [(r["firm"], r["action"], r["pt_action"]) for r in rows] == [("Oppenheimer", "up", "Announces"), ("UBS", "main", "Lowers")]
+    up = rows[0]
+    assert up["day"] == _dt.date(2026, 11, 9) and up["pt_now"] == 600.0 and up["pt_prior"] is None and up["from_grade"] == "Perform"
+    assert rows[1]["day"] == _dt.date(2026, 11, 8)        # 22:46 UTC = 17:46 in New York, the same day
+    assert ar.rows_from_history("X", pd.DataFrame(), 1e11, _dt.datetime(2026, 11, 6, tzinfo=utc)) == []
+    # the API: rows and counts
+    class Cur:
+        def __init__(self): self.n = 0
+        def execute(self, *a): self.n += 1
+        def fetchone(self): return (True,) if self.n == 1 else (14, 23)
+        def fetchall(self): return [("AMD", "Oppenheimer", "up", "Perform", "Outperform", 600.0, None)] * 13
+        def close(self): pass
+
+    class Conn:
+        def cursor(self): return Cur()
+    out = api._analyst_ratings_for_day(Conn(), _dt.date(2026, 11, 9))
+    assert len(out["changes"]) == 12 and out["more"] == 2 and out["target_changes"] == 23
+    assert out["changes"][0] == {"ticker": "AMD", "firm": "Oppenheimer", "action": "up", "from": "Perform", "to": "Outperform",
+                                 "target": 600.0, "prior_target": None}
+    # the health check: no change at all on a trading day = a warning; the day before a Monday is Friday
+    import data_health as dh
+    seen = {}
+
+    class HCur:
+        def execute(self, sql, params=None): seen["params"] = params
+        def fetchone(self): return {"ok": True} if seen.get("params") is None else {"ratings": 0, "all_changes": 0}
+    line = dh.check_ratings(HCur(), _dt.datetime(2026, 11, 9, 12, 30, tzinfo=utc))[0]
+    assert line["status"] == "warn" and seen["params"] == (_dt.date(2026, 11, 6),)
+    dh.check_ratings(HCur(), _dt.datetime(2026, 11, 27, 12, 30, tzinfo=utc))
+    assert seen["params"] == (_dt.date(2026, 11, 25),)    # Thanksgiving in between
+
+
 def test_company_names_stay_in_english():
     """v38c: Google made "כדור" of Ball and "תלושי ויזה" of "Visa slips"; with " Inc" after the name it keeps it (9.11.2026)."""
     import translation_fixes as tf

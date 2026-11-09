@@ -77,6 +77,10 @@ JOBS = [
     # then only newly opened stocks and new annual reports; at quiet hours (no scan / AI-notes run at the same time)
     dict(name="profiles",    workflow="company-profiles.yml", kind="daily",   at=(2, 30),  weekdays_only=False, grace_min=300),
     dict(name="profiles_day", workflow="company-profiles.yml", kind="daily",  at=(13, 0),  weekdays_only=False, grace_min=180),
+    # v39: analyst rating changes (analyst_ratings.py) for the daily summary — most come out before the open, the rest
+    # during the day; both on minutes when the news job keeps the database awake anyway
+    dict(name="ratings_am",  workflow="analyst-ratings.yml", kind="daily",    at=(9, 50),  weekdays_only=True,  grace_min=120),
+    dict(name="ratings_pm",  workflow="analyst-ratings.yml", kind="daily",    at=(17, 40), weekdays_only=True,  grace_min=180),
     # v32: read-only data check (data_health.py) — after the evening jobs and the first quick refresh of the morning
     dict(name="data_health", workflow="data-health.yml",     kind="daily",    at=(7, 30),  weekdays_only=True,  grace_min=300),
     # v35c: encrypted copy of the personal data, under 1 MB, right after other morning jobs so it wakes nothing up

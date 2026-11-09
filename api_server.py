@@ -510,6 +510,11 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS macro_news_article_url ON macro_news (article_url);")
     push_alerts.ensure_tables(cur)                                                     # v19 alerts
     fundlib.ensure_table(cur)                                                          # v21 stored fundamentals
+    try:                                  # v39: the daily summary reads it before the job's first run; without the file, no section
+        import analyst_ratings
+        analyst_ratings.ensure_table(cur)
+    except ImportError:
+        pass
     # v24: the person's own trades — open ones are "my portfolio", closed ones the trade journal
     cur.execute("""CREATE TABLE IF NOT EXISTS trades (
         id SERIAL PRIMARY KEY,
@@ -5958,6 +5963,12 @@ def get_daily_digest(day: Optional[str] = Query(default=None, pattern=r"^\d{4}-\
         except Exception:
             conn.rollback()
             ai_summary = None
+        try:
+            ratings = _analyst_ratings_for_day(conn, d)
+        except Exception as e:  # noqa: BLE001
+            conn.rollback()
+            print(f"[warn] analyst ratings skipped: {type(e).__name__}: {e}")
+            ratings = None
     finally:
         conn.close()
 
@@ -5986,7 +5997,35 @@ def get_daily_digest(day: Optional[str] = Query(default=None, pattern=r"^\d{4}-\
         "critical": critical,
         "hot_topics": hot_topics[:top_n],
         "ai_summary": ai_summary,
+        "analyst_ratings": ratings,
     }
+
+
+ANALYST_RATINGS_SHOWN = 12
+
+
+def _analyst_ratings_for_day(conn, day):
+    """v39: the day's rating changes (analyst_ratings.py), the largest companies first, and how many targets alone changed.
+    ~2 KB, inside the cached answer of /api/daily-digest. None before the job's first run."""
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT to_regclass('analyst_ratings') IS NOT NULL")
+        if not cur.fetchone()[0]:
+            return None
+        cur.execute("""SELECT ticker, firm, action, from_grade, to_grade, pt_now, pt_prior FROM analyst_ratings
+                       WHERE day = %s AND action IN ('up', 'down', 'init')
+                       ORDER BY market_cap DESC NULLS LAST, graded_at LIMIT %s""", (day, ANALYST_RATINGS_SHOWN + 1))
+        rows = cur.fetchall()
+        cur.execute("""SELECT COUNT(*) FILTER (WHERE action IN ('up', 'down', 'init')),
+                              COUNT(*) FILTER (WHERE action NOT IN ('up', 'down', 'init', 'run') AND pt_action IN ('Raises', 'Lowers'))
+                       FROM analyst_ratings WHERE day = %s""", (day,))
+        n_ratings, n_targets = cur.fetchone()
+    finally:
+        cur.close()
+    changes = [{"ticker": t, "firm": f, "action": a, "from": fg or None, "to": tg or None,
+                "target": round(p, 2) if p else None, "prior_target": round(q, 2) if q else None}
+               for t, f, a, fg, tg, p, q in rows[:ANALYST_RATINGS_SHOWN]]
+    return {"changes": changes, "more": max(0, int(n_ratings) - len(changes)), "target_changes": int(n_targets)}
 
 
 @app.get("/api/daily-digest/days")

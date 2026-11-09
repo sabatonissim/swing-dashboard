@@ -81,6 +81,7 @@ FRESHNESS = [
     ("ai_stock_notes", "created_at", 2, "warn"),
     ("econ_snapshots", "updated_at", 2, "warn"),
     ("scanned_stocks", "timestamp", 3, "warn"),     # the quality gate can leave a quiet day with no row at all
+    ("analyst_ratings", "seen_at", 2, "warn"),      # v39: every run writes its own row, also on a day with no change
 ]
 _RANK = {"ok": 0, "info": 0, "warn": 1, "fail": 2}
 
@@ -342,6 +343,24 @@ def check_market_caps(cur) -> List[dict]:
     return [_line("value.market_cap", "warn" if odd else "ok", detail or "the stock page's market caps agree with the scanner's", len(odd))]
 
 
+def check_ratings(cur, now: datetime) -> List[dict]:
+    """v39: the last trading day's analyst changes. Every trading day has some (AMD alone had 8 on 4.11.2026); none at all =
+    Yahoo's answer changed shape or the job did not read it."""
+    from ai_digest import nyse_holidays
+    day = now.astimezone(ET).date() - timedelta(days=1)
+    while day.weekday() >= 5 or day in nyse_holidays(day.year):
+        day -= timedelta(days=1)
+    cur.execute("SELECT to_regclass('analyst_ratings') IS NOT NULL AS ok")
+    if not cur.fetchone()["ok"]:
+        return [_line("value.analyst_ratings", "info", "no table yet (analyst_ratings.py: from its first run)")]
+    cur.execute("""SELECT COUNT(*) FILTER (WHERE action IN ('up', 'down', 'init')) AS ratings,
+                          COUNT(*) FILTER (WHERE action <> 'run') AS all_changes
+                   FROM analyst_ratings WHERE day = %s""", (day,))
+    r = cur.fetchone()
+    return [_line("value.analyst_ratings", "ok" if r["all_changes"] else "warn",
+                  f"{day}: {r['ratings']} rating changes, {r['all_changes'] - r['ratings']} target changes", r["all_changes"])]
+
+
 def check_digest(cur) -> List[dict]:
     """The last closed summary. ~10 KB, once a day."""
     cur.execute("SELECT day, payload FROM ai_daily_digests WHERE is_final ORDER BY day DESC LIMIT 1")
@@ -425,6 +444,7 @@ def main() -> int:
                           ("arithmetic", lambda: check_arithmetic(cur)), ("values", lambda: check_values(cur)),
                           ("earnings", lambda: check_earnings(cur, now)), ("market caps", lambda: check_market_caps(cur)),
                           ("profiles", lambda: check_profiles(cur)), ("digest", lambda: check_digest(cur)),
+                          ("ratings", lambda: check_ratings(cur, now)),
                           ("size", lambda: check_db_size(cur)), ("usage", lambda: check_db_usage(cur, now))):
             try:
                 results += run()
