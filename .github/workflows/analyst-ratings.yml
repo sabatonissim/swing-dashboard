@@ -1,0 +1,24 @@
+name: Analyst Ratings
+
+# v39: today's analyst rating changes of the large companies (Yahoo's rating history) -> Postgres (analyst_ratings), for the
+# last section of the daily summary. Started by the built-in scheduler on Render (scheduler.py) at 09:50 and 17:40 ET on
+# weekdays; can also be run by hand (Run workflow).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ratings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -u analyst_ratings.py
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
