@@ -620,6 +620,9 @@ window.addEventListener('load', function(){
   .earn-im b{font-family:'JetBrains Mono',monospace;font-weight:600;}
   .earn-rx{font-size:10.5px;color:var(--text-dim);white-space:nowrap;}   /* v40: the stock's reaction, under the name */
   .earn-rx b{font-family:'JetBrains Mono',monospace;font-weight:600;}
+  .earn-gd{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1.3fr) minmax(0,1fr) auto;gap:5px 10px;font-size:12px;align-items:baseline;}   /* v40 guidance */
+  .earn-gd .k{font-size:10.5px;color:var(--text-dim);}
+  .earn-gd .mono{font-family:'JetBrains Mono',monospace;}
   .earn-fig{flex:0 0 96px;display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-family:'JetBrains Mono',monospace;}
   .earn-fig .k{font-size:9.5px;color:var(--text-dim);font-family:'Heebo',sans-serif;}
   .earn-fig .v{font-size:12.5px;font-weight:600;}
@@ -4295,6 +4298,7 @@ function renderEarningsCalendar(items){
     strip.scrollLeft += (ar.left + ar.width / 2) - (sr.left + sr.width / 2);
   }
   _earnLoadMoves(_earnDay, byDay.get(_earnDay));
+  _earnLoadGuidance(_earnDay, byDay.get(_earnDay));
 }
 let _earnStripCentered = false;
 const EARN_SESSION_SHOWN = 12;
@@ -4351,7 +4355,8 @@ function _earnRowHtml(it, todayStr){
         it.implied_move_pct != null ? `<span class="earn-im">${en ? 'Expected move' : 'תנודה צפויה'} <b dir="ltr">±${Number(it.implied_move_pct).toFixed(1)}%</b></span>` : ''}${
         // v38c: a day later and still nothing: our sources do not carry this company's results (often a foreign company or one no analyst covers)
         !it.reported && it.report_date && todayStr && it.report_date < todayStr ? `<span class="earn-im">${en ? 'Results not available from our data sources' : 'התוצאות לא התקבלו ממקורות הנתונים שלנו'}</span>` : ''}${
-        it.reported && _earnMoves[key] ? `<span class="earn-rx">${_earnRxLabel(_earnMoves[key])} <b>${_earnPct(_earnMoves[key].pct)}</b></span>` : ''}</div>
+        it.reported && _earnMoves[key] ? `<span class="earn-rx">${_earnRxLabel(_earnMoves[key])} <b>${_earnPct(_earnMoves[key].pct)}</b></span>` : ''}${
+        it.reported ? _earnGuideLine(_earnGuide[key]) : ''}</div>
       ${_earnFigHtml('EPS', it.eps_actual, it.eps_estimate, it.surprise_pct, _earnUsd, it.reported)}
       ${_earnFigHtml(en ? 'Revenue' : 'הכנסות', it.revenue_actual, it.revenue_estimate, it.revenue_surprise_pct, _earnBig, it.reported)}
       <span class="earn-chev">›</span>
@@ -4401,6 +4406,95 @@ function _earnLoadMoves(day, items){
       _earnMovesAt[day] = Date.now();
       if(lastEarningsCalItems) renderEarningsCalendar(lastEarningsCalItems);
     });
+}
+
+// v40: the company's own guidance, read from its press release by earnings_guidance.py (/api/earnings-guidance, one day at a
+// time). Asked every 3 minutes while a recent report still waits for it, every 30 once all are known.
+const _earnGuide = {};          // "TICKER|date" -> {status, items, final}
+const _earnGuideAt = {};        // day -> when it was last asked
+let _earnGuideBusy = false;
+function _earnLoadGuidance(day, items){
+  const el = document.getElementById('earnings-cal-wrap');
+  const rep = (items || []).filter(it => it.reported);
+  if(!rep.length || _earnGuideBusy || !el || el.offsetParent === null || document.hidden) return;
+  const waiting = day >= _earnLocalDate(-4) && rep.some(it => !(_earnGuide[`${it.ticker}|${it.report_date}`] || {}).final);
+  if(Date.now() - (_earnGuideAt[day] || 0) < (waiting ? 180000 : 1800000)) return;
+  _earnGuideBusy = true;
+  fetchWithTimeout(`${API_BASE}/api/earnings-guidance?day=${encodeURIComponent(day)}`, 20000)
+    .then(r => r.ok ? r.json() : Promise.reject())
+    .then(j => { for(const [t, g] of Object.entries((j && j.guidance) || {})) _earnGuide[`${t}|${day}`] = g; })
+    .catch(() => {})
+    .finally(() => {
+      _earnGuideBusy = false;
+      _earnGuideAt[day] = Date.now();
+      if(lastEarningsCalItems) renderEarningsCalendar(lastEarningsCalItems);
+    });
+}
+
+function _earnGuidePeriod(g){
+  const en = lang==='en';
+  return g.period === 'quarter' ? (en ? `Q${g.quarter} FY${g.fiscal_year}` : `רבעון ${g.quarter}, ${g.fiscal_year}`)
+                                : (en ? `FY${g.fiscal_year}` : `שנת ${g.fiscal_year}`);
+}
+function _earnGuideMetric(g){
+  const en = lang==='en';
+  if(g.metric === 'revenue') return en ? 'Revenue' : 'הכנסות';
+  if(g.metric === 'revenue_growth') return en ? 'Revenue growth' : 'צמיחת הכנסות';
+  return g.basis === 'adjusted' ? (en ? 'Adj. EPS' : 'EPS מתואם') : g.basis === 'gaap' ? (en ? 'GAAP EPS' : 'EPS (GAAP)') : 'EPS';
+}
+function _earnGuideVal(g, v){
+  if(v == null) return '—';
+  if(g.metric === 'revenue') return _earnBig(v);
+  if(g.metric === 'eps') return v < 0 ? `−$${Math.abs(v).toFixed(2)}` : _earnUsd(v);
+  return `${Number(v.toFixed(1))}%`;
+}
+function _earnGuideRange(g){
+  return g.low === g.high ? _earnGuideVal(g, g.low) : `${_earnGuideVal(g, g.low)}–${_earnGuideVal(g, g.high)}`;
+}
+function _earnGuideChange(g){
+  const en = lang==='en';
+  return g.change === 'raised' ? `<span style="color:var(--green)">${en ? 'raised' : 'הועלתה'}</span>`
+    : g.change === 'lowered' ? `<span style="color:var(--red)">${en ? 'lowered' : 'הורדה'}</span>`
+    : g.change === 'reaffirmed' ? `<span style="color:var(--text-dim)">${en ? 'reaffirmed' : 'נשמרה'}</span>` : '';
+}
+
+// The line under the company's name: the first figure that has a consensus (next quarter's revenue, then EPS, then the year);
+// without one, a raised / lowered guidance.
+function _earnGuideLine(g){
+  if(!g || g.status !== 'found' || !g.items.length) return '';
+  const en = lang==='en';
+  for(const [p, m] of [['quarter','revenue'], ['quarter','eps'], ['year','revenue'], ['year','eps']]){
+    const it = g.items.find(x => x.period === p && x.metric === m && x.vs_pct != null);
+    if(!it) continue;
+    const what = en ? `${p === 'quarter' ? 'Next-quarter' : 'Full-year'} ${m === 'revenue' ? 'revenue' : 'EPS'} guidance`
+                    : `תחזית ${m === 'revenue' ? 'הכנסות' : 'EPS'} ${p === 'quarter' ? 'לרבעון הבא' : 'שנתית'}`;
+    const vs = Math.abs(it.vs_pct) < 0.5 ? (en ? 'in line with est.' : 'בהתאם לצפי')
+                                         : `<b>${_earnPct(it.vs_pct)}</b> ${en ? 'vs est.' : 'מהצפי'}`;
+    return `<span class="earn-rx">${what} ${vs}</span>`;
+  }
+  const ch = g.items.find(x => x.change === 'raised' || x.change === 'lowered');
+  return ch ? `<span class="earn-rx">${en ? `${_earnGuidePeriod(ch)} guidance` : `תחזית ${_earnGuidePeriod(ch)}`} ${_earnGuideChange(ch)}</span>` : '';
+}
+
+function _earnGuideSection(it, todayStr){
+  const en = lang==='en';
+  const g = _earnGuide[`${it.ticker}|${it.report_date}`];
+  let body;
+  if(g && g.status === 'found' && g.items.length){
+    const head = `<div class="k">${en ? 'Period' : 'תקופה'}</div><div class="k">${en ? 'Guidance' : 'התחזית'}</div><div class="k">${en ? 'Consensus' : 'צפי אנליסטים'}</div><div class="k">${en ? 'Diff.' : 'הפער'}</div>`;
+    const rows = g.items.map(x => `<div title="${escH(x.quote || '')}">${_earnGuidePeriod(x)} · ${_earnGuideMetric(x)}${x.change ? ` · ${_earnGuideChange(x)}` : ''}</div>`
+      + `<div class="mono">${_earnGuideRange(x)}</div><div class="mono">${x.est != null ? _earnGuideVal(x, x.est) : '—'}</div><div>${x.vs_pct != null ? _earnPct(x.vs_pct) : ''}</div>`).join('');
+    body = `<div class="earn-gd">${head}${rows}</div><div class="earn-note">${en
+      ? "From the company's earnings release to the SEC. Consensus: the analysts' average for the same period before the report; the difference is from the middle of the range."
+      : 'מתוך הודעת הרווחים של החברה ל-SEC. צפי האנליסטים: הממוצע לאותה תקופה לפני הדוח; הפער מחושב מאמצע הטווח.'}</div>`;
+  } else if(g && g.status === 'none'){
+    body = `<div class="earn-note">${en ? 'The company gave no guidance in its earnings release (some give it only on the conference call).' : 'החברה לא פרסמה תחזית בהודעת הרווחים (יש חברות שנותנות תחזית רק בשיחת הוועידה).'}</div>`;
+  } else if(g && g.final){
+    body = `<div class="earn-note">${en ? "We could not read the guidance from the company's release." : 'לא הצלחנו לקרוא את התחזית מהודעת החברה.'}</div>`;
+  } else if(it.report_date >= _earnLocalDate(-3)){
+    body = `<div class="earn-note">${en ? "Reading the guidance from the company's release — usually within minutes of the report." : 'התחזית נקראת מהודעת החברה — בדרך כלל תוך דקות מהדוח.'}</div>`;
+  } else return '';
+  return `<div class="earn-dsec"><div class="earn-dsec-t">${en ? "The company's guidance" : 'תחזית החברה (גיידנס)'}</div>${body}</div>`;
 }
 
 function _earnRxLabel(m){
@@ -4482,6 +4576,7 @@ function _earnDetailHtml(it, todayStr){
     else if(!_earnMovesAt[it.report_date]) body = loadingTxt;
     else body = `<div class="earn-note">${en ? 'No trading since the report yet.' : 'עוד לא היה מסחר מאז הדוח.'}</div>`;
     out.push(`<div class="earn-dsec"><div class="earn-dsec-t">${en ? 'Stock reaction' : 'תגובת המניה'}</div>${body}</div>`);
+    out.push(_earnGuideSection(it, todayStr));
   }
 
   // 3. track record + growth + valuation (SEC quarterly data)
