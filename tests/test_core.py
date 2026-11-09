@@ -852,6 +852,41 @@ def test_movers_refresh_keeps_a_row_when_the_session_is_missing(scanner):
     assert scanner.movers_row(closes.iloc[:1], None) is None
 
 
+def test_digest_movers_only_of_the_latest_session():
+    """v37f: a refresh on Saturday stamps Friday's prices with Saturday: the date of a row says nothing about the session."""
+    import datetime as _dt
+    import ai_digest as d
+    friday, thursday = _dt.date(2026, 11, 6), _dt.date(2026, 11, 5)
+
+    class Cur:
+        def __init__(self):
+            self.sql, self.rows = "", []
+
+        def execute(self, sql, params=None):
+            self.sql = sql
+            self.rows = {"market_breadth WHERE": [(184, 318, 11, 2)], "MAX(day)": [(friday,)], "ASC": [("NTRA", -14.6)], "DESC": [("AMD", 11.04)]}[
+                next(k for k in ("market_breadth WHERE", "MAX(day)", "ASC", "DESC") if k in sql)]
+
+        def fetchone(self):
+            return self.rows[0]
+
+        def fetchall(self):
+            return self.rows
+
+        def close(self):
+            pass
+
+    class Conn:
+        def cursor(self):
+            return Cur()
+
+        def rollback(self):
+            pass
+    latest = d._market_from_db(Conn(), friday)
+    assert latest["movers"]["up"] == [{"ticker": "AMD", "change_pct": 11.04}] and latest["breadth"]["advancers"] == 184
+    assert "movers" not in d._market_from_db(Conn(), thursday)                 # an earlier day written again
+
+
 def test_movers_gap_in_health():
     import data_health as dh
     assert dh.movers_gap(73, 430, 184, 318) > dh.MOVERS_MAX_GAP                            # 7.11.2026
@@ -1137,3 +1172,234 @@ def test_morning_brief_text():
     en = push_alerts._morning_payload("en", ev, [("KO", "bmo", True)], 5, 12, ["KO"])
     assert "14:30" in he["body"] and "KO" in he["body"] and "12" in he["body"]   # Israel is UTC+2 after 25.10.2026
     assert "08:30 ET" in en["body"] and "+4" in en["body"]
+
+
+# ------------------------------------------------------------------ v38: scheduler connections, db meter, sign out other devices
+class _FakeCur:
+    def __init__(self, log, claimed=None, fail_on=None):
+        self.log, self.claimed, self.fail_on, self._rows = log, claimed, fail_on, []
+
+    def execute(self, sql, params=None):
+        if self.fail_on and self.fail_on in sql:
+            raise RuntimeError("SSL connection has been closed unexpectedly")
+        self.log.append((" ".join(sql.split()), params))
+        if "RETURNING slot_key" in sql:
+            self._rows = [(k,) for k in params[0] if self.claimed is None or k in self.claimed]
+
+    def fetchall(self):
+        return self._rows
+
+    def close(self):
+        pass
+
+
+class _FakeConn:
+    def __init__(self, log, **k):
+        self.log, self.k, self.closed, self.autocommit = log, k, 0, False
+
+    def cursor(self, *a, **k):
+        return _FakeCur(self.log, **self.k)
+
+    def commit(self):
+        self.log.append(("COMMIT", None))
+
+    def rollback(self):
+        self.log.append(("ROLLBACK", None))
+
+    def close(self):
+        self.closed = 1
+
+
+def _fresh_scheduler(monkeypatch):
+    import scheduler as s
+    monkeypatch.setattr(s, "_done", {})
+    monkeypatch.setattr(s, "_attempts", {})
+    monkeypatch.setattr(s, "_last_prune", {"at": 0.0})
+    monkeypatch.setattr(s, "_table_ready", {"v": False})
+    return s
+
+
+def test_scheduler_uses_one_connection_per_minute(monkeypatch):
+    """v38: every job due in the same minute is claimed, then recorded, on ONE connection (was two per job)."""
+    import datetime as _dt
+    s = _fresh_scheduler(monkeypatch)
+    log, opened, fired = [], [], []
+    monkeypatch.setattr(s, "_dispatch", lambda wf: (fired.append(wf), (204, ""))[1])
+
+    def get_conn():
+        opened.append(1)
+        return _FakeConn(log)
+    now = _dt.datetime(2026, 11, 9, 10, 0, tzinfo=s.ET).astimezone(s.UTC)       # a Monday: news, quick, insider, econ, breadth
+    did = s.tick(get_conn, now)
+    assert len(opened) == 1
+    assert {"news-aggregator.yml", "earnings-refresh.yml", "insider-refresh.yml", "econ-refresh.yml", "market-breadth.yml"} <= set(fired)
+    assert len(did) == len(fired)
+    sql = [q for q, _ in log]
+    assert sum("INSERT INTO scheduler_runs" in q for q in sql) == 1
+    assert sum("SET http_status = 204" in q for q in sql) == 1
+    assert any("INTERVAL '30 days'" in q for q in sql)                           # the daily clean-up rides along
+    s.tick(get_conn, now + _dt.timedelta(seconds=30))                           # the next tick: all done, no connection
+    assert len(opened) == 1
+
+
+def test_scheduler_skips_fired_slots_and_releases_failed_ones(monkeypatch):
+    import datetime as _dt
+    s = _fresh_scheduler(monkeypatch)
+    now = _dt.datetime(2026, 11, 7, 3, 0, tzinfo=s.ET).astimezone(s.UTC)        # a Saturday night: news_quiet only
+    keys = [s.slot_key(j, s.latest_due_slot(j, now)) for j in s.JOBS if s.latest_due_slot(j, now)]
+    news = next(k for k in keys if k.startswith("news_quiet|"))
+    log = []
+    monkeypatch.setattr(s, "_dispatch", lambda wf: (500, "boom") if wf == "news-aggregator.yml" else (204, ""))
+    s.tick(lambda: _FakeConn(log), now)
+    deletes = [p for q, p in log if q.startswith("DELETE FROM scheduler_runs WHERE slot_key")]
+    assert deletes and news in deletes[0][0]                                   # given back: the next tick retries
+    # already fired elsewhere: not dispatched again
+    s = _fresh_scheduler(monkeypatch)
+    fired = []
+    monkeypatch.setattr(s, "_dispatch", lambda wf: (fired.append(wf), (204, ""))[1])
+    s.tick(lambda: _FakeConn([], claimed=set()), now)
+    assert fired == []
+
+
+def test_scheduler_gives_back_a_claim_on_a_new_connection(monkeypatch):
+    """The connection dropped during the dispatch: the claim of a failed slot must still be given back, or it never runs."""
+    import datetime as _dt
+    s = _fresh_scheduler(monkeypatch)
+    now = _dt.datetime(2026, 11, 7, 3, 0, tzinfo=s.ET).astimezone(s.UTC)
+    monkeypatch.setattr(s, "_dispatch", lambda wf: (502, "bad gateway"))
+    conns, log2 = [], []
+
+    def get_conn():
+        conns.append(1)
+        return _FakeConn([], fail_on="DELETE") if len(conns) == 1 else _FakeConn(log2)
+    s.tick(get_conn, now)
+    assert len(conns) == 2 and any(q.startswith("DELETE FROM scheduler_runs") for q, _ in log2)
+
+
+def test_scheduler_fires_when_the_database_is_down(monkeypatch):
+    import datetime as _dt
+    s = _fresh_scheduler(monkeypatch)
+    fired = []
+    monkeypatch.setattr(s, "_dispatch", lambda wf: (fired.append(wf), (204, ""))[1])
+
+    def down():
+        raise RuntimeError("no database")
+    s.tick(down, _dt.datetime(2026, 11, 7, 3, 0, tzinfo=s.ET).astimezone(s.UTC))
+    assert "news-aggregator.yml" in fired
+
+
+def test_db_meter_counts_rows_and_sources():
+    import db_meter as m
+    m.take_pending()
+    assert m.row_bytes(("KO", 61.5, None)) == 7 + (4 + 2) + (4 + 4) + 4
+    assert m.row_bytes({"t": "שלום"}) == 7 + 4 + 8                               # Hebrew = 2 bytes a letter in UTF-8
+    assert m.value_bytes({"a": 1}) == len('{"a": 1}')
+    assert m.request_source("/api/stock/KO") == "server /api/stock"
+    assert m.request_source("/robots.txt") == "server /robots.txt"
+
+    class Base:
+        def __init__(self):
+            self.rows = [("KO", 1), ("PEP", 2)]
+
+        def execute(self, *a):
+            pass
+
+        def fetchall(self):
+            return self.rows
+
+        def fetchone(self):
+            return self.rows[0]
+
+        def __iter__(self):
+            return iter(self.rows)
+    cur = m._counting_class(Base)()
+    token = m.set_source("test source")
+    try:
+        cur.execute("SELECT 1")
+        cur.fetchall()
+        cur.fetchone()
+        list(cur)
+    finally:
+        m.reset_source(token)
+    got = m.take_pending()["test source"]
+    assert got[1] == 1 and got[2] == 5 and got[3] > 0
+
+
+def test_db_meter_writes_on_the_closing_connection():
+    import db_meter as m
+    m.take_pending()
+    m.add("job a", connections=1, queries=3, rows=10, nbytes=500)
+    m.add("job b", rows=2, nbytes=40)
+    log = []
+
+    class Info:
+        transaction_status = 2                                   # in a transaction nobody committed: closing rolls it back
+
+    conn = _FakeConn(log)
+    conn.info = Info()
+    old_plain, m._plain_cursor = m._plain_cursor, lambda c: c.cursor()
+    try:
+        assert m.flush_through(conn, force=True)
+    finally:
+        m._plain_cursor = old_plain
+    sql = [q for q, _ in log]
+    assert sql[0] == "ROLLBACK" and sql[-1] == "COMMIT"
+    insert = next(p for q, p in log if q.startswith("INSERT INTO db_usage"))
+    assert len(insert) == 12 and "job a" in insert and "job b" in insert
+    assert m.take_pending() == {}
+    m.add("job c", rows=1, nbytes=9)                             # a closed connection: the counts wait for the next one
+    conn.closed = 1
+    assert not m.flush_through(conn, force=True)
+    assert m.take_pending()["job c"][2] == 1
+
+
+def test_usage_line_in_health():
+    import datetime as _dt
+    import data_health as dh
+    d = _dt.date(2026, 11, 9)
+    assert dh.usage_line(d, [], [])["status"] == "info"
+    days = [{"day": d, "bytes": 20_000_000, "connections": 1000}, {"day": d - _dt.timedelta(days=1), "bytes": 5_000_000, "connections": 100}]
+    top = [{"source": "server /api/stocks", "bytes": 15_000_000, "connections": 10}]
+    line = dh.usage_line(d, days, top)
+    assert line["status"] == "ok" and line["value"] == 25.0 and "server /api/stocks 15.1" in line["detail"]
+    days[0]["bytes"] = 200_000_000
+    assert dh.usage_line(d, days, top)["status"] == "warn"
+    import decimal
+    days[0]["bytes"] = decimal.Decimal(20_000_000)                # what psycopg2 returns for SUM(bigint)
+    assert dh.usage_line(d, days, top)["value"] == 25.0
+
+
+def test_db_meter_hooks_the_real_psycopg2():
+    """Without a database: the classes psycopg2 will build connections and cursors from (GitHub Actions has psycopg2)."""
+    ext = pytest.importorskip("psycopg2.extensions")
+    import psycopg2.extras
+    import db_meter as m
+    conn_class = m._make_connection_class(ext)
+    assert issubclass(conn_class, ext.connection)
+    for base in (ext.cursor, psycopg2.extras.RealDictCursor, psycopg2.extras.DictCursor):
+        cls = m._counting_class(base)
+        assert issubclass(cls, base) and cls.__mro__[1] is m._Counting
+    assert m._counting_class(ext.cursor) is m._counting_class(ext.cursor)
+
+
+def test_sign_out_other_devices_ends_older_tokens(api, monkeypatch):
+    """v38: a token carries the account's token version; a newer version (or a deleted account) = 401."""
+    pytest.importorskip("jwt")
+    if api.pyjwt is None:
+        pytest.skip("PyJWT not loaded by the server here")
+    from fastapi import HTTPException
+    monkeypatch.setattr(api, "_auth_ready", lambda: True)
+    monkeypatch.setattr(api, "_token_versions", {})
+    api._remember_token_version(7, 2)
+    assert api.current_user_id("Bearer " + api._issue_token(7, 2)) == 7
+    for token, why in ((api._issue_token(7, 1), "signed out on this device"), (api._issue_token(7), "signed out on this device")):
+        with pytest.raises(HTTPException) as e:
+            api.current_user_id("Bearer " + token)
+        assert e.value.status_code == 401 and e.value.detail == why
+    api._remember_token_version(7, None)                           # the account was deleted
+    with pytest.raises(HTTPException) as e:
+        api.current_user_id("Bearer " + api._issue_token(7, 2))
+    assert e.value.detail == "user not found"
+    api._remember_token_version(8, 0)                              # a token from before v38 has no "tv": still good
+    old = api.pyjwt.encode({"sub": "8", "exp": 4102444800}, api.JWT_SECRET, algorithm="HS256")
+    assert api.current_user_id("Bearer " + old) == 8

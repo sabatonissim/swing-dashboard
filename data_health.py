@@ -3,7 +3,8 @@ Data health check (v32) — is what the site shows actually right?
 ================================================================
 Runs in GitHub Actions (data-health.yml), started by scheduler.py once a weekday at 07:30 ET. The site does not use it.
 READ ONLY on every existing table; the only thing it writes is its own report (table data_health, one row per day,
-60 days kept), which /api/data-health serves. So the first step of a work session: read that report.
+60 days kept), which /api/data-health serves, and (v38) db_meter.py adds this run's own reads to db_usage, like every
+job's. So the first step of a work session: read that report.
 
 Why: tests/ checks the CODE. Nothing checked the DATA, so wrong numbers stayed on the site until someone compared by hand
 (3.11.2026: 498 of 503 stocks, EQR showing a figure from August as today's, ALGN lost to a failed download).
@@ -18,6 +19,7 @@ The checks (a problem found = a line in the report, never a stop; a check that c
   * size (v34): how much of the database's storage is used, and by which tables
   * company profiles (v35): an impossible staff count, an encyclopedia text that does not name the company (KO's said
     400 employees, MSFT's described a court case)
+  * database reads (v38): yesterday's estimate from db_meter.py, by source (the free Neon plan stops at 5 GB a month)
 
 status: ok / info (worth knowing, nothing to fix: KVUE still on the free list) / warn (look at it) / fail (wrong or stopped).
 Exit code 0 even when problems are found (a red run would email the owner, the report is where this is read).
@@ -58,6 +60,10 @@ BIG_COMPANY_CAP = 10e9          # a company this large with under PROFILE_MIN_ST
 PROFILE_MIN_STAFF = 500
 PROFILE_STAFF_CHECKED = {"RGLD"}   # read in the annual report: Royal Gold owns royalties and really has 39 employees (6.11.2026)
 KEEP_DAYS = 60
+# v38: db_meter.py counts what each part reads; a connection's handshake is not counted there (~5 KB, an estimate: the
+# server certificates + login). 5 GB a month = ~160 MB a day; a day over 100 = more than 3 GB a month at that pace.
+CONN_OVERHEAD_BYTES = 5000
+DB_DAY_WARN_MB = 100
 
 # (table, time column, most weekdays since the last change, status when older). Normal = 1 at 07:30 ET (yesterday's
 # evening job), 2 = one market holiday in between, so 2 is the limit for what runs every trading day.
@@ -144,6 +150,24 @@ def profile_problems(r: dict) -> List[str]:
     if staff is not None and staff < PROFILE_MIN_STAFF and (cap or 0) >= BIG_COMPANY_CAP and r.get("ticker") not in PROFILE_STAFF_CHECKED:
         out.append(f"{staff} employees at a market cap of ${cap / 1e9:.0f}B")
     return out
+
+
+def usage_mb(nbytes, connections) -> float:
+    return (float(nbytes or 0) + float(connections or 0) * CONN_OVERHEAD_BYTES) / 1e6   # SUM(bigint) = Decimal
+
+
+def usage_line(day: date, days: List[dict], top: List[dict]) -> dict:
+    """days: [{day, bytes, connections}] newest first (the last week); top: yesterday's sources, largest first."""
+    if not days:
+        return _line("usage.db", "info", "no counts yet (db_meter.py: from the first run after v38)")
+    by_day = {d["day"]: usage_mb(d["bytes"], d["connections"]) for d in days}
+    mb = by_day.get(day)
+    week = ", ".join(f"{d['day'].strftime('%d.%m')} {usage_mb(d['bytes'], d['connections']):.1f}" for d in days)
+    if mb is None:
+        return _line("usage.db", "info", f"nothing counted on {day} (MB a day, estimate: {week})")
+    parts = ", ".join(f"{t['source']} {usage_mb(t['bytes'], t['connections']):.1f} ({t['connections']} conn.)" for t in top)
+    return _line("usage.db", "warn" if mb > DB_DAY_WARN_MB else "ok",
+                 f"{day}: ~{mb:.1f} MB read from the database (estimate; largest: {parts}). MB a day: {week}", round(mb, 1))
 
 
 def overall_status(results: List[dict]) -> str:
@@ -344,6 +368,20 @@ def check_db_size(cur) -> List[dict]:
     return [_line("size.database", status, f"{mb} MB used (largest, MB: {top})", mb)]
 
 
+def check_db_usage(cur, now: datetime) -> List[dict]:
+    """v38: yesterday (UTC, as db_meter.py counts) and the last week. ~20 rows a day, a few KB."""
+    cur.execute("SELECT to_regclass('db_usage') IS NOT NULL AS ok")
+    if not cur.fetchone()["ok"]:
+        return [usage_line(now.date(), [], [])]
+    day = now.date() - timedelta(days=1)
+    cur.execute("""SELECT day, SUM(bytes) AS bytes, SUM(connections) AS connections FROM db_usage
+                   WHERE day >= %s GROUP BY day ORDER BY day DESC""", (day - timedelta(days=6),))
+    days = cur.fetchall()
+    cur.execute("""SELECT source, bytes, connections FROM db_usage WHERE day = %s
+                   ORDER BY bytes + connections * %s DESC LIMIT 6""", (day, CONN_OVERHEAD_BYTES))
+    return [usage_line(day, days, cur.fetchall())]
+
+
 # ------------------------------------------------------------------ report
 def save(conn, day: date, status: str, results: List[dict]) -> None:
     cur = conn.cursor()
@@ -372,7 +410,7 @@ def main() -> int:
                           ("arithmetic", lambda: check_arithmetic(cur)), ("values", lambda: check_values(cur)),
                           ("earnings", lambda: check_earnings(cur, now)), ("market caps", lambda: check_market_caps(cur)),
                           ("profiles", lambda: check_profiles(cur)), ("digest", lambda: check_digest(cur)),
-                          ("size", lambda: check_db_size(cur))):
+                          ("size", lambda: check_db_size(cur)), ("usage", lambda: check_db_usage(cur, now))):
             try:
                 results += run()
             except Exception as e:
@@ -390,4 +428,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    import db_meter                       # v38: its own reads are counted too
+    db_meter.install()
     sys.exit(main())

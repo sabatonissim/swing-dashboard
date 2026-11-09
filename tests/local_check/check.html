@@ -19,7 +19,7 @@ async function main(){
   }
   log('files: ' + names.length);
   const micropip = py.pyimport('micropip');
-  await micropip.install(['pyflakes', 'fastapi==0.115.6']);
+  await micropip.install(['pyflakes', 'fastapi==0.115.6', 'PyJWT']);   // v38: the sign-in tests
   await py.runPythonAsync(await (await fetch('/src/__check__.py').catch(() => null))?.text?.() || CHECK);
   window.__done = true;
   log('DONE');

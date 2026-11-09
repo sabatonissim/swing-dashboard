@@ -71,6 +71,8 @@ from news_links import PROMO_RE, is_unwanted_headline, clean_publisher, strip_ou
 import push_alerts    # v19: push notifications (watchlist signals, price alerts) — also used by the scanner
 import fundamentals as fundlib   # v21: SEC fundamentals build + stored copies (also the nightly warm-up job)
 import scheduler      # starts the GitHub Actions workflows at exact ET times (see scheduler.py): providers -> processing -> uniform events (see econ_calendar.py)
+import db_meter       # v38: counts what each endpoint reads from the database (data_health.py reports it)
+db_meter.install("server", flush_every=db_meter.SERVER_FLUSH_EVERY, prune=True)
 
 DB_URL = os.environ.get("SWING_DB_PATH") or os.environ.get("DATABASE_URL")
 
@@ -205,7 +207,11 @@ async def security_middleware(request: Request, call_next):
     m = _TICKER_PATH_RE.match(path)
     if m and not _TICKER_OK_RE.match(m.group(1)):
         return _refuse(request, 404, "ticker not found")
-    response = await call_next(request)
+    meter = db_meter.set_source(db_meter.request_source(path))
+    try:
+        response = await call_next(request)
+    finally:
+        db_meter.reset_source(meter)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -496,6 +502,7 @@ def init_db():
     # v18d: real article URL behind a Google News link (filled by the news pipeline / on first preview) — news_links.py
     cur.execute("ALTER TABLE IF EXISTS macro_news ADD COLUMN IF NOT EXISTS article_url TEXT;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sector TEXT;")   # v19 sector filter
+    cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0;")   # v38 sign out other devices
     # v34: the two largest tables had no index on what every page asks for, so each read went through the whole table
     cur.execute('CREATE INDEX IF NOT EXISTS scanned_stocks_ticker_ts ON scanned_stocks (ticker, "timestamp" DESC);')
     cur.execute('CREATE INDEX IF NOT EXISTS scanned_stocks_ts ON scanned_stocks ("timestamp" DESC);')
@@ -546,26 +553,63 @@ def _auth_ready() -> bool:
     return bool(JWT_SECRET) and pyjwt is not None and google_id_token is not None
 
 
-def _issue_token(user_id: int) -> str:
+def _issue_token(user_id: int, version: int = 0) -> str:
     now = dt.now(timezone.utc)
     return pyjwt.encode(
-        {"sub": str(user_id), "iat": int(now.timestamp()),
+        {"sub": str(user_id), "tv": int(version or 0), "iat": int(now.timestamp()),
          "exp": int((now + timedelta(days=JWT_TTL_DAYS)).timestamp())},
         JWT_SECRET, algorithm="HS256",
     )
 
 
+# v38: a token used to be good until it expired, whatever happened: a device left signed in (a computer at work) or a
+# deleted account kept working for up to 90 days, and the only way out was a new JWT_SECRET, signing everybody out.
+# Now each token carries the account's token_version ("tv"; tokens from before v38 = 0). "Sign out other devices" adds
+# one, and every older token stops working. The version is kept here for TOKEN_CHECK_SEC: a signed-in page asks the
+# database at most once in that time per person, and its own answer comes from the database anyway.
+TOKEN_CHECK_SEC = 300
+_token_versions: dict = {}           # user id -> (token_version, or None = no such account; when read)
+_token_lock = threading.Lock()
+
+
+def _token_version(user_id: int) -> Optional[int]:
+    now = time.time()
+    with _token_lock:
+        hit = _token_versions.get(user_id)
+    if hit and now - hit[1] < TOKEN_CHECK_SEC:
+        return hit[0]
+    with db_cursor() as (conn, cur):
+        cur.execute("SELECT token_version FROM users WHERE id = %s", (user_id,))
+        row = cur.fetchone()
+    version = int(row[0] or 0) if row else None
+    _remember_token_version(user_id, version)
+    return version
+
+
+def _remember_token_version(user_id: int, version: Optional[int]) -> None:
+    with _token_lock:
+        if len(_token_versions) > 10000:
+            _token_versions.clear()
+        _token_versions[user_id] = (version, time.time())
+
+
 def current_user_id(authorization: Optional[str] = Header(default=None)) -> int:
-    """FastAPI dependency: the signed-in user's id, or 401."""
+    """FastAPI dependency: the signed-in user's id, or 401 (bad or expired token, signed out by "other devices", no account)."""
     if not _auth_ready():
         raise HTTPException(status_code=503, detail="auth is not configured on the server")
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="login required")
     try:
         payload = pyjwt.decode(authorization[7:].strip(), JWT_SECRET, algorithms=["HS256"])
-        return int(payload["sub"])
+        user_id, version = int(payload["sub"]), int(payload.get("tv") or 0)
     except Exception:
         raise HTTPException(status_code=401, detail="invalid or expired token")
+    current = _token_version(user_id)
+    if current is None:
+        raise HTTPException(status_code=401, detail="user not found")
+    if version != current:
+        raise HTTPException(status_code=401, detail="signed out on this device")
+    return user_id
 
 
 class GoogleLogin(BaseModel):
@@ -598,26 +642,39 @@ def auth_google(body: GoogleLogin):
                ON CONFLICT (google_sub) DO UPDATE
                  SET email = EXCLUDED.email, name = EXCLUDED.name,
                      picture = EXCLUDED.picture, last_login = NOW()
-               RETURNING id""",
+               RETURNING id, token_version""",
             (sub, email, name, picture),
         )
-        user_id = cur.fetchone()["id"]
+        row = cur.fetchone()
+        user_id, version = row["id"], row["token_version"] or 0
         if is_first_user:
             # The very first account (the owner) inherits the old shared watchlist.
             cur.execute("UPDATE watchlist SET user_id = %s WHERE user_id IS NULL", (user_id,))
         conn.commit()
-    return {"token": _issue_token(user_id),
+    _remember_token_version(user_id, version)
+    return {"token": _issue_token(user_id, version),
             "user": {"id": user_id, "email": email, "name": name, "picture": picture}}
 
 
 @app.post("/api/auth/refresh")
 def auth_refresh(user_id: int = Depends(current_user_id)):
-    """Swap a still-valid token for a fresh one (called on every page load)."""
-    with db_cursor(dict_cursor=True) as (conn, cur):
-        cur.execute("SELECT 1 FROM users WHERE id = %s", (user_id,))
-        if not cur.fetchone():
-            raise HTTPException(status_code=401, detail="user not found")
-    return {"token": _issue_token(user_id)}
+    """Swap a still-valid token for a fresh one (called on every page load). current_user_id has just checked the
+    account and its token version (from memory or the database), so this needs no query of its own."""
+    return {"token": _issue_token(user_id, _token_version(user_id))}
+
+
+@app.post("/api/auth/logout-others")
+def auth_logout_others(user_id: int = Depends(current_user_id)):
+    """v38: every other device signed in to this account is signed out at once; this one gets a new token."""
+    with db_cursor() as (conn, cur):
+        cur.execute("UPDATE users SET token_version = COALESCE(token_version, 0) + 1 WHERE id = %s RETURNING token_version",
+                    (user_id,))
+        row = cur.fetchone()
+        conn.commit()
+    if not row:
+        raise HTTPException(status_code=401, detail="user not found")
+    _remember_token_version(user_id, row[0])
+    return {"token": _issue_token(user_id, row[0])}
 
 
 @app.get("/api/auth/me")
@@ -661,6 +718,7 @@ def auth_delete_me(user_id: int = Depends(current_user_id)):
             cur.execute(f"DELETE FROM {table} WHERE user_id = %s", (user_id,))
         cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
         conn.commit()
+    _remember_token_version(user_id, None)          # v38: its tokens stop working at once, on every device
     return {"deleted": True}
 
 

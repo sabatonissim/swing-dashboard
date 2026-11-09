@@ -134,4 +134,6 @@ def main(argv) -> int:
 
 
 if __name__ == "__main__":
+    import db_meter                       # v38: what this run reads from the database (data_health.py reports it)
+    db_meter.install()
     sys.exit(main(sys.argv))

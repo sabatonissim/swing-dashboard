@@ -139,56 +139,75 @@ def slot_key(job, slot_utc):
 
 
 # ------------------------------------------------------------------ database claim (exactly once)
-def _claim(get_conn, key):
-    """True = we claimed it, False = somebody already fired it, None = database unreachable."""
+# v38: ONE connection per minute that has slots, for all of them: the claims, then (after the dispatches) the results and
+# the monthly clean-up. It was two connections per slot (~356 on a weekday, ~5 KB of Neon network each just to connect),
+# although news, the quick refresh and insider trades share the same minutes.
+_table_ready = {"v": False}
+
+
+def _claim_all(conn, keys):
+    """{key: True = we claimed it, False = somebody already fired it}; None for all = database unreachable."""
+    if conn is None:
+        return {k: None for k in keys}
     try:
-        conn = get_conn()
-        try:
-            cur = conn.cursor()
+        cur = conn.cursor()
+        if not _table_ready["v"]:
             cur.execute("""CREATE TABLE IF NOT EXISTS scheduler_runs (
                 slot_key TEXT PRIMARY KEY, fired_at TIMESTAMPTZ DEFAULT NOW(), http_status INTEGER)""")
-            cur.execute("INSERT INTO scheduler_runs (slot_key) VALUES (%s) ON CONFLICT DO NOTHING", (key,))
-            claimed = cur.rowcount == 1
-            conn.commit()
-            cur.close()
-            return claimed
-        finally:
-            conn.close()
+            _table_ready["v"] = True
+        cur.execute("""INSERT INTO scheduler_runs (slot_key) SELECT unnest(%s::text[])
+                       ON CONFLICT DO NOTHING RETURNING slot_key""", (list(keys),))
+        won = {r[0] for r in cur.fetchall()}
+        conn.commit()
+        cur.close()
+        return {k: k in won for k in keys}
     except Exception as e:  # noqa: BLE001
-        print(f"[scheduler] could not claim {key} in the database ({type(e).__name__}: {e}) — firing anyway")
-        return None
-
-
-def _db_update(get_conn, key, status=None, delete=False):
-    try:
-        conn = get_conn()
+        print(f"[scheduler] could not claim {', '.join(keys)} in the database ({type(e).__name__}: {e}) — firing anyway")
         try:
-            cur = conn.cursor()
-            if delete:
-                cur.execute("DELETE FROM scheduler_runs WHERE slot_key = %s", (key,))
-            else:
-                cur.execute("UPDATE scheduler_runs SET http_status = %s WHERE slot_key = %s", (status, key))
-            conn.commit()
-            cur.close()
-        finally:
-            conn.close()
-    except Exception as e:  # noqa: BLE001
-        print(f"[scheduler] bookkeeping for {key} failed: {type(e).__name__}: {e}")
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return {k: None for k in keys}
 
 
-def _prune_runs(get_conn):
-    """v34: scheduler_runs grew forever (~100 rows a day). A month is plenty: a slot is claimed once, within hours."""
+def _record(conn, sent, released, prune):
+    """After the dispatches: the 204s, the claims given back for a retry, the clean-up. False = not saved."""
+    if conn is None:
+        return False
     try:
-        conn = get_conn()
-        try:
-            cur = conn.cursor()
+        cur = conn.cursor()
+        if sent:
+            cur.execute("UPDATE scheduler_runs SET http_status = 204 WHERE slot_key = ANY(%s)", (list(sent),))
+        if released:
+            cur.execute("DELETE FROM scheduler_runs WHERE slot_key = ANY(%s)", (list(released),))
+        if prune:        # v34: scheduler_runs grew forever (~100 rows a day). A month is plenty: a slot is claimed once, within hours.
             cur.execute("DELETE FROM scheduler_runs WHERE fired_at < NOW() - INTERVAL '30 days'")
-            conn.commit()
-            cur.close()
+        conn.commit()
+        cur.close()
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"[scheduler] bookkeeping for {', '.join(list(sent) + list(released)) or 'clean-up'} failed: {type(e).__name__}: {e}")
+        return False
+
+
+def _release_again(get_conn, released):
+    """A failed dispatch whose claim could not be given back would never be retried: one more try on a new connection."""
+    try:
+        conn = get_conn()
+        try:
+            _record(conn, [], released, False)
         finally:
             conn.close()
     except Exception as e:  # noqa: BLE001
-        print(f"[scheduler] pruning old runs failed: {type(e).__name__}: {e}")
+        print(f"[scheduler] could not give back {', '.join(released)}: {type(e).__name__}: {e}")
+
+
+def _open(get_conn):
+    try:
+        return get_conn()
+    except Exception as e:  # noqa: BLE001
+        print(f"[scheduler] database unreachable ({type(e).__name__}: {e})")
+        return None
 
 
 # ------------------------------------------------------------------ GitHub dispatch
@@ -211,14 +230,35 @@ def tick(get_conn, now_utc=None):
     """One scheduler pass. Returns a list of (slot key, outcome) for what it did."""
     now = now_utc or datetime.now(UTC)
     did = []
+    due = []
     for job in JOBS:
         slot = latest_due_slot(job, now)
         if slot is None:
             continue
         key = slot_key(job, slot)
-        if key in _done:
-            continue
-        claim = _claim(get_conn, key)
+        if key not in _done:
+            due.append((job, slot, key))
+    if due:
+        conn = _open(get_conn)
+        try:
+            did = _fire(get_conn, conn, due, now)
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
+    for k in [k for k in _done if k.split("|", 1)[1] < (now - timedelta(days=2)).strftime("%Y-%m-%dT%H:%MZ")]:
+        _done.pop(k, None)
+        _attempts.pop(k, None)
+    return did
+
+
+def _fire(get_conn, conn, due, now):
+    claims = _claim_all(conn, [key for _, _, key in due])
+    did, sent, released = [], [], []
+    for job, slot, key in due:
+        claim = claims.get(key)
         if claim is False:
             _done[key] = "fired earlier (by another instance or before a restart)"
             continue
@@ -228,25 +268,27 @@ def tick(get_conn, now_utc=None):
             status, body = 0, f"{type(e).__name__}: {e}"
         if status == 204:
             _done[key] = "dispatched"
-            _db_update(get_conn, key, status=204)
+            if claim:
+                sent.append(key)
             late = int((now - slot).total_seconds() // 60)
             print(f"[scheduler] {job['workflow']} dispatched for slot {key}" + (f" ({late} min late — catch-up)" if late >= 3 else ""))
             did.append((key, "dispatched"))
-            if time.time() - _last_prune["at"] > 86400:        # right after a claim: the database is awake anyway
-                _last_prune["at"] = time.time()
-                _prune_runs(get_conn)
         else:
             _attempts[key] = _attempts.get(key, 0) + 1
             _last_error.update(msg=f"{job['workflow']}: HTTP {status} {body}", at=now.isoformat())
             print(f"[scheduler] dispatch of {job['workflow']} FAILED (attempt {_attempts[key]}/{MAX_ATTEMPTS}): HTTP {status} {body}")
             if claim:
-                _db_update(get_conn, key, delete=True)          # release the claim so the next tick can retry
+                released.append(key)                            # release the claim so the next tick can retry
             if _attempts[key] >= MAX_ATTEMPTS:
                 _done[key] = f"gave up after {MAX_ATTEMPTS} failures (HTTP {status})"
             did.append((key, f"failed HTTP {status}"))
-    for k in [k for k in _done if k.split("|", 1)[1] < (now - timedelta(days=2)).strftime("%Y-%m-%dT%H:%MZ")]:
-        _done.pop(k, None)
-        _attempts.pop(k, None)
+    prune = bool(sent) and time.time() - _last_prune["at"] > 86400
+    if sent or released or prune:
+        if _record(conn, sent, released, prune):
+            if prune:
+                _last_prune["at"] = time.time()
+        elif released:
+            _release_again(get_conn, released)
     return did
 
 
@@ -261,6 +303,11 @@ def _self_ping():
 
 def _loop(get_conn):
     time.sleep(20)                       # let the app finish booting
+    try:
+        import db_meter                  # v38: its connections are counted under their own name
+        db_meter.set_source("server scheduler")
+    except Exception:  # noqa: BLE001
+        pass
     last_ping = 0.0
     while True:
         try:

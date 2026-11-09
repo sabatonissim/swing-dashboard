@@ -6700,6 +6700,19 @@ async function deleteMyAccount(){
     alert(lang==='en'?'Your account was deleted.':'החשבון נמחק.');
   }catch(e){ alert(lang==='en'?'Could not delete the account right now — try again later.':'לא ניתן למחוק את החשבון כרגע — נסה שוב מאוחר יותר.'); }
 }
+// v38: every other phone / computer signed in to this account is signed out at once (a computer at work left signed in);
+// this one stays signed in with a new token
+async function signOutOtherDevices(){
+  closeProfileMenu();
+  if(!confirm(lang==='en'?'Sign out of this account on every other phone and computer? This device stays signed in.':'לנתק את החשבון בכל הטלפונים והמחשבים האחרים? המכשיר הזה נשאר מחובר.')) return;
+  try{
+    const res = await authFetch(`${API_BASE}/api/auth/logout-others`, {method:'POST'});
+    if(!res.ok) throw new Error();
+    const d = await res.json();
+    if(d && d.token){ authToken = d.token; localStorage.setItem('swing_token', authToken); }
+    alert(lang==='en'?'Done: the other devices are signed out.':'בוצע: המכשירים האחרים נותקו.');
+  }catch(e){ alert(lang==='en'?'Could not do it right now — try again later.':'לא ניתן לבצע כרגע — נסה שוב מאוחר יותר.'); }
+}
 // ==== end v14 helpers ====
 
 function getSessionId(){
@@ -6821,6 +6834,7 @@ function renderAuthBox(){
           <button onclick="closeProfileMenu();openLegal('terms')" style="${rowBtn}">${en?'Terms of use':'תנאי שימוש'}</button>
           ${signedIn ? `<button onclick="exportMyData()" style="${rowBtn}">${en?'Download my data':'הורדת המידע שלי'}</button>
           <button onclick="signOut()" style="${rowBtn}">${en?'Sign out':'התנתק'}</button>
+          <button onclick="signOutOtherDevices()" style="${rowBtn}">${en?'Sign out other devices':'ניתוק כל המכשירים האחרים'}</button>
           <button onclick="deleteMyAccount()" style="${rowBtn}color:var(--red);">${en?'Delete my account':'מחיקת החשבון שלי'}</button>` : ''}
         </div>
       </div>`;
