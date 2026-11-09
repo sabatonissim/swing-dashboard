@@ -176,6 +176,42 @@ def test_signal_context_slice(api):
     assert api._sigctx_slice([]) == {"n": 0}
 
 
+def test_earnings_move_states(api):
+    """v40: the reaction to a report says whether it is final, live, after-hours or pre-market — and is measured from the
+    last close before the report reached the market (Friday for a Monday-morning report, Monday for a Monday-evening one)."""
+    import datetime as _d
+    from zoneinfo import ZoneInfo
+    ny = ZoneInfo("America/New_York")
+    D = _d.date
+    thu, fri, mon = D(2026, 11, 5), D(2026, 11, 6), D(2026, 11, 9)
+
+    def at(day, hh, mm=0):
+        return _d.datetime(day.year, day.month, day.day, hh, mm, tzinfo=ny)
+
+    def intra(points):
+        return pd.Series([p for _, p in points], index=pd.DatetimeIndex([pd.Timestamp(t) for t, _ in points]))
+
+    daily_mon = pd.Series([100.0, 110.0, 120.0], index=[thu, fri, mon])     # Monday's bar is there from the open
+    ticks = intra([(at(fri, 15, 45), 110), (at(fri, 18), 111), (at(mon, 7), 115), (at(mon, 10), 118),
+                   (at(mon, 15, 45), 120), (at(mon, 17, 30), 132)])
+    mv = api._earnings_move
+
+    m = mv(daily_mon, ticks, mon, "amc", at(mon, 18))           # evening report, the same evening
+    assert m["state"] == "post" and m["pct"] == 10.0 and m["base_day"] == "2026-11-09"
+    assert mv(daily_mon, ticks, mon, "amc", at(mon, 14)) is None  # before the close: not out yet
+    m = mv(daily_mon, ticks[ticks.index <= at(mon, 10)], mon, "bmo", at(mon, 10, 5))   # morning report, market open
+    assert m["state"] == "live" and m["pct"] == round((118 / 110 - 1) * 100, 2) and m["base_day"] == "2026-11-06"
+    m = mv(daily_mon.iloc[:2], ticks[ticks.index <= at(mon, 7)], mon, "bmo", at(mon, 7, 10))   # before the open
+    assert m["state"] == "pre" and m["pct"] == round((115 / 110 - 1) * 100, 2)
+    m = mv(daily_mon, ticks, thu, "amc", at(mon, 11))           # Thursday evening -> Friday's session, closed
+    assert m["state"] == "closed" and m["day"] == "2026-11-06" and m["pct"] == 10.0 and "since_pct" not in m
+    m = mv(daily_mon, ticks, thu, "amc", at(mon, 17))           # ...and once Monday closed, the move since then too
+    assert m["since_day"] == "2026-11-09" and m["since_pct"] == 20.0
+    m = mv(daily_mon, ticks, mon, "bmo", at(mon, 16, 10))       # morning report after the bell = final
+    assert m["state"] == "closed" and m["pct"] == round((120 / 110 - 1) * 100, 2)
+    assert mv(daily_mon, ticks, D(2026, 11, 10), "bmo", at(mon, 18)) is None   # tomorrow's report
+
+
 def test_fundamentals_stale_series():
     """v27: a series the company stopped reporting (JPM debt 2014, BRK EPS 2013) is dropped, a recent one is kept."""
     import fundamentals

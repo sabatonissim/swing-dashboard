@@ -44,6 +44,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from contextlib import contextmanager
 from datetime import date, datetime as dt, timedelta, timezone
 from typing import List, Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import numpy as np
@@ -140,7 +141,7 @@ _RATE_RULES = [
     ("heavy",  ("/api/article-preview", "/api/lookup", "/api/fundamentals", "/api/ticker-search",
                 "/api/stock-news", "/api/technical-setup", "/api/watchlist-setups", "/api/price-compare",
                 "/api/sector-comparison", "/api/signal-history", "/api/backtest", "/api/demo-portfolio",
-                "/api/pattern-stats", "/api/company-profile", "/api/quotes"), 40, 60),
+                "/api/pattern-stats", "/api/company-profile", "/api/quotes", "/api/earnings-moves"), 40, 60),
     ("seo",    ("/api/seo",), 600, 60),     # v35: asked by the site's own pages (one address); answered from memory
     ("default", ("/api/",), 240, 60),
 ]
@@ -5085,6 +5086,149 @@ def get_quotes(tickers: str = Query(..., min_length=1, max_length=800)):
         if len(_quote_cache) > 2000:
             _quote_cache.clear()
     return {"quotes": out}
+
+
+# ------------------------------------------------------------------
+# v40: the stock's reaction to an earnings report WHILE it happens (owner, 9.11.2026: "the evening reports should show the
+# move too"). The calendar used the daily bars, which already hold today's unfinished session: a morning report showed the
+# move so far as if the day were over, and an evening report showed nothing until the next day traded (the after-hours
+# move was not asked for at all). Now each move says what it is:
+#   closed   the first session that could react has closed: its change vs the close before the report (+ since then)
+#   live     that session is trading now: the latest regular price
+#   post/pre it has not opened yet: the latest after-hours / pre-market price (thin trading — the site says so)
+# Every price vs the last regular close BEFORE the report reached the market. No database; Yahoo chart data only
+# (.history/.download work from Render), cached 2 minutes per stock whoever asks.
+# ------------------------------------------------------------------
+_EM_TTL_SEC = 120
+_em_cache: dict = {}                 # ticker -> (timestamp, (daily closes by date, intraday closes by NY time))
+_EM_OPEN, _EM_CLOSE = 9 * 60 + 30, 16 * 60
+_EM_SETTLE_MIN = 5                   # the day's bar counts as final this long after the bell
+_EM_NY = ZoneInfo("America/New_York")
+
+
+def _em_frames(tickers: List[str]) -> dict:
+    now = time.time()
+    out = {t: _em_cache[t][1] for t in tickers if t in _em_cache and now - _em_cache[t][0] < _EM_TTL_SEC}
+    missing = [t for t in tickers if t not in out]
+
+    def closes(df, symbols):
+        c = df["Close"] if df is not None and not df.empty else None
+        if c is not None and isinstance(c, pd.Series):
+            c = c.to_frame(symbols[0])
+        return c
+
+    def fetch(symbols, threads):
+        daily = closes(yf.download(symbols, period="1mo", interval="1d", group_by="column", auto_adjust=False,
+                                   threads=threads, progress=False), symbols)
+        intra = closes(yf.download(symbols, period="5d", interval="15m", prepost=True, group_by="column",
+                                   auto_adjust=False, threads=threads, progress=False), symbols)
+        for t in symbols:
+            if daily is None or t not in daily.columns:
+                continue
+            d = pd.to_numeric(daily[t], errors="coerce").dropna()
+            d.index = [pd.Timestamp(x).date() for x in d.index]
+            i = pd.Series(dtype=float)
+            if intra is not None and t in intra.columns:
+                i = pd.to_numeric(intra[t], errors="coerce").dropna()
+                idx = pd.DatetimeIndex(i.index)
+                i.index = idx.tz_convert(_EM_NY) if idx.tz is not None else idx.tz_localize("UTC").tz_convert(_EM_NY)
+            if len(d):
+                out[t] = (d, i)
+                _em_cache[t] = (now, (d, i))
+
+    if missing:
+        try:
+            fetch(missing, True)
+            lost = [t for t in missing if t not in out]      # threads=True can lose a random stock (see /api/quotes)
+            if lost and len(lost) <= 20:
+                fetch(lost, False)
+        except Exception as e:  # noqa: BLE001
+            print(f"[warn] /api/earnings-moves download failed for {len(missing)} ticker(s): {type(e).__name__}: {e}")
+        if len(_em_cache) > 1000:
+            _em_cache.clear()
+    return out
+
+
+def _em_pct(a, b):
+    return round((float(a) / float(b) - 1) * 100, 2) if a is not None and b else None
+
+
+def _earnings_move(daily: pd.Series, intra: pd.Series, report_date: date, session: str, now_et) -> Optional[dict]:
+    """The reaction of one stock to one report (see the block above), or None while there is nothing to show yet.
+    daily: regular closes by date (today's bar may be unfinished); intra: 15-minute closes incl. pre/after-hours, by NY time.
+    A report of unknown time is treated as before the open, like the calendar always did."""
+    today = now_et.date()
+    mins = now_et.hour * 60 + now_et.minute
+    done = [d for d in daily.index if d < today or (d == today and mins >= _EM_CLOSE + _EM_SETTLE_MIN)]
+    amc = session == "amc"
+    if amc and report_date not in done and report_date >= today:
+        return None                                   # an evening report of today, before the close: not out yet
+    base_days = [d for d in done if (d <= report_date if amc else d < report_date)]
+    if not base_days or report_date > today:
+        return None
+    base_day = base_days[-1]
+    base = float(daily[base_day])
+    out = {"base_day": base_day.isoformat(), "base_close": round(base, 4)}
+    after = [d for d in done if d > base_day]
+    if after:
+        rd = after[0]
+        out.update(state="closed", day=rd.isoformat(), pct=_em_pct(daily[rd], base))
+        if after[-1] > rd:
+            out.update(since_day=after[-1].isoformat(), since_pct=_em_pct(daily[after[-1]], base))
+        return out
+    if intra is None or intra.empty:
+        return None
+    t_min = intra.index.hour * 60 + intra.index.minute
+    regular_today = intra[(intra.index.date == today) & (t_min >= _EM_OPEN) & (t_min < _EM_CLOSE)]
+    if len(regular_today) and _EM_OPEN <= mins < _EM_CLOSE + _EM_SETTLE_MIN:
+        out.update(state="live", day=today.isoformat(), pct=_em_pct(regular_today.iloc[-1], base),
+                   price=round(float(regular_today.iloc[-1]), 4), as_of=int(regular_today.index[-1].timestamp()))
+        return out
+    base_end = pd.Timestamp(dt.combine(base_day, dt.min.time()), tz=_EM_NY) + pd.Timedelta(minutes=_EM_CLOSE)
+    ext = intra[intra.index >= base_end]
+    ext = ext[~((ext.index.hour * 60 + ext.index.minute >= _EM_OPEN) & (ext.index.hour * 60 + ext.index.minute < _EM_CLOSE))]
+    if ext.empty:
+        return None
+    last_t = ext.index[-1]
+    out.update(state="post" if last_t.hour * 60 + last_t.minute >= _EM_CLOSE else "pre",
+               pct=_em_pct(ext.iloc[-1], base), price=round(float(ext.iloc[-1]), 4), as_of=int(last_t.timestamp()))
+    return out
+
+
+@app.get("/api/earnings-moves")
+def earnings_moves(items: str = Query(..., min_length=1, max_length=1500)):
+    """items = "TICKER:YYYY-MM-DD:session,..." (up to 60). Returns {"moves": {"TICKER|date": move + "mkt_pct"}}, where
+    mkt_pct is the S&P 500 (SPY) over the same stretch — not given for after-hours / pre-market prices."""
+    req = []
+    for raw in items.split(",")[:60]:
+        parts = raw.split(":")
+        if len(parts) != 3:
+            continue
+        t = _canon_ticker(parts[0])
+        try:
+            d = date.fromisoformat(parts[1])
+        except ValueError:
+            continue
+        if t and re.fullmatch(_TICKER_RE, t):
+            req.append((t, d, parts[2] if parts[2] in ("bmo", "amc") else "unknown"))
+    if not req:
+        return {"moves": {}}
+    frames = _em_frames(sorted({t for t, _, _ in req} | {"SPY"}))
+    now_et = dt.now(_EM_NY)
+    spy = frames.get("SPY")
+    moves = {}
+    for t, d, s in req:
+        if t not in frames:
+            continue
+        m = _earnings_move(frames[t][0], frames[t][1], d, s, now_et)
+        if not m:
+            continue
+        if spy and m["state"] in ("closed", "live"):
+            ms = _earnings_move(spy[0], spy[1], d, s, now_et)
+            if ms and ms["state"] == m["state"]:
+                m["mkt_pct"] = ms["pct"]
+        moves[f"{t}|{d.isoformat()}"] = m
+    return {"moves": moves}
 
 
 # ------------------------------------------------------------------

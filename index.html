@@ -618,6 +618,8 @@ window.addEventListener('load', function(){
   .earn-more{display:block;width:100%;margin:4px 0 8px;padding:8px;border:1px dashed var(--line);border-radius:8px;background:none;color:var(--text-dim);font-size:12px;cursor:pointer;font-family:'Heebo',sans-serif;}
   .earn-more:hover{color:var(--text);border-color:var(--text-dim);}
   .earn-im b{font-family:'JetBrains Mono',monospace;font-weight:600;}
+  .earn-rx{font-size:10.5px;color:var(--text-dim);white-space:nowrap;}   /* v40: the stock's reaction, under the name */
+  .earn-rx b{font-family:'JetBrains Mono',monospace;font-weight:600;}
   .earn-fig{flex:0 0 96px;display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-family:'JetBrains Mono',monospace;}
   .earn-fig .k{font-size:9.5px;color:var(--text-dim);font-family:'Heebo',sans-serif;}
   .earn-fig .v{font-size:12.5px;font-weight:600;}
@@ -4292,6 +4294,7 @@ function renderEarningsCalendar(items){
     const sr = strip.getBoundingClientRect(), ar = a.getBoundingClientRect();
     strip.scrollLeft += (ar.left + ar.width / 2) - (sr.left + sr.width / 2);
   }
+  _earnLoadMoves(_earnDay, byDay.get(_earnDay));
 }
 let _earnStripCentered = false;
 const EARN_SESSION_SHOWN = 12;
@@ -4347,7 +4350,8 @@ function _earnRowHtml(it, todayStr){
       <div class="earn-id"><span class="earn-tk">${escH(it.ticker)}</span><span class="earn-name">${escH(it.name || '')}</span>${
         it.implied_move_pct != null ? `<span class="earn-im">${en ? 'Expected move' : 'תנודה צפויה'} <b dir="ltr">±${Number(it.implied_move_pct).toFixed(1)}%</b></span>` : ''}${
         // v38c: a day later and still nothing: our sources do not carry this company's results (often a foreign company or one no analyst covers)
-        !it.reported && it.report_date && todayStr && it.report_date < todayStr ? `<span class="earn-im">${en ? 'Results not available from our data sources' : 'התוצאות לא התקבלו ממקורות הנתונים שלנו'}</span>` : ''}</div>
+        !it.reported && it.report_date && todayStr && it.report_date < todayStr ? `<span class="earn-im">${en ? 'Results not available from our data sources' : 'התוצאות לא התקבלו ממקורות הנתונים שלנו'}</span>` : ''}${
+        it.reported && _earnMoves[key] ? `<span class="earn-rx">${_earnRxLabel(_earnMoves[key])} <b>${_earnPct(_earnMoves[key].pct)}</b></span>` : ''}</div>
       ${_earnFigHtml('EPS', it.eps_actual, it.eps_estimate, it.surprise_pct, _earnUsd, it.reported)}
       ${_earnFigHtml(en ? 'Revenue' : 'הכנסות', it.revenue_actual, it.revenue_estimate, it.revenue_surprise_pct, _earnBig, it.reported)}
       <span class="earn-chev">›</span>
@@ -4362,28 +4366,56 @@ function toggleEarnDetail(key){
   if(!_earnOpen) return;
   const ticker = key.split('|')[0];
   if(_earnDetail[ticker]) return;                       // already loaded / loading
-  const st = _earnDetail[ticker] = { fund: null, fundErr: false, px: null, pxErr: false };
+  const st = _earnDetail[ticker] = { fund: null, fundErr: false };
   const redraw = () => { if(_earnOpen && _earnOpen.startsWith(ticker + '|') && lastEarningsCalItems) renderEarningsCalendar(lastEarningsCalItems); };
-  // price around the report (stock vs S&P 500) — light, cached on the server
-  fetchWithTimeout(`${API_BASE}/api/price-compare?tickers=${encodeURIComponent(ticker)},SPY&period=1M`, 20000)
-    .then(r => r.ok ? r.json() : Promise.reject()).then(j => { st.px = j; }).catch(() => { st.pxErr = true; }).finally(redraw);
   // quarterly history (SEC) — the same data the stock analysis page uses; can take a while on a first call
   fetchFundamentalsData(ticker).then(j => { st.fund = j; }).catch(() => { st.fundErr = true; }).finally(redraw);
 }
 
-// How the stock moved on the first trading day that could react to the report: the report day itself for a
-// before-the-open report, the next trading day for an after-the-close one. Built from price-compare's % series.
-function _earnReaction(it, px){
-  if(!px || !Array.isArray(px.dates) || !Array.isArray(px.series)) return null;
-  const s = px.series.find(x => x.ticker === it.ticker);
-  const m = px.series.find(x => x.ticker === 'SPY');
-  if(!s) return null;
-  const ds = px.dates;
-  const i = it.session === 'amc' ? ds.findIndex(d => d > it.report_date) : ds.indexOf(it.report_date);
-  if(i < 1) return null;                                 // the reaction day has not traded yet
-  const chg = (arr, a, b) => (arr && arr[a] != null && arr[b] != null) ? ((1 + arr[b]/100) / (1 + arr[a]/100) - 1) * 100 : null;
-  const last = ds.length - 1;
-  return { day: chg(s.values, i-1, i), mkt: m ? chg(m.values, i-1, i) : null, since: i < last ? chg(s.values, i-1, last) : null, date: ds[i] };
+// v40: the stock's reaction to each report of the shown day (/api/earnings-moves): final once the first session that
+// could react has closed (the report day for a before-the-open report, the next one for an evening report), the price so
+// far while it trades, and the after-hours / pre-market price before it opens. Asked again every 3 minutes while any of
+// them can still change, every 30 once all are final; only while the calendar is on the screen.
+const _earnMoves = {};          // "TICKER|date" -> move
+const _earnMovesAt = {};        // day -> when it was last asked
+let _earnMovesBusy = false, _earnMovesErr = false;
+function _earnLoadMoves(day, items){
+  const el = document.getElementById('earnings-cal-wrap');
+  const want = (items || []).filter(it => it.reported).sort((a, b) => (b.market_cap || 0) - (a.market_cap || 0)).slice(0, 60);
+  if(!want.length || _earnMovesBusy || !el || el.offsetParent === null || document.hidden) return;
+  const keys = want.map(it => `${it.ticker}|${it.report_date}`);
+  const settled = keys.every(k => _earnMoves[k] && _earnMoves[k].state === 'closed');
+  if(Date.now() - (_earnMovesAt[day] || 0) < (settled ? 1800000 : 180000)) return;
+  _earnMovesBusy = true;
+  const q = want.map(it => `${it.ticker}:${it.report_date}:${it.session || 'unknown'}`).join(',');
+  fetchWithTimeout(`${API_BASE}/api/earnings-moves?items=${encodeURIComponent(q)}`, 25000)
+    .then(r => r.ok ? r.json() : Promise.reject())
+    .then(j => {
+      const got = (j && j.moves) || {};
+      for(const k of keys){ if(got[k]) _earnMoves[k] = got[k]; else delete _earnMoves[k]; }
+      _earnMovesErr = false;
+    })
+    .catch(() => { _earnMovesErr = true; })
+    .finally(() => {
+      _earnMovesBusy = false;
+      _earnMovesAt[day] = Date.now();
+      if(lastEarningsCalItems) renderEarningsCalendar(lastEarningsCalItems);
+    });
+}
+
+function _earnRxLabel(m){
+  const en = lang==='en';
+  return m.state === 'closed' ? (en ? 'Reaction' : 'תגובה')
+    : m.state === 'live' ? (en ? 'Today so far' : 'היום עד עכשיו')
+    : m.state === 'post' ? (en ? 'After hours' : 'אחרי שעות המסחר')
+    : (en ? 'Pre-market' : 'לפני הפתיחה');
+}
+
+function _earnAsOf(sec){             // the time of a live / extended-hours price, in the reader's own time zone
+  if(!sec) return '';
+  const d = new Date(sec * 1000), en = lang==='en';
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return new Intl.DateTimeFormat(en ? 'en-US' : 'he-IL', sameDay ? { hour:'2-digit', minute:'2-digit' } : { weekday:'short', hour:'2-digit', minute:'2-digit' }).format(d);
 }
 
 function _earnPct(v){
@@ -4428,15 +4460,27 @@ function _earnDetailHtml(it, todayStr){
   // 2. how the stock reacted (reported only)
   if(it.reported){
     let body;
-    if(st.px){
-      const r = _earnReaction(it, st.px);
-      body = r ? `<div class="earn-kv">
-          ${card(en ? 'Reaction day' : 'ביום התגובה', _earnPct(r.day), `S&amp;P 500 ${_earnPct(r.mkt)}`
-            + (it.implied_move_pct != null ? ` · ${en ? 'expected' : 'צפי'} ±${Number(it.implied_move_pct).toFixed(1)}%` : ''))}
-          ${r.since != null ? card(en ? 'Since the report' : 'מאז הדוח', _earnPct(r.since), en ? 'to the last close' : 'עד הסגירה האחרונה') : ''}
-        </div>`
-        : `<div class="earn-note">${en ? 'The first trading day after the report has not closed yet.' : 'יום המסחר הראשון אחרי הדוח עוד לא נסגר.'}</div>`;
-    } else body = st.pxErr ? `<div class="earn-note">${en ? 'Price data unavailable right now.' : 'נתוני מחיר לא זמינים כרגע.'}</div>` : loadingTxt;
+    const m = _earnMoves[`${it.ticker}|${it.report_date}`];
+    const expTxt = it.implied_move_pct != null ? ` · ${en ? 'expected' : 'צפי'} ±${Number(it.implied_move_pct).toFixed(1)}%` : '';
+    if(m && m.state === 'closed'){
+      body = `<div class="earn-kv">
+          ${card(en ? 'Reaction day' : 'ביום התגובה', _earnPct(m.pct), `S&amp;P 500 ${_earnPct(m.mkt_pct)}` + expTxt)}
+          ${m.since_pct != null ? card(en ? 'Since the report' : 'מאז הדוח', _earnPct(m.since_pct), en ? 'to the last close' : 'עד הסגירה האחרונה') : ''}
+        </div>`;
+    } else if(m){
+      const ext = m.state !== 'live';
+      body = `<div class="earn-kv">
+          ${card(_earnRxLabel(m), _earnPct(m.pct), (ext
+              ? `${en ? 'vs the close of' : 'מול סגירה של'} ${_earnUsd(m.base_close)}`
+              : `S&amp;P 500 ${_earnPct(m.mkt_pct)}`) + ` · ${en ? 'at' : 'נכון ל-'}${_earnAsOf(m.as_of)}` + expTxt)}
+        </div>
+        <div class="earn-note">${ext
+          ? (en ? 'A price from trading outside regular hours: few shares change hands, and the price can be quite different at the open. The full reaction is known after the first regular session closes.'
+                : 'מחיר מהמסחר שמחוץ לשעות הרגילות: מעט מניות מחליפות ידיים, והמחיר יכול להשתנות לא מעט בפתיחה. התגובה המלאה ידועה אחרי שיום המסחר הרגיל הראשון נסגר.')
+          : (en ? 'The session is still trading — this figure changes until the close.' : 'יום המסחר עוד לא נגמר — המספר משתנה עד הסגירה.')}</div>`;
+    } else if(_earnMovesErr) body = `<div class="earn-note">${en ? 'Price data unavailable right now.' : 'נתוני מחיר לא זמינים כרגע.'}</div>`;
+    else if(!_earnMovesAt[it.report_date]) body = loadingTxt;
+    else body = `<div class="earn-note">${en ? 'No trading since the report yet.' : 'עוד לא היה מסחר מאז הדוח.'}</div>`;
     out.push(`<div class="earn-dsec"><div class="earn-dsec-t">${en ? 'Stock reaction' : 'תגובת המניה'}</div>${body}</div>`);
   }
 
