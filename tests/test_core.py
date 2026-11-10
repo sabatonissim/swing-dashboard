@@ -1498,6 +1498,42 @@ def test_demo_stop_is_not_closer_than_one_atr(scanner):
     assert scanner.sim_levels(100.0, 99.0, [], float("nan"))[0] == 93.0
 
 
+def test_scan_score_follows_rs_not_volume(scanner):
+    """v42: the first 8 results of 9.11.2026 were all exactly 100 — volume added up to +20 (measured in v27: no effect
+    on the outcome) and RS one step of +8. Real rows of that scan."""
+    of = scanner.swing_score_of
+    s2 = "Stage 2 - Uptrend"
+    sgry = of("52w_high", 168, s2, 98, None, "Breaking above 52-week high")
+    kymr = of("52w_high", 32, s2, 97, None, "Breaking above 52-week high")
+    jhx = of("bull_flag", 330, s2, 88, None, "Bull Flag breakout (pole +12.3%)")
+    assert (sgry, kymr, jhx) == (98, 96, 88)                       # were 100, 100, 100
+    assert of("52w_high", 0, s2, 99, None) > of("52w_high", 500, s2, 90, None)      # RS outweighs any volume
+    assert of("52w_high", 100, s2, 90, None) - of("52w_high", 0, s2, 90, None) == 2
+    # the parts that did not change
+    res = "Breaking above horizontal resistance at $31.03 (tested {}x)"
+    assert of("horizontal_resistance_breakout", 0, s2, 90, None, res.format(4)) - of("horizontal_resistance_breakout", 0, s2, 90, None, res.format(2)) == 4
+    assert of("horizontal_resistance_breakout", 0, s2, 90, None, res.format(9)) - of("horizontal_resistance_breakout", 0, s2, 90, None, res.format(2)) == 8
+    assert of("52w_high", 0, s2, 90, 3) == of("52w_high", 0, s2, 90, None) - 12     # a report within a week
+    assert of("52w_high", 0, s2, 90, 30) == of("52w_high", 0, s2, 90, None)
+    assert of("52w_high", 0, "Stage 4 - Downtrend", 90, None) == of("52w_high", 0, None, 90, None) - 20
+    held = "Back above the 150-day MA (~$50) — second close above it"
+    assert of("ma150_breakout", 300, s2, 80, None, held) == of("ma150_breakout", 0, s2, 80, None, held)
+    assert of("ma150_support_bounce", 300, s2, 80, None) == of("ma150_support_bounce", 0, s2, 80, None)
+    assert of("momentum_surge", 900, s2, 99, None) < of("horizontal_level_bounce", 0, None, 70, None)   # indicators stay below structure
+    # RS 40-69 neither adds nor takes (a 150-MA reclaim has a middling RS by nature); under 40 it takes, point by point
+    assert of("ma150_breakout", 0, None, 46, None) == of("ma150_breakout", 0, None, 69, None) == 73
+    assert of("ma150_breakout", 0, None, 38, None) > of("ma150_breakout", 0, None, 30, None) > of("ma150_breakout", 0, None, 20, None) == of("ma150_breakout", 0, None, 0, None) == 58
+    assert of("52w_high", None, None, None, None) == 78 and of("52w_high", float("nan"), None, None, None) == 78
+    assert 1 <= of("rsi_bounce", 0, "Stage 4 - Downtrend", 1, 2) <= of("cup_handle", 999, s2, 99, None) <= 100
+
+
+def test_every_pattern_of_the_scan_has_a_base_score(scanner):
+    import re
+    src = (ROOT / "pipeline_a_scanner.py").read_text(encoding="utf-8")
+    names = set(re.findall(r'^\s+pattern_type = "(\w+)"', src, re.M))
+    assert len(names) >= 15 and not names - set(scanner.SCORE_PATTERN_BASE)
+
+
 def test_statistics_start_date_is_the_same_in_both_files(scanner, api):
     assert scanner.STATS_SINCE == api.STATS_SINCE
 

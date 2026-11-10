@@ -1377,6 +1377,7 @@ def init_db():
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sim_exit_date DATE;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sim_exit_return REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sim_rules INTEGER;")   # v41: SIM_RULES_VERSION of the outcome
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS score_rules INTEGER;") # v42: SCORE_RULES_VERSION of swing_score
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sector TEXT;")   # v19: sector filter
     cur.execute("""
         CREATE TABLE IF NOT EXISTS universe_movers (
@@ -1461,8 +1462,8 @@ def upsert_scan_result(conn, result):
             social_volume_spike_pct, ai_summary_he, ai_summary_en,
             market_cap, avg_volume_20d, breakout_volume_pct, exchange,
             change_pct, sma50, sma150, sma200, trend_stage, atr_value, atr_pct,
-            rs_rating, pattern_type, days_to_earnings, sector, timestamp
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            rs_rating, pattern_type, days_to_earnings, sector, timestamp, score_rules
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             result.ticker, result.trigger_text_he, result.trigger_text_en,
@@ -1473,6 +1474,7 @@ def upsert_scan_result(conn, result):
             _native(result.change_pct), _native(result.sma50), _native(result.sma150), _native(result.sma200),
             result.trend_stage, _native(result.atr_value), _native(result.atr_pct), _native(result.rs_rating),
             result.pattern_type, _native(result.days_to_earnings), result.sector, datetime.now(timezone.utc).isoformat(),
+            SCORE_RULES_VERSION,
         ),
     )
     conn.commit()
@@ -1587,6 +1589,56 @@ def compute_rs_ratings(rs_raw_by_ticker: Dict[str, float]) -> Dict[str, int]:
 # ------------------------------------------------------------------
 
 EARNINGS_WARNING_WINDOW_DAYS = 7  # flag + score penalty inside this window
+
+
+# ------------------------------------------------------------------
+# The scan score (v42). One function, used for today's results and to recompute the stored ones
+# (rescore_since_stats_start), so the same result always gets the same score.
+#
+# Until v42 volume added up to +20 and a strong RS one step of +8: the first 8 results of 9.11.2026 were all
+# exactly 100 (the demo portfolio buys the top 3 of a day, so it could not tell them apart), while the v27
+# measurement on 3,687 past results found that volume made no difference and RS did. Now RS counts point by
+# point and volume only breaks ties. There is no evidence yet that a higher score means a better outcome —
+# the demo portfolio's "does a higher score help" table will show.
+#   base      : the pattern (structural patterns 68-80, pure-indicator ones 40-45, as before)
+#   touches   : +2 for each test of a horizontal level beyond the second, up to +8 (as before)
+#   volume    : up to +2 (at 100% above the 20-day average); not for the patterns that never had a volume bonus
+#   trend     : Stage 2 +8, Stage 3 -10, Stage 4 -20 (as before)
+#   RS        : 70 and up: (RS - 70) x 0.345, up to +10; 40-69: nothing, as before (a stock reclaiming its 150-day
+#               MA — a setup the owner asked to keep, outside the quality gate — has a middling RS by nature: with a
+#               penalty there, FERG of 9.11.2026 fell from 88 to 55); under 40: (RS - 40) x 0.75, down to -15 at RS 20
+#   earnings  : -12 when the report is within EARNINGS_WARNING_WINDOW_DAYS (as before)
+# ------------------------------------------------------------------
+SCORE_RULES_VERSION = 2       # raise it when swing_score_of changes: results since STATS_SINCE are scored again
+SCORE_PATTERN_BASE = {
+    "cup_handle": 80, "double_bottom": 79, "52w_high": 78, "cup_no_handle": 76,
+    "horizontal_resistance_breakout": 75, "golden_cross": 74, "ma150_breakout": 73, "bull_flag": 72,
+    "ma150_support_bounce": 70, "ascending_trendline": 69, "ascending_triangle": 68, "horizontal_level_bounce": 68,
+    "descending_trendline_breakout": 55, "macd_cross": 45, "momentum_surge": 44, "rsi_bounce": 40,
+}
+SCORE_NO_VOLUME_BONUS = {"ascending_trendline", "ma150_support_bounce", "horizontal_level_bounce"}
+SCORE_TREND = {"Stage 2 - Uptrend": 8, "Stage 3 - Topping": -10, "Stage 4 - Downtrend": -20}
+
+
+def swing_score_of(pattern_type, vol_pct, trend_stage, rs_rating, days_to_earnings, trigger_text_en="") -> int:
+    """The 1-100 score of a scan result. Everything it needs is stored with the result (the number of tests of a
+    horizontal level, and the second close above the 150-day MA, are read from the English trigger text)."""
+    score = float(SCORE_PATTERN_BASE.get(pattern_type, 55))
+    text = trigger_text_en or ""
+    if pattern_type in ("horizontal_resistance_breakout", "horizontal_level_bounce"):
+        m = re.search(r"tested (\d+)x", text)
+        if m:
+            score += max(0, min(int(m.group(1)) - 2, 4)) * 2
+    held = pattern_type == "ma150_breakout" and "second close" in text      # confirmed by time, not by volume
+    if pattern_type not in SCORE_NO_VOLUME_BONUS and not held and vol_pct is not None and math.isfinite(float(vol_pct)):
+        score += min(2.0, max(0.0, float(vol_pct)) / 50)
+    score += SCORE_TREND.get(trend_stage, 0)
+    if rs_rating is not None:
+        rs = float(rs_rating)
+        score += min(10.0, (rs - 70) * 0.345) if rs >= 70 else max(-15.0, (rs - 40) * 0.75) if rs < 40 else 0.0
+    if days_to_earnings is not None and 0 <= days_to_earnings <= EARNINGS_WARNING_WINDOW_DAYS:
+        score -= 12
+    return int(round(max(1.0, min(100.0, score))))
 
 
 def compute_days_to_earnings(info: dict) -> Optional[int]:
@@ -1791,21 +1843,18 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         prev_close = float(hist["Close"].iloc[-2]) if len(hist) > 1 else close
         change_pct = round(((close - prev_close) / prev_close) * 100, 2) if prev_close else 0.0
 
-        # Priority: strongest/rarest patterns get highest score
+        # Priority: strongest/rarest patterns first (their score: SCORE_PATTERN_BASE)
         if cup_handle and cup_handle.get("handle"):
             trigger_en = "Cup & Handle breakout"
             trigger_he = "פריצת תבנית כוס וידית (Cup & Handle)"
-            tech_score = min(100, 80 + int(vol_pct / 5))
             pattern_type = "cup_handle"
         elif double_bottom:
             trigger_en = f"Double Bottom breakout above ${double_bottom['neckline']}"
             trigger_he = f"פריצת תבנית תחתית כפולה (W) מעל ${double_bottom['neckline']}"
-            tech_score = min(100, 79 + int(vol_pct / 5))
             pattern_type = "double_bottom"
         elif high_52w:
             trigger_en = "Breaking above 52-week high"
             trigger_he = "פריצת שיא 52 שבועות"
-            tech_score = min(100, 78 + int(vol_pct / 5))
             pattern_type = "52w_high"
         elif cup_handle:
             # Cup formed and broke out, but never built the tight handle
@@ -1815,88 +1864,65 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             # confirmation (a final shakeout before the real move).
             trigger_en = "Cup breakout (no handle)"
             trigger_he = "פריצת תבנית כוס (ללא ידית)"
-            tech_score = min(100, 76 + int(vol_pct / 5))
             pattern_type = "cup_no_handle"
         elif resistance_break:
             trigger_en = f"Breaking above horizontal resistance at ${resistance_break['level']} (tested {resistance_break['touches']}x)"
             trigger_he = f"פריצת התנגדות אופקית ב-${resistance_break['level']} ({_tested_he(resistance_break['touches'])})"
-            tech_score = min(100, 75 + min(resistance_break['touches'] - 2, 4) * 2 + int(vol_pct / 10))
             pattern_type = "horizontal_resistance_breakout"
         elif golden_cross:
             trigger_en = "Golden Cross (50D SMA crossed above 200D SMA)"
             trigger_he = "פריצת גולדן קרוס (ממוצע 50 יום חצה מעל ממוצע 200 יום)"
-            tech_score = min(100, 74 + int(vol_pct / 5))
             pattern_type = "golden_cross"
         elif ma150_breakout and ma150_breakout["held"]:
             trigger_en = f"Back above the 150-day MA (~${ma150_breakout['ma150']}) — second close above it"
             trigger_he = f"חזרה מעל ממוצע 150 יום (סביב ${ma150_breakout['ma150']}) — סגירה שנייה ברצף מעליו"
-            tech_score = 73
             pattern_type = "ma150_breakout"
         elif ma150_breakout:
             trigger_en = f"Breaking back above the 150-day MA (~${ma150_breakout['ma150']}) — possible recovery signal"
             trigger_he = f"פריצה מעל ממוצע 150 יום (סביב ${ma150_breakout['ma150']}) — ייתכן שזה סימן להתאוששות"
-            tech_score = min(100, 73 + int(vol_pct / 5))
             pattern_type = "ma150_breakout"
         elif bull_flag:
             trigger_en = f"Bull Flag breakout (pole +{bull_flag['pole_pct']}%)"
             trigger_he = f"פריצת דגל שורי (עמוד +{bull_flag['pole_pct']}%)"
-            tech_score = min(100, 72 + int(vol_pct / 5))
             pattern_type = "bull_flag"
         elif asc_triangle:
             trigger_en = f"Ascending Triangle breakout above ${asc_triangle['resistance']}"
             trigger_he = f"פריצת משולש עולה מעל ${asc_triangle['resistance']}"
-            tech_score = min(100, 68 + int(vol_pct / 5))
             pattern_type = "ascending_triangle"
         elif asc_trendline:
             trigger_en = f"Bouncing off rising trendline support (~${asc_trendline['trendline_value']})"
             trigger_he = f"התאוששות מקו מגמה עולה (סביב ${asc_trendline['trendline_value']})"
-            tech_score = 69
             pattern_type = "ascending_trendline"
         elif ma150_bounce:
             trigger_en = f"Bouncing off the 150-day MA as support (~${ma150_bounce['ma150']}, {ma150_bounce['distance_pct']}% away)"
             trigger_he = f"התאוששות מממוצע 150 יום כתמיכה (סביב ${ma150_bounce['ma150']}, במרחק {ma150_bounce['distance_pct']}%)"
-            tech_score = 70
             pattern_type = "ma150_support_bounce"
         elif level_bounce:
-            # Score scales gently with touch count — a level tested 4
-            # times is more validated (more traders watching it, stronger
-            # reaction) than one tested twice, but this stays a secondary
-            # factor, not a dominant one. Floor raised to 68 (was 65) so
-            # this always outranks the pure-indicator patterns below,
-            # regardless of how much volume bonus those pick up — a
-            # validated support/resistance level is considered a
-            # stronger signal than an indicator crossover on its own.
             trigger_en = f"Bouncing off horizontal support at ${level_bounce['level']} (tested {level_bounce['touches']}x)"
             trigger_he = f"התאוששות מרמת תמיכה אופקית ב-${level_bounce['level']} ({_tested_he(level_bounce['touches'])})"
-            tech_score = min(76, 68 + min(level_bounce['touches'] - 2, 4) * 2)
             pattern_type = "horizontal_level_bounce"
         # Below this point: pure-indicator patterns (MACD crossover,
         # momentum/volume surge, RSI bounce) — no real chart structure
         # (a validated support/resistance level, a trendline, a cup)
-        # behind them, just an indicator or volume reading. Capped below
-        # 65 so a high-volume MACD cross or momentum spike can never
-        # outrank any of the structural patterns above, per an explicit
-        # request that those matter more for technical analysis than a
-        # generic indicator/volume signal.
+        # behind them, just an indicator or volume reading. Their base score
+        # (SCORE_PATTERN_BASE) is far below the structural patterns above, per
+        # an explicit request that those matter more for technical analysis
+        # than a generic indicator/volume signal.
         elif macd_cross:
             trigger_en = "MACD bullish crossover"
             trigger_he = "חציית MACD שורית"
-            tech_score = min(60, 45 + int(vol_pct / 10))
             pattern_type = "macd_cross"
         elif momentum:
             trigger_en = f"Strong momentum surge (+{momentum['pct_change_5d']}% / 5 days)"
             trigger_he = f"מומנטום חזק ב-5 ימים (+{momentum['pct_change_5d']}%)"
-            tech_score = min(58, 44 + int(vol_pct / 10))
             pattern_type = "momentum_surge"
         elif rsi_bounce:
             trigger_en = f"RSI oversold bounce (RSI {rsi_bounce['rsi']})"
             trigger_he = f"התאוששות מאזור מכירת יתר (RSI {rsi_bounce['rsi']})"
-            tech_score = min(55, 40 + int(vol_pct / 10))
             pattern_type = "rsi_bounce"
         else:
             trigger_en = "Breakout above descending trendline on strong volume"
             trigger_he = "פריצת שיאים יורדים בווליום חזק"
-            tech_score = min(100, 55 + int(vol_pct / 4))
             pattern_type = "descending_trendline_breakout"
 
         # Trend-quality adjustment: the same pattern is a meaningfully
@@ -1906,21 +1932,14 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         # or basing phase. This is the main lever for making the scan more
         # precise rather than just pattern-matching in a vacuum.
         trend_stage = trend["stage"] if trend else None
-        if trend:
-            if trend["stage"] == "Stage 2 - Uptrend":
-                tech_score = min(100, tech_score + 8)
-            elif trend["stage"] == "Stage 4 - Downtrend":
-                tech_score = max(1, tech_score - 20)  # bullish pattern against a downtrend = much lower conviction
-            elif trend["stage"] == "Stage 3 - Topping":
-                tech_score = max(1, tech_score - 10)
 
         # A technically great setup right before earnings is still a much
         # riskier trade — the stock can gap against the position overnight
         # regardless of the chart. Penalize (don't disqualify) so it's a
         # visible warning rather than a hidden risk.
         earnings_soon = days_to_earnings is not None and 0 <= days_to_earnings <= EARNINGS_WARNING_WINDOW_DAYS
-        if earnings_soon:
-            tech_score = max(1, tech_score - 12)
+        # the RS part is added once every ticker has been seen (below); until then the score is without it
+        tech_score = swing_score_of(pattern_type, vol_pct, trend_stage, None, days_to_earnings, trigger_en)
 
         ai_summary_en = f"{trigger_en}. Volume {vol_pct:.0f}% above 20d average."
         ai_summary_he = f"{trigger_he}. נפח גבוה ב-{vol_pct:.0f}% מהממוצע."
@@ -1982,17 +2001,16 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
     for result in results:
         rating = rs_ratings.get(result.ticker)
         result.rs_rating = rating
+        result.swing_score = swing_score_of(result.pattern_type, result.breakout_volume_pct, result.trend_stage, rating,
+                                            result.days_to_earnings, result.trigger_text_en)
         if rating is not None:
-            if rating >= 80:
-                result.swing_score = min(100, result.swing_score + 8)   # genuine market leader
+            if rating >= 80:      # genuine market leader
                 result.ai_summary_en += f" RS Rating {rating}/99 — outperforming {rating}% of the scanned universe over the past year."
                 result.ai_summary_he += f" דירוג RS {rating}/99 — מתעלה על {rating}% מהיקום שנסרק בשנה האחרונה."
             elif rating >= 60:
-                result.swing_score = min(100, result.swing_score + 3)
                 result.ai_summary_en += f" RS Rating {rating}/99."
                 result.ai_summary_he += f" דירוג RS {rating}/99."
-            elif rating < 40:
-                result.swing_score = max(1, result.swing_score - 15)  # pattern firing on a market laggard = low conviction
+            elif rating < 40:     # pattern firing on a market laggard = low conviction
                 result.ai_summary_en += f" RS Rating {rating}/99 — this pattern is firing on a market laggard, lower conviction."
                 result.ai_summary_he += f" דירוג RS {rating}/99 — התבנית מתרחשת על מניה שפחות מובילה את השוק, רמת ביטחון נמוכה יותר."
 
@@ -3260,6 +3278,39 @@ def simulate_trade(entry, stop, target, bars, max_days=SIM_MAX_HOLD_DAYS):
     return None
 
 
+def rescore_since_stats_start():
+    """v42: results saved under older score rules (since STATS_SINCE — the ones the demo portfolio and the statistics
+    use) get the score the current rules give them, once, so everything the site counts is on one scale."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT id, pattern_type, breakout_volume_pct, trend_stage, rs_rating, days_to_earnings, trigger_text_en, swing_score
+           FROM scanned_stocks
+           WHERE pattern_type IS NOT NULL AND timestamp >= %s AND COALESCE(score_rules, 1) < %s""",
+        (STATS_SINCE, SCORE_RULES_VERSION),
+    )
+    rows = cur.fetchall()
+    changed = []
+    for rid, pattern, vol, stage, rs, dte, text, old in rows:
+        new = swing_score_of(pattern, vol, stage, rs, dte, text)
+        if new != old:
+            changed.append((rid, new))
+    if changed:
+        psycopg2.extras.execute_values(
+            cur, "UPDATE scanned_stocks AS s SET swing_score = v.score FROM (VALUES %s) AS v(id, score) WHERE s.id = v.id",
+            changed, page_size=500)
+    if rows:
+        cur.execute(
+            """UPDATE scanned_stocks SET score_rules = %s
+               WHERE pattern_type IS NOT NULL AND timestamp >= %s AND COALESCE(score_rules, 1) < %s""",
+            (SCORE_RULES_VERSION, STATS_SINCE, SCORE_RULES_VERSION),
+        )
+    conn.commit()
+    cur.close()
+    conn.close()
+    print(f"Scan scores: {len(rows)} stored result(s) checked against the current rules, {len(changed)} changed.")
+
+
 def backfill_sim_outcomes():
     conn = get_conn()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -3865,6 +3916,10 @@ def main():
         guard_conn.close()
 
     backfill_forward_returns()
+    try:
+        rescore_since_stats_start()      # before the simulation: it only follows results with a score of SIM_MIN_SCORE+
+    except Exception as e:
+        print(f"[warn] rescoring stored results failed: {type(e).__name__}: {e}")
     try:
         backfill_sim_outcomes()
     except Exception as e:   # the simulation must never block the scan itself
