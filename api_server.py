@@ -6099,9 +6099,39 @@ def get_daily_digest(day: Optional[str] = Query(default=None, pattern=r"^\d{4}-\
             c0.close()
         start, end = aid.day_bounds(d)
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute("SELECT * FROM macro_news WHERE timestamp >= %s AND timestamp < %s ORDER BY timestamp DESC", (start, end))
+        # v40f: the columns the ranking needs for the whole day, the full rows only for the ~14 headlines shown. SELECT * of
+        # ~1,000 rows (bodies in two languages) was ~340 KB per refresh (usage.db 9.11: 3.4 MB a day, second largest)
+        cur.execute("""SELECT id, timestamp, category_tag, summary_en, source_name FROM macro_news
+                       WHERE timestamp >= %s AND timestamp < %s ORDER BY timestamp DESC""", (start, end))
         rows = [_tidy_news_row(r) for r in cur.fetchall()]        # v34: tidied like the feed (older rows had HTML codes)
+        day_events = _key_events(rows, now=max((r["timestamp"] for r in rows), default=None), max_events=8)
+        key_ids = {i for e in day_events for i in e["ids"]}
+        for r in rows:
+            r["impact_level"] = "Critical" if r["id"] in key_ids else "High"
+        # "Buzz" ranking — NOT AI: which category had the most separate articles that day (Critical first as the
+        # representative story, then the most recent).
+        tag_groups: dict = {}
+        for r in rows:
+            tag_groups.setdefault(r["category_tag"], []).append(r)
+        hot_topics = []
+        for tag, items in tag_groups.items():
+            items_sorted = sorted(items, key=lambda r: r["timestamp"], reverse=True)
+            items_sorted.sort(key=lambda r: 0 if r.get("impact_level") == "Critical" else 1)
+            hot_topics.append({"tag": tag, "count": len(items), "representative": items_sorted[0]})
+        hot_topics.sort(key=lambda h: h["count"], reverse=True)
+        hot_topics = hot_topics[:top_n]
+        shown = list(dict.fromkeys([e["row"]["id"] for e in day_events] + [h["representative"]["id"] for h in hot_topics]))
+        full = {}
+        if shown:
+            cur.execute("SELECT * FROM macro_news WHERE id = ANY(%s)", (shown,))
+            full = {r["id"]: _tidy_news_row(r) for r in cur.fetchall()}
         cur.close()
+
+        def _full(r, level):
+            return dict(full.get(r["id"], r), impact_level=level)
+        critical = [_full(e["row"], "Critical") for e in day_events]
+        for h in hot_topics:
+            h["representative"] = _full(h["representative"], h["representative"]["impact_level"])
         try:
             ai_summary = _digest_ai_for_day(conn, d)
         except Exception:
@@ -6116,30 +6146,12 @@ def get_daily_digest(day: Optional[str] = Query(default=None, pattern=r"^\d{4}-\
     finally:
         conn.close()
 
-    # v18d: the day's key events (same rules as the home page strip) — one headline per event, not every loose match
-    day_events = _key_events(rows, now=max((r["timestamp"] for r in rows), default=None), max_events=8)
-    key_ids = {i for e in day_events for i in e["ids"]}
-    for r in rows:
-        r["impact_level"] = "Critical" if r["id"] in key_ids else "High"
-    critical = [dict(e["row"], impact_level="Critical") for e in day_events]
-    # "Buzz" ranking — NOT AI: which category had the most separate articles that day (Critical first as the
-    # representative story, then the most recent).
-    tag_groups: dict = {}
-    for r in rows:
-        tag_groups.setdefault(r["category_tag"], []).append(r)
-    hot_topics = []
-    for tag, items in tag_groups.items():
-        items_sorted = sorted(items, key=lambda r: r["timestamp"], reverse=True)
-        items_sorted.sort(key=lambda r: 0 if r.get("impact_level") == "Critical" else 1)
-        hot_topics.append({"tag": tag, "count": len(items), "representative": items_sorted[0]})
-    hot_topics.sort(key=lambda h: h["count"], reverse=True)
-
     return {
         "day": d.isoformat(),
         "is_today": d == today,
         "total_items": len(rows),
         "critical": critical,
-        "hot_topics": hot_topics[:top_n],
+        "hot_topics": hot_topics,
         "ai_summary": ai_summary,
         "analyst_ratings": ratings,
     }

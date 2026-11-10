@@ -37,6 +37,7 @@ SOURCE_MAX_CHARS = 14000         # the parts of the release that can hold guidan
 KEEP_DAYS = 120
 MAX_ITEMS = 8
 LLM_BUDGET_SEC = "90"            # per AI request, across its fallback models (llm_provider's LLM_BUDGET_SECONDS)
+REJECTED_NOTE = "AI answered, no figure passed"   # every answer rejected: "none" after the last attempt, not "failed"
 
 METRICS = ("revenue", "eps", "revenue_growth")
 UNITS = {"billion": 1e9, "million": 1e6, "thousand": 1e3, "dollars": 1.0, "percent": 1.0}
@@ -340,10 +341,20 @@ def read_guidance(ticker: str, report_date: date, ref: dict):
         os.environ.setdefault("LLM_BUDGET_SECONDS", LLM_BUDGET_SEC)
         user = f"Company: {ticker}. Report date: {report_date.isoformat()}.\n\nTEXT:\n{src}"
         msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]
+        rejected = []                    # v40e: answers whose every figure failed the checks (ROIV 9.11: a result, not guidance)
+
+        def _validate(a):
+            try:
+                return clean_guidance(a, text, ref, report_date)
+            except ValueError as e:
+                if str(e).startswith("no figure passed"):
+                    rejected.append(str(e))
+                raise
         try:
-            answer, model = llm_provider.chat(msgs, max_tokens=1500, temperature=0.1,
-                                              validate=lambda a: clean_guidance(a, text, ref, report_date))
+            answer, model = llm_provider.chat(msgs, max_tokens=1500, temperature=0.1, validate=_validate)
         except (RuntimeError, llm_provider.LLMNotConfigured) as e:
+            if rejected:                 # main() turns this into "none" on the last attempt
+                return None, None, acc, None, f"{REJECTED_NOTE}: {rejected[-1][:130]}"
             return None, None, acc, None, f"AI: {str(e)[:150]}"
         items = clean_guidance(answer, text, ref, report_date)
         return ("found" if items else "none"), items, acc, model, None
@@ -398,6 +409,8 @@ def main() -> int:
             status, items, acc, model, note = read_guidance(r["ticker"], r["report_date"], ref)
         except Exception as e:  # noqa: BLE001
             status, items, acc, model, note = None, None, None, None, f"{type(e).__name__}: {str(e)[:150]}"
+        if status is None and note and note.startswith(REJECTED_NOTE) and r["attempts"] + 1 >= MAX_ATTEMPTS:
+            status, items = "none", []   # the AI did read it each time and found only results: no guidance, not a failure
         if items:
             est = {k: r[k] for k in ("est_nq_eps", "est_nq_rev", "est_fy0_eps", "est_fy0_rev", "est_fy1_eps", "est_fy1_rev", "fy_end")}
             if est.get("est_nq_rev") and mcap and est["est_nq_rev"] > 10 * mcap:      # another currency (as _usable_revenue)

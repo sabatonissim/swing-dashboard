@@ -7,7 +7,7 @@ Writes Postgres tables insider_trades / insider_filings_seen / insider_sweep_sta
 Companies: S&P 500 + Nasdaq 100 + scanner hits of the last 60 days + watchlists (mapped to SEC CIKs).
 Each run, within RUN_BUDGET_SEC:
   1. recent — SEC's live feed of new Form 4 filings (newest first), pages until FEED_LOOKBACK_H back;
-  2. sweep  — the companies swept longest ago (never-swept first): their SEC filing list (submissions JSON), every
+  2. sweep  — the companies not swept for SWEEP_EVERY_DAYS (never-swept first): their SEC filing list (submissions JSON), every
               Form 4 of the last BACKFILL_DAYS not seen yet. This fills six months of history over the first runs
               and catches anything the feed missed.
 Kept: transaction code P (open-market purchase) and S (open-market sale) from the non-derivative table only.
@@ -37,6 +37,7 @@ RUN_BUDGET_SEC = 7 * 60
 FEED_LOOKBACK_H = 3
 FEED_MAX_PAGES = 10
 BACKFILL_DAYS = 183
+SWEEP_EVERY_DAYS = 3        # v40f: ~900 companies / 3 days = ~10 per run (32 runs a weekday), seconds instead of 7 minutes
 
 _last_request = [0.0]
 
@@ -341,11 +342,14 @@ def send_pushes() -> None:
         print(f"[warn] insider push notifications failed: {type(e).__name__}: {e}")
 
 
-def _seen(accessions: List[str]) -> set:
+def _unseen(accessions: List[str]) -> set:
+    """v40f: the database answers with the accessions NOT seen yet (usually none). It answered with the seen ones: every
+    run re-read all six months of every company it swept, ~12 MB a day of Neon's 5 GB-a-month network (usage.db, 9.11)."""
     if not accessions:
         return set()
     with cursor() as (conn, cur):
-        cur.execute("SELECT accession FROM insider_filings_seen WHERE accession = ANY(%s)", (accessions,))
+        cur.execute("""SELECT a FROM unnest(%s::text[]) AS a
+                       WHERE NOT EXISTS (SELECT 1 FROM insider_filings_seen s WHERE s.accession = a)""", (accessions,))
         return {r[0] for r in cur.fetchall()}
 
 
@@ -390,23 +394,25 @@ def run_recent(univ: Dict[str, str], deadline: float, stats: dict) -> None:
                 todo.append((m.group(1), ma.group(1), (updated or "")[:10] or date.today().isoformat()))
         if oldest is not None and oldest < cutoff:
             break
-    seen = _seen([a for _, a, _ in todo])
+    new = _unseen([a for _, a, _ in todo])
     for cik, acc, filed in dict.fromkeys(todo):
-        if acc in seen or time.time() > deadline:
+        if acc not in new or time.time() > deadline:
             continue
         n = process_filing(cik, univ[cik], acc, filed, None)
         stats["feed_filings"] += 1
         stats["trades"] += max(n, 0)
-        seen.add(acc)
+        new.discard(acc)
 
 
 # ------------------------------------------------------------------ 2. the per-company sweep
 def run_sweep(univ: Dict[str, str], deadline: float, stats: dict) -> None:
+    # v40f: only companies not swept for SWEEP_EVERY_DAYS (never-swept first). It swept the whole list again and again until
+    # RUN_BUDGET_SEC ran out: 7 minutes of queries every 30 minutes kept Neon awake (compute) — the feed catches new filings
     with cursor() as (conn, cur):
-        cur.execute("SELECT cik, swept_at FROM insider_sweep_state")
-        swept = {r[0]: r[1] for r in cur.fetchall()}
-    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
-    order = sorted(univ, key=lambda c: swept.get(c) or epoch)
+        cur.execute("""SELECT c FROM unnest(%s::text[]) AS c LEFT JOIN insider_sweep_state s ON s.cik = c
+                       WHERE s.swept_at IS NULL OR s.swept_at < NOW() - make_interval(days => %s)
+                       ORDER BY s.swept_at NULLS FIRST""", (list(univ), SWEEP_EVERY_DAYS))
+        order = [r[0] for r in cur.fetchall()]
     since = (date.today() - timedelta(days=BACKFILL_DAYS)).isoformat()
     for cik in order:
         if time.time() > deadline:
@@ -420,10 +426,10 @@ def run_sweep(univ: Dict[str, str], deadline: float, stats: dict) -> None:
         cand = [(accs[i], dates[i], docs[i] if i < len(docs) else None)
                 for i in range(min(len(forms), len(accs), len(dates)))
                 if forms[i] == "4" and dates[i] >= since]
-        seen = _seen([a for a, _, _ in cand])
+        new = _unseen([a for a, _, _ in cand])
         finished = True
         for acc, filed, doc in cand:
-            if acc in seen:
+            if acc not in new:
                 continue
             if time.time() > deadline:
                 finished = False

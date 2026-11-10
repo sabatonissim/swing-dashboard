@@ -250,6 +250,37 @@ def test_guidance_figures_are_checked_against_the_release():
     assert items[0]["est"] == 3.9e9 and items[0]["vs_pct"] == 1.28 and items[1]["vs_pct"] == round((14.55 / 14.0 - 1) * 100, 2)
 
 
+def test_guidance_only_results_is_no_guidance(monkeypatch):
+    """v40e: ROIV 9.11.2026: the one model that answered copied this quarter's results (rejected), the others were 404 / timed
+    out, and after 6 attempts the report stayed "failed". An answer that was read and rejected says so in the note."""
+    import datetime as _d
+    import json as _j
+    import earnings_guidance as eg
+    import llm_provider
+    import pipeline_a_scanner as sc
+    rel = "Revenue was $50 million. Outlook: we expect the trial to read out next year, in 2027, as planned."
+    monkeypatch.setattr(sc, "_sec_cik_for", lambda t: "1")
+    monkeypatch.setattr(sc, "_sec_release_accessions", lambda cik, d: ["acc-1"])
+    monkeypatch.setattr(sc, "_sec_release_text", lambda cik, acc: rel)
+    result = {"guidance": [dict(period="year", quarter=None, fiscal_year=2026, metric="revenue", basis=None, low="50", high="50",
+                                unit="million", change=None, quote="Revenue was $50 million.")]}
+
+    def chat(msgs, validate=None, **kw):
+        try:
+            validate(_j.dumps(result))
+        except ValueError:
+            pass
+        raise RuntimeError("all models failed — last: google/gemma-4-31b-it: ReadTimeout")
+    monkeypatch.setattr(llm_provider, "chat", chat)
+    status, items, acc, model, note = eg.read_guidance("ROIV", _d.date(2026, 11, 9), {"revenue_estimate": 5e7, "eps_estimate": None})
+    assert status is None and note.startswith(eg.REJECTED_NOTE) and acc == "acc-1"
+
+    def timeout(msgs, validate=None, **kw):
+        raise RuntimeError("all models failed — last: ReadTimeout")
+    monkeypatch.setattr(llm_provider, "chat", timeout)
+    assert eg.read_guidance("ROIV", _d.date(2026, 11, 9), {})[4].startswith("AI: ")      # never answered = tried again
+
+
 def test_guidance_health_rule():
     import data_health
     rows = [{"ticker": t, "status": "found", "items": [{"metric": "revenue", "vs_pct": 2.0}]} for t in "ABCD"]
@@ -726,6 +757,71 @@ def test_key_events_read_only_new_rows(api, monkeypatch):
     api._key_cache["until"] = 0.0
     monkeypatch.setattr(api, "db_cursor", lambda dict_cursor=False: (_ for _ in ()).throw(RuntimeError("database suspended")))
     assert api._recent_key_events() == api._key_cache["events"]                      # the last answer, not an error
+
+
+def test_daily_digest_reads_full_rows_only_for_what_it_shows(api, monkeypatch):
+    """v40f: the day's headlines in five columns, SELECT * only for the key events and topic headlines shown."""
+    import datetime as _dt
+    now = _dt.datetime(2026, 11, 9, 15, tzinfo=_dt.timezone.utc)
+    row = lambda i, title, src, tag: dict(id=i, summary_en=title, source_name=src, category_tag=tag,
+                                          timestamp=now - _dt.timedelta(minutes=i))
+    light = [row(1, "Fed cuts interest rates by a quarter point", "Reuters", "Fed"),
+             row(2, "Fed cuts rates again", "CNBC", "Fed"), row(3, "Fed rate cut lifts stocks", "MarketWatch", "Fed"),
+             row(4, "Oil slips as supply rises", "Reuters", "Energy"), row(5, "Oil prices edge lower", "CNBC", "Energy")]
+
+    class Conn:
+        def __init__(self):
+            self.db = _FakeDb([light, None, None])       # light rows, then the full rows (filled below), AI digest, ratings
+            self.db.close = lambda: None
+        def cursor(self, cursor_factory=None):
+            return self.db
+        def rollback(self):
+            pass
+        def close(self):
+            pass
+    conn = Conn()
+    real_fetchall = conn.db.fetchall
+
+    def fetchall():
+        sql, params = conn.db.sql[-1]
+        if "ANY" in sql:
+            conn.db.answers.pop(0)
+            return [dict(r, summary_he="עברית", body_en="body") for r in light if r["id"] in params[0]]
+        return real_fetchall()
+    conn.db.fetchall = fetchall
+    conn.db.fetchone = lambda: (False,) if "to_regclass" in conn.db.sql[-1][0] else None
+    monkeypatch.setattr(api, "get_conn", lambda: conn)
+    out = api.get_daily_digest.__wrapped__(day="2026-11-09", top_n=6)
+    first = conn.db.sql[0][0]
+    assert "SELECT *" not in first and "summary_en" in first
+    full_reads = [p for s, p in conn.db.sql if "SELECT * FROM macro_news" in s]
+    assert len(full_reads) == 1 and set(full_reads[0][0]) <= {1, 2, 3, 4, 5}
+    assert out["total_items"] == 5 and [h["tag"] for h in out["hot_topics"]] == ["Fed", "Energy"]
+    for h in out["hot_topics"]:
+        assert h["representative"]["summary_he"] == "עברית" and h["representative"]["impact_level"] in ("Critical", "High")
+    for c in out["critical"]:
+        assert c["impact_level"] == "Critical" and c["body_en"] == "body"
+
+
+def test_insider_asks_only_for_what_is_new(monkeypatch):
+    """v40f: the database answers with the accessions not seen yet, and the sweep takes only companies that are due."""
+    import contextlib
+    import time
+    import insider_trades as it
+    db = _FakeDb([[("0001-26-000002",)], [("0000000002",)]])
+
+    @contextlib.contextmanager
+    def cursor(dict_cursor=False):
+        yield (None, db)
+    monkeypatch.setattr(it, "cursor", cursor)
+    assert it._unseen(["0001-26-000001", "0001-26-000002"]) == {"0001-26-000002"}
+    assert "NOT EXISTS" in db.sql[0][0]
+    asked = []
+    monkeypatch.setattr(it, "sec_get", lambda url, timeout=20: asked.append(url))
+    stats = {"sweep_filings": 0, "trades": 0, "companies_swept": 0}
+    it.run_sweep({"0000000001": "AAA", "0000000002": "BBB"}, time.time() + 60, stats)
+    assert db.sql[1][1] == (["0000000001", "0000000002"], it.SWEEP_EVERY_DAYS)
+    assert len(asked) == 1 and "CIK0000000002" in asked[0]
 
 
 def test_stocks_read_again_only_after_a_scan(api, monkeypatch):
@@ -1345,6 +1441,20 @@ def test_digest_hebrew_check():
         d.clean_hebrew(_json.dumps({"overview": "The S&P fell 4.36%.", "topics": en["topics"]}), en)
     with pytest.raises(ValueError, match="topics"):
         d.clean_hebrew(_json.dumps({"overview": "ירידה", "topics": []}), en)
+    glued = _json.dumps({"overview": "מדד S&P 500 ירד 4.36%, ותוצאות בחירות אמצע הקדנציהערערו את וול סטריט.", "topics": [{"title": "גל מכירות", "summary": "השבבים ירדו.", "impact": ""}]})
+    assert "הקדנציה ערערו" in d.clean_hebrew(glued, en)["overview"]          # v40e, the digest of 9.11.2026
+
+
+def test_digest_dates_and_old_stories_v40e():
+    """v40e: 10.11.2026 "On the US stock market had not opened yet" (the date was cut, "On" was left); 9.11.2026, S&P +2.35%:
+    "midterm election results rattled Wall Street", the week before's story."""
+    import ai_digest as d
+    assert d._no_dates("On 2026-11-10 the US stock market had not opened yet.") == "The US stock market had not opened yet."
+    assert d._no_dates("Oil fell. On 2026-11-10, the market waited.") == "Oil fell. The market waited."
+    up = {"same_day": True, "indices": [{"symbol": "^GSPC", "change_pct": 2.35}]}
+    assert "rattled Wall Street" in d.contradicts_market("Midterm election results rattled Wall Street.", up)
+    assert d.contradicts_market("Midterm election results rattled Wall Street.", dict(up, indices=[{"symbol": "^GSPC", "change_pct": -2.0}])) is None
+    assert d.contradicts_market("The rally rocketed past records.", up) is None
 
 
 def test_digest_health_rule():

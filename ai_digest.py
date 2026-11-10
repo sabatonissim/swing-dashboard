@@ -420,7 +420,7 @@ Exact shape:
 
 SYSTEM_HE = """Translate this market summary from English into natural, simple Israeli Hebrew, as a financial newspaper would write it.
 Keep the meaning exactly: who did what must not change, and add nothing. Never leave an ordinary English word in the Hebrew.
-Glossary: stocks = מניות; session = יום מסחר (never "מפגש"); sell-off or rout = גל מכירות (never "מסלול"); safe haven = נכס מפלט; crypto = קריפטו; 10-year Treasury yield = תשואת אג"ח ממשלתי ל-10 שנים; index = מדד; chip stocks = מניות השבבים; interest rate = ריבית; rate hike = העלאת ריבית; yield = תשואה; Treasury bond = אג"ח ממשלתי; inflation = אינפלציה; results / earnings = דוחות או רווחים; forecast / outlook = תחזית; oil = נפט; tariffs = מכסים; sanctions = סנקציות; midterm elections = בחירות אמצע הקדנציה; the Fed = הפד; Wall Street = וול סטריט; AI = בינה מלאכותית.
+Glossary: stocks = מניות; session = יום מסחר (never "מפגש"); sell-off or rout = גל מכירות (never "מסלול"); safe haven = נכס מפלט; crypto = קריפטו; 10-year Treasury yield = תשואת אג"ח ממשלתי ל-10 שנים; index = מדד; chip stocks = מניות השבבים; interest rate = ריבית; rate hike = העלאת ריבית; yield = תשואה; Treasury bond = אג"ח ממשלתי; inflation = אינפלציה; results / earnings = דוחות או רווחים; forecast / outlook = תחזית; oil = נפט; tariffs = מכסים; sanctions = סנקציות; midterm elections = בחירות אמצע הקדנציה; the news is dominated by = הכותרות עוסקות בעיקר ב (never "מודגמות"); has not opened yet = עוד לא נפתח; the Fed = הפד; Wall Street = וול סטריט; AI = בינה מלאכותית.
 Names of companies, indices and people stay in English letters (Nvidia, S&P 500, Nasdaq, VIX). A company is feminine in Hebrew. Keep every number exactly as written.
 Write Hebrew abbreviations with the mark ״ (ארה״ב, נאסד״ק), never with a plain double quote.
 Keep the same fields and the same number of topics; an empty field stays empty. Answer with the JSON only, in the same shape as the input."""
@@ -432,7 +432,9 @@ _OWN_GUESS = re.compile(r"\b(suggest(?:s|ed|ing)?|possibly|perhaps|reflect(?:s|e
 # v37c: more than one of these in a topic = a list of the market numbers the site shows anyway, not a story
 _ASSET_WORDS = (r"\boil\b|\bwti\b|\bcrude\b", r"\byields?\b|\btreasur", r"\bgold\b", r"\bvix\b", r"\bbitcoin\b|\bcrypto")
 _ENDED = re.compile(r"\b(ended|closed|finished|at the close)\b", re.I)    # 14:06 ET on 6.11.2026: "The US market ended mixed"
-_ISO_DATE = re.compile(r"\s*\b(?:on |for )?\d{4}-\d{2}-\d{2}\b")
+_ISO_DATE = re.compile(r"\s*\b(?:on |for |as of )?\d{4}-\d{2}-\d{2}\b,?", re.I)
+# v40e: words the Hebrew model glued to the next one (9.11.2026: "בחירות אמצע הקדנציהערערו")
+_GLUED_HE = re.compile(r"(הקדנציה|וול סטריט|אינפלציה|המלאכותית|השבבים|הנאסד״ק|הנפט|הריבית)(?=[א-ת])")
 MAX_OVERVIEW = 450       # the shape asks for 380; the first real answer wrote 480, a list of every number
 _SHORT_TERMS = re.compile(r"\b(ai|fed|oil|ecb|sox|vix|gdp|cpi|boj|us)\b", re.I)
 
@@ -669,7 +671,17 @@ def contradicts_market(text, market):
         m = re.search(rf"\b(?:{name})\b(?:\s+\w+){{0,2}}\s+(?:{verbs})\b", text, re.I)
         if m:
             return f"'{m.group(0)}', and the MARKET NUMBERS say {pct:+.2f}% that day"
+    # v40e: the verb before the name. 9.11.2026 (S&P +2.35%): "midterm election results rattled Wall Street", a story of the week before
+    pct = changes.get("^GSPC")
+    if pct is not None and pct >= MOVE_THAT_COUNTS:
+        m = _SHOOK.search(text)
+        if m:
+            return f"'{m.group(0)}', and the MARKET NUMBERS say the S&P 500 {pct:+.2f}% that day"
     return None
+
+
+_SHOOK = re.compile(r"\b(?:rattl|spook|roil|jolt|rock|shook|shak)\w*\s+(?:the\s+)?(?:wall street|us stocks|the (?:us )?stock market|"
+                    r"(?:us )?investors|markets?)\b", re.I)
 
 
 _SESSION_NAMES = r"S&P(?: 500)?|Nasdaq|Dow(?: Jones)?|Wall Street|(?:the )?(?:US )?(?:stock )?market|US stocks|chip stocks|VIX"
@@ -730,6 +742,13 @@ def _sentences_without_guess(text, source_text=""):
     return " ".join(s for s in re.split(r"(?<=[.!?])\s+", text) if not _own_guess(s, source_text)).strip()
 
 
+def _no_dates(text):
+    """v40e: the dates the model copies from the MARKET part, out. 10.11.2026: "On 2026-11-10 the US stock market had not opened
+    yet" lost only the date ("On the US stock market had not opened yet"), and the Hebrew followed it."""
+    text = _ISO_DATE.sub("", str(text or "")).strip()
+    return re.sub(r"(^|[.!?]\s+)([a-z])", lambda m: m.group(1) + m.group(2).upper(), text)
+
+
 def _shorter(text, limit):
     out = ""
     for s in re.split(r"(?<=[.!?])\s+", text):
@@ -746,11 +765,10 @@ def clean_answer(text, items, market, strict=True):
     A source that shares no word with its topic is not shown (v37b: the AI selloff cited "Emirates saw its profits plunge")."""
     raw = _parse(text)
     allowed = allowed_numbers(market, items)
-    overview = _ISO_DATE.sub("", str(raw.get("overview", ""))).strip()
+    overview = _no_dates(raw.get("overview", ""))
     topics = []
     for t in (raw.get("topics") or [])[:MAX_TOPICS]:
-        title, summary = _ISO_DATE.sub("", str(t.get("title", ""))).strip(), _ISO_DATE.sub("", str(t.get("summary", ""))).strip()
-        impact = _ISO_DATE.sub("", str(t.get("impact", ""))).strip()
+        title, summary, impact = _no_dates(t.get("title", "")), _no_dates(t.get("summary", "")), _no_dates(t.get("impact", ""))
         about = _topic_words(f"{title} {summary}")
         sources, seen, rank = [], set(), len(items) + 1
         for n in _ints(t.get("items"), 1, len(items)):
@@ -911,10 +929,10 @@ def clean_hebrew(text, en):
         left = [w for w in re.findall(r"\b[a-z][a-z-]{2,}\b", he)]      # names start with a capital; "typicall risk-off" does not
         if left:
             raise ValueError(f"the field '{field}' has English words left: {left[:4]}. Translate them into Hebrew")
-    out["overview"] = fix_he(out["overview"])
+    out["overview"] = fix_he(_GLUED_HE.sub(r"\1 ", out["overview"]))
     for t in out["topics"]:
         for k in t:
-            t[k] = fix_he(t[k])
+            t[k] = fix_he(_GLUED_HE.sub(r"\1 ", t[k]))
     return out
 
 
