@@ -1508,7 +1508,9 @@ _KEY_NON_US = re.compile(r"\b(uk|u\.k\.|britain|british|euro ?zone|europe|europe
 _KEY_US_MARKET = r"\b(u\.s\.|us|america|american|fed|treasur\w*|wall street|stocks?|markets?|s&p|nasdaq|dow)\b"
 _KEY_JUNK = re.compile(r"^\s*\d+\s|\b(stocks? to (buy|watch|own)|should you|is it time|smart buy|buy now|"
                        r"dividend stocks?|what to expect|things to watch|how to|here'?s|according to analysts|"
-                       r"this strategist|strategist says|cpi card group)\b", re.I)    # v37: a company, not the inflation report
+                       r"this strategist|strategist says|cpi card group|"             # v37: a company, not the inflation report
+                       # v41: a personal-finance story copied by 7 sites was the key "market" event (10.11.2026)
+                       r"social security|retirement|retirees?|401\(?k\)?|roth ira|nest egg)\b", re.I)
 # v37: a data release that is still to come is not the event ("Dollar edges up as oil prices bounce, payrolls eyed", 5.11.2026)
 _KEY_PREVIEW = re.compile(r"\b(eyed|on tap|in focus|looms?|awaits?|ahead|before|week ahead|due)\b", re.I)
 _KEY_RATE_WORDS = r"\b(rates?|decision|meeting|hikes?|hiked|hiking|cuts?|holds?|pause[sd]?|minutes|statement|chair)\b"
@@ -4068,7 +4070,7 @@ _SETUP_EXPLANATIONS = {
     },
     "rsi_oversold_bounce": {
         "he": lambda d: (
-            f"ה-RSI(14) ירד מתחת ל-30 (איזור \"קניית יתר שלילית\") בימים האחרונים — כרגע {d['rsi']}. "
+            f"ה-RSI(14) ירד מתחת ל-30 (אזור \"מכירת יתר\") בימים האחרונים — כרגע {d['rsi']}. "
             + ("המניה כבר חצתה בחזרה מעל 30 עם עלייה במחיר — סימן מוקדם אפשרי להיפוך." if d['stage']=='triggered'
                else "עדיין מתחת ל-30 — לא חזרה עדיין.")
             + " זהו אינדיקטור מומנטום, אין כאן רמת מחיר או יעד — לא המלצה לפעולה בפני עצמו."

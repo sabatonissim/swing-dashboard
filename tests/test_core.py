@@ -1480,10 +1480,26 @@ def test_key_events_of_this_round(api):
     assert of("A prolonged war in Iran is the market's real black swan, says this strategist") is None
     assert of("Dollar edges up as oil prices bounce, payrolls eyed") is None
     assert of("What CPI Card Group (PMTS) said on its earnings call") is None
+    assert of("He Sees the Nasdaq Plunging 5.5% at 63. Claiming Social Security to Avoid Selling Stocks Could Lock In a Smaller Check for Life") is None
     assert of("US payrolls rose by 150,000 in October")[0] == "jobs"
     assert of("Oil jumps as missiles hit tankers in the Strait of Hormuz")[0].startswith("geo")
     crash = of("A brutal sell-off sends Wall Street reeling, and the S&P 500 tumbles 4.4%")
     assert crash[0] == "market" and crash[1] > of("ECB holds rates steady, Lagarde says")[1]
+
+
+def test_demo_stop_is_not_closer_than_one_atr(scanner):
+    """v41: a support 1% under the entry was the stop, and ordinary daily movement closed the trade the next day
+    (ANET 4.11.2026: entry $178.48, support $176.77)."""
+    stop, target = scanner.sim_levels(178.48, 176.77, [188.99], 6.0)
+    assert stop == round(178.48 - 1.5 * 6.0, 4) and target >= 178.48 + (178.48 - stop)
+    assert scanner.sim_levels(100.0, 92.0, [], 3.0)[0] == 92.0            # a support 8% away (more than 1 ATR) is the stop
+    assert scanner.sim_levels(100.0, 99.0, [], None)[0] == 93.0           # no ATR: closer than 2% is not a stop
+    assert scanner.sim_levels(100.0, 97.0, [], None)[0] == 97.0
+    assert scanner.sim_levels(100.0, 99.0, [], float("nan"))[0] == 93.0
+
+
+def test_statistics_start_date_is_the_same_in_both_files(scanner, api):
+    assert scanner.STATS_SINCE == api.STATS_SINCE
 
 
 def test_new_highs_are_counted_by_the_close():

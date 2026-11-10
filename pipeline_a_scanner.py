@@ -1376,6 +1376,7 @@ def init_db():
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sim_exit_days INTEGER;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sim_exit_date DATE;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sim_exit_return REAL;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sim_rules INTEGER;")   # v41: SIM_RULES_VERSION of the outcome
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sector TEXT;")   # v19: sector filter
     cur.execute("""
         CREATE TABLE IF NOT EXISTS universe_movers (
@@ -3101,6 +3102,8 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
 
 FORWARD_RETURN_HORIZONS = {"forward_return_10d": 10, "forward_return_20d": 20}
 BACKFILL_BATCH_SIZE = 300  # cap per run so a huge backlog can't blow out scan runtime
+STATS_SINCE = "2026-11-03"       # = api_server.STATS_SINCE (a test compares them): the statistics count scans from here on
+BACKFILL_MAX_AGE_DAYS = 90       # v41: the price window is 45 days after the scan; a row older than this will never fill
 
 
 def backfill_forward_returns():
@@ -3123,16 +3126,22 @@ def backfill_forward_returns():
 
     filled = 0
     for col, min_age in horizon_min_age_days.items():
+        # v41: the queue was oldest-first with no way out — a row that can never be computed (no entry price, a
+        # delisted stock) stayed at its head for good, and rows from before STATS_SINCE (not counted in any
+        # statistic) were served before the ones the site is waiting for. Now: only rows that can still fill,
+        # and the ones the statistics use first.
         cur.execute(
             f"""
             SELECT id, ticker, entry_price, timestamp FROM scanned_stocks
             WHERE pattern_type IS NOT NULL
+              AND entry_price > 0
               AND timestamp <= NOW() - INTERVAL '{min_age} days'
+              AND timestamp >= NOW() - INTERVAL '{BACKFILL_MAX_AGE_DAYS} days'
               AND {col} IS NULL
-            ORDER BY timestamp ASC
+            ORDER BY (timestamp >= %s) DESC, timestamp ASC
             LIMIT %s
             """,
-            (BACKFILL_BATCH_SIZE,),
+            (STATS_SINCE, BACKFILL_BATCH_SIZE),
         )
         rows = cur.fetchall()
         horizon = FORWARD_RETURN_HORIZONS[col]
@@ -3181,8 +3190,11 @@ def backfill_forward_returns():
 #
 # Rules (kept deliberately simple and explicit):
 #   entry  : the scan price (entry_price); bars from the NEXT trading day on
-#   stop   : the signal's support level if it is 0–12% below entry,
+#   stop   : the signal's support level if it is far enough below entry to be a real stop
+#            (at least 1 ATR, or 2% when there is no ATR) and at most 12%,
 #            else entry - 1.5*ATR, else entry - 7%
+#            (v41: a support 1% under the entry was the stop — ANET $178.48 / $176.77 — and 3 of the
+#            first 4 closed trades were stopped out the next day by ordinary daily movement)
 #   target : the first resistance target that pays at least 1R,
 #            else entry + 2R   (R = entry - stop)
 #   a bar that opens beyond a level exits at the OPEN (gap), otherwise at the
@@ -3193,15 +3205,20 @@ def backfill_forward_returns():
 SIM_MAX_HOLD_DAYS = 20
 SIM_MIN_SCORE = 60            # only signals that could ever be "high score" are simulated
 SIM_MAX_TICKERS_PER_RUN = 400
+SIM_RULES_VERSION = 2         # v41 (minimum stop distance). Raise it when sim_levels / simulate_trade change:
+                              # outcomes of older rules since STATS_SINCE are computed again
+SIM_MIN_STOP_PCT = 0.02       # the closest a stop may be when the signal has no ATR
 
 
 def sim_levels(entry, support, resistances, atr):
     """(stop, target) for a signal, or None if no sane levels exist."""
     entry = float(entry)
+    has_atr = bool(atr) and math.isfinite(float(atr)) and float(atr) > 0
+    min_gap = float(atr) / entry if has_atr else SIM_MIN_STOP_PCT
     stop = None
-    if support and 0 < (entry - float(support)) / entry <= 0.12:
+    if support and min_gap <= (entry - float(support)) / entry <= 0.12:
         stop = float(support)
-    elif atr and float(atr) > 0 and 1.5 * float(atr) < entry * 0.25:
+    elif has_atr and 1.5 * float(atr) < entry * 0.25:
         stop = entry - 1.5 * float(atr)
     else:
         stop = entry * 0.93
@@ -3246,6 +3263,16 @@ def simulate_trade(entry, stop, target, bars, max_days=SIM_MAX_HOLD_DAYS):
 def backfill_sim_outcomes():
     conn = get_conn()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    # v41: outcomes closed under older rules (since STATS_SINCE — the only ones the site counts) go back in the queue
+    cur.execute(
+        """UPDATE scanned_stocks SET sim_exit_reason = NULL, sim_exit_price = NULL, sim_exit_days = NULL,
+                  sim_exit_date = NULL, sim_exit_return = NULL
+           WHERE sim_exit_reason IS NOT NULL AND COALESCE(sim_rules, 1) < %s AND timestamp >= %s""",
+        (SIM_RULES_VERSION, STATS_SINCE),
+    )
+    if cur.rowcount:
+        print(f"Demo-portfolio simulation: {cur.rowcount} outcome(s) of older rules will be computed again.")
+    conn.commit()
     cur.execute(
         """
         SELECT id, ticker, entry_price, support_level, resistance_targets, atr_value, timestamp
@@ -3291,8 +3318,9 @@ def backfill_sim_outcomes():
             if out:
                 upd.execute(
                     """UPDATE scanned_stocks SET sim_stop=%s, sim_target=%s, sim_exit_reason=%s, sim_exit_price=%s,
-                       sim_exit_days=%s, sim_exit_date=%s, sim_exit_return=%s WHERE id=%s""",
-                    (stop, target, out["reason"], out["exit_price"], out["exit_days"], out["exit_date"], out["return_pct"], r["id"]),
+                       sim_exit_days=%s, sim_exit_date=%s, sim_exit_return=%s, sim_rules=%s WHERE id=%s""",
+                    (stop, target, out["reason"], out["exit_price"], out["exit_days"], out["exit_date"], out["return_pct"],
+                     SIM_RULES_VERSION, r["id"]),
                 )
                 resolved += 1
             else:   # still open: remember the levels so the API knows it was evaluated

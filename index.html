@@ -1993,11 +1993,12 @@ let backtestLoaded = false;
 
 async function loadBacktestPatterns(){
   try {
-    const res = await fetch(`${API_BASE}/api/backtest/patterns`);
+    const res = await fetchWithTimeout(`${API_BASE}/api/backtest/patterns`, 20000);
     if(!res.ok) throw new Error('bad response');
     backtestPatternsCache = await res.json();
   } catch(e) {
     console.warn('[backtest patterns] load failed:', e);
+    backtestLoaded = false;
     backtestPatternsCache = [];
   }
   renderBacktestPatternFilter();
@@ -2042,6 +2043,7 @@ async function loadBacktestPatternSummary(){
     renderBacktestPatternSummary();
   } catch(e) {
     console.warn('[backtest pattern summary] load failed', e);
+    backtestLoaded = false;
     el.innerHTML = '';
   }
 }
@@ -2106,14 +2108,15 @@ async function loadBacktestData(){
   const t = lang === 'en';
   el.innerHTML = `<div class="bt-empty">${UI[lang].loading}</div>`;
   try {
-    const res = await fetch(`${API_BASE}/api/backtest?pattern=${encodeURIComponent(backtestPattern)}&horizon=${backtestHorizon}`);
+    const res = await fetchWithTimeout(`${API_BASE}/api/backtest?pattern=${encodeURIComponent(backtestPattern)}&horizon=${backtestHorizon}`, 30000);
     if(!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     renderBacktestContent(data);
   } catch(e) {
     console.error('[backtest] load failed', e);
-    const why = e && e.message ? ` <span style="opacity:.6;font-size:11px;">(${e.message})</span>` : '';
-    el.innerHTML = `<div class="bt-empty">${t?'Could not load backtest data.':'לא ניתן לטעון נתוני בדיקה היסטורית.'}${why}</div>`;
+    backtestLoaded = false;
+    const why = e && e.message ? ` <span style="opacity:.6;font-size:11px;">(${e.name === 'AbortError' ? 'timeout' : escH(e.message)})</span>` : '';
+    el.innerHTML = `<div class="bt-empty">${t?'Could not load backtest data.':'לא ניתן לטעון נתוני בדיקה היסטורית.'}${why}${retryHtml('ensureBtViewLoaded()')}</div>`;
   }
 }
 
@@ -2614,11 +2617,11 @@ function renderDeepDive(quote, sector, signals, news){
           <tbody>
             ${signals.map(s => `
               <tr>
-                <td>${s.date}</td>
+                <td>${escH(String(s.date || '').slice(0, 10).split('-').reverse().join('.'))}</td>
                 <td>${patternLabel(s.pattern_type)}</td>
                 <td>${s.swing_score ?? '—'}</td>
                 <td>${s.rs_rating ?? '—'}</td>
-                <td style="color:${s.return_10d==null?'var(--text-dim)':s.return_10d>=0?'var(--green)':'var(--red)'}">${s.return_10d==null ? (t?'pending':'ממתין') : (s.return_10d>=0?'+':'')+s.return_10d+'%'}</td>
+                <td style="color:${s.return_10d==null?'var(--text-dim)':s.return_10d>=0?'var(--green)':'var(--red)'}">${s.return_10d==null ? (Date.now() - new Date(s.date).getTime() > 30*86400000 ? '—' : (t?'pending':'ממתין')) :(s.return_10d>=0?'+':'')+s.return_10d+'%'}</td>
               </tr>
             `).join('')}
           </tbody>
@@ -2951,6 +2954,12 @@ function setBtView(v){
   document.getElementById('bt-view-btn-stats').classList.toggle('active', v==='stats');
   ensureBtViewLoaded();
 }
+// v41: a view that failed to load (the server waking up takes 30–60 s) used to stay "loaded" until the whole page
+// was reloaded. A failed loader now clears its view's flag, so the next visit to the view tries again, and the
+// error message carries this link.
+function retryHtml(call){
+  return ` <span style="text-decoration:underline;cursor:pointer" onclick="${call}">${lang==='en'?'Try again':'נסה שוב'}</span>`;
+}
 function ensureBtViewLoaded(){
   if(btView === 'demo' && !demoLoaded){ demoLoaded = true; loadDemoPortfolio(); }
   if(btView === 'stats' && !backtestLoaded){
@@ -2979,7 +2988,8 @@ async function loadDemoPortfolio(){
     renderDemoPortfolio();
   } catch(e) {
     console.error('[demo-portfolio] load failed', e);
-    el.innerHTML = `<div class="movers-empty">${lang==='en'?'Could not load the demo portfolio right now.':'לא ניתן לטעון את תיק הדמו כרגע.'}</div>`;
+    demoLoaded = false;
+    el.innerHTML = `<div class="movers-empty">${lang==='en'?'Could not load the demo portfolio right now.':'לא ניתן לטעון את תיק הדמו כרגע.'}${retryHtml('loadDemoPortfolio()')}</div>`;
   }
 }
 
@@ -3414,14 +3424,15 @@ async function loadFearGreed(){
   const t = lang==='en';
   if(el) el.innerHTML = `<div class="movers-empty">${UI[lang].loading}</div>`;
   try {
-    const res = await fetch(`${API_BASE}/api/fear-greed`);
+    const res = await fetchWithTimeout(`${API_BASE}/api/fear-greed`, 25000);
     if(!res.ok) throw new Error('bad response');
     const data = await res.json();
     lastFearGreedData = data;
     renderFearGreed(data);
   } catch(e) {
     console.error('[fear-greed] load failed', e);
-    if(el) el.innerHTML = `<div class="movers-empty">${t?'Could not load the Fear & Greed index right now.':'לא ניתן לטעון את מדד הפחד והתאווה כרגע.'}</div>`;
+    pulseLoaded = false;
+    if(el) el.innerHTML = `<div class="movers-empty">${t?'Could not load the Fear & Greed index right now.':'לא ניתן לטעון את מדד הפחד והתאווה כרגע.'}${retryHtml('loadFearGreed()')}</div>`;
   }
 }
 
@@ -4132,7 +4143,7 @@ async function loadEconMonth(month){
     console.error('[econ-calendar] month load failed', e);
     if(!econMonthCache[month]){
       const el = document.getElementById('econ-month-wrap');
-      if(el) el.innerHTML = `<div class="movers-empty">${lang==='en'?'Could not load this month right now.':'לא ניתן לטעון את החודש הזה כרגע.'}</div>`;
+      if(el) el.innerHTML = `<div class="movers-empty">${lang==='en'?'Could not load this month right now.':'לא ניתן לטעון את החודש הזה כרגע.'}${retryHtml('loadEconMonth(econMonth)')}</div>`;
     }
   }
 }
@@ -4231,15 +4242,16 @@ async function loadEarningsCalendar(silent){
   const el = document.getElementById('earnings-cal-wrap');
   if(el && !silent) el.innerHTML = `<div class="movers-empty">${UI[lang].loading}</div>`;
   try {
-    const res = await fetch(`${API_BASE}/api/earnings-calendar`);
+    const res = await fetchWithTimeout(`${API_BASE}/api/earnings-calendar`, 30000);
     if(!res.ok) throw new Error('bad response');
     const data = await res.json();
     renderEarningsCalendar(data.items || []);
   } catch(e) {
     console.error('[earnings-calendar] load failed', e);
     if(silent) return;      // a background refresh that failed keeps what is on the screen
+    pulseCalLoaded = false;
     const t = lang==='en';
-    if(el) el.innerHTML = `<div class="movers-empty">${t?'Could not load the earnings calendar right now.':'לא ניתן לטעון את יומן הדוחות כרגע.'}</div>`;
+    if(el) el.innerHTML = `<div class="movers-empty">${t?'Could not load the earnings calendar right now.':'לא ניתן לטעון את יומן הדוחות כרגע.'}${retryHtml('loadEarningsCalendar()')}</div>`;
   }
 }
 
@@ -5709,7 +5721,7 @@ const TECHNICAL_SETUP_PATTERN_NAMES = {
   horizontal_resistance_breakout: {he: 'פריצת התנגדות אופקית', en: 'Horizontal Resistance Breakout'},
   horizontal_support_bounce: {he: 'ריבאונד מתמיכה אופקית', en: 'Horizontal Support Bounce'},
   ma150_support: {he: 'תמיכה על ממוצע 150 יום', en: '150-Day MA Support'},
-  rsi_oversold_bounce: {he: 'ריבאונד RSI מקניית יתר שלילית', en: 'RSI Oversold Bounce'},
+  rsi_oversold_bounce: {he: 'התאוששות RSI ממכירת יתר', en: 'RSI Oversold Bounce'},
   momentum_surge: {he: 'זינוק מומנטום', en: 'Momentum Surge'},
 };
 const TECHNICAL_SETUP_STAGE_LABELS = {
@@ -5973,11 +5985,19 @@ function renderTechnicalSetup(data, elId){
   const drawCandidates = [c, ...others.slice(0, 1)];   // v18: one extra pattern on the chart (owner: too many lines); all are listed below
   const svg = buildTechnicalSetupSvg(data.price_series, [...drawCandidates.flatMap(dc => dc.lines), ...(data.context_lines || []), ...(data.zones || []), ...(ma && ma.line ? [ma.line] : [])]);
 
-  let statsHtml = `
-    <div class="dd-stats-row">
-      <div class="dd-stat-card"><div class="k">${t?'Key level':'רמת מפתח'}</div><div class="v">$${c.key_level}</div></div>
-      <div class="dd-stat-card"><div class="k">${t?'Distance':'מרחק'}</div><div class="v">${c.distance_pct>0?'+':''}${c.distance_pct}%</div></div>
-  `;
+  // RSI and momentum have no price level: their key_level is the RSI threshold (30) / today's close, not a "$ level"
+  const statCard = (k, v) => `<div class="dd-stat-card"><div class="k">${k}</div><div class="v">${v}</div></div>`;
+  const signed = v => (v > 0 ? '+' : '') + v;
+  let statsHtml = `<div class="dd-stats-row">`;
+  if(c.pattern === 'rsi_oversold_bounce'){
+    statsHtml += statCard('RSI(14)', c.rsi ?? '—') + statCard(t?'Oversold below':'מכירת יתר מתחת ל-', '30');
+  } else if(c.pattern === 'momentum_surge'){
+    statsHtml += statCard(t?'5 trading days':'5 ימי מסחר', signed(c.pct_change_5d) + '%')
+               + statCard(t?'Volume vs. average':'ווליום מול הממוצע', signed(c.vol_surge_pct) + '%');
+  } else {
+    statsHtml += statCard(t?'Key level':'רמת מפתח', '$' + c.key_level)
+               + statCard(t?'Distance':'מרחק', signed(c.distance_pct) + '%');
+  }
   if(c.target_price){
     statsHtml += `
       <div class="dd-stat-card"><div class="k">${t?'Measured-move target':'יעד מדידת גובה'}</div><div class="v">$${c.target_price}</div></div>
@@ -8302,6 +8322,7 @@ async function loadLeaders(){
     const r = await fetchWithTimeout(`${API_BASE}/api/leaders`, 25000);
     leadersData = r.ok ? await r.json() : {available: false, failed: true};
   } catch(e){ leadersData = {available: false, failed: true}; }
+  if(leadersData.failed) pulseStocksLoaded = false;
   renderLeaders();
 }
 
@@ -8311,7 +8332,7 @@ function renderLeaders(){
   const en = lang==='en', d = leadersData;
   if(!d){ el.innerHTML = `<div class="movers-empty">${UI[lang].loading}</div>`; return; }
   if(!d.available){ el.innerHTML = `<div class="movers-empty">${d.failed
-    ? (en ? 'Not available right now — please reload the page later.' : 'לא זמין כרגע — אפשר לרענן את העמוד מאוחר יותר.')
+    ? (en ? 'Not available right now.' : 'לא זמין כרגע.') + retryHtml('loadLeaders()')
     : (en ? 'The leading-stocks table fills after the next full scan.' : 'טבלת המניות המובילות תתמלא אחרי הסריקה המלאה הבאה.')}</div>`; return; }
   const sectors = d.sectors || [];
   const chip = (key, label, on) => `<span class="rg-chip" style="cursor:pointer;${on ? 'color:var(--amber);border-color:var(--amber)' : ''}" onclick="leadersSector=${JSON.stringify(key).replace(/"/g, '&quot;')};leadersShowAll=false;renderLeaders()">${label}</span>`;
@@ -8356,6 +8377,7 @@ async function loadCorpCalendar(){
     const r = await fetchWithTimeout(`${API_BASE}/api/corporate-calendar`, 30000);
     corpData = r.ok ? await r.json() : {dividends: [], ipos: [], failed: true};
   } catch(e){ corpData = {dividends: [], ipos: [], failed: true}; }
+  if(corpData.failed) pulseCalLoaded = false;
   renderCorpCalendar();
 }
 
@@ -8386,7 +8408,7 @@ function renderCorpCalendar(){
   el.innerHTML = `<div class="hx-card">
       <div class="hx-head"><span class="hx-title">${en ? 'Ex-dividend dates · 30 days' : 'תאריכי אקס-דיבידנד · 30 יום'}</span></div>
       ${divRows || `<div class="movers-empty">${d.failed
-        ? (en ? 'Not available right now — please reload the page later.' : 'לא זמין כרגע — אפשר לרענן את העמוד מאוחר יותר.')
+        ? (en ? 'Not available right now.' : 'לא זמין כרגע.') + retryHtml('loadCorpCalendar()')
         : (en ? 'No ex-dividend dates in the next 30 days yet (filled by the full scan).' : 'אין עדיין תאריכי אקס ב-30 הימים הקרובים (מתמלא בסריקה המלאה).')}</div>`}
       ${more('div', divList)}
       <div class="hx-note">${en
@@ -8414,6 +8436,7 @@ async function loadFunds(){
     const r = await fetchWithTimeout(`${API_BASE}/api/funds`, 25000);
     fundsData = r.ok ? await r.json() : {available: false, failed: true};
   } catch(e){ fundsData = {available: false, failed: true}; }
+  if(fundsData.failed) pulseStocksLoaded = false;
   renderFunds();
 }
 
@@ -8431,7 +8454,7 @@ function renderFunds(){
   const en = lang==='en', d = fundsData;
   if(!d){ el.innerHTML = `<div class="movers-empty">${UI[lang].loading}</div>`; return; }
   if(!d.available){ el.innerHTML = `<div class="movers-empty">${d.failed
-    ? (en ? 'Not available right now — please reload the page later.' : 'לא זמין כרגע — אפשר לרענן את העמוד מאוחר יותר.')
+    ? (en ? 'Not available right now.' : 'לא זמין כרגע.') + retryHtml('loadFunds()')
     : (en ? 'Fund holdings are not available yet.' : 'נתוני הקרנות עוד לא זמינים.')}</div>`; return; }
   const chip = (key, label) => `<span class="rg-chip" style="cursor:pointer;${fundsPick === key ? 'color:var(--amber);border-color:var(--amber)' : ''}" onclick="fundsPick='${key}';renderFunds()">${label}</span>`;
   const chips = `<div class="hx-regime" style="margin-bottom:8px">${(d.most_bought || []).length ? chip('most', en ? 'Bought by several funds' : 'נקנו ע"י כמה קרנות') : ''}${
