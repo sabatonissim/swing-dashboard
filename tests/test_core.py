@@ -1481,6 +1481,7 @@ def test_key_events_of_this_round(api):
     assert of("Dollar edges up as oil prices bounce, payrolls eyed") is None
     assert of("What CPI Card Group (PMTS) said on its earnings call") is None
     assert of("He Sees the Nasdaq Plunging 5.5% at 63. Claiming Social Security to Avoid Selling Stocks Could Lock In a Smaller Check for Life") is None
+    assert of("Nasdaq AI chip stocks have crashed 50%+! Is this a golden buying opportunity?") is None
     assert of("US payrolls rose by 150,000 in October")[0] == "jobs"
     assert of("Oil jumps as missiles hit tankers in the Strait of Hormuz")[0].startswith("geo")
     crash = of("A brutal sell-off sends Wall Street reeling, and the S&P 500 tumbles 4.4%")
@@ -1532,6 +1533,28 @@ def test_every_pattern_of_the_scan_has_a_base_score(scanner):
     src = (ROOT / "pipeline_a_scanner.py").read_text(encoding="utf-8")
     names = set(re.findall(r'^\s+pattern_type = "(\w+)"', src, re.M))
     assert len(names) >= 15 and not names - set(scanner.SCORE_PATTERN_BASE)
+
+
+def test_today_line_comes_from_the_digest_kept_in_memory(api, monkeypatch):
+    """v43: the home page's "market today" reads the daily digest's answer — no database call of its own; a digest of
+    an earlier day is marked as such, and no overview = nothing to show."""
+    digest = {"day": "2026-11-10", "is_today": True, "ai_summary": {
+        "overview_he": "עברית", "overview_en": "English", "generated_at": "2026-11-10T14:00:00+00:00",
+        "market": {"status": "pre_open", "day": "2026-11-10", "session_day": "2026-11-09"}}}
+    calls = []
+    monkeypatch.setattr(api, "get_daily_digest", lambda **kw: calls.append(kw) or digest)
+    line = api.get_today_line.__wrapped__()
+    assert calls == [{"day": None, "top_n": 6}]
+    assert line["available"] and line["is_today"] and line["overview_he"] == "עברית" and line["status"] == "pre_open"
+    digest["is_today"] = False
+    assert api.get_today_line.__wrapped__()["is_today"] is False
+    digest["ai_summary"] = None
+    assert api.get_today_line.__wrapped__() == {"available": False, "day": "2026-11-10"}
+
+    def down(**kw):
+        raise RuntimeError("no database")
+    monkeypatch.setattr(api, "get_daily_digest", down)
+    assert api.get_today_line.__wrapped__() == {"available": False}
 
 
 def test_statistics_start_date_is_the_same_in_both_files(scanner, api):

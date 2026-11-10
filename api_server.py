@@ -229,7 +229,7 @@ async def security_middleware(request: Request, call_next):
 # (_cached_answer), so a crawl does not reach the database. Everything per stock stays closed: a crawl over 860 stocks
 # would wake the database and hit Yahoo. A stock page has its own text in its HTML (api/page.js on Vercel).
 _ROBOTS_ALLOW = ("/api/stocks", "/api/macro-news", "/api/key-news", "/api/market-movers", "/api/market-ticker",
-                 "/api/pattern-stats", "/api/market-breadth", "/api/insider-buys", "/api/focus")
+                 "/api/pattern-stats", "/api/market-breadth", "/api/insider-buys", "/api/focus", "/api/today")
 
 
 @app.get("/robots.txt", include_in_schema=False)
@@ -1510,7 +1510,9 @@ _KEY_JUNK = re.compile(r"^\s*\d+\s|\b(stocks? to (buy|watch|own)|should you|is i
                        r"dividend stocks?|what to expect|things to watch|how to|here'?s|according to analysts|"
                        r"this strategist|strategist says|cpi card group|"             # v37: a company, not the inflation report
                        # v41: a personal-finance story copied by 7 sites was the key "market" event (10.11.2026)
-                       r"social security|retirement|retirees?|401\(?k\)?|roth ira|nest egg)\b", re.I)
+                       r"social security|retirement|retirees?|401\(?k\)?|roth ira|nest egg|"
+                       # v43: "Nasdaq AI chip stocks have crashed 50%+! Is this a golden buying opportunity?" (10.11.2026)
+                       r"buying opportunity|time to buy)\b|\?\s*$", re.I)
 # v37: a data release that is still to come is not the event ("Dollar edges up as oil prices bounce, payrolls eyed", 5.11.2026)
 _KEY_PREVIEW = re.compile(r"\b(eyed|on tap|in focus|looms?|awaits?|ahead|before|week ahead|due)\b", re.I)
 _KEY_RATE_WORDS = r"\b(rates?|decision|meeting|hikes?|hiked|hiking|cuts?|holds?|pause[sd]?|minutes|statement|chair)\b"
@@ -6156,6 +6158,29 @@ def get_daily_digest(day: Optional[str] = Query(default=None, pattern=r"^\d{4}-\
         "hot_topics": hot_topics,
         "ai_summary": ai_summary,
         "analyst_ratings": ratings,
+    }
+
+
+@app.get("/api/today")
+@_cached_answer(ttl_sec=300)
+def get_today_line():
+    """v43: the two or three sentences on top of the home page ("the market today") — the overview of the daily digest,
+    ~1 KB. Taken from the answer /api/daily-digest already keeps in memory, so it adds no database call of its own.
+    `is_today` False = the digest shown is still yesterday's (the site says so); available False = no overview to show."""
+    try:
+        d = get_daily_digest(day=None, top_n=6)        # the same key the site's own request uses
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] today line: {type(e).__name__}: {e}")
+        return {"available": False}
+    ai = d.get("ai_summary") or {}
+    if not (ai.get("overview_en") or ai.get("overview_he")):
+        return {"available": False, "day": d.get("day")}
+    market = ai.get("market") or {}
+    return {
+        "available": True, "day": d.get("day"), "is_today": bool(d.get("is_today")),
+        "overview_he": ai.get("overview_he") or "", "overview_en": ai.get("overview_en") or "",
+        "generated_at": ai.get("generated_at"),
+        "status": market.get("status"), "session_day": market.get("session_day"), "market_day": market.get("day"),
     }
 
 
