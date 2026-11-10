@@ -37,7 +37,12 @@ RUN_BUDGET_SEC = 7 * 60
 FEED_LOOKBACK_H = 3
 FEED_MAX_PAGES = 10
 BACKFILL_DAYS = 183
-SWEEP_EVERY_DAYS = 3        # v40f: ~900 companies / 3 days = ~10 per run (32 runs a weekday), seconds instead of 7 minutes
+# v40f: a company's backup check is due after this many days (was: every run, 7 minutes of queries every 30 minutes).
+# v40g: 1 day (owner's choice over 3): a filing the feed missed shows up the next day at the latest
+SWEEP_EVERY_DAYS = 1
+# v40g: at most this many a run (~15 seconds of SEC requests), so companies that fall due together (every one after a
+# weekend) are spread over the day; 32 runs x 25 = 800 a weekday, more than the ~730 companies
+SWEEP_MAX_PER_RUN = 25
 
 _last_request = [0.0]
 
@@ -411,7 +416,7 @@ def run_sweep(univ: Dict[str, str], deadline: float, stats: dict) -> None:
     with cursor() as (conn, cur):
         cur.execute("""SELECT c FROM unnest(%s::text[]) AS c LEFT JOIN insider_sweep_state s ON s.cik = c
                        WHERE s.swept_at IS NULL OR s.swept_at < NOW() - make_interval(days => %s)
-                       ORDER BY s.swept_at NULLS FIRST""", (list(univ), SWEEP_EVERY_DAYS))
+                       ORDER BY s.swept_at NULLS FIRST LIMIT %s""", (list(univ), SWEEP_EVERY_DAYS, SWEEP_MAX_PER_RUN))
         order = [r[0] for r in cur.fetchall()]
     since = (date.today() - timedelta(days=BACKFILL_DAYS)).isoformat()
     for cik in order:

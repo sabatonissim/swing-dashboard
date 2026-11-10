@@ -820,7 +820,7 @@ def test_insider_asks_only_for_what_is_new(monkeypatch):
     monkeypatch.setattr(it, "sec_get", lambda url, timeout=20: asked.append(url))
     stats = {"sweep_filings": 0, "trades": 0, "companies_swept": 0}
     it.run_sweep({"0000000001": "AAA", "0000000002": "BBB"}, time.time() + 60, stats)
-    assert db.sql[1][1] == (["0000000001", "0000000002"], it.SWEEP_EVERY_DAYS)
+    assert db.sql[1][1] == (["0000000001", "0000000002"], it.SWEEP_EVERY_DAYS, it.SWEEP_MAX_PER_RUN)
     assert len(asked) == 1 and "CIK0000000002" in asked[0]
 
 
