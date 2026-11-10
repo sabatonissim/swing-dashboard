@@ -1064,6 +1064,8 @@ Actions → **AI Digest (manual test)** → Run workflow → `mode = probe` → 
 - **נבדק:** 118 בדיקות עברו ב-Pyodide (2 חדשות: `test_daily_digest_reads_full_rows_only_for_what_it_shows`, `test_insider_asks_only_for_what_is_new`), pyflakes נקי. **לא נבדק:** ה-SQL החדש מול Postgres אמיתי (unnest/NOT EXISTS/`make_interval` — תקני).
 - **לבדוק אחרי העלאה:** Actions → Insider refresh → לוג: `companies swept` קטן (~10) וזמן ריצה קצר; למחרת `usage.db`: `insider_trades` פחות מ-1MB, `/api/daily-digest` פחות מ-0.5MB; באתר הסיכום היומי נראה כרגיל (כותרות בעברית, נושאים).
 
+**v40g (10.11):** v40e+v40f הועלו, Render עלה תקין. המשתמש: בסיכום היומי בעברית המספרים של הנושאים היו משמאל → `html[lang="he"] .dg-topic{flex-direction:row-reverse}` (כמו `.scan-pattern-filter`). נבדק באתר המקומי מול נתונים חיים: בעברית המספר מימין, באנגלית משמאל. `LLM_MODELS` של המשתמש כבר נקי (lightning, minimax-m3.1-flash, ultra-550b).
+
 ### 27.5 כיווני מוצר (סיכום שנמסר למשתמש 27.10.2026)
 1. **אמינות לפני פיצ'רים:** Render חינמי נרדם (טעינה קרה 30–60 שנ') ו-512MB → שרת בתשלום בסיסי (~$7/חודש) הוא השיפור הגדול ביותר לחוויה. ניטור uptime + התראה.
 2. **רישוי נתונים (חוסם משפטי):** yfinance/Yahoo אסור לשימוש מסחרי; TradingView widgets מותרים עם הקרדיט; תרגום Google דרך endpoint לא רשמי; כותרות מו"לים. חלופות: ספק נתונים בתשלום (Polygon/Massive, FMP, Tiingo, EODHD), Google Cloud Translation/DeepL רשמי.
