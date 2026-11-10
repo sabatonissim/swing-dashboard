@@ -148,6 +148,9 @@ GEO_CONTEXT_WORDS = [
     "supply chain", "opec", "economy", "economic", "gdp", "market", "markets",
     "stocks", "stock", "dollar", "currency", "central bank", "inflation",
     "exports", "imports", "shipping", "sanctions",
+    # v44: the places whose wars do move oil and markets — "Trump says the Iran war could end 'pretty soon'" had no
+    # word from this list and was filed by a passing word in its summary
+    "iran", "israel", "gaza", "ukraine", "russia", "taiwan", "hormuz", "red sea", "ceasefire", "truce",
 ]
 
 MARKET_CONTEXT_WORDS = [
@@ -219,6 +222,12 @@ def _has_geo_context(title: str) -> bool:
     return any(w in lowered for w in GEO_CONTEXT_WORDS)
 
 
+TITLE_WEIGHT = 3
+_IPO_ACTION_RE = re.compile(r"\b(files?|filed|filing|prices?|priced|pricing|debuts?|raises?|raised|plans?|planned|launch\w*|"
+                            r"list(s|ed|ing)?|go(es|ing)? public|ipo (market|window|pipeline)|upsiz\w+|postpon\w+|withdr\w+)\b", re.I)
+_MARKET_SUBJECT_RE = re.compile(r"\b(stocks|equities|wall street|futures|dow)\b", re.I)
+
+
 def classify_headline(title: str, summary: str) -> Optional[dict]:
     """Returns {"tag": ..., "impact": ...}, or None if not market-relevant.
 
@@ -239,33 +248,49 @@ def classify_headline(title: str, summary: str) -> Optional[dict]:
     tag_scores: dict = {}
     earliest_position: dict = {}
     matched_critical = False
+    market_ctx, geo_ctx = _has_market_context(combined), _has_geo_context(combined)
 
-    for kw in TIER1_KEYWORDS:
-        for m in re.finditer(r'\b' + re.escape(kw) + r'\b', combined, re.IGNORECASE):
-            tag = KEYWORD_TO_TAG.get(kw, "מאקרו")
-            tag_scores[tag] = tag_scores.get(tag, 0) + 2
-            earliest_position.setdefault(tag, m.start())
-            if kw in CRITICAL_KEYWORDS:
-                matched_critical = True
+    # v44 (live feed 10.11.2026): the headline says what the story is about; the summary under it mentions a lot in
+    # passing ("Trump says the Iran war could end 'pretty soon'" was filed under Technology). A word in the headline
+    # counts three times a word in the summary, and comes first when two categories tie.
+    for text, weight, offset in ((title, TITLE_WEIGHT, 0), (summary or "", 1, 100000)):
+        def hit(tag, points, m):
+            tag_scores[tag] = tag_scores.get(tag, 0) + points * weight
+            earliest_position.setdefault(tag, offset + m.start())
 
-    if _has_market_context(combined):
-        for kw in TIER2_KEYWORDS:
-            for m in re.finditer(r'\b' + re.escape(kw) + r'\b', combined, re.IGNORECASE):
-                tag = KEYWORD_TO_TAG.get(kw, "מאקרו")
-                tag_scores[tag] = tag_scores.get(tag, 0) + 1
-                earliest_position.setdefault(tag, m.start())
-
-    if _has_geo_context(combined):
-        for kw in GEO_AMBIGUOUS_KEYWORDS:
-            for m in re.finditer(r'\b' + re.escape(kw) + r'\b', combined, re.IGNORECASE):
-                tag = KEYWORD_TO_TAG.get(kw, "גאופוליטי")
-                tag_scores[tag] = tag_scores.get(tag, 0) + 2
-                earliest_position.setdefault(tag, m.start())
+        for kw in TIER1_KEYWORDS:
+            for m in re.finditer(r'\b' + re.escape(kw) + r'\b', text, re.IGNORECASE):
+                # "five years since its IPO" is not an IPO story
+                if kw == "IPO" and not _IPO_ACTION_RE.search(title):
+                    continue
+                hit(KEYWORD_TO_TAG.get(kw, "מאקרו"), 2, m)
                 if kw in CRITICAL_KEYWORDS:
                     matched_critical = True
+        if market_ctx:
+            for kw in TIER2_KEYWORDS:
+                for m in re.finditer(r'\b' + re.escape(kw) + r'\b', text, re.IGNORECASE):
+                    hit(KEYWORD_TO_TAG.get(kw, "מאקרו"), 1, m)
+        if geo_ctx:
+            for kw in GEO_AMBIGUOUS_KEYWORDS:
+                for m in re.finditer(r'\b' + re.escape(kw) + r'\b', text, re.IGNORECASE):
+                    hit(KEYWORD_TO_TAG.get(kw, "גאופוליטי"), 2, m)
+                    if kw in CRITICAL_KEYWORDS:
+                        matched_critical = True
 
     if not tag_scores:
         return None
+
+    # Words that only help CHOOSE the category of a headline that is already market news — they do not let a headline
+    # in by themselves. "European Stocks Approach Record Highs as Oil Prices Fall" is a market story, not an energy one.
+    for m in _MARKET_SUBJECT_RE.finditer(title):
+        tag_scores["שוק"] = tag_scores.get("שוק", 0) + 2 * TITLE_WEIGHT
+        earliest_position["שוק"] = min(earliest_position.get("שוק", m.start()), m.start())
+    # A headline opens with its subject: "Bitcoin Falls Below $74K After Hot US Inflation Fuels Fed Rate Hike Bets" is a
+    # crypto story although rates and inflation are named more often.
+    in_title = [t for t, pos in earliest_position.items() if pos < 100000]
+    if in_title:
+        first = min(in_title, key=lambda t: earliest_position[t])
+        tag_scores[first] += 2 * TITLE_WEIGHT
 
     best_tag = max(tag_scores.items(), key=lambda kv: (kv[1], -earliest_position[kv[0]]))[0]
     return {"tag": best_tag, "impact": "Critical" if matched_critical else "High"}
@@ -374,7 +399,7 @@ def fetch_raw_headlines() -> List[dict]:
 
 # Translation fixes (v18): idioms rewritten before Google, known bad Hebrew renderings fixed after — shared with
 # api_server.py; see translation_fixes.py for the lists and for why the old placeholder masking was dropped.
-from translation_fixes import prep_en as _prep_en, fix_he as _fix_he
+from translation_fixes import prep_en as _prep_en, fix_he as _fix_he, half_translated as _half_translated
 from news_links import is_unwanted_headline, clean_publisher, strip_outlet_suffix   # v28: shared with api_server.py
 
 
@@ -452,11 +477,16 @@ def translate_to_hebrew(text: str) -> str:
             first = first[0] if first else None
         return first if isinstance(first, str) and first.strip() else None
 
+    half = None      # v44: an answer with part of the text still in English — kept only if no provider does better
     for provider_name, provider_fn in (("Google gtx", _try_google_gtx), ("Google dict", _try_google_dict),
                                        ("MyMemory", _try_mymemory)):
         for attempt in (1, 2):
             try:
                 result = provider_fn()
+                if result and _half_translated(result):
+                    half = half or result
+                    print(f"[warn] translation ({provider_name}): part of the text came back in English, trying the next provider")
+                    break
                 if result:
                     return _restore(result)
                 print(f"[warn] translation ({provider_name}) attempt {attempt}: empty result")
@@ -466,8 +496,11 @@ def translate_to_hebrew(text: str) -> str:
                 print(f"[warn] translation ({provider_name}) attempt {attempt} failed: {type(e).__name__}: {e}")
             if attempt == 1:
                 time.sleep(random.uniform(1.5, 3.0))  # brief backoff before the same provider's 2nd try
-        print(f"[warn] translation: {provider_name} failed twice, trying next provider")
+        else:
+            print(f"[warn] translation: {provider_name} failed twice, trying next provider")
 
+    if half:
+        return _restore(half)
     print(f"[warn] translation: all providers failed, keeping original English text: {clean[:80]!r}")
     return text
 

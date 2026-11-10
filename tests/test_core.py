@@ -1474,6 +1474,63 @@ def test_headline_filters_of_this_round():
     assert not bad("Asian stocks fall as India and Indonesia follow Wall Street lower")
 
 
+def test_news_quality_of_the_live_feed_of_10_11():
+    """v44: headlines of the live feed of 10.11.2026 — what should not be shown, which category each belongs to, and
+    the translations that came out wrong."""
+    from news_links import is_unwanted_headline as bad
+    import pipeline_b_news_aggregator as pb
+    import translation_fixes as tf
+    for junk in ("As Crude Oil Prices Retreat, Sell Soybean Oil Now",
+                 "Home Depot (HD) Reports Next Week: Wall Street Expects Earnings Growth",
+                 "Earnings Preview: Spire (SR) Q4 Earnings Expected to Decline",
+                 "Brazil's central bank signals high bar for rate hikes despite inflation risks",
+                 "Poland's Maslowska sees growing case for January rate hike",
+                 "Canadian stock market today: TSX futures drift higher in critical US inflation test",
+                 "TSX futures muted ahead of US inflation data, oil dips",
+                 "Hot inflation report puts Fed on track for December rate hike; The best banks to work for in 2026—and more in Bankers' Hours",
+                 "Nasdaq AI chip stocks have crashed 50%+! Is this a golden buying opportunity?"):
+        assert bad(junk), junk
+    for real in ("S&P 500 futures fall sharply after October inflation data",
+                 "Investors sell stocks now that inflation is back",
+                 "European Stocks Approach Record Highs as Oil Prices Fall and Technology Shares Advance: DAX, CAC, FTSE100",
+                 "Brazil's real slides as the dollar jumps on US inflation",
+                 "Sea Limited Shares Fall Nearly 9% After Q3 Earnings Miss Despite 43% Revenue Growth"):
+        assert not bad(real), real
+
+    def tag(title, summary=""):
+        return pb.classify_headline(title, summary)["tag"]
+    assert tag("US stocks drift lower after a discouraging update on inflation") == "שוק"
+    assert tag("European Stocks Approach Record Highs as Oil Prices Fall and Technology Shares Advance: DAX, CAC, FTSE100") == "שוק"
+    assert tag("S&P 500 futures fall sharply after October inflation data") == "שוק"
+    assert tag("Core CPI rose 0.3% in October versus 0.2% expected; stocks slide") == "CPI"
+    assert tag("Bitcoin Falls Below $74K After Hot US Inflation Fuels Fed Rate Hike Bets – Solana, Ethereum, XRP Hit Harder") == "קריפטו"
+    assert tag("Gold, Silver Fall as Rate-Hike Betting Jumps on Strong Inflation Data") == "סחורות"
+    assert tag("Trump Said Resuming the Iran war is 'Highly Unlikely.' Oil Prices Fell Below a Key Threshold.") == "גאופוליטי"
+    # the summary's passing words do not outvote the headline
+    assert tag("Trump says Iran war could end 'pretty soon' after Qatar talks",
+               "Tech stocks and chip shares rallied. Apple, Microsoft and Nvidia stock rose as tech investors cheered.") == "גאופוליטי"
+    assert tag("Rivian CEO says new R2 SUV, autonomy make 2027 an ‘inflection year’ as EV maker marks five years since IPO",
+               "Rivian stock rose after earnings.") != "IPO"
+    assert tag("Cerebras files for IPO as AI chip demand soars") == "IPO"
+    # a headline with no market word of its own still does not get in through "stocks" alone
+    assert pb.classify_headline("Grocery stocks run low before the storm", "") is None
+
+    p = tf.prep_en
+    assert p("U.S. equities drift lower after a hotter CPI print") == "U.S. equities drift lower after a hotter CPI reading"
+    assert p("Gold, Silver Fall as Rate-Hike Betting Jumps") == "Gold, Silver Fall as interest rate hike Betting Jumps"
+    assert p("an interest rate hike in December") == "an interest rate hike in December"
+    assert p("Hot US Inflation Fuels Fed Rate Hike Bets") == "Hot US Inflation increase Fed interest rate hike Bets"
+    assert p("US CPI cements December rate hike bets") == "US CPI strengthens December interest rate hike bets"
+    assert p("Core CPI rose; stocks slide") == "Core CPI rose; stocks fall"
+    assert p("jet fuel prices raise fears of inflation") == "jet fuel prices raise fears of inflation"
+    assert p("fossil fuels stay in demand despite concerns") == "fossil fuels stay in demand despite concerns"
+    assert tf.fix_he("ההימורים על העלאת שיעור קופצים") == "ההימורים על העלאת ריבית קופצים"
+    assert tf.half_translated('טראמפ אמר שחידוש המלחמה באיראן הוא "לא סביר ביותר". Oil Prices Fell Below a Key Threshold.')
+    assert not tf.half_translated("מניות Taiwan Semiconductor Manufacturing Company עלו ב-3%")
+    assert not tf.half_translated("ביטקוין יורד מתחת ל-74 אלף דולר - סולנה, Ethereum, XRP נפגעו")
+    assert not tf.half_translated("Stocks fell as the Fed held rates")          # no Hebrew at all: a failed translation, handled elsewhere
+
+
 def test_key_events_of_this_round(api):
     of = api._key_event_of
     assert of("Stray Drones Spawn a Growing Area of the Insurance Market") is None

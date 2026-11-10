@@ -297,8 +297,9 @@ window.addEventListener('load', function(){
     .home-main{min-width:0;border-right:1px solid var(--line);}
     .home-main > .col.left{border-top:1px solid var(--line);}
     .home-side{min-width:0;display:flex;flex-direction:column;gap:16px;padding:20px 22px 40px;}
-    .home-side > .breaking-bar{order:1;background:none;border:0;padding:0;}
-    .home-side > .movers-col{order:2;}
+    /* v43b (owner): the watchlist (the second tab of the movers box) first — it was too far down to reach */
+    .home-side > .movers-col{order:1;}
+    .home-side > .breaking-bar{order:2;background:none;border:0;padding:0;}
     .home-side > .chart-col{order:3;}
     .home-side > .hx-card{order:4;}
     /* in the side column the key events are a list, not a strip that scrolls sideways */
@@ -307,6 +308,24 @@ window.addEventListener('load', function(){
     .home-side .breaking-nav{display:none !important;}
   }
   @media(min-width:901px) and (max-width:1300px){ .home-side .hx-stats{grid-template-columns:repeat(2,minmax(0,1fr));} }
+  /* v43b (owner: "in Hebrew it is still aligned to the left"): on the home page Hebrew reads from the right — the
+     main column (scanner, news) on the right, the side column on the left, every heading at the right end of its row.
+     Like the earnings calendar (v40c), a deliberate exception to "the layout is LTR in both languages". */
+  html[lang="he"] .today-head,
+  html[lang="he"] #page-home .col-title, html[lang="he"] #page-home .col-title-row,
+  html[lang="he"] #page-home .breaking-bar-title, html[lang="he"] #page-home .movers-head-row,
+  html[lang="he"] #page-home .market-charts-title-row{direction:rtl;}
+  html[lang="he"] .today-more{margin-left:0;margin-right:auto;}
+  @media(min-width:901px){
+    html[lang="he"] .home-grid{grid-template-columns:minmax(0,2fr) minmax(0,3fr);}
+    html[lang="he"] .home-main{grid-column:2;grid-row:1;border-right:0;border-left:1px solid var(--line);}
+    html[lang="he"] .home-side{grid-column:1;grid-row:1;}
+  }
+  /* v43b (owner): "show all" opens the whole list inside a box that scrolls on its own, so the news under the
+     scanner and the side column stay within reach */
+  #stocks.scan-box{max-height:min(640px,72vh);overflow-y:auto;border:1px solid var(--line);border-radius:10px;padding:8px 8px 0;}
+  #stocks.scan-box::-webkit-scrollbar{width:6px;}
+  #stocks.scan-box::-webkit-scrollbar-thumb{background:var(--line-hover);border-radius:4px;}
   .col{padding:20px 22px 32px;}
   .col::-webkit-scrollbar{width:6px;}
   .col::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px;}
@@ -1021,11 +1040,11 @@ window.addEventListener('load', function(){
     .home-grid,.home-main,.home-side{display:contents;}
     .home-side > .breaking-bar{order:2;}
     .home-main > .col.right{order:3;}
-    .home-side > .hx-card{order:4;margin:0 12px 12px;}
-    .home-side > #hx-breadth{margin-top:4px;}
-    .home-side > .chart-col{order:5;border-top:1px solid var(--line);background:var(--panel-2);padding:12px 12px 0;}
-    .home-side > .movers-col{order:5;background:var(--panel-2);padding:12px;}
-    .home-main > .col.left{order:6;border-top:1px solid var(--line);}
+    .home-side > .movers-col{order:4;background:var(--panel-2);padding:12px;border-top:1px solid var(--line);}   /* v43b: movers + watchlist right after the scanner */
+    .home-side > .hx-card{order:5;margin:0 12px 12px;}
+    .home-side > #hx-breadth{margin-top:12px;}
+    .home-side > .chart-col{order:6;border-top:1px solid var(--line);background:var(--panel-2);padding:12px;}
+    .home-main > .col.left{order:7;border-top:1px solid var(--line);}
     .home-main .col{padding:16px 14px 24px;}
     .today-text{font-size:14px;}
   }
@@ -1647,7 +1666,11 @@ function renderStocks(){
   const SCAN_ROWS = window.matchMedia('(max-width:900px)').matches ? SCAN_PHONE_ROWS : SCAN_DESKTOP_ROWS;
   const phoneCut = !scanShowAll && (recent.length + previous.length) > SCAN_ROWS;
 
-  let html = "";
+  // v43b (owner): the whole list opens inside a box with its own scrolling; "show fewer" on top closes it
+  const boxed = scanShowAll && (recent.length + previous.length) > SCAN_ROWS;
+  const keepScroll = boxed && el.classList.contains('scan-box') ? el.scrollTop : 0;
+  el.classList.toggle('scan-box', boxed);
+  let html = boxed ? `<button class="scan-more-btn" onclick="scanShowAll=false;renderStocks();document.getElementById('stocks').scrollIntoView({block:'nearest'});">${lang==='en' ? `Show only the first ${SCAN_ROWS}` : `הצג רק את ${SCAN_ROWS} הראשונות`}</button>` : "";
   if(recent.length){
     const collapsed = collapsedStockGroups.recent;
     html += `<div class="stock-group-title first" onclick="toggleStockGroup('recent')">
@@ -1668,6 +1691,7 @@ function renderStocks(){
     if(!collapsed) html += previous.map(i=>stockRowHtml(stocks[i],i)).join("");
   }
   el.innerHTML = html;
+  if(keepScroll) el.scrollTop = keepScroll;      // the list is redrawn every few minutes — stay where the reader was
 }
 
 // "Today's biggest movers" — genuine whole-US-market data (Yahoo's day

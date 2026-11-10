@@ -85,19 +85,32 @@ PROMO_RE = re.compile(r"\b(stocks? to (buy|watch|own|bet on)|to bet on|should yo
                       r"is it (time to buy|a buy)|smart buy|buy the dip|"
                       r"stocks? (for|to) (retirees|beginners)|our (ai |top )?picks|stock picks|"
                       r"(to )?buy (ahead of|before) (the )?(print|earnings|results|report)|"   # v28d: "To Buy Ahead of the Print or Wait"
-                      r"buy or (sell|wait|hold))\b"
+                      r"buy or (sell|wait|hold)|"
+                      # v44 (live feed 10.11.2026): "As Crude Oil Prices Retreat, Sell Soybean Oil Now" \u2014 advice, not news
+                      r"(buy|sell|short)\s+(?:[\w&'-]+\s+){1,4}now(?!\s+that)|buying opportunity)\b"
                       r"|^\s*\d+\s+[\w\s&'-]{0,40}\bstocks?\b", re.I)
-_FORMAT_JUNK_RE = re.compile(r"^\s*(watch|video|listen|podcast)\s*[:\-\u2013\u2014]|^\s*q\s*[.:]\s", re.I)
+# v44: a newsletter's table of contents as a headline ("Hot inflation report puts Fed on track ...; The best banks to
+# work for in 2026\u2014and more in Bankers' Hours")
+_FORMAT_JUNK_RE = re.compile(r"^\s*(watch|video|listen|podcast)\s*[:\-\u2013\u2014]|^\s*q\s*[.:]\s|\band more (in|from)\b", re.I)
 # v37: machine-made pages about one company's report: 1,029 of the 1,564 headlines of 5.11.2026 were tagged as earnings, most
 # of them these. The stock's own page finds its company's news separately (_feed_clean with promo_only).
 EARNINGS_CHATTER_RE = re.compile(r":\s*(fiscal\s+)?q[1-4]\s+earnings snapshot\s*$|\bearnings call (highlights|transcript|is live)\b|"
-                                 r"\bsaid on its q[1-4] earnings call\b|\breleases? (first|second|third|fourth)[- ]quarter earnings\b", re.I)
+                                 r"\bsaid on its q[1-4] earnings call\b|\breleases? (first|second|third|fourth)[- ]quarter earnings\b|"
+                                 # v44: machine-made previews of one company's report ("Home Depot (HD) Reports Next Week: Wall
+                                 # Street Expects Earnings Growth", "Earnings Preview: Spire (SR) Q4 Earnings Expected to Decline")
+                                 r"\bearnings preview\b|\breports next week\b|\bearnings expected to (decline|grow|rise|fall)\b|"
+                                 r"\bexpected to beat earnings estimates\b|\banalysts estimate\b.*\bto report\b", re.I)
 # Countries whose domestic news rarely moves US stocks — dropped unless the headline also ties it to the US / world markets
 # v37: also the adjectives. "Philippine Inflation Surges to 7.8%" passed and made the overview of a day the S&P 500 fell 4.36%.
 LOCAL_RE = re.compile(r"\b(india|indian|russians?|ethiopia|ethiopian|pakistan|pakistani|nigeria|nigerian|kenya|kenyan|bangladesh|"
                       r"sri lanka|philippines?|filipino|indonesia|indonesian|vietnam|vietnamese|thailand|thai|malaysia|malaysian|"
                       r"argentina|argentine|egypt|egyptian|south africa|south african|ghana|zimbabwe|uganda|tanzania|sudan|"
-                      r"myanmar|nepal|peru|peruvian|colombia|colombian)\b", re.I)
+                      r"myanmar|nepal|peru|peruvian|colombia|colombian|"
+                      # v44: "Brazil's central bank signals high bar for rate hikes", "Poland's Maslowska sees growing case ..."
+                      r"brazil|brazilian|poland|polish|turkey|turkish|hungary|hungarian|czech|romania|romanian|chile|chilean)\b", re.I)
+# v44: another country's own stock index is not US market news even when the headline names the US as the reason
+# ("Canadian stock market today: TSX futures drift higher in critical US inflation test")
+FOREIGN_INDEX_RE = re.compile(r"\b(tsx|canadian (stocks?|shares|markets?|stock market)|sensex|nifty|asx ?200|bovespa)\b", re.I)
 GLOBAL_RE = re.compile(r"\bU\.?S\.?\b|(?i:\b(america|american|fed|wall street|trump|washington|oil|crude|opec|global|"
                        r"world|dollar|treasur(y|ies)|tariffs?|sanctions?|nasdaq|s&p|chips?)\b)")
 _LOCAL_MARKET_RE = re.compile(r"\b(stocks?|markets?|shares)\b", re.I)
@@ -107,7 +120,7 @@ _SUBSTANCE_RE = re.compile(r"\d|%|\$|\b(stocks?|shares|markets?|fed|rates?|earni
 def is_unwanted_headline(title: str) -> bool:
     """True for promotional listicles, video/Q&A items, too-short meaningless titles and far-away domestic news."""
     t = (title or "").strip()
-    if not t or PROMO_RE.search(t) or _FORMAT_JUNK_RE.search(t) or EARNINGS_CHATTER_RE.search(t):
+    if not t or PROMO_RE.search(t) or _FORMAT_JUNK_RE.search(t) or EARNINGS_CHATTER_RE.search(t) or FOREIGN_INDEX_RE.search(t):
         return True
     if len(t.split()) < 5 and not _SUBSTANCE_RE.search(t):
         return True

@@ -46,8 +46,17 @@ EN_REWRITES = [
     # v28 (live feed 3.11.2026)
     (r"\binch(?:es|ed|ing)?\s+(?:higher|up)\b", "rise slightly"),            # "MU, SNDK inch higher" -> "אינץ' גבוה יותר"
     (r"\binch(?:es|ed|ing)?\s+(?:lower|down)\b", "fall slightly"),
-    (r"\bfan(?:s|ned|ning)?\s+((?:\w+\s+){0,2}?)(fears|concerns|worries|speculation|hopes)\b",
-     r"increase \1\2"),                                                     # "strikes fan Fed inflation fears" -> "האוהדים"
+    # "strikes fan Fed inflation fears" -> "האוהדים"; v44: "Hot US Inflation Fuels Fed Rate Hike Bets" -> "הימורי דלקים חמים"
+    (r"\b(?:fan(?:s|ned|ning)?|(?<!fossil )(?<!jet )fuel(?:s|l?ed|l?ing)|stok(?:e|es|ed|ing))\s+((?:[\w-]+\s+){0,4}?)"
+     r"(fears|concerns|worries|speculation|hopes|bets|expectations)\b", r"increase \1\2"),
+    # v44 (live feed 10.11.2026)
+    (r"\b(cpi|ppi|pce|inflation|jobs|payrolls|gdp|data)\s+print\b", r"\1 reading"),        # "CPI print" -> "הדפסת מדד"
+    (r"(?<!interest )(?<!interest-)\brate[- ]hike(s?)\b", r"interest rate hike\1"),   # "Rate-Hike Betting" -> "העלאת שיעור"
+    (r"(?<!interest )(?<!interest-)\brate[- ]cut(s?)\b", r"interest rate cut\1"),
+    (r"\bcement(s|ed|ing)?\s+((?:[\w-]+\s+){0,4}?)(bets|expectations|hopes|case|view)\b", r"strengthen\1 \2\3"),   # -> "מלט את הימורי"
+    (r"\b(stocks|shares|futures|equities|markets?|wall street|s&p 500|nasdaq|dow)\s+slide\b", r"\1 fall"),    # -> "גולשות"
+    (r"\b(stocks|shares|futures|equities|markets?|wall street|s&p 500|nasdaq|dow)\s+slides\b", r"\1 falls"),
+    (r"\binflection (year|point)\b", r"turning-point \1"),                 # -> "שנת פיתול"
     # v28d: Wall Street slang for an earnings report — "Ahead of the Print" -> "לפני ההדפסה"
     (r"\b(ahead of|before|after|into|for)\s+(?:the|its|their)\s+(?:earnings\s+)?print\b", r"\1 the earnings report"),
     (r"\b(earnings|q[1-4])\s+print\b", r"\1 report"),
@@ -58,6 +67,15 @@ EN_REWRITES = [
 ]
 
 HE_FIXES = [
+    # v44 (live feed 10.11.2026): "rate" read as a tariff / a proportion, not the interest rate
+    ("העלאת שיעור", "העלאת ריבית"),
+    ("העלאות שיעור", "העלאות ריבית"),
+    ("הורדת שיעור", "הורדת ריבית"),
+    ("העלאת תעריפים", "העלאת ריבית"),
+    ("העלאות תעריפים", "העלאות ריבית"),
+    ("הורדת תעריפים", "הורדת ריבית"),
+    ("הדפסת מדד", "קריאת מדד"),
+    ("שנת פיתול", "שנת מפנה"),
     # v37b: the AI's Hebrew in the daily summary of 5.11.2026
     ("הבחירות האמצעיות", "בחירות אמצע הקדנציה"),
     ("המכירה החריגה", "גל המכירות החריג"),
@@ -145,6 +163,26 @@ def keep_company_names(text: str) -> str:
 # Google sometimes adds vowel points to single words ("לִחיוֹת"). Points and accents only — not the maqaf (U+05BE) or
 # the Hebrew punctuation marks U+05C0 / U+05C3 / U+05C6.
 _NIQQUD = re.compile(r"[֑-ׇֽֿׁׂׅׄ]")
+
+
+# v44: "טראמפ אמר שחידוש המלחמה באיראן הוא "לא סביר ביותר". Oil Prices Fell Below a Key Threshold." — a translator
+# sometimes hands back the second sentence untouched. A run of 4+ English words with ordinary words among them (not a
+# company name) means part of the text was not translated.
+_LATIN_RUN = re.compile(r"[A-Za-z][A-Za-z'’-]*(?:\s+[A-Za-z][A-Za-z'’-]*){3,}")
+_PLAIN_EN = {"the", "a", "an", "of", "to", "in", "on", "at", "as", "is", "are", "was", "were", "for", "and", "or", "but", "with",
+             "by", "from", "after", "before", "below", "above", "over", "under", "into", "amid", "its", "their", "that", "this",
+             "will", "says", "said", "fell", "rose", "falls", "rises", "than", "more", "not", "has", "have", "had", "be"}
+
+
+def half_translated(hebrew: str) -> bool:
+    """True when a Hebrew translation still carries a stretch of plain English (see above). A text with no Hebrew at
+    all is not "half" — the caller already treats that as a failed translation."""
+    if not re.search(r"[א-ת]", hebrew or ""):
+        return False
+    for run in _LATIN_RUN.findall(hebrew):
+        if sum(w.lower() in _PLAIN_EN for w in run.split()) >= 2:
+            return True
+    return False
 
 
 def prep_en(text: str) -> str:
