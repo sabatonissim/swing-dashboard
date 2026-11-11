@@ -60,6 +60,17 @@ EN_REWRITES = [
     # v28d: Wall Street slang for an earnings report — "Ahead of the Print" -> "לפני ההדפסה"
     (r"\b(ahead of|before|after|into|for)\s+(?:the|its|their)\s+(?:earnings\s+)?print\b", r"\1 the earnings report"),
     (r"\b(earnings|q[1-4])\s+print\b", r"\1 report"),
+    # v47 (live feed 11.11.2026): "CoreWeave stock pops 15% after outlook raise eases AI slowdown concerns" came out as
+    # "צונחת ב-15% לאחר שתחזית העלתה את החששות" — the OPPOSITE of the news. With "jumps" Google gets both halves right
+    # (checked against the same endpoint).
+    (r"\bpops\b(?=\s+(?:\d|(?:as|after|on|amid|to)\b))", "jumps"),
+    (r"\bpopped\b(?=\s+(?:\d|(?:as|after|on|amid|to)\b))", "jumped"),
+    (r"\b(stock|stocks|shares|futures|prices?)\s+pop\b", r"\1 jump"),
+    # "Dems Reveal ..." -> "הדגים חושפים"; "Top Senate Dem says" -> "הסנאט העליון אומר"
+    (r"\btop (senate|house) dem(?:ocrat)?\b", r"the senior Democrat in the \1"),
+    (r"\btop (senate|house) republican\b", r"the senior Republican in the \1"),
+    (r"\bdems\b", "Democrats"),
+    (r"\bdem\b(?=\s+(?:says|said|senator|lawmakers?|leader))", "Democrat"),
     # v38c: "Visa slips" -> "תלושי ויזה"
     (r"\bslips\b", "falls slightly"),
     (r"\bslipped\b", "fell slightly"),

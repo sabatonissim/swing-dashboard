@@ -526,6 +526,15 @@ window.addEventListener('load', function(){
   html[lang="he"] .macro-item .macro-time{text-align:right;}
   @media(max-width:600px){ .macro-item .macro-tag{font-size:10px;width:calc(14ch + 12px);padding:4px 5px;} }
   .macro-time{color:var(--text-dim);font-size:11px;margin-top:3px;}
+  /* v47: one line per story; the other outlets' headlines open under it */
+  .macro-more-line{margin-top:4px;font-size:11.5px;}
+  html[lang="he"] .macro-more-line{text-align:right;}
+  .macro-more-btn{background:none;border:0;padding:2px 0;font:inherit;color:var(--sky);cursor:pointer;}
+  .macro-more-btn:hover,.macro-more-btn:focus-visible{text-decoration:underline;}
+  .macro-more{margin-top:6px;padding-top:4px;border-top:1px dashed var(--line);cursor:default;}
+  .macro-more-row{display:block;padding:4px 0;font-size:12.5px;line-height:1.45;color:var(--text);text-decoration:none;}
+  a.macro-more-row:hover,a.macro-more-row:focus-visible{color:var(--amber);}
+  .macro-more-src{color:var(--text-dim);font-size:11px;}
   .macro-hook{font-size:11.5px;color:var(--amber);line-height:1.4;margin-top:4px;opacity:.9;}
   .breaking-card .b-hook{font-size:11px;color:var(--amber);line-height:1.4;margin-top:5px;opacity:.9;}
 
@@ -1879,9 +1888,35 @@ function renderMacro(){
       <div>
         <div class="macro-text">${escH(getNewsText(m))}</div>
         <div class="macro-time">${macroMeta(m)}</div>
+        ${macroMoreBtn(m)}${macroMoreList(m)}
       </div>
     </div>
   `).join("");
+}
+
+// v47: the server folds the same story from several outlets into one line (more_sources). "3 more sources" opens their
+// headlines under it; which ones are open is kept by id, so the 5-minute refresh does not close them.
+const macroMoreOpen = new Set();
+function macroMoreBtn(m){
+  if(!m.more || !m.more.length) return '';
+  const n = m.more.length, open = macroMoreOpen.has(m.id);
+  const label = lang==='en' ? `${n} more source${n>1?'s':''}` : (n===1 ? 'עוד מקור אחד' : `עוד ${n} מקורות`);
+  // on a line of its own: inside the "Reuters · 20 min ago" line the mix of English and Hebrew moved it from side to side
+  return `<div class="macro-more-line"><button type="button" class="macro-more-btn" aria-expanded="${open}" onclick="toggleMacroMore(event, ${Number(m.id)||0})">${label} ${open?'▴':'▾'}</button></div>`;
+}
+function macroMoreList(m){
+  if(!m.more || !m.more.length || !macroMoreOpen.has(m.id)) return '';
+  return `<div class="macro-more" onclick="event.stopPropagation()">` + m.more.map(s => {
+    const url = safeUrl(s.link);
+    const inner = `<span class="macro-more-src">${escH(s.source||'')}</span><br>${escH((lang==='en' ? (s.en||s.he) : (s.he||s.en)) || '')}`;
+    return url ? `<a class="macro-more-row" href="${escH(url)}" target="_blank" rel="noopener noreferrer">${inner}</a>`
+               : `<div class="macro-more-row">${inner}</div>`;
+  }).join('') + `</div>`;
+}
+function toggleMacroMore(ev, id){
+  ev.stopPropagation();
+  if(macroMoreOpen.has(id)) macroMoreOpen.delete(id); else macroMoreOpen.add(id);
+  renderMacro();
 }
 
 // Breaking-news strip: on a computer the strip had no visible way to move sideways. Now it has ‹ › buttons
@@ -7436,6 +7471,8 @@ function sortByCompositeRank(list){
 
 function mapDbRowToMacro(r){
   return {
+    id: r.id,
+    more: (r.more_sources || []).map(s => ({source: s.source_name, he: s.summary_he, en: s.summary_en, link: s.url})),   // v47
     tag: r.category_tag,
     impact: r.impact_level,
     text: lang==='en' ? (r.summary_en||r.summary_he) : (r.summary_he||r.summary_en),

@@ -925,7 +925,10 @@ def test_macro_news_reads_only_rows_not_in_memory(api, monkeypatch):
     """v36: a refresh asks for the ids, and for full rows only of those it does not hold yet. The order stays the database's."""
     import datetime as _dt
     now = _dt.datetime.now(_dt.timezone.utc)
-    full = lambda i: dict(id=i, summary_en=f"A long enough headline about the economy number {i}", summary_he="כותרת", source_name="Reuters",
+    # v47: three different stories (near-identical headlines are now folded into one line)
+    titles = {1: "Fed officials signal patience on interest rates", 2: "Copper miners report record quarterly output",
+              3: "Treasury auction draws weak demand from foreign buyers"}
+    full = lambda i: dict(id=i, summary_en=titles[i], summary_he="כותרת", source_name="Reuters",
                           impact_level="High", category_tag="Macro", timestamp=now - _dt.timedelta(minutes=i))
     get = api.get_macro_news.__wrapped__
     monkeypatch.setattr(api, "_news_rows", {"at": 0.0, "rows": {}})
@@ -1514,6 +1517,99 @@ def test_digest_health_rule():
     assert dh.digest_problems({"overview_en": "The S&P 500 fell 4.4%.", "market": _CRASH_MARKET}) == []
     assert dh.digest_problems({"overview_en": "Technology dominated.", "market": dict(_CRASH_MARKET, move="normal")}) == []
     assert dh.digest_problems({"overview_en": "An older day."}) == []
+
+
+def test_news_of_the_live_feed_of_11_11(api):
+    """v47: the 100 headlines the site held on 11.11.2026 (tests/fixtures/news_2026_11_11.json). What must not be shown,
+    which outlets the geopolitics feed takes, and the same story from several outlets folded into one line."""
+    import json, pathlib
+    import datetime as _dt
+    import news_links as nl
+    import translation_fixes as tf
+    for junk in ("Poland passes bill targeting crypto assets under sanctions",
+                 "Lukashenka calls for dialogue with Poland, criticizes sanctions",
+                 "France threatens sanctions against EPR organisations over low packaging fees",
+                 "Moldova to fully join EU sanctions against Russia and Belarus",
+                 "+102%, +40%: As CoreWeave lifts tech, earnings beats power these AI-picked winners",
+                 "We told you first: these AI-picked small-cap stocks are up +49% and +28% MTD",
+                 "Top 3 Real Estate Stocks That Could Blast Off In Q4",
+                 "New Strong Buy Stocks for November 11th",
+                 "Crude Oil Dec 26 (CL=F) Stock Price, News, Quote & History",
+                 "AM Markets Need to Know: Fed faces inflation test, Anthropic IPO demand surges, and more",
+                 "Lowe's Companies, Inc. to Host Third Quarter 2026 Earnings Conference Call on Nov. 18",
+                 "How Investors May Respond To Ross Stores Stock Ahead Of Earnings Growth Expectations",
+                 "Irish annual CPI inflation rises to 4.3% in October"):
+        assert nl.is_unwanted_headline(junk), junk
+    for real in ("US Congress Urged To Tighten Russia Sanctions, Speed Military Aid",
+                 "U.S. Sanctions Iran's oil tankers as talks stall",
+                 "Oil prices rise amid concerns of shipping disruptions in the Strait of Hormuz",
+                 "CoreWeave stock pops 15% after outlook raise eases AI slowdown concerns",
+                 "German inflation eases to 2.8% in October as expected",
+                 "Goldman adds March rate hike to Fed forecast after another hot inflation read"):
+        assert not nl.is_unwanted_headline(real), real
+
+    for name in ("Reuters", "Bloomberg.com", "WSJ", "AP News", "Yahoo Finance Australia", "The Jerusalem Post", "NPR",
+                 "The New York Times", "Financial Times", "Semafor", "Benzinga"):
+        assert nl.is_trusted_outlet(name), name
+    for name in ("تسنیم", "Belsat", "Palestine Chronicle", "KBOI", "Plastics News", "Anadolu Ajansı", "The Times of India",
+                 "Riviera Radio", "Middle East Eye", "", "Aptitude News"):
+        assert not nl.is_trusted_outlet(name), name
+
+    # the translation that said the opposite: "pops 15%" came out as "צונחת"
+    assert tf.prep_en("CoreWeave stock pops 15% after outlook raise eases AI slowdown concerns").startswith("CoreWeave stock jumps 15%")
+    assert tf.prep_en("Pop star sells her catalog") == "Pop star sells her catalog"
+    assert "senior Democrat in the Senate" in tf.prep_en("Top Senate Dem says 'looking at all options' to end Iran war")
+    assert "Democrats Reveal" in tf.prep_en("Dems Reveal Stunning Iran War Plan To Counter Trump Action")
+
+    assert nl.story_move("Strait of Hormuz Shipping Risks Push Oil Prices Up From Two-Month Lows") == ("oil", "up")
+    assert nl.story_move("Oil Rebounds After Two-Day Drop on U.S.-Iran Conflict Uncertainty") == ("oil", "up")
+    assert nl.story_move("Gold steadies after inflation-driven selloff amid Fed hike bets") is None
+    assert nl.story_move("VLE: Higher oil prices lifted Q3 earnings and cash flow") is None
+
+    rows = json.loads(pathlib.Path(__file__).with_name("fixtures").joinpath("news_2026_11_11.json").read_text(encoding="utf-8-sig"))
+    rows = [r for r in rows if not nl.is_unwanted_headline(r["en"])]
+    titles = [r["en"] for r in rows]
+    groups = nl.story_groups(titles)
+    where = {titles[i]: n for n, g in enumerate(groups) for i in g}
+
+    def together(*parts):
+        found = {where[t] for t in titles if any(p in t for p in parts)}
+        return len(found) == 1
+
+    assert together("Oil prices rise as investors monitor", "Oil Prices Rise as Iran Peace Hopes", "Push Oil Prices Up",
+                    "Oil prices rose after Iran", "Oil Prices Rise More Than 1%", "Oil prices rise amid concerns",
+                    "Oil Rebounds After Two-Day Drop")
+    assert together("Nvidia shares rebound 4%", "Nvidia shares rebound 5%")
+    assert together("Dollar rises toward two-week high", "US dollar nears two-week high")
+    # different stories that share the words of the day
+    assert not together("Trump, Netanyahu clash", "Trump says US won Iran war")
+    assert not together("Gold steadies after", "Falling US Bond Futures")
+    assert not together("Iran warns of domestic gas shortages", "Oil prices rise amid concerns")
+    assert not together("European stocks near record high", "Nvidia shares rebound 4%")
+    assert len(groups) < len(titles) - 8
+    # opposite directions never meet; and far apart in time is another day's story
+    assert len(nl.story_groups(["Oil prices rise as Hormuz shipping risks grow", "Oil prices fall as Hormuz shipping risks ease"])) == 2
+    two = ["Oil prices rise as Hormuz shipping risks grow", "Oil prices rise as Hormuz shipping risks persist"]
+    assert len(nl.story_groups(two, [1.0, 2.0])) == 1 and len(nl.story_groups(two, [1.0, 60.0])) == 2
+
+    # the server: one row per story, the most established outlet leads, one line per other outlet
+    now = _dt.datetime(2026, 11, 11, 12, 0, tzinfo=_dt.timezone.utc)
+
+    def row(i, src, title, mins):
+        return {"id": i, "source_name": src, "summary_en": title, "summary_he": "ע", "category_tag": "אנרגיה",
+                "source_url": f"https://news.google.com/{i}", "article_url": "" if i == 2 else f"https://x.example/{i}",
+                "timestamp": now - _dt.timedelta(minutes=mins)}
+    folded = api._fold_stories([row(1, "KBOI", "Strait of Hormuz Shipping Risks Push Oil Prices Up From Two-Month Lows", 5),
+                                row(2, "Benzinga", "Oil Prices Rise as Iran Peace Hopes Clash With Strait of Hormuz Tensions", 10),
+                                row(3, "CNBC", "Nvidia shares rebound 5% as Huang faces scrutiny ahead of earnings", 20),
+                                row(4, "Reuters", "Oil prices rise amid concerns of shipping disruptions in the Strait of Hormuz", 30),
+                                row(5, "CNBC", "Nvidia shares rebound 4% as Huang faces scrutiny ahead of earnings", 40),
+                                row(6, "KBOI", "Oil prices rise as investors monitor shipping disruption in the Strait of Hormuz", 50)], now)
+    assert [s["id"] for s in folded] == [4, 3]                       # newest story first; Reuters leads the oil story
+    oil, nvda = folded
+    assert [m["source_name"] for m in oil["more_sources"]] == ["KBOI", "Benzinga"] and oil["story_ids"] == [1, 2, 4, 6]
+    assert oil["more_sources"][0]["url"] == "https://x.example/1" and oil["more_sources"][1]["url"] == "https://news.google.com/2"
+    assert nvda["more_sources"] == [] and nvda["story_ids"] == [3, 5]   # the same outlet twice = its newest headline only
 
 
 def test_headline_filters_of_this_round():

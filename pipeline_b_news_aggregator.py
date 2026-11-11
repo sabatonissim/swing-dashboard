@@ -401,6 +401,8 @@ def fetch_raw_headlines() -> List[dict]:
 # api_server.py; see translation_fixes.py for the lists and for why the old placeholder masking was dropped.
 from translation_fixes import prep_en as _prep_en, fix_he as _fix_he, half_translated as _half_translated
 from news_links import is_unwanted_headline, clean_publisher, strip_outlet_suffix   # v28: shared with api_server.py
+from news_links import is_trusted_outlet                                            # v47
+TRUSTED_ONLY_FEEDS = {"Geopolitics & Markets (Google News)"}
 
 
 PROVIDER_SKIP_AFTER = 3
@@ -851,9 +853,15 @@ def run_pipeline_b():
     known = _known_urls([i["link"] for i in raw_items])
     decode_budget, decoded, decode_failed = DECODE_MAX_PER_RUN, 0, 0
 
+    skipped_outlet: dict = {}
     for item in raw_items:
         if item["link"] in known:
             skipped_dupe += 1
+            continue
+        # v47: the war/sanctions/oil search returns anyone who wrote those words — only established outlets are taken from it
+        if item["source"] in TRUSTED_ONLY_FEEDS and not is_trusted_outlet(item.get("publisher", "")):
+            name = item.get("publisher") or "?"
+            skipped_outlet[name] = skipped_outlet.get(name, 0) + 1
             continue
         if not item.get("forced") and is_unwanted_headline(item["title"]):   # v28: promo / video / meaningless / far-away
             skipped_no_match += 1
@@ -896,6 +904,10 @@ def run_pipeline_b():
 
     print(f"Pipeline B complete. {saved} new high-impact items saved, "
           f"{skipped_dupe} duplicates skipped, {skipped_no_match} not market-relevant.")
+    if skipped_outlet:
+        top = sorted(skipped_outlet.items(), key=lambda kv: -kv[1])[:8]
+        print(f"[info] outlets not on the list (geopolitics feed): {sum(skipped_outlet.values())} headline(s) left out — "
+              + ", ".join(f"{n} {c}" for n, c in top))
     print(f"[info] article links: decoded {decoded} Google News links, {decode_failed} failed "
           f"(all failing = Google blocks this runner; the site then keeps the Google link as before).")
     try:

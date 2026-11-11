@@ -69,6 +69,7 @@ import econ_calendar  # US economic calendar
 from translation_fixes import prep_en, fix_he   # shared EN->HE translation fixes (also used by pipeline_b)
 from news_links import is_google_news, decode_google_news_url   # v18d: Google News link -> real article (also pipeline_b)
 from news_links import PROMO_RE, is_unwanted_headline, clean_publisher, strip_outlet_suffix   # v28: headline clean-up
+from news_links import story_groups                                                          # v47: one line per story
 import push_alerts    # v19: push notifications (watchlist signals, price alerts) — also used by the scanner
 import fundamentals as fundlib   # v21: SEC fundamentals build + stored copies (also the nightly warm-up job)
 import scheduler      # starts the GitHub Actions workflows at exact ET times (see scheduler.py): providers -> processing -> uniform events (see econ_calendar.py)
@@ -1710,6 +1711,38 @@ def _feed_clean(rows, seen: set, promo_only: bool = False) -> list:
     return out
 
 
+STORY_MAX_SOURCES = 6
+
+
+def _fold_stories(rows: list, now: Optional[dt] = None) -> list:
+    """v47: rows = tidied macro_news rows, newest first. One row per STORY (news_links.story_groups): the headline of the
+    most established outlet (the newest one among equals), with the other outlets' headlines under "more_sources" — one
+    per outlet. Stories come out newest first, by their newest headline. Nothing is dropped from the database: the
+    key-events strip and the daily summary count how many outlets reported a story."""
+    now = now or dt.now(timezone.utc)
+    hours = [(now - r["timestamp"]).total_seconds() / 3600 for r in rows]
+    out = []
+    for group in story_groups([r.get("summary_en") or "" for r in rows], hours):
+        members = [rows[i] for i in group]
+        lead = min(members, key=lambda r: (_outlet_rank(r.get("source_name")), -r["timestamp"].timestamp()))
+        story = dict(lead)
+        named, more = {(lead.get("source_name") or "").strip().lower()}, []
+        for m in members:
+            name = (m.get("source_name") or "").strip()
+            if m is lead or not name or name.lower() in named:
+                continue
+            named.add(name.lower())
+            more.append({"id": m["id"], "source_name": name, "summary_en": m.get("summary_en"),
+                         "summary_he": m.get("summary_he"), "url": m.get("article_url") or m.get("source_url"),
+                         "timestamp": m["timestamp"]})
+        more.sort(key=lambda m: _outlet_rank(m["source_name"]))
+        story.update(more_sources=more[:STORY_MAX_SOURCES], story_ids=[m["id"] for m in members],
+                     story_ts=max(m["timestamp"] for m in members))
+        out.append(story)
+    out.sort(key=lambda s: s["story_ts"], reverse=True)
+    return out
+
+
 _news_rows = {"at": 0.0, "rows": {}}     # id -> full macro_news row
 
 
@@ -1753,6 +1786,10 @@ def get_macro_news(limit: int = Query(default=25, ge=1, le=100)):
 
         remaining = max(limit - len(critical_rows), 5)
         per_category_cap = max(3, remaining // 5)
+        # v47: the same story from several outlets becomes ONE line (_fold_stories), so three times as many headlines are
+        # looked at to fill the list. Rows are read by id and kept in memory (_news_rows_by_id): what is read from the
+        # database is the headlines that ARRIVED since the last refresh, as before — not the size of this pool.
+        pool = remaining * 3
         # v34: only the last two weeks are ranked — the window function used to go through the whole table on every call
         cur.execute(
             """
@@ -1765,7 +1802,7 @@ def get_macro_news(limit: int = Query(default=25, ge=1, le=100)):
             ORDER BY timestamp DESC
             LIMIT %s
             """,
-            (critical_ids, per_category_cap, remaining + 20),   # +20: room for the rows _feed_clean drops
+            (critical_ids, per_category_cap * 3, pool),
         )
         other_ids = [r["id"] for r in cur.fetchall()]
         critical_rows = _news_rows_by_id(cur, [r["id"] for r in critical_rows])
@@ -1773,17 +1810,30 @@ def get_macro_news(limit: int = Query(default=25, ge=1, le=100)):
 
     seen: set = set()
     critical_rows = _feed_clean([_tidy_news_row(r) for r in critical_rows], seen)
-    other_rows = _feed_clean([_tidy_news_row(r) for r in other_rows], seen)[:remaining]
+    other_rows = _feed_clean([_tidy_news_row(r) for r in other_rows], seen)
+    reserved = {r["id"] for r in critical_rows}
     combined = list(critical_rows) + list(other_rows)
     combined.sort(key=lambda r: r["timestamp"], reverse=True)
-    out = [dict(r) for r in combined]
+    out, per_tag = [], {}
+    for story in _fold_stories(combined):
+        if not reserved.intersection(story["story_ids"]):       # the reserved slice is not counted against its category
+            tag = story.get("category_tag")
+            if per_tag.get(tag, 0) >= per_category_cap:
+                continue
+            per_tag[tag] = per_tag.get(tag, 0) + 1
+        out.append(story)
+        if len(out) >= limit:
+            break
     # v18d: "Critical" on the site = part of a KEY event (see KEY NEWS above), not the old loose keyword label
     try:
         key_ids = {i for e in _recent_key_events() for i in e["ids"]}
         for r in out:
-            r["impact_level"] = "Critical" if r["id"] in key_ids else "High"
+            r["impact_level"] = "Critical" if key_ids.intersection(r["story_ids"]) else "High"
     except Exception as e:
         print(f"[warn] macro-news: key-event labels skipped: {type(e).__name__}: {e}")
+    for r in out:
+        r.pop("story_ids", None)
+        r.pop("story_ts", None)
     return out
 
 
