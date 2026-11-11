@@ -26,6 +26,7 @@ push service reports as gone (404/410) is deleted.
 import json
 import os
 import re
+import time
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -106,39 +107,51 @@ def ensure_tables(cur):
                        CHECK (direction IN ('above', 'below', 'touch'))""")
 
 
+RETRY_PAUSE_SEC = 2            # v46: a temporary failure is tried once more after this pause
+
+
+def _temporary(code) -> bool:
+    """A failure that may pass by itself: no answer at all (network, timeout), "too many requests", or a fault on the
+    push service's side. A 4xx refusal (bad key, message too large) will be refused again, so it is not retried."""
+    return code is None or code == 429 or code >= 500
+
+
 def _send_one(sub: dict, payload: dict) -> str:
-    """'ok' | 'gone' (subscription no longer valid) | 'error'."""
+    """'ok' | 'gone' (subscription no longer valid) | 'retry' (temporary failure, twice in a row) | 'error' (refused)."""
     if not ready() or not endpoint_ok(sub["endpoint"]):
         return "error"
-    try:
-        webpush(
-            subscription_info={"endpoint": sub["endpoint"], "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]}},
-            data=json.dumps(payload, ensure_ascii=False),
-            vapid_private_key=VAPID_PRIVATE_KEY,
-            vapid_claims={"sub": VAPID_SUBJECT},
-            ttl=6 * 3600,
-            timeout=10,
-        )
-        return "ok"
-    except WebPushException as e:  # noqa: PERF203
-        code = getattr(getattr(e, "response", None), "status_code", None)
-        if code in (404, 410):
-            return "gone"
-        print(f"[push] send failed ({code}): {str(e)[:160]}")
-        return "error"
-    except Exception as e:  # noqa: BLE001
-        print(f"[push] send failed: {type(e).__name__}: {str(e)[:160]}")
-        return "error"
+    for attempt in (1, 2):
+        try:
+            webpush(
+                subscription_info={"endpoint": sub["endpoint"], "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]}},
+                data=json.dumps(payload, ensure_ascii=False),
+                vapid_private_key=VAPID_PRIVATE_KEY,
+                vapid_claims={"sub": VAPID_SUBJECT},
+                ttl=6 * 3600,
+                timeout=10,
+            )
+            return "ok"
+        except WebPushException as e:  # noqa: PERF203
+            code = getattr(getattr(e, "response", None), "status_code", None)
+            if code in (404, 410):
+                return "gone"
+            print(f"[push] send failed ({code}), attempt {attempt}: {str(e)[:160]}")
+            if not _temporary(code):
+                return "error"
+        except Exception as e:  # noqa: BLE001
+            print(f"[push] send failed, attempt {attempt}: {type(e).__name__}: {str(e)[:160]}")
+        if attempt == 1:
+            time.sleep(RETRY_PAUSE_SEC)
+    return "retry"
 
 
-def send_to_user(cur, user_id: int, make_payload, only_signals: bool = False, only_macro: bool = False,
-                 only_insider: bool = False, only_morning: bool = False) -> int:
-    """Sends to every device of one user. make_payload(lang) -> {title, body, url, tag}. Returns the number delivered.
-    only_signals / only_macro / only_insider / only_morning = only devices with that switch on. The caller commits."""
+def _send_all(cur, user_id: int, make_payload, only_signals: bool = False, only_macro: bool = False,
+              only_insider: bool = False, only_morning: bool = False) -> tuple:
+    """Sends to every device of one user. Returns (delivered, devices that failed temporarily). The caller commits."""
     cur.execute("""SELECT id, endpoint, p256dh, auth, lang, watch_signals, COALESCE(watch_macro, FALSE),
                           COALESCE(watch_insider, TRUE), COALESCE(watch_morning, FALSE)
                    FROM push_subscriptions WHERE user_id = %s""", (user_id,))
-    sent = 0
+    sent = waiting = 0
     for sid, endpoint, p256dh, auth, lang, watch_signals, watch_macro, watch_insider, watch_morning in cur.fetchall():
         if ((only_signals and not watch_signals) or (only_macro and not watch_macro) or (only_insider and not watch_insider)
                 or (only_morning and not watch_morning)):
@@ -150,15 +163,58 @@ def send_to_user(cur, user_id: int, make_payload, only_signals: bool = False, on
         elif res == "gone":
             cur.execute("DELETE FROM push_subscriptions WHERE id = %s", (sid,))
         else:
+            waiting += res == "retry"
             cur.execute("UPDATE push_subscriptions SET fails = fails + 1 WHERE id = %s", (sid,))
             cur.execute("DELETE FROM push_subscriptions WHERE id = %s AND fails >= 20", (sid,))
-    return sent
+    return sent, waiting
+
+
+def send_to_user(cur, user_id: int, make_payload, only_signals: bool = False, only_macro: bool = False,
+                 only_insider: bool = False, only_morning: bool = False) -> int:
+    """Sends to every device of one user. make_payload(lang) -> {title, body, url, tag}. Returns the number delivered.
+    only_signals / only_macro / only_insider / only_morning = only devices with that switch on. The caller commits."""
+    return _send_all(cur, user_id, make_payload, only_signals, only_macro, only_insider, only_morning)[0]
 
 
 def _first_time(cur, user_id: int, ref: str) -> bool:
-    """True once per (user, ref): the same signal is never pushed twice to the same person."""
+    """True once per (user, ref): the same signal is never pushed twice to the same person. The row is written BEFORE
+    the send on purpose — a second server instance (during a deploy) waits on it instead of sending the same message."""
     cur.execute("INSERT INTO push_log (user_id, ref) VALUES (%s, %s) ON CONFLICT DO NOTHING", (user_id, ref))
     return cur.rowcount == 1
+
+
+# v46 (review 10.11, item A3): the notification was written to push_log before it was sent, so one bad minute at the push
+# service = the message was lost for good. Now: if NO device got it and at least one failed temporarily, the row is taken
+# back, and the next run that brings the same event sends it (macro: every 5 minutes; earnings: every quick refresh;
+# morning brief: until 09:25 ET; signals: the next scan of the day). A refusal (4xx) and "no device with this switch
+# on" stay logged — trying again would change nothing.
+last_unsent = 0                # how many notifications the last notify_* call took back for another try
+
+
+def _send_or_release(cur, user_id: int, ref: str, make_payload, **only) -> int:
+    global last_unsent
+    sent, waiting = _send_all(cur, user_id, make_payload, **only)
+    if not sent and waiting:
+        cur.execute("DELETE FROM push_log WHERE user_id = %s AND ref = %s", (user_id, ref))
+        last_unsent += 1
+        print(f"[push] {ref}: not delivered (temporary failure) — it will be tried again")
+    return sent
+
+
+def _push_once(cur, user_id: int, ref: str, make_payload, **only) -> int:
+    """Once per (user, ref): returns the number of devices that got it (0 = already sent, nobody to send to, or failed)."""
+    if not _first_time(cur, user_id, ref):
+        return 0
+    return _send_or_release(cur, user_id, ref, make_payload, **only)
+
+
+PUSH_LOG_KEEP_DAYS = 200       # the insider sweep goes back 6 months; nothing older can come up again
+
+
+def prune_log(cur) -> int:
+    """push_log was never cleaned (review 10.11, D4). Called once per full scan, on the connection that is open anyway."""
+    cur.execute("DELETE FROM push_log WHERE sent_at < NOW() - make_interval(days => %s)", (PUSH_LOG_KEEP_DAYS,))
+    return cur.rowcount
 
 
 def notify_watchlist_signals(conn, signals: list) -> int:
@@ -169,22 +225,23 @@ def notify_watchlist_signals(conn, signals: list) -> int:
     for tk, he, en in signals:
         by_ticker.setdefault(tk, (he or en or "", en or he or ""))
     day = datetime.now(timezone.utc).date().isoformat()
+    global last_unsent
+    last_unsent = 0
     cur = conn.cursor()
     ensure_tables(cur)
+    prune_log(cur)
     cur.execute("""SELECT DISTINCT w.user_id, w.ticker FROM watchlist w
                    JOIN push_subscriptions p ON p.user_id = w.user_id AND p.watch_signals
                    WHERE w.ticker = ANY(%s)""", (list(by_ticker),))
     pairs = cur.fetchall()
     sent = 0
     for user_id, tk in pairs:
-        if not _first_time(cur, user_id, f"sig:{tk}:{day}"):
-            continue
         he, en = by_ticker[tk]
 
         def payload(lang, tk=tk, he=he, en=en):
             return {"title": f"{tk}: " + ("new scanner signal" if lang == "en" else "סריקה חדשה"),
                     "body": (en if lang == "en" else he)[:200], "url": f"/?ticker={tk}", "tag": f"sig-{tk}"}
-        sent += send_to_user(cur, user_id, payload, only_signals=True)
+        sent += _push_once(cur, user_id, f"sig:{tk}:{day}", payload, only_signals=True)
     conn.commit()
     cur.close()
     print(f"[push] watchlist signals: {len(pairs)} user/ticker match(es), {sent} notification(s) delivered")
@@ -256,6 +313,8 @@ def notify_watchlist_earnings(conn, events: list) -> int:
     Each (user, ticker, report date, kind) is sent once (push_log); only devices with watchlist notifications on."""
     if not ready() or not events:
         return 0
+    global last_unsent
+    last_unsent = 0
     cur = conn.cursor()
     ensure_tables(cur)
     by_ticker = {}
@@ -268,9 +327,8 @@ def notify_watchlist_earnings(conn, events: list) -> int:
     sent = 0
     for user_id, tk in pairs:
         for ev in by_ticker.get(tk, []):
-            if not _first_time(cur, user_id, f"earn-{ev['kind']}:{tk}:{ev['report_date'].isoformat()}"):
-                continue
-            sent += send_to_user(cur, user_id, lambda lang, ev=ev: _earnings_payload(ev, lang), only_signals=True)
+            sent += _push_once(cur, user_id, f"earn-{ev['kind']}:{tk}:{ev['report_date'].isoformat()}",
+                               lambda lang, ev=ev: _earnings_payload(ev, lang), only_signals=True)
     conn.commit()
     cur.close()
     print(f"[push] watchlist earnings: {len(events)} event(s), {len(pairs)} user/ticker match(es), {sent} delivered")
@@ -337,6 +395,8 @@ def notify_watchlist_insider(conn, trades: list) -> int:
     by_ticker = {}
     for t in wanted:
         by_ticker.setdefault(t["ticker"], []).append(t)
+    global last_unsent
+    last_unsent = 0
     cur = conn.cursor()
     ensure_tables(cur)
     cur.execute("""SELECT DISTINCT w.user_id, w.ticker FROM watchlist w
@@ -346,9 +406,8 @@ def notify_watchlist_insider(conn, trades: list) -> int:
     sent = 0
     for user_id, tk in pairs:
         for t in by_ticker.get(tk, []):
-            if not _first_time(cur, user_id, f"ins:{t['accession']}:{t['code']}"):
-                continue
-            sent += send_to_user(cur, user_id, lambda lang, t=t: _insider_payload(t, lang), only_insider=True)
+            sent += _push_once(cur, user_id, f"ins:{t['accession']}:{t['code']}",
+                               lambda lang, t=t: _insider_payload(t, lang), only_insider=True)
     conn.commit()
     cur.close()
     print(f"[push] watchlist insider trades: {len(wanted)} filing(s) to push, {len(pairs)} user/ticker match(es), {sent} delivered")
@@ -378,14 +437,15 @@ def notify_macro_events(conn, slot_utc: datetime, events: list) -> int:
         return {"title": f"נתון כלכלי חשוב בעוד {mins} דקות", "body": f"{t_il} (שעון ישראל): {names_he}"[:200],
                 "url": "/?page=pulse", "tag": "macro"}
 
+    global last_unsent
+    last_unsent = 0
     cur = conn.cursor()
     ensure_tables(cur)
     cur.execute("SELECT DISTINCT user_id FROM push_subscriptions WHERE watch_macro")
     users = [r[0] for r in cur.fetchall()]
     sent = 0
     for user_id in users:
-        if _first_time(cur, user_id, f"macro:{slot_utc.strftime('%Y-%m-%dT%H:%MZ')}"):
-            sent += send_to_user(cur, user_id, payload, only_macro=True)
+        sent += _push_once(cur, user_id, f"macro:{slot_utc.strftime('%Y-%m-%dT%H:%MZ')}", payload, only_macro=True)
     conn.commit()
     cur.close()
     print(f"[push] macro events at {t_et} ET ({names_en}): {len(users)} user(s), {sent} delivered")
@@ -428,6 +488,8 @@ def notify_morning_brief(conn, day, events: list) -> int:
     impact, when (aware datetime)}], high first. Sent by api_server's alert thread before the US open."""
     if not ready():
         return 0
+    global last_unsent
+    last_unsent = 0
     cur = conn.cursor()
     ensure_tables(cur)
     conn.commit()
@@ -458,8 +520,8 @@ def notify_morning_brief(conn, day, events: list) -> int:
             cur.execute(f"""SELECT DISTINCT ticker FROM scanned_stocks
                             WHERE ticker = ANY(%s) AND {last_scan} ORDER BY ticker""", (list(watch),))
             watch_sig = [r[0] for r in cur.fetchall()]
-        sent += send_to_user(cur, user_id, lambda lang, e=earnings, w=watch_sig:
-                             _morning_payload(lang, events, e, len(reports), n_signals, w), only_morning=True)
+        sent += _send_or_release(cur, user_id, f"morning:{day.isoformat()}", lambda lang, e=earnings, w=watch_sig:
+                                 _morning_payload(lang, events, e, len(reports), n_signals, w), only_morning=True)
     conn.commit()
     cur.close()
     print(f"[push] morning brief {day}: {len(users)} user(s), {len(events)} event(s), {len(reports)} report(s), {sent} delivered")
@@ -500,7 +562,7 @@ def check_price_alerts(conn, prices: dict, bars: dict = None) -> int:
     cur = conn.cursor()
     cur.execute("""SELECT id, user_id, ticker, direction, price, created_at FROM price_alerts
                    WHERE triggered_at IS NULL AND ticker = ANY(%s)""", (list(prices),))
-    fired = 0
+    fired = waiting = 0
     for aid, user_id, tk, direction, level, created_at in cur.fetchall():
         p = prices.get(tk)
         if p is None:
@@ -512,10 +574,6 @@ def check_price_alerts(conn, prices: dict, bars: dict = None) -> int:
             hit = (direction == "above" and p >= level) or (direction == "below" and p <= level)
         if not hit:
             continue
-        cur.execute("UPDATE price_alerts SET triggered_at = NOW(), triggered_price = %s WHERE id = %s", (p, aid))
-        fired += 1
-        if not ready():
-            continue
 
         def payload(lang, tk=tk, direction=direction, level=level, p=p):
             if lang == "en":
@@ -525,8 +583,17 @@ def check_price_alerts(conn, prices: dict, bars: dict = None) -> int:
             word = {"above": "עלתה מעל", "below": "ירדה מתחת ל-"}.get(direction, "נגעה ב-")
             return {"title": f"{tk} {word} ${level:,.2f}", "body": f"מחיר אחרון ${p:,.2f} (התראת מחיר שקבעת).",
                     "url": f"/?ticker={tk}", "tag": f"px-{tk}"}
-        send_to_user(cur, user_id, payload)
+        # v46: the alert used to be closed before the send. A temporary failure on every device now leaves it open, and
+        # the next quick refresh (~20 minutes) tries again. Push not configured / no device = closed as before: the
+        # site still shows it as triggered.
+        sent, failed = _send_all(cur, user_id, payload) if ready() else (0, 0)
+        if failed and not sent:
+            waiting += 1
+            continue
+        cur.execute("UPDATE price_alerts SET triggered_at = NOW(), triggered_price = %s WHERE id = %s", (p, aid))
+        fired += 1
     conn.commit()
     cur.close()
-    print(f"[push] price alerts: {fired} triggered out of {len(prices)} watched ticker(s)")
+    print(f"[push] price alerts: {fired} triggered out of {len(prices)} watched ticker(s)"
+          + (f", {waiting} not delivered (temporary failure) — left open for the next run" if waiting else ""))
     return fired

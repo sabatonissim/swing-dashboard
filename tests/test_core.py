@@ -311,6 +311,57 @@ def test_touch_alert_range():
     assert lo <= 95.5 <= hi and not (lo <= 100 <= hi)
 
 
+def test_push_not_lost_on_temporary_failure():
+    """v46: a notification is logged before it is sent (so two servers never send it twice). If no device got it and
+    the failure was temporary, the log row is taken back so the next run sends it; a refusal stays logged."""
+    import push_alerts
+
+    class Cur:
+        def __init__(self):
+            self.sql, self.rowcount = [], 1
+
+        def execute(self, q, params=None):
+            self.sql.append(" ".join(q.split()))
+
+        def fetchall(self):
+            return [(1, "https://fcm.googleapis.com/x", "k", "a", "he", True, True, True, True)]
+
+    def run(result):
+        cur = Cur()
+        push_alerts.last_unsent = 0
+        n = push_alerts._push_once(cur, 7, "sig:KO:2026-11-11", lambda lang: {"title": "t"})
+        return n, any(s.startswith("DELETE FROM push_log") for s in cur.sql), push_alerts.last_unsent
+
+    old = push_alerts._send_one
+    try:
+        push_alerts._send_one = lambda sub, payload: "ok"
+        assert run("ok") == (1, False, 0)
+        push_alerts._send_one = lambda sub, payload: "retry"
+        assert run("retry") == (0, True, 1)
+        push_alerts._send_one = lambda sub, payload: "error"       # refused: trying again would change nothing
+        assert run("error") == (0, False, 0)
+    finally:
+        push_alerts._send_one = old
+
+    # one failed attempt with no answer, then success = delivered, after exactly two attempts
+    calls = []
+
+    def flaky(**kw):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("timed out")
+
+    saved = (push_alerts.webpush, push_alerts.VAPID_PRIVATE_KEY, push_alerts.RETRY_PAUSE_SEC)
+    try:
+        push_alerts.webpush, push_alerts.VAPID_PRIVATE_KEY, push_alerts.RETRY_PAUSE_SEC = flaky, "test-key", 0
+        sub = {"endpoint": "https://fcm.googleapis.com/x", "p256dh": "k", "auth": "a"}
+        assert push_alerts._send_one(sub, {"title": "t"}) == "ok" and len(calls) == 2
+    finally:
+        push_alerts.webpush, push_alerts.VAPID_PRIVATE_KEY, push_alerts.RETRY_PAUSE_SEC = saved
+    assert push_alerts._temporary(None) and push_alerts._temporary(503) and push_alerts._temporary(429)
+    assert not push_alerts._temporary(403) and not push_alerts._temporary(400)
+
+
 def test_press_release_eps(scanner):
     """v33: EPS from the company's release — real sentences of 3.11.2026 and before. Only the adjusted figure of THIS
     quarter counts; a wrong number is worse than a blank."""

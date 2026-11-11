@@ -5449,7 +5449,8 @@ def _morning_brief_check():
         push_alerts.notify_morning_brief(conn, now_et.date(), todays)
     finally:
         conn.close()
-    _morning_brief_done = now_et.date()
+    if not push_alerts.last_unsent:        # v46: a temporary failure for someone = try again in 5 minutes (until 09:25)
+        _morning_brief_done = now_et.date()
 
 
 def _macro_alert_loop():
