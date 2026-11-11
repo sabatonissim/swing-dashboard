@@ -3,16 +3,19 @@ name: AI Digest (manual test)
 # Manual only: Actions -> "AI Digest (manual test)" -> Run workflow, then pick a mode:
 #   probe  = test which AI models really work for your key right now (prints a ready LLM_MODELS value) ~2 min
 #   digest = generate the AI digest now (forced) ~2 min. With a day (2026-11-05): that earlier day is written again
+#   compare = v45 trial: ~30 fresh headlines translated by Google and by the AI, printed side by side ~3 min.
+#             Nothing is saved and the site does not change (no database).
 # Uses the same settings as news-aggregator.yml (LLM_API_KEY secret, optional LLM_BASE_URL / LLM_MODELS variables).
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "probe = which models work for my key | digest = generate the digest now"
+        description: "probe = which models work for my key | digest = generate the digest now | compare = Google vs AI headline translation"
         type: choice
         options:
           - probe
           - digest
+          - compare
         default: probe
       day:
         description: "digest only: an earlier day to write again, as 2026-11-05 (empty = today)"
@@ -48,4 +51,13 @@ jobs:
           LLM_MODELS: ${{ vars.LLM_MODELS }}
           LLM_MODELS_DIGEST: ${{ vars.LLM_MODELS_DIGEST }}
           DIGEST_DAY: ${{ inputs.day }}
-        run: python ai_digest.py --${{ inputs.mode == 'digest' && 'force' || 'probe' }} --day "$DIGEST_DAY"
+          AI_MODE: ${{ inputs.mode }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          if [ "$AI_MODE" = "compare" ]; then
+            python pipeline_b_news_aggregator.py --ai-compare
+          elif [ "$AI_MODE" = "digest" ]; then
+            python ai_digest.py --force --day "$DIGEST_DAY"
+          else
+            python ai_digest.py --probe --day "$DIGEST_DAY"
+          fi
