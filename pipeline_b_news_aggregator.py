@@ -965,6 +965,13 @@ def ai_translation_ok(en: str, he: str) -> Optional[str]:
         return "part left in English"
     if not 0.4 <= len(he) / max(len(en), 1) <= 2.2:
         return "length"
+    # second trial (11.11.2026): "BOJ" and "BOE" both came out as "בנק ישראל", and ordinary words stayed in English
+    # inside the Hebrew ("על רקע boom של תשתיות AI", "מניות ... undervalued", "accelrates")
+    if "בנק ישראל" in he and not re.search(r"\bisrael", en, re.I):
+        return "wrong central bank"
+    left = [w for w in re.findall(r"[A-Za-z]{4,}", he) if w.islower()]
+    if left:
+        return "word left in English: " + ", ".join(left[:3])
     # a decade may be written in full or short: "the 1960s" = "שנות ה-60" (a correct translation was rejected, 11.11.2026)
     decades = set(re.findall(r"\b((?:19|20)\d0)s\b", en))
     either = decades | {d[2:] for d in decades}

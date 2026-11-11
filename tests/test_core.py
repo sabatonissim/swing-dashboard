@@ -1549,6 +1549,15 @@ def test_ai_headline_translation_is_checked_before_it_is_used(monkeypatch):
     assert ok("Jobless claims near the lowest since the 1960s", "תביעות האבטלה קרובות לשפל מאז שנות ה-60") is None
     assert ok("Inflation forecast to stay high into 2030s", "האינפלציה צפויה להישאר גבוהה עד שנות ה-2030") is None
     assert ok("Jobless claims near the lowest since the 1960s", "תביעות האבטלה קרובות לשפל של עשרות שנים").startswith("number missing")
+    # second trial, 11.11.2026
+    assert ok("BOE Should Raise Key Rate to Around 5%, U.K. Economic Think Tank Says",
+              "בנק ישראל צריך להעלות את הריבית המרכזית לכ-5%, אומר מכון מחקר כלכלי בבריטניה") == "wrong central bank"
+    assert ok("Bank of Israel holds rates at 4%", "בנק ישראל מותיר את הריבית על 4%") is None
+    assert ok("Infineon expects an AI infrastructure boom to drive data center revenue higher",
+              "אינפיניון צופה עלייה בהכנסות מרכזי מידע על רקע boom של תשתיות AI").startswith("word left in English: boom")
+    assert ok("Stocks gain as CoreWeave reignites AI trade", "המניות עולות כש-CoreWeave מציתה מחדש את המסחר ב-AI") is None
+    from news_links import is_unwanted_headline
+    assert is_unwanted_headline("Tech Sell-Off: Two AI Stocks That Are Screaming Buys Right Now")
     # numbered lines, because Hebrew abbreviations carry a double quote that broke JSON
     answers = iter(['1. המניות בארה"ב עולות 1% כשהפד מותיר את הריבית\n2. המניות עולות כשהפד מותיר את הריבית\n3) המניות עולות 3% כשהפד מותיר את הריבית'])
     monkeypatch.setattr(llm_provider, "chat", lambda messages, **kw: (kw["validate"](a := next(answers)), (a, "test-model"))[1])

@@ -87,7 +87,8 @@ PROMO_RE = re.compile(r"\b(stocks? to (buy|watch|own|bet on)|to bet on|should yo
                       r"(to )?buy (ahead of|before) (the )?(print|earnings|results|report)|"   # v28d: "To Buy Ahead of the Print or Wait"
                       r"buy or (sell|wait|hold)|"
                       # v44 (live feed 10.11.2026): "As Crude Oil Prices Retreat, Sell Soybean Oil Now" \u2014 advice, not news
-                      r"(buy|sell|short)\s+(?:[\w&'-]+\s+){1,4}now(?!\s+that)|buying opportunity)\b"
+                      r"(buy|sell|short)\s+(?:[\w&'-]+\s+){1,4}now(?!\s+that)|buying opportunity|"
+                      r"screaming buys?)\b"       # "Tech Sell-Off: Two AI Stocks That Are Screaming Buys Right Now" (11.11.2026)
                       r"|^\s*\d+\s+[\w\s&'-]{0,40}\bstocks?\b", re.I)
 # v44: a newsletter's table of contents as a headline ("Hot inflation report puts Fed on track ...; The best banks to
 # work for in 2026\u2014and more in Bankers' Hours")
