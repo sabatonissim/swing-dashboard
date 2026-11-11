@@ -905,7 +905,133 @@ def run_pipeline_b():
         print(f"[ai_digest] skipped (non-fatal): {type(e).__name__}: {e}")
 
 
+# ------------------------------------------------------------------
+# v45 — a TRIAL, not part of the news run: would the AI translate headlines better than the free Google endpoints?
+# `python pipeline_b_news_aggregator.py --ai-compare` (workflow "AI Digest (manual test)", mode "compare") takes ~30
+# fresh headlines from the feeds, translates each both ways and prints them side by side. It reads and writes nothing
+# in the database and changes nothing on the site. The owner decides from the log whether it is worth connecting.
+#
+# An AI translation is used only if it passes ai_translation_ok — a model may drop a number, add a sentence or answer
+# in English; such a headline keeps the Google translation.
+# ------------------------------------------------------------------
+AI_TRANSLATE_BATCH = 15
+_AI_TRANSLATE_SYSTEM = (
+    "You translate US financial news headlines into Hebrew for an Israeli financial news site.\n"
+    "Rules:\n"
+    "1. Natural, professional Hebrew, the way an Israeli financial newspaper writes a headline. Translate the meaning, "
+    "not word by word.\n"
+    "2. Add nothing and leave nothing out. No opinions, no advice, no explanations.\n"
+    "3. Keep every number, percentage and price exactly as in the source.\n"
+    "4. Keep company names, stock tickers and product names in English letters, exactly as written.\n"
+    "5. Fixed terms: Fed = הפד; rate hike = העלאת ריבית; rate cut = הורדת ריבית; Treasury yields = תשואות האג\"ח; "
+    "futures = החוזים העתידיים; earnings = הדוחות / הרווחים; guidance = תחזית; Wall Street = וול סטריט; "
+    "CPI = מדד המחירים לצרכן; jobs report = דוח התעסוקה; sell-off = גל מכירות; rally = ראלי; "
+    "oversold = מכירת יתר; short squeeze = לחיצת שורטים.\n"
+    "6. Answer with a JSON array of strings only: one Hebrew headline for each input headline, in the same order. "
+    "No other text."
+)
+_NUM_RE = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _numbers_of(text: str) -> set:
+    # "Q3" / "FY2027" name a period, which Hebrew may spell out ("הרבעון השלישי"); thousands separators are dropped
+    text = re.sub(r"\b(?:Q[1-4]|FY)\s?(?=\d|\b)", " ", text or "", flags=re.I)
+    text = re.sub(r"\bQ[1-4]\b", " ", text, flags=re.I)
+    return set(_NUM_RE.findall(text.replace(",", "")))
+
+
+def ai_translation_ok(en: str, he: str) -> Optional[str]:
+    """None when the Hebrew can be used; otherwise the reason it is rejected."""
+    he = (he or "").strip()
+    if not re.search(r"[א-ת]", he):
+        return "no Hebrew"
+    if _half_translated(he):
+        return "part left in English"
+    if not 0.4 <= len(he) / max(len(en), 1) <= 2.2:
+        return "length"
+    missing = _numbers_of(en) - _numbers_of(he)
+    if missing:
+        return "number missing: " + ", ".join(sorted(missing))
+    extra = _numbers_of(he) - _numbers_of(en)
+    if extra:
+        return "number added: " + ", ".join(sorted(extra))
+    return None
+
+
+def ai_translate_headlines(titles: List[str]) -> List[Optional[str]]:
+    """Hebrew for each headline, or None where the model's answer was unusable (the caller keeps Google's)."""
+    import json as _json
+    import llm_provider
+    out: List[Optional[str]] = []
+    for i in range(0, len(titles), AI_TRANSLATE_BATCH):
+        batch = titles[i:i + AI_TRANSLATE_BATCH]
+
+        def parse(text, n=len(batch)):
+            m = re.search(r"\[.*\]", text, re.DOTALL)
+            arr = _json.loads(m.group(0)) if m else None
+            if not (isinstance(arr, list) and len(arr) == n and all(isinstance(x, str) for x in arr)):
+                raise ValueError(f"expected a JSON array of {n} strings")
+            return arr
+
+        def validate(text):
+            try:
+                parse(text)
+            except _json.JSONDecodeError as e:
+                raise ValueError(f"not JSON: {e}")
+
+        try:
+            text, model = llm_provider.chat(
+                [{"role": "system", "content": _AI_TRANSLATE_SYSTEM},
+                 {"role": "user", "content": _json.dumps(batch, ensure_ascii=False)}],
+                max_tokens=2500, temperature=0.1, validate=validate)
+            answers = parse(text)
+            print(f"[ai-translate] {len(batch)} headlines by {model}")
+        except Exception as e:  # noqa: BLE001 — no key, all models failed, a broken answer: these headlines stay with Google
+            print(f"[ai-translate] batch failed: {type(e).__name__}: {str(e)[:160]}")
+            out.extend([None] * len(batch))
+            continue
+        for en, he in zip(batch, answers):
+            he = _fix_he(he)
+            why = ai_translation_ok(en, he)
+            if why:
+                print(f"[ai-translate] rejected ({why}): {en[:90]!r} -> {he[:90]!r}")
+            out.append(None if why else he)
+    return out
+
+
+def ai_compare(n: int = 30):
+    import time
+    seen, titles = set(), []
+    for item in fetch_raw_headlines():
+        t = item["title"]
+        if t.lower() in seen or is_unwanted_headline(t) or not (item.get("forced") or classify_headline(t, item.get("summary", ""))):
+            continue
+        seen.add(t.lower())
+        titles.append(t)
+    step = max(1, len(titles) // n)                  # spread over all the feeds, not the first feed's 30
+    titles = titles[::step][:n]
+    print(f"AI translation trial: {len(titles)} headlines. Nothing is saved.")
+    t0 = time.time()
+    google = [translate_to_hebrew(t) for t in titles]
+    t_google = time.time() - t0
+    t0 = time.time()
+    ai = ai_translate_headlines(titles)
+    t_ai = time.time() - t0
+    print("=" * 70)
+    for k, (en, g, a) in enumerate(zip(titles, google, ai), 1):
+        print(f"{k:>2}. EN     : {en}")
+        print(f"    Google : {g}")
+        print(f"    AI     : {a if a else '(rejected or failed - the Google line would be shown)'}")
+        print("-" * 70)
+    used = sum(1 for a in ai if a)
+    print(f"Summary: AI translations usable: {used} of {len(titles)}; time: Google {t_google:.0f}s, AI {t_ai:.0f}s.")
+
+
 if __name__ == "__main__":
+    import sys
+    if "--ai-compare" in sys.argv:        # v45: the trial above — no database
+        ai_compare()
+        sys.exit(0)
     import db_meter                       # v38: what this run reads from the database (data_health.py reports it)
     db_meter.install()
     run_pipeline_b()

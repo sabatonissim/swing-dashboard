@@ -316,6 +316,8 @@ window.addEventListener('load', function(){
   html[lang="he"] #page-home .breaking-bar-title, html[lang="he"] #page-home .movers-head-row,
   html[lang="he"] #page-home .market-charts-title-row{direction:rtl;}
   html[lang="he"] .today-more{margin-left:0;margin-right:auto;}
+  /* v44b (owner's screenshot): the second line of the overview hugged the left edge, far from its heading */
+  html[lang="he"] .today-text, html[lang="he"] .today-intro{direction:rtl;text-align:right;margin-left:auto;}
   @media(min-width:901px){
     html[lang="he"] .home-grid{grid-template-columns:minmax(0,2fr) minmax(0,3fr);}
     html[lang="he"] .home-main{grid-column:2;grid-row:1;border-right:0;border-left:1px solid var(--line);}
@@ -1518,6 +1520,7 @@ let collapsedStockGroups = { recent: false, previous: false };
 let scanShowAll = false;          // phone: the full list only after "show all"
 const SCAN_PHONE_ROWS = 8;
 const SCAN_DESKTOP_ROWS = 12;
+let scanBoxMinH = 0;              // height of the short list when "show all" was pressed
 
 function toggleStockGroup(key){
   collapsedStockGroups[key] = !collapsedStockGroups[key];
@@ -1667,10 +1670,16 @@ function renderStocks(){
   const phoneCut = !scanShowAll && (recent.length + previous.length) > SCAN_ROWS;
 
   // v43b (owner): the whole list opens inside a box with its own scrolling; "show fewer" on top closes it
-  const boxed = scanShowAll && (recent.length + previous.length) > SCAN_ROWS;
+  const total = recent.length + previous.length;
+  const boxed = scanShowAll && total > SCAN_ROWS;
   const keepScroll = boxed && el.classList.contains('scan-box') ? el.scrollTop : 0;
   el.classList.toggle('scan-box', boxed);
-  let html = boxed ? `<button class="scan-more-btn" onclick="scanShowAll=false;renderStocks();document.getElementById('stocks').scrollIntoView({block:'nearest'});">${lang==='en' ? `Show only the first ${SCAN_ROWS}` : `הצג רק את ${SCAN_ROWS} הראשונות`}</button>` : "";
+  // v44b (owner: "the box gets shorter when I open the rest"): the box is never shorter than the short list was
+  el.style.maxHeight = boxed && scanBoxMinH ? Math.max(scanBoxMinH, 480) + 'px' : '';
+  // the same button in the same place opens and closes the list (v44b: on top, where it is seen at once)
+  const showAllBtn = `<button class="scan-more-btn" onclick="scanBoxMinH=document.getElementById('stocks').offsetHeight;scanShowAll=true;renderStocks();">${lang==='en' ? `Show all ${total} signals` : `הצג את כל ${total} הסריקות`}</button>`;
+  let html = boxed ? `<button class="scan-more-btn" onclick="scanShowAll=false;renderStocks();document.getElementById('stocks').scrollIntoView({block:'nearest'});">${lang==='en' ? `Show only the first ${SCAN_ROWS}` : `הצג רק את ${SCAN_ROWS} הראשונות`}</button>`
+           : phoneCut ? showAllBtn : "";
   if(recent.length){
     const collapsed = collapsedStockGroups.recent;
     html += `<div class="stock-group-title first" onclick="toggleStockGroup('recent')">
@@ -1680,8 +1689,7 @@ function renderStocks(){
     if(!collapsed) html += (phoneCut ? recent.slice(0, SCAN_ROWS) : recent).map(i=>stockRowHtml(stocks[i],i)).join("");
   }
   if(phoneCut){
-    const n = recent.length + previous.length;
-    html += `<button class="scan-more-btn" onclick="scanShowAll=true;renderStocks();">${lang==='en' ? `Show all ${n} signals` : `הצג את כל ${n} הסריקות`}</button>`;
+    html += showAllBtn;
   } else if(previous.length){
     const collapsed = collapsedStockGroups.previous;
     html += `<div class="stock-group-title previous" onclick="toggleStockGroup('previous')">

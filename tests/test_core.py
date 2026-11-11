@@ -1531,6 +1531,32 @@ def test_news_quality_of_the_live_feed_of_10_11():
     assert not tf.half_translated("Stocks fell as the Fed held rates")          # no Hebrew at all: a failed translation, handled elsewhere
 
 
+def test_ai_headline_translation_is_checked_before_it_is_used(monkeypatch):
+    """v45 (trial): an AI translation that drops or adds a number, leaves English in, or is not Hebrew is not used."""
+    import pipeline_b_news_aggregator as pb
+    ok = pb.ai_translation_ok
+    en = "Sea Limited Shares Fall Nearly 9% After Q3 Earnings Miss Despite 43% Revenue Growth"
+    assert ok(en, "מניית Sea Limited יורדת בכמעט 9% אחרי דוחות הרבעון השלישי, למרות צמיחה של 43% בהכנסות") is None
+    assert ok(en, "מניית Sea Limited יורדת אחרי דוחות הרבעון השלישי, למרות צמיחה של 43% בהכנסות").startswith("number missing: 9")
+    assert ok(en, "מניית Sea Limited יורדת בכמעט 9% ב-2026 אחרי הדוחות, למרות צמיחה של 43% בהכנסות").startswith("number added: 2026")
+    assert ok(en, "Sea Limited shares fall nearly 9% despite 43% growth") == "no Hebrew"
+    assert ok(en, "מניית Sea Limited יורדת 9% after the earnings miss despite 43% growth") == "part left in English"
+    assert ok(en, "ירידה 9% 43%") == "length"
+    assert ok("Bitcoin Falls Below $74,000", "הביטקוין יורד מתחת ל-74000 דולר") is None
+
+    import llm_provider
+    titles = [f"Stocks rise {i}% as the Fed holds rates" for i in range(1, 4)]
+    answers = iter(['["המניות עולות 1% כשהפד מותיר את הריבית", "המניות עולות כשהפד מותיר את הריבית", "המניות עולות 3% כשהפד מותיר את הריבית"]'])
+    monkeypatch.setattr(llm_provider, "chat", lambda messages, **kw: (kw["validate"](a := next(answers)), (a, "test-model"))[1])
+    got = pb.ai_translate_headlines(titles)
+    assert got[0] and got[2] and got[1] is None            # the second lost its number
+
+    def broken(messages, **kw):
+        raise RuntimeError("all models failed")
+    monkeypatch.setattr(llm_provider, "chat", broken)
+    assert pb.ai_translate_headlines(titles) == [None, None, None]
+
+
 def test_key_events_of_this_round(api):
     of = api._key_event_of
     assert of("Stray Drones Spawn a Growing Area of the Insurance Market") is None
