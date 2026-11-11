@@ -403,6 +403,10 @@ from translation_fixes import prep_en as _prep_en, fix_he as _fix_he, half_trans
 from news_links import is_unwanted_headline, clean_publisher, strip_outlet_suffix   # v28: shared with api_server.py
 
 
+PROVIDER_SKIP_AFTER = 3
+_provider_fails: dict = {}        # provider name -> texts in a row it failed (this run)
+
+
 def translate_to_hebrew(text: str) -> str:
     """Translate to Hebrew — free, no API key, with two independent
     providers tried in order and clear logging of exactly what failed.
@@ -480,6 +484,11 @@ def translate_to_hebrew(text: str) -> str:
     half = None      # v44: an answer with part of the text still in English — kept only if no provider does better
     for provider_name, provider_fn in (("Google gtx", _try_google_gtx), ("Google dict", _try_google_dict),
                                        ("MyMemory", _try_mymemory)):
+        # v45b (the trial's log, 11.11.2026): Google gtx answered HTTP 429 to every one of 30 headlines — two attempts
+        # and a pause each time, ~3 seconds a text for nothing, while the run keeps the database awake. A provider
+        # that failed PROVIDER_SKIP_AFTER texts in a row is left out for the rest of the run.
+        if _provider_fails.get(provider_name, 0) >= PROVIDER_SKIP_AFTER:
+            continue
         for attempt in (1, 2):
             try:
                 result = provider_fn()
@@ -488,6 +497,7 @@ def translate_to_hebrew(text: str) -> str:
                     print(f"[warn] translation ({provider_name}): part of the text came back in English, trying the next provider")
                     break
                 if result:
+                    _provider_fails[provider_name] = 0
                     return _restore(result)
                 print(f"[warn] translation ({provider_name}) attempt {attempt}: empty result")
             except urllib.error.HTTPError as e:
@@ -497,7 +507,10 @@ def translate_to_hebrew(text: str) -> str:
             if attempt == 1:
                 time.sleep(random.uniform(1.5, 3.0))  # brief backoff before the same provider's 2nd try
         else:
-            print(f"[warn] translation: {provider_name} failed twice, trying next provider")
+            _provider_fails[provider_name] = _provider_fails.get(provider_name, 0) + 1
+            left_out = _provider_fails[provider_name] >= PROVIDER_SKIP_AFTER
+            print(f"[warn] translation: {provider_name} failed twice, trying next provider"
+                  + (f" — {provider_name} is left out for the rest of this run" if left_out else ""))
 
     if half:
         return _restore(half)
@@ -927,9 +940,12 @@ _AI_TRANSLATE_SYSTEM = (
     "futures = החוזים העתידיים; earnings = הדוחות / הרווחים; guidance = תחזית; Wall Street = וול סטריט; "
     "CPI = מדד המחירים לצרכן; jobs report = דוח התעסוקה; sell-off = גל מכירות; rally = ראלי; "
     "oversold = מכירת יתר; short squeeze = לחיצת שורטים.\n"
-    "6. Answer with a JSON array of strings only: one Hebrew headline for each input headline, in the same order. "
-    "No other text."
+    # numbered lines, not JSON: Hebrew abbreviations carry a double quote (ארה"ב, אג"ח) and broke the JSON of the
+    # first model on both batches of the first trial (11.11.2026)
+    "6. The headlines are numbered. Answer with the same numbers, one line each: `1. <Hebrew headline>`. "
+    "One line for every headline, in the same order, and no other text."
 )
+_AI_LINE_RE = re.compile(r"^\s*(\d+)\s*[.)]\s*(.+?)\s*$", re.M)
 _NUM_RE = re.compile(r"\d+(?:\.\d+)?")
 
 
@@ -949,53 +965,65 @@ def ai_translation_ok(en: str, he: str) -> Optional[str]:
         return "part left in English"
     if not 0.4 <= len(he) / max(len(en), 1) <= 2.2:
         return "length"
-    missing = _numbers_of(en) - _numbers_of(he)
-    if missing:
-        return "number missing: " + ", ".join(sorted(missing))
-    extra = _numbers_of(he) - _numbers_of(en)
+    # a decade may be written in full or short: "the 1960s" = "שנות ה-60" (a correct translation was rejected, 11.11.2026)
+    decades = set(re.findall(r"\b((?:19|20)\d0)s\b", en))
+    either = decades | {d[2:] for d in decades}
+    missing = _numbers_of(en) - _numbers_of(he) - decades
+    if missing or any(d not in _numbers_of(he) and d[2:] not in _numbers_of(he) for d in decades):
+        return "number missing: " + ", ".join(sorted(missing or decades))
+    extra = _numbers_of(he) - _numbers_of(en) - either
     if extra:
         return "number added: " + ", ".join(sorted(extra))
     return None
 
 
-def ai_translate_headlines(titles: List[str]) -> List[Optional[str]]:
-    """Hebrew for each headline, or None where the model's answer was unusable (the caller keeps Google's)."""
-    import json as _json
+def ai_translate_headlines(titles: List[str], models: Optional[str] = None) -> List[Optional[str]]:
+    """Hebrew for each headline, or None where the model's answer was unusable (the caller keeps Google's).
+    models = a model list to use instead of LLM_MODELS (the trial compares the small models with the digest's)."""
     import llm_provider
     out: List[Optional[str]] = []
-    for i in range(0, len(titles), AI_TRANSLATE_BATCH):
-        batch = titles[i:i + AI_TRANSLATE_BATCH]
+    saved = os.environ.get("LLM_MODELS")
+    if models:
+        os.environ["LLM_MODELS"] = models
+    try:
+        for i in range(0, len(titles), AI_TRANSLATE_BATCH):
+            batch = titles[i:i + AI_TRANSLATE_BATCH]
 
-        def parse(text, n=len(batch)):
-            m = re.search(r"\[.*\]", text, re.DOTALL)
-            arr = _json.loads(m.group(0)) if m else None
-            if not (isinstance(arr, list) and len(arr) == n and all(isinstance(x, str) for x in arr)):
-                raise ValueError(f"expected a JSON array of {n} strings")
-            return arr
+            def parse(text, n=len(batch)):
+                got = {int(k): v for k, v in _AI_LINE_RE.findall(text)}
+                if set(got) != set(range(1, n + 1)):
+                    raise ValueError(f"expected lines 1..{n}, got {sorted(got)[:20]}")
+                return [got[k] for k in range(1, n + 1)]
 
-        def validate(text):
             try:
-                parse(text)
-            except _json.JSONDecodeError as e:
-                raise ValueError(f"not JSON: {e}")
+                text, model = llm_provider.chat(
+                    [{"role": "system", "content": _AI_TRANSLATE_SYSTEM},
+                     {"role": "user", "content": "\n".join(f"{k}. {t}" for k, t in enumerate(batch, 1))}],
+                    max_tokens=2500, temperature=0.1, validate=parse)
+                answers = parse(text)
+                print(f"[ai-translate] {len(batch)} headlines by {model}")
+            except Exception as e:  # noqa: BLE001 — no key, all models failed, a broken answer: these headlines stay with Google
+                print(f"[ai-translate] batch failed: {type(e).__name__}: {str(e)[:160]}")
+                out.extend([None] * len(batch))
+                continue
+            out.extend(_checked(batch, answers))
+    finally:
+        if models:
+            if saved is None:
+                os.environ.pop("LLM_MODELS", None)
+            else:
+                os.environ["LLM_MODELS"] = saved
+    return out
 
-        try:
-            text, model = llm_provider.chat(
-                [{"role": "system", "content": _AI_TRANSLATE_SYSTEM},
-                 {"role": "user", "content": _json.dumps(batch, ensure_ascii=False)}],
-                max_tokens=2500, temperature=0.1, validate=validate)
-            answers = parse(text)
-            print(f"[ai-translate] {len(batch)} headlines by {model}")
-        except Exception as e:  # noqa: BLE001 — no key, all models failed, a broken answer: these headlines stay with Google
-            print(f"[ai-translate] batch failed: {type(e).__name__}: {str(e)[:160]}")
-            out.extend([None] * len(batch))
-            continue
-        for en, he in zip(batch, answers):
-            he = _fix_he(he)
-            why = ai_translation_ok(en, he)
-            if why:
-                print(f"[ai-translate] rejected ({why}): {en[:90]!r} -> {he[:90]!r}")
-            out.append(None if why else he)
+
+def _checked(batch, answers):
+    out = []
+    for en, he in zip(batch, answers):
+        he = _fix_he(he)
+        why = ai_translation_ok(en, he)
+        if why:
+            print(f"[ai-translate] rejected ({why}): {en[:90]!r} -> {he[:90]!r}")
+        out.append(None if why else he)
     return out
 
 
@@ -1014,17 +1042,26 @@ def ai_compare(n: int = 30):
     t0 = time.time()
     google = [translate_to_hebrew(t) for t in titles]
     t_google = time.time() - t0
-    t0 = time.time()
-    ai = ai_translate_headlines(titles)
-    t_ai = time.time() - t0
+    # v45b: the first trial was answered by a small fallback model whose Hebrew had spelling mistakes ("סכסוח",
+    # "התיישלו"). The daily summary is written by a larger model (LLM_MODELS_DIGEST) — both are shown.
+    runs = [("AI small", None)]
+    large = (os.environ.get("LLM_MODELS_DIGEST") or "").strip()
+    if large and large != (os.environ.get("LLM_MODELS") or "").strip():
+        runs.append(("AI large", large))
+    results = []
+    for label, models in runs:
+        t0 = time.time()
+        print(f"--- {label}: {models or os.environ.get('LLM_MODELS') or 'default models'}")
+        results.append((label, ai_translate_headlines(titles, models), time.time() - t0))
     print("=" * 70)
-    for k, (en, g, a) in enumerate(zip(titles, google, ai), 1):
-        print(f"{k:>2}. EN     : {en}")
-        print(f"    Google : {g}")
-        print(f"    AI     : {a if a else '(rejected or failed - the Google line would be shown)'}")
+    for k, (en, g) in enumerate(zip(titles, google), 1):
+        print(f"{k:>2}. EN       : {en}")
+        print(f"    Google   : {g}")
+        for label, ai, _ in results:
+            print(f"    {label:<9}: {ai[k - 1] if ai[k - 1] else '(rejected or failed - the Google line would be shown)'}")
         print("-" * 70)
-    used = sum(1 for a in ai if a)
-    print(f"Summary: AI translations usable: {used} of {len(titles)}; time: Google {t_google:.0f}s, AI {t_ai:.0f}s.")
+    print(f"Summary: {len(titles)} headlines; Google {t_google:.0f}s; "
+          + "; ".join(f"{label}: {sum(1 for a in ai if a)} usable, {secs:.0f}s" for label, ai, secs in results) + ".")
 
 
 if __name__ == "__main__":

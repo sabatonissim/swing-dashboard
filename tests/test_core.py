@@ -1546,10 +1546,42 @@ def test_ai_headline_translation_is_checked_before_it_is_used(monkeypatch):
 
     import llm_provider
     titles = [f"Stocks rise {i}% as the Fed holds rates" for i in range(1, 4)]
-    answers = iter(['["המניות עולות 1% כשהפד מותיר את הריבית", "המניות עולות כשהפד מותיר את הריבית", "המניות עולות 3% כשהפד מותיר את הריבית"]'])
+    assert ok("Jobless claims near the lowest since the 1960s", "תביעות האבטלה קרובות לשפל מאז שנות ה-60") is None
+    assert ok("Inflation forecast to stay high into 2030s", "האינפלציה צפויה להישאר גבוהה עד שנות ה-2030") is None
+    assert ok("Jobless claims near the lowest since the 1960s", "תביעות האבטלה קרובות לשפל של עשרות שנים").startswith("number missing")
+    # numbered lines, because Hebrew abbreviations carry a double quote that broke JSON
+    answers = iter(['1. המניות בארה"ב עולות 1% כשהפד מותיר את הריבית\n2. המניות עולות כשהפד מותיר את הריבית\n3) המניות עולות 3% כשהפד מותיר את הריבית'])
     monkeypatch.setattr(llm_provider, "chat", lambda messages, **kw: (kw["validate"](a := next(answers)), (a, "test-model"))[1])
     got = pb.ai_translate_headlines(titles)
     assert got[0] and got[2] and got[1] is None            # the second lost its number
+    monkeypatch.setattr(llm_provider, "chat", lambda messages, **kw: (kw["validate"]("1. רק שורה אחת"), ("x", "m"))[1])
+    assert pb.ai_translate_headlines(titles) == [None, None, None]        # a line is missing: the whole batch stays with Google
+    monkeypatch.setenv("LLM_MODELS", "small-model")
+    seen = []
+    monkeypatch.setattr(llm_provider, "chat", lambda messages, **kw: (seen.append(os.environ["LLM_MODELS"]), ("1. א\n2. ב\n3. ג", "m"))[1])
+    pb.ai_translate_headlines(titles, "large-model")
+    assert seen == ["large-model"] and os.environ["LLM_MODELS"] == "small-model"
+
+    # v45b: a provider that keeps refusing is left out for the rest of the run
+    pb._provider_fails.clear()
+    pb._provider_fails["Google gtx"] = pb.PROVIDER_SKIP_AFTER
+    import urllib.request
+    asked = []
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b'["\xd7\xa9\xd7\x9c\xd7\x95\xd7\x9d"]'
+
+    def fake_open(req, timeout=0):
+        asked.append(req.full_url)
+        return _Resp()
+    monkeypatch.setattr(urllib.request, "urlopen", fake_open)
+    import time as _time
+    monkeypatch.setattr(_time, "sleep", lambda s: None)
+    assert pb.translate_to_hebrew("Hello") == "שלום"
+    assert len(asked) == 1 and "clients5" in asked[0]
+    pb._provider_fails.clear()
 
     def broken(messages, **kw):
         raise RuntimeError("all models failed")
