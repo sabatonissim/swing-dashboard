@@ -101,7 +101,8 @@ while ($l.IsListening -and ((Get-Date) - $started).TotalMinutes -lt 60) {
             $c.Response.Close()
             continue
         }
-        elseif ($path -eq '/' -or $path -eq '/index.html' -or $path.StartsWith('/stock/') -or $path -eq '/he' -or $path.StartsWith('/he/stock/')) {
+        elseif ($path -eq '/' -or $path -eq '/index.html' -or $path.StartsWith('/stock/') -or $path -eq '/he' -or $path.StartsWith('/he/stock/') -or
+                $path -match '^(/he)?/(stock|portfolio|market(/(stocks|calendar|events))?|performance(/stats)?)$') {   # v49: every screen's address
             $html = [IO.File]::ReadAllText((Join-Path $Project 'index.html'), [Text.Encoding]::UTF8).Replace('https://swing-dashboard-3btx.onrender.com', "http://localhost:$Port/proxy")
             $bytes = [Text.Encoding]::UTF8.GetBytes($html)
             $c.Response.Headers.Add('Content-Security-Policy', $csp)

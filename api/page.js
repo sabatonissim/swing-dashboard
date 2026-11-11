@@ -186,10 +186,43 @@ async function indexHtml() {
   return indexCache;
 }
 
-function appPage(index, lang, head, block) {
+// v49: the app's other screens have addresses too (/market, /market/calendar, /performance, /portfolio, /stock), so the
+// Back button, a refresh and a shared link work. Each is the app itself with that screen showing and its own title.
+// The titles are twins of PAGE_TITLES in index.html (the app sets the same title when the screen is opened by a click).
+// Listed in search engines: the market and performance screens. Their tabs, the personal portfolio and the empty analysis
+// page are not (the same page again, or nothing to read).
+const APP_VIEWS = {
+  market: {
+    page: 'pulse', subs: ['stocks', 'calendar', 'events'], listed: true,
+    en: { title: 'US Market Today: Heatmap, Market Breadth & Economic Calendar | Swing Desk', description: 'The US stock market at a glance: a heatmap of the S&P 500 and the Nasdaq 100, market breadth, leading stocks, earnings and dividend dates and the economic calendar. Information only, not investment advice.' },
+    he: { title: 'השוק האמריקאי היום: מפת חום, רוחב שוק ולוח כלכלי | Swing Desk', description: 'השוק האמריקאי במבט אחד: מפת חום של S&P 500 ונאסד"ק 100, רוחב השוק, מניות מובילות, מועדי דוחות ודיבידנדים ולוח האירועים הכלכליים. מידע בלבד, לא ייעוץ השקעות.' },
+  },
+  performance: {
+    page: 'backtest', subs: ['stats'], listed: true,
+    en: { title: 'Scanner Results: Demo Portfolio & Pattern Statistics | Swing Desk', description: 'How the past scans of the Swing Desk scanner turned out: a demo portfolio run by fixed rules, and statistics for each chart pattern. Past results do not predict future results. Information only, not investment advice.' },
+    he: { title: 'תוצאות הסורק: תיק דמו וסטטיסטיקת סריקות | Swing Desk', description: 'איך הסתיימו הסריקות הקודמות של הסורק של Swing Desk: תיק דמו שמתנהל לפי כללים קבועים, וסטטיסטיקה לכל תבנית גרף. תוצאות עבר אינן מעידות על העתיד. מידע בלבד, לא ייעוץ השקעות.' },
+  },
+  portfolio: {
+    page: 'portfolio', subs: [], listed: false,
+    en: { title: 'My Portfolio | Swing Desk', description: 'A personal trade journal on Swing Desk. Information only, not investment advice.' },
+    he: { title: 'התיק שלי | Swing Desk', description: 'יומן עסקאות אישי ב-Swing Desk. מידע בלבד, לא ייעוץ השקעות.' },
+  },
+  stock: {
+    page: 'deepdive', subs: [], listed: false,
+    en: { title: 'Stock Analysis | Swing Desk', description: 'Chart, technical setup, fundamentals, earnings and news for a US stock on Swing Desk. Information only, not investment advice.' },
+    he: { title: 'ניתוח מניה | Swing Desk', description: 'גרף, מבנה טכני, נתונים פונדמנטליים, דוחות וחדשות למניה אמריקאית ב-Swing Desk. מידע בלבד, לא ייעוץ השקעות.' },
+  },
+};
+
+function appPage(index, lang, head, block, show) {
   let html = index
     .replace(/<!--seo-head-start-->[\s\S]*?<!--seo-head-end-->/, () => `<!--seo-head-start-->\n${head}\n<!--seo-head-end-->`)
     .replace(/<html lang="[a-z]+"/, `<html lang="${lang}"`);
+  if (show) {                                           // v49: this screen is the one showing before any script runs
+    html = html
+      .replace('<div id="page-home">', '<div id="page-home" style="display:none;">')
+      .replace(`<div id="page-${show}" style="display:none;">`, `<div id="page-${show}">`);
+  }
   if (block !== undefined) {                            // a stock's address: the analysis page is the one showing
     html = html
       .replace('<div id="page-home">', '<div id="page-home" style="display:none;">')
@@ -322,6 +355,19 @@ function homeGraph(lang) {
 async function homePage(lang) {
   const head = headTags({ lang, path: '/', title: HOME[lang].title, description: HOME[lang].description, langs: LANGS, graph: homeGraph(lang) });
   return { status: 200, cache: KEEP.fixed, body: appPage(await indexHtml(), lang, head) };
+}
+
+async function appViewPage(q, lang) {
+  const view = String(q.view || '');
+  const sub = String(q.sub || '');
+  const v = Object.prototype.hasOwnProperty.call(APP_VIEWS, view) ? APP_VIEWS[view] : null;
+  if (!v || (sub && !v.subs.includes(sub))) return notFoundPage(lang);
+  const listed = v.listed && !sub;
+  const head = headTags({
+    lang, path: `/${view}${sub ? `/${sub}` : ''}`, title: v[lang].title, description: v[lang].description,
+    langs: listed ? LANGS : null, robots: listed ? 'index, follow' : 'noindex, follow',
+  });
+  return { status: 200, cache: KEEP.fixed, body: appPage(await indexHtml(), lang, head, undefined, v.page) };
 }
 
 // ---- the site's own pages (no app around them) ----
@@ -498,7 +544,7 @@ function siteEntry(p, lastmod, langs) {
 
 async function sitemap() {
   const data = await apiJson(`${API}/api/seo/index`, INDEX_WAIT_MS);
-  const fixed = ['/', '/stocks', '/learn', ...C.ARTICLES.map((a) => `/learn/${a.slug}`), '/about', '/privacy', '/terms'];
+  const fixed = ['/', '/market', '/performance', '/stocks', '/learn', ...C.ARTICLES.map((a) => `/learn/${a.slug}`), '/about', '/privacy', '/terms'];
   const entries = fixed.map((p) => siteEntry(p, p.startsWith('/learn/') ? C.PUBLISHED : null, LANGS));
   ((data && data.stocks) || []).filter((s) => TICKER_RE.test(s.ticker)).forEach((s) => {
     const langs = LANGS.filter((l) => (s.langs || []).includes(l));
@@ -524,6 +570,7 @@ async function build(q) {
   switch (q.kind) {
     case 'stock': return stockPage(q, lang);
     case 'home': return homePage(lang);
+    case 'app': return appViewPage(q, lang);
     case 'stocks': return stocksPage(lang);
     case 'learn-index': return learnIndexPage(lang);
     case 'learn': return articlePage(String(q.slug || ''), lang);
@@ -555,3 +602,4 @@ module.exports = async (req, res) => {
 };
 module.exports.shortName = shortName;
 module.exports.cut = cut;
+module.exports.APP_VIEWS = APP_VIEWS;

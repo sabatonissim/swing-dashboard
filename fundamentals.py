@@ -972,6 +972,22 @@ def db_load(cur, ticker: str):
     return data, float(age)
 
 
+_CARRIED_KEYS = ("has_fundamentals", "eps_labels", "eps_actual", "eps_estimate", "eps_surprise_pct", "pe_band")
+
+
+def db_load_extras(cur, ticker: str):
+    """v48: only what carry_over_extras can take from the stored copy — the database cuts the fields out, the whole
+    document (several KB a stock, ~860 stocks a night) is not sent."""
+    pairs = ", ".join(f"'{k}', data->'{k}'" for k in _CARRIED_KEYS)
+    cur.execute(f"SELECT jsonb_build_object({pairs}) AS data FROM fundamentals_cache WHERE ticker = %s AND version = %s",
+                (ticker, CACHE_VERSION))
+    row = cur.fetchone()
+    if not row:
+        return None
+    data = row["data"] if isinstance(row, dict) else row[0]
+    return json.loads(data) if isinstance(data, str) else data
+
+
 # ------------------------------------------------------------------ nightly warm-up (GitHub Actions)
 WARM_SKIP_IF_YOUNGER_H = 18     # built more recently than this -> skipped (a re-run the same day is cheap)
 WARM_MAX_TICKERS = 1500
@@ -1032,19 +1048,38 @@ def warm_main() -> int:
         print("DATABASE_URL is not set")
         return 1
 
+    # v48 (usage.db of 10.11.2026: "fundamentals 17.2 MB, 2192 connections" — the largest reader of the day, on a month
+    # that has ~30 MB a day left). Every ticker opened three connections (estimates, the old copy, the save), and each
+    # connection costs ~5 KB of Neon's network quota before a single row moves. The four workers query the whole time,
+    # so the database is awake for the run anyway: ONE connection, shared under a lock, reopened if it drops.
+    import threading
+    lock = threading.Lock()
+    shared = {"conn": None}
+
     @contextmanager
     def cursor_ctx(dict_cursor: bool = False):
-        conn = psycopg2.connect(db_url)         # Neon auto-suspends: a fresh short connection per use
-        cur = None
-        try:
-            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) if dict_cursor else conn.cursor()
-            yield conn, cur
-        finally:
+        with lock:
+            conn = shared["conn"]
+            if conn is None or conn.closed:
+                conn = shared["conn"] = psycopg2.connect(db_url)
+            cur = None
             try:
-                if cur is not None:
-                    cur.close()
+                cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) if dict_cursor else conn.cursor()
+                yield conn, cur
+                conn.commit()                   # no transaction is left open between tickers
+            except Exception:
+                try:
+                    conn.close()                # a dropped or broken connection: the next use opens a new one
+                except Exception:  # noqa: BLE001
+                    pass
+                shared["conn"] = None
+                raise
             finally:
-                conn.close()
+                try:
+                    if cur is not None:
+                        cur.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
     started = time.time()
     with cursor_ctx() as (conn, cur):
@@ -1074,8 +1109,10 @@ def warm_main() -> int:
                 stats["no_data"] += 1
                 return
             apply_stock_estimates(data, t, cursor_ctx)
-            with cursor_ctx(dict_cursor=True) as (conn, cur):
-                old, _ = db_load(cur, t)
+            old = None
+            if not data.get("eps_labels") or not data.get("pe_band"):   # v48: the old copy only when something is missing,
+                with cursor_ctx(dict_cursor=True) as (conn, cur):       # and only the fields that can be carried over
+                    old = db_load_extras(cur, t)
             carry_over_extras(data, old)
             finalize(data)
             with cursor_ctx() as (conn, cur):
@@ -1088,6 +1125,11 @@ def warm_main() -> int:
 
     with ThreadPoolExecutor(max_workers=WARM_WORKERS) as ex:
         list(ex.map(one, todo))
+    if shared["conn"] is not None:
+        try:
+            shared["conn"].close()
+        except Exception:  # noqa: BLE001
+            pass
     print(f"fundamentals warm-up: saved {stats['saved']}, no data {stats['no_data']}, failed {stats['failed']}, "
           f"not reached (time budget) {stats['skipped_time']}, {int(time.time() - started)}s")
     return 0

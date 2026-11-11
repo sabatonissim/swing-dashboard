@@ -2995,10 +2995,78 @@ function _setHeadLinks(){
   set('link[hreflang="x-default"]', bare);
   set('link[hreflang="he"]', _langPath(bare, 'he'));
 }
+// v49: every screen has its own address, so the browser's Back button returns to the previous screen (it used to
+// leave the site), a refresh stays on the screen, and a screen can be bookmarked or sent to someone:
+//   /market (+ /stocks, /calendar, /events)   /performance (+ /stats)   /portfolio   /stock, /stock/KO   — and each under /he.
+// api/page.js serves these addresses (vercel.json sends them there) with the same titles: PAGE_TITLES here and
+// APP_VIEWS there are twins. The four tabs INSIDE a stock's analysis have no address (four near-identical pages per
+// stock for a search engine). Old links (/?page=pulse, /?ticker=KO — notifications, app shortcuts) are read at load
+// and replaced by the new address.
+const PULSE_SUB = {overview: '', stocks: '/stocks', cal: '/calendar', events: '/events'};
+const BT_SUB = {demo: '', stats: '/stats'};
+const PAGE_TITLES = {
+  pulse: {en: 'US Market Today: Heatmap, Market Breadth & Economic Calendar | Swing Desk', he: 'השוק האמריקאי היום: מפת חום, רוחב שוק ולוח כלכלי | Swing Desk'},
+  backtest: {en: 'Scanner Results: Demo Portfolio & Pattern Statistics | Swing Desk', he: 'תוצאות הסורק: תיק דמו וסטטיסטיקת סריקות | Swing Desk'},
+  portfolio: {en: 'My Portfolio | Swing Desk', he: 'התיק שלי | Swing Desk'},
+  deepdive: {en: 'Stock Analysis | Swing Desk', he: 'ניתוח מניה | Swing Desk'},
+};
+const APP_PATH_RE = /^(\/he)?(\/|\/stock(\/[^\/]+)?|\/market(\/(stocks|calendar|events))?|\/performance(\/stats)?|\/portfolio)?$/;
+let _ddAddrTicker = null;      // the stock whose analysis is open (null = the analysis page with no stock yet)
+// how a change of screen reaches the address bar: 'push' = a click (a new step for Back); 'replace' = reading the
+// address when the page loads; 'none' = Back / Forward (the address is already the right one)
+let _navMode = 'push';
+let _syncTimer = null, _syncMode = null;
+
+function _routePath(){
+  if(currentPage === 'pulse') return '/market' + (PULSE_SUB[pulseView] || '');
+  if(currentPage === 'backtest') return '/performance' + (BT_SUB[btView] || '');
+  if(currentPage === 'portfolio') return '/portfolio';
+  if(currentPage === 'deepdive') return _ddAddrTicker ? '/stock/' + encodeURIComponent(_ddAddrTicker) : '/stock';
+  return '/';
+}
+function _routeTitle(){
+  if(currentPage === 'deepdive' && _ddAddrTicker) return _stockTitle(_ddAddrTicker);
+  return (PAGE_TITLES[currentPage] || HOME_TITLES)[lang === 'en' ? 'en' : 'he'];
+}
+function _parseRoute(pathname){
+  const bare = _langPath(pathname, 'en');
+  let m;
+  if((m = bare.match(/^\/market(?:\/(stocks|calendar|events))?$/))) return {page: 'pulse', view: ({stocks: 'stocks', calendar: 'cal', events: 'events'})[m[1]] || 'overview'};
+  if((m = bare.match(/^\/performance(?:\/(stats))?$/))) return {page: 'backtest', view: m[1] ? 'stats' : 'demo'};
+  if(bare === '/portfolio') return {page: 'portfolio'};
+  if((m = bare.match(/^\/stock(?:\/([^\/]+))?\/?$/))){
+    let tk = '';
+    try { tk = m[1] ? decodeURIComponent(m[1]) : ''; } catch(e){ /* a broken address = the page with no stock */ }
+    return {page: 'deepdive', ticker: tk};
+  }
+  return {page: 'home'};
+}
+function syncAddress(mode){
+  if(!/^https?:$/.test(location.protocol) || !APP_PATH_RE.test(location.pathname)) return;   // not /index.html, not a file:// preview
+  try {
+    const path = _addr(_routePath());
+    if(mode !== 'none' && path !== location.pathname){
+      // the analysis page with no stock -> its first stock: one step, not two
+      if(mode === 'replace' || _langPath(location.pathname, 'en') === '/stock') history.replaceState(null, '', path);
+      else history.pushState(null, '', path);
+    }
+    document.title = _routeTitle();
+    _setHeadLinks();
+  } catch(e){ /* history API refused — the page itself still works */ }
+}
+// One click often changes two things (open the analysis page AND load a stock; open the market page AND its calendar
+// tab): the address is written once, after the click's own code has finished.
+function _scheduleSync(){
+  let mode = _navMode;
+  if(mode === 'push' && typeof tourStep !== 'undefined' && tourStep >= 0) mode = 'replace';   // the guide walks through the screens: no steps for Back
+  _syncMode = mode;
+  if(_syncTimer) return;
+  _syncTimer = setTimeout(() => { _syncTimer = null; syncAddress(_syncMode); }, 0);
+}
 // after a language switch the address follows the language (only on the app's own addresses, not /index.html)
 function syncLangAddress(){
   if(window.__geoPending || !/^https?:$/.test(location.protocol)) return;
-  if(!/^(\/he)?(\/|\/stock\/[^\/]+)?$/.test(location.pathname)) return;
+  if(!APP_PATH_RE.test(location.pathname)) return;
   try {
     const want = _langPath(location.pathname, lang);
     if(want !== location.pathname) history.replaceState(null, '', want + location.search + location.hash);
@@ -3006,24 +3074,36 @@ function syncLangAddress(){
   } catch(e){ /* history API refused — the page itself still works */ }
 }
 function setStockAddress(ticker){
-  if(!/^https?:$/.test(location.protocol)) return;
-  try {
-    if(ticker){
-      const path = _addr('/stock/' + encodeURIComponent(ticker));
-      if(location.pathname !== path) history.replaceState(null, '', path);
-      document.title = _stockTitle(ticker);
-      _setHeadLinks();
-    } else if(/^(\/he)?\/stock\//.test(location.pathname)){
-      history.replaceState(null, '', _addr('/'));
-      document.title = HOME_TITLES[lang === 'en' ? 'en' : 'he'];
-      _setHeadLinks();
-    }
-  } catch(e){ /* history API refused — the page itself still works */ }
+  if(!ticker) return;
+  _ddAddrTicker = ticker;
+  _scheduleSync();
 }
+// Back / Forward: show the screen the address names. Nothing is written to the address here.
+window.addEventListener('popstate', () => {
+  const r = _parseRoute(location.pathname);
+  _navMode = 'none';
+  try {
+    setPage(r.page);
+    if(r.page === 'pulse' && pulseView !== r.view) setPulseView(r.view);
+    if(r.page === 'backtest' && btView !== r.view) setBtView(r.view);
+    if(r.page === 'deepdive'){
+      const tk = canonTicker(r.ticker || '');
+      const ok = /^[A-Z0-9.\-^=]{1,12}$/.test(tk);
+      if(ok ? tk !== _ddAddrTicker : !!_ddAddrTicker){
+        _ddAddrTicker = ok ? tk : null;
+        document.getElementById('dd-ticker-input').value = ok ? tk : '';
+        loadDeepDive();
+      }
+    }
+    syncLangAddress();         // a step made in the other language: the same screen, in the language chosen now
+    _scheduleSync();           // the title and the canonical link of this screen
+  } finally { _navMode = 'push'; }
+});
 
 function setPage(page){
   if(currentPage === page) return;
   currentPage = page;
+  _scheduleSync();
   document.getElementById('page-nav-home').classList.toggle('active', page==='home');
   document.getElementById('page-nav-pulse').classList.toggle('active', page==='pulse');
   document.getElementById('page-nav-backtest').classList.toggle('active', page==='backtest');
@@ -3037,7 +3117,6 @@ function setPage(page){
   document.getElementById('page-deepdive').style.display = page==='deepdive' ? '' : 'none';
   document.getElementById('page-portfolio').style.display = page==='portfolio' ? '' : 'none';
   if(page === 'portfolio') ensurePortfolioLoaded();       // v24
-  if(page !== 'deepdive') setStockAddress(null);           // v25: leaving the stock page -> back to the plain address
   if(page === 'pulse') ensurePulseViewLoaded();
   if(page === 'backtest') ensureBtViewLoaded();
   if(page === 'deepdive' && _ddChartPending){ requestAnimationFrame(() => { if(typeof TradingView !== 'undefined') _ddMountChart(); else loadTV(_ddMountChart); }); }
@@ -3052,6 +3131,7 @@ function setBtView(v){
   document.getElementById('bt-view-stats').style.display = v==='stats' ? '' : 'none';
   document.getElementById('bt-view-btn-demo').classList.toggle('active', v==='demo');
   document.getElementById('bt-view-btn-stats').classList.toggle('active', v==='stats');
+  _scheduleSync();            // v49: /performance <-> /performance/stats
   ensureBtViewLoaded();
 }
 // v41: a view that failed to load (the server waking up takes 30–60 s) used to stay "loaded" until the whole page
@@ -3222,6 +3302,7 @@ function setPulseView(v){
   });
   const btn = document.getElementById('pulse-view-btn-' + v);           // phone: keep the chosen tab in view
   if(btn && btn.scrollIntoView) btn.scrollIntoView({block: 'nearest', inline: 'nearest'});
+  _scheduleSync();            // v49: /market/calendar ...
   ensurePulseViewLoaded();
 }
 
@@ -7646,7 +7727,7 @@ function endTour(){
 function maybeStartTour(){
   let seen = false;
   try { seen = !!localStorage.getItem(TOUR_KEY); } catch(e){ seen = true; }   // no storage = don't nag on every visit
-  if(seen || window.__isBot || /^(\/he)?\/stock\//.test(location.pathname) || /[?&](ticker|page)=/.test(location.search)) return;
+  if(seen || window.__isBot || _parseRoute(location.pathname).page !== 'home' || /[?&](ticker|page)=/.test(location.search)) return;
   setTimeout(() => { if(tourStep < 0 && currentPage === 'home') startTour(); }, 1800);
 }
 
@@ -9073,11 +9154,8 @@ function applyLang(){
   document.documentElement.setAttribute('dir', 'ltr');
   document.documentElement.setAttribute('lang', lang === 'he' ? 'he' : 'en');
   syncLangAddress();    // v35: /stock/KO <-> /he/stock/KO
-  // v26: applyLang runs every few minutes — on a stock page (/stock/KO) keep the stock's title, don't reset it
-  const _stockPath = location.pathname.match(/^(?:\/he)?\/stock\/([^\/]+)/);
-  let _stockTk = null;
-  if(_stockPath){ try { _stockTk = decodeURIComponent(_stockPath[1]); } catch(e){ /* a broken address must not stop this function */ } }
-  document.title = _stockTk && currentPage === 'deepdive' ? _stockTitle(_stockTk) : HOME_TITLES[lang === 'en' ? 'en' : 'he'];
+  // v26: applyLang runs every few minutes — keep the title of the screen that is open (v49: every screen has one)
+  document.title = _routeTitle();
   document.getElementById('header-sub').textContent = t.sub;
   document.getElementById('search-input').placeholder = t.search_placeholder;
   document.getElementById('search-input-mobile').placeholder = t.search_placeholder;
@@ -9551,20 +9629,27 @@ if('serviceWorker' in navigator){
 // ---- v19: links into the site — /?ticker=KO opens that stock's analysis, /?page=pulse a page (app shortcuts, alerts, sharing) ----
 (function(){
   const q = new URLSearchParams(location.search);
-  const m = location.pathname.match(/^(?:\/he)?\/stock\/([^\/?#]{1,16})\/?$/);   // v25: /stock/KO, v35: /he/stock/KO
-  let fromPath = '';
-  try { fromPath = m ? decodeURIComponent(m[1]) : ''; } catch(e){}
-  const tk = canonTicker(fromPath || q.get('ticker') || '');
+  const r = _parseRoute(location.pathname);       // v25: /stock/KO, v35: /he/stock/KO, v49: /market, /performance/stats ...
+  const tk = canonTicker((r.page === 'deepdive' && r.ticker) || q.get('ticker') || '');
   const page = q.get('page');
-  if(/^[A-Z0-9.\-^=]{1,12}$/.test(tk)){          // a link from outside: ticker characters only
-    document.getElementById('dd-ticker-input').value = tk;
-    setPage('deepdive');
-    // v35: a first visit waits for the country's answer (at most 1.2 s, the page is hidden anyway), so the news is not first
-    // translated into a language nobody asked for
-    (window.__geoPending ? window.__geoLang : Promise.resolve()).then(() => loadDeepDive());
-  } else if(['pulse','backtest','deepdive','portfolio'].includes(page)){
-    setPage(page);
-  }
+  _navMode = 'replace';                           // reading the address is not a step for the Back button
+  try {
+    if(/^[A-Z0-9.\-^=]{1,12}$/.test(tk)){          // a link from outside: ticker characters only
+      document.getElementById('dd-ticker-input').value = tk;
+      _ddAddrTicker = tk;
+      setPage('deepdive');
+      // v35: a first visit waits for the country's answer (at most 1.2 s, the page is hidden anyway), so the news is not first
+      // translated into a language nobody asked for
+      (window.__geoPending ? window.__geoLang : Promise.resolve()).then(() => loadDeepDive());
+    } else if(r.page !== 'home'){
+      setPage(r.page);
+      if(r.page === 'pulse' && r.view !== 'overview') setPulseView(r.view);
+      if(r.page === 'backtest' && r.view !== 'demo') setBtView(r.view);
+    } else if(['pulse','backtest','deepdive','portfolio'].includes(page)){
+      setPage(page);
+    }
+    syncAddress('replace');                       // /?page=pulse -> /market; and this screen's title
+  } finally { _navMode = 'push'; }
 })();
 </script>
 </body>

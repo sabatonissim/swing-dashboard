@@ -297,6 +297,86 @@ def test_fundamentals_stale_series():
     assert fundamentals._drop_if_stale({}, "2026-09-30") == {}
 
 
+def test_fundamentals_warm_up_uses_one_connection(monkeypatch):
+    """v48: the nightly warm-up opened three connections per stock (2,192 on 10.11.2026 = the day's largest reader of
+    Neon's network quota). One shared connection now, reopened if it drops; the old copy is read only when the new
+    build lacks something that can be carried over, and then only those fields."""
+    import psycopg2
+    import fundamentals as f
+    opened, sql = [], []
+
+    class Cur:
+        def execute(self, q, params=None):
+            sql.append(" ".join(q.split()))
+            if "drop-me" in str(params):
+                raise psycopg2.Error("connection dropped")
+
+        def fetchall(self):
+            return []
+
+        def fetchone(self):
+            return None
+
+        def close(self):
+            pass
+
+    class Conn:
+        closed = 0
+
+        def cursor(self, **kw):
+            return Cur()
+
+        def commit(self):
+            pass
+
+        def close(self):
+            self.closed = 1
+
+    def connect(url):
+        opened.append(Conn())
+        return opened[-1]
+    monkeypatch.setattr(psycopg2, "connect", connect)
+    monkeypatch.setenv("DATABASE_URL", "postgres://test")
+    monkeypatch.setattr(f, "_warm_tickers", lambda ctx: ["KO", "PEP", "MSFT", "AES"])
+    monkeypatch.setattr(f, "fetch_cik_map", lambda: {})
+
+    class Inline:                              # the workers, one after another (and the browser check has no threads)
+        def __init__(self, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def map(self, fn, items):
+            return [fn(i) for i in items]
+    monkeypatch.setattr(f, "ThreadPoolExecutor", Inline)
+    monkeypatch.setattr(f, "apply_stock_estimates", lambda data, t, ctx: None)
+    full = {"has_fundamentals": True, "eps_labels": ["Q3"], "pe_band": {"lo": 1}}
+    monkeypatch.setattr(f, "build_fundamentals", lambda t, m, info_getter=None:
+                        dict(full, ticker=t) if t != "AES" else {"has_fundamentals": True, "ticker": t})
+    saved = []
+    monkeypatch.setattr(f, "db_save", lambda cur, t, data: saved.append(t))
+    assert f.warm_main() == 0
+    assert len(opened) == 1 and opened[0].closed and saved == ["KO", "PEP", "MSFT", "AES"]
+    extras = [s for s in sql if "jsonb_build_object" in s]
+    assert len(extras) == 1 and "'pe_band', data->'pe_band'" in extras[0]      # only AES lacked something
+    assert not any(s.startswith("SELECT data,") for s in sql)                  # the whole stored document is never read
+
+    # a dropped connection costs that one stock; the next one opens a new connection
+    opened.clear()
+    saved.clear()
+    monkeypatch.setattr(f, "_warm_tickers", lambda ctx: ["KO", "PEP"])
+
+    def save(cur, t, data):
+        cur.execute("INSERT", ("drop-me" if t == "KO" else t,))
+        saved.append(t)
+    monkeypatch.setattr(f, "db_save", save)
+    assert f.warm_main() == 0 and saved == ["PEP"] and len(opened) == 2 and opened[0].closed
+
+
 def test_touch_alert_range():
     """v27: a "touch" alert looks at the low..high of the bars since it was set — the bar running at that moment counts,
     earlier bars do not."""

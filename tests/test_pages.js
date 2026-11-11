@@ -72,7 +72,8 @@ async function run() {
   const index = read('index.html');
   const vercel = JSON.parse(read('vercel.json'));
   ok(/^<!DOCTYPE html>\n<html lang="en" dir="ltr">/.test(index), 'index.html starts with lang="en"');
-  ['<!--seo-head-start-->', '<!--seo-head-end-->', '<div id="page-home">', '<div id="page-deepdive" style="display:none;">', '<div id="deepdive-content"></div>']
+  ['<!--seo-head-start-->', '<!--seo-head-end-->', '<div id="page-home">', '<div id="page-deepdive" style="display:none;">', '<div id="deepdive-content"></div>',
+    '<div id="page-pulse" style="display:none;">', '<div id="page-backtest" style="display:none;">', '<div id="page-portfolio" style="display:none;">']
     .forEach((s) => ok(index.split(s).length === 2, `index.html has exactly one ${s} (api/page.js replaces it)`));
   ok(!read('.vercelignore').includes('sitemap.xml'), '.vercelignore: no static sitemap (a file would win over the rewrite)');
   ok(read('.vercelignore').includes('!api'), '.vercelignore lets api/ through');
@@ -85,7 +86,20 @@ async function run() {
     ok(r.destination.startsWith('/api/page?'), `rewrite ${r.source} goes to the function`);
     ok(r.source.startsWith('/he') === (q.get('lang') === 'he') || !q.get('lang'), `rewrite ${r.source} has the right language`);
   });
-  ['stock', 'home', 'stocks', 'learn-index', 'learn', 'doc', 'sitemap'].forEach((k) => ok(kinds.has(k), `a rewrite goes to ${k}`));
+  ['stock', 'home', 'app', 'stocks', 'learn-index', 'learn', 'doc', 'sitemap'].forEach((k) => ok(kinds.has(k), `a rewrite goes to ${k}`));
+  // v49: every screen of the app has an address. The same names in four places: the rewrites, APP_VIEWS (api/page.js),
+  // and in index.html the addresses the app writes (APP_PATH_RE) and the titles it sets (PAGE_TITLES).
+  const sources = vercel.rewrites.map((x) => x.source);
+  Object.keys(page.APP_VIEWS).forEach((view) => {
+    const v = page.APP_VIEWS[view];
+    ok(sources.some((x) => x.startsWith('/:view(') && x.includes(view)) && sources.some((x) => x.startsWith('/he/:view(') && x.includes(view)), `rewrites for /${view} in both languages`);
+    ok(index.includes(`\\/${view}`), `index.html knows the address /${view}`);
+    ['en', 'he'].forEach((l) => ok(index.includes(`${l}: '${v[l].title}'`), `index.html has the ${l} title of /${view}`));
+    v.subs.forEach((sub) => {
+      ok(sources.includes(`/${view}/:sub(${v.subs.join('|')})`) && sources.includes(`/he/${view}/:sub(${v.subs.join('|')})`), `rewrites for /${view}/${sub}`);
+      ok(index.includes(`'/${sub}'`), `index.html writes the address /${view}/${sub}`);
+    });
+  });
   const staticTitle = /<title>([^<]*)<\/title>/.exec(index)[1];
   ok(staticTitle === 'Swing Desk — Stock Scanner, Technical Analysis &amp; Market News', 'the English title in index.html');
   ok(index.includes('Swing Desk — Stock Scanner, Technical Analysis & Market News\', he: \'Swing Desk — סורק מניות'), 'HOME_TITLES in the script');
@@ -185,6 +199,25 @@ async function run() {
   ok(has(r, `hreflang="en" href="${SITE}/"`) && has(r, `hreflang="he" href="${SITE}/he"`), 'he home hreflang');
   ok(types(r).includes('WebSite'), 'he home structured data');
 
+  // ---- v49: the app's other screens ----
+  r = await get({ kind: 'app', lang: 'en', view: 'market' });
+  ok(r.statusCode === 200 && has(r, `<link rel="canonical" href="${SITE}/market">`) && has(r, '<title>US Market Today'), 'market page');
+  ok(has(r, '<div id="page-pulse">') && has(r, '<div id="page-home" style="display:none;">'), 'the market screen is the one showing');
+  ok(has(r, 'content="index, follow"') && has(r, `hreflang="he" href="${SITE}/he/market"`), 'market page is listed, with its Hebrew twin');
+  r = await get({ kind: 'app', lang: 'he', view: 'market', sub: 'calendar' });
+  ok(has(r, '<html lang="he"') && has(r, `<link rel="canonical" href="${SITE}/he/market/calendar">`) && has(r, '<div id="page-pulse">'), 'he market calendar');
+  ok(has(r, 'noindex, follow') && !headOf(r).includes('hreflang'), 'a tab of a screen is not listed');
+  r = await get({ kind: 'app', lang: 'he', view: 'performance', sub: 'stats' });
+  ok(r.statusCode === 200 && has(r, '<div id="page-backtest">') && has(r, '<title>תוצאות הסורק'), 'he performance stats');
+  r = await get({ kind: 'app', lang: 'en', view: 'portfolio' });
+  ok(r.statusCode === 200 && has(r, '<div id="page-portfolio">') && has(r, 'noindex, follow'), 'portfolio: works, not listed');
+  r = await get({ kind: 'app', lang: 'en', view: 'stock' });
+  ok(r.statusCode === 200 && has(r, '<div id="page-deepdive">') && has(r, '<div id="deepdive-content"></div>') && has(r, 'noindex, follow'), 'the analysis page with no stock');
+  for (const q of [{ view: 'nope' }, { view: 'market', sub: 'nope' }, { view: 'portfolio', sub: 'stats' }, { view: 'constructor' }, {}]) {
+    r = await get({ kind: 'app', lang: 'en', ...q });
+    ok(r.statusCode === 404, `an unknown screen is refused: ${JSON.stringify(q)}`);
+  }
+
   // ---- guides ----
   r = await get({ kind: 'learn-index', lang: 'en' });
   ok(r.statusCode === 200 && has(r, `<link rel="canonical" href="${SITE}/learn">`), 'learn index');
@@ -255,7 +288,7 @@ async function run() {
   // ---- sitemap ----
   r = await get({ kind: 'sitemap' });
   ok(r.headers['content-type'].includes('xml') && r.body.startsWith('<?xml'), 'sitemap is XML');
-  [`${SITE}/`, `${SITE}/he`, `${SITE}/learn`, `${SITE}/he/learn/cup-and-handle`, `${SITE}/about`, `${SITE}/he/terms`, `${SITE}/stock/KO`, `${SITE}/he/stock/KO`, `${SITE}/stock/ENG`]
+  [`${SITE}/`, `${SITE}/he`, `${SITE}/market`, `${SITE}/he/performance`, `${SITE}/learn`, `${SITE}/he/learn/cup-and-handle`, `${SITE}/about`, `${SITE}/he/terms`, `${SITE}/stock/KO`, `${SITE}/he/stock/KO`, `${SITE}/stock/ENG`]
     .forEach((u) => ok(has(r, `<loc>${u}</loc>`), `sitemap lists ${u}`));
   ok(!has(r, `<loc>${SITE}/he/stock/ENG</loc>`), 'sitemap: no page that asks not to be listed');
   ok(has(r, `<loc>${SITE}/stock/KO</loc><lastmod>2026-11-03</lastmod><xhtml:link rel="alternate" hreflang="en" href="${SITE}/stock/KO"/>`), 'sitemap: date and alternates');
