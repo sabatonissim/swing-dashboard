@@ -402,6 +402,7 @@ def fetch_raw_headlines() -> List[dict]:
 from translation_fixes import prep_en as _prep_en, fix_he as _fix_he, half_translated as _half_translated
 from news_links import is_unwanted_headline, clean_publisher, strip_outlet_suffix   # v28: shared with api_server.py
 from news_links import is_trusted_outlet                                            # v47
+from news_links import is_advice_outlet                                             # v51
 TRUSTED_ONLY_FEEDS = {"Geopolitics & Markets (Google News)"}
 
 
@@ -854,6 +855,7 @@ def run_pipeline_b():
     decode_budget, decoded, decode_failed = DECODE_MAX_PER_RUN, 0, 0
 
     skipped_outlet: dict = {}
+    skipped_advice = 0
     for item in raw_items:
         if item["link"] in known:
             skipped_dupe += 1
@@ -862,6 +864,10 @@ def run_pipeline_b():
         if item["source"] in TRUSTED_ONLY_FEEDS and not is_trusted_outlet(item.get("publisher", "")):
             name = item.get("publisher") or "?"
             skipped_outlet[name] = skipped_outlet.get(name, 0) + 1
+            continue
+        # v51: outlets that write advice to the reader, from any feed (the site shows no recommendations)
+        if not item.get("forced") and is_advice_outlet(item.get("publisher", "")):
+            skipped_advice += 1
             continue
         if not item.get("forced") and is_unwanted_headline(item["title"]):   # v28: promo / video / meaningless / far-away
             skipped_no_match += 1
@@ -908,6 +914,8 @@ def run_pipeline_b():
         top = sorted(skipped_outlet.items(), key=lambda kv: -kv[1])[:8]
         print(f"[info] outlets not on the list (geopolitics feed): {sum(skipped_outlet.values())} headline(s) left out — "
               + ", ".join(f"{n} {c}" for n, c in top))
+    if skipped_advice:
+        print(f"[info] advice outlets: {skipped_advice} headline(s) left out")
     print(f"[info] article links: decoded {decoded} Google News links, {decode_failed} failed "
           f"(all failing = Google blocks this runner; the site then keeps the Google link as before).")
     try:

@@ -1331,7 +1331,10 @@ def test_digest_hebrew_has_no_english_words_and_known_fixes():
         d.clean_hebrew(he("המהלך נבע� מהתאוששות"), en)
     with pytest.raises(ValueError, match="English words"):
         d.clean_hebrew(he("אם כי breadth היה צר"), en)
-    assert d.clean_hebrew(he("מכירה חריגה אחרי הבחירות האמצעיות"), en)["overview"] == "גל מכירות חריג אחרי בחירות אמצע הקדנציה"
+    no_name = dict(en, overview="An unusual sell-off after the midterm elections.")
+    assert d.clean_hebrew(he("מכירה חריגה אחרי הבחירות האמצעיות"), no_name)["overview"] == "גל מכירות חריג אחרי בחירות אמצע הקדנציה"
+    with pytest.raises(ValueError, match="lost the name Nvidia"):          # v51
+        d.clean_hebrew(he("ניידות נמוטרון ירדה"), en)
 
 
 def test_stock_note_numbers_must_be_in_the_facts():
@@ -1598,6 +1601,59 @@ def test_digest_health_rule():
     assert dh.digest_problems({"overview_en": "The S&P 500 fell 4.4%.", "market": _CRASH_MARKET}) == []
     assert dh.digest_problems({"overview_en": "Technology dominated.", "market": dict(_CRASH_MARKET, move="normal")}) == []
     assert dh.digest_problems({"overview_en": "An older day."}) == []
+
+
+def test_home_page_of_15_11():
+    """v51: what a visitor saw on the home page on Sunday 15.11.2026."""
+    import news_links as nl
+    import translation_fixes as tf
+    import ai_digest as dg
+    for junk in ("A 64-year-old farmer plans to lease land to a neighbor on crop share and start Social Security as crop values climb 7%",
+                 "Disney's new CEO reportedly plans thousands of cuts ahead of Nov. 17 earnings. Here's what it means for a 72-year-old widow with $150,000 of Disney",
+                 "Investors: If a Market Correction Arrives, This Move Will Make or Break Your Portfolio",
+                 "Bitcoin vs. Stocks: Are Crypto Really the Best Investment. The Results May Surprise You",
+                 "Laird Superfood: 3 Key Options For Long-Term Investors",
+                 "Stocks Have Risen the Year After Every Midterm Since 1950. Here's What That Means and Doesn't Mean for You.",
+                 "FILE PHOTO: The Federal Reserve Board building is seen in Washington",
+                 "SA Asks: What are the most attractive big pharma stocks right now? (LLY:NYSE)",
+                 "Bank of America names 5 bullish stocks amid market fears",
+                 "Saudi stocks fell 0.66% as inflation eased to 1.7%",
+                 "Israel inflation rate drops to 1.1% in October, lowest since April 2021",
+                 "Contrary to forecasts, CPI falls, inflation drops and home prices fall across Israel"):
+        assert nl.is_unwanted_headline(junk), junk
+    for real in ("Fed's Schmid says Fed has more work to do to bring down inflation",
+                 "Nvidia reports earnings on Nov. 17. Here's what investors should expect.",
+                 "Trump pushes for 'total victory' in Iran conflict",
+                 "Israel strikes Iran oil facilities, crude jumps 4%",
+                 "SoFi expects about 50% earnings growth in 2027 and says it will not need to raise new capital",
+                 "US inflation cools to 2.9% in October"):
+        assert not nl.is_unwanted_headline(real), real
+    for name in ("The Motley Fool", "24/7 Wall St.", "Zacks Investment Research", "Stocks Down Under"):
+        assert nl.is_advice_outlet(name), name
+    for name in ("Reuters", "Yahoo Finance", "Bloomberg.com", "Seeking Alpha", ""):
+        assert not nl.is_advice_outlet(name), name
+    # translations
+    assert "Republican midterm election losses" in tf.prep_en("Pence calls Vance 'wrong' on Iran war, GOP midterm losses")
+    assert tf.prep_en("What the midterm elections mean") == "What the midterm elections mean"
+    assert "Fed meeting protocol" in tf.prep_en("Can Nvidia earnings and Fed minutes spark a Nasdaq rally?")
+    assert tf.fix_he("רווחי Nvidia ודקות הפד") == "רווחי Nvidia ופרוטוקול הפד"
+    assert tf.half_translated("רווחי Nvidia ו-Anthropic IPO Lead Market Week")
+    assert not tf.half_translated("מניות Taiwan Semiconductor Manufacturing Company עלו ב-3%")
+    # the summary: a name must survive the Hebrew, another country's market is out, and no session = not bitcoin first
+    assert dg.lost_name("Nvidia faces a $109 billion earnings test", "ניידות נמוטרון נותרת במבחן רווחים של 109 מיליארד דולר") == "Nvidia"
+    assert dg.lost_name("Nvidia faces a $109 billion earnings test", "Nvidia עומדת במבחן רווחים של 109 מיליארד דולר") is None
+    assert dg.lost_name("Walmart prepares for a test as Trump speaks", "וולמארט נערכת למבחן בזמן שטראמפ נואם") is None
+    assert dg.lost_name("Gold retreated from record highs", "הזהב נסוג מהשיא") is None
+    en = ("Bitcoin rose 1.03%. Nvidia faces a $109 billion earnings test. Gold retreated from record highs. "
+          "Saudi stocks fell 0.66% as inflation eased to 1.7%.")
+    assert dg._home_first(en, {"same_day": False}) == \
+        "Nvidia faces a $109 billion earnings test. Gold retreated from record highs. Bitcoin rose 1.03%."
+    assert dg._home_first("Bitcoin rose 1.03%. Nvidia faces a test.", {"same_day": True}) == "Bitcoin rose 1.03%. Nvidia faces a test."
+    assert dg._home_first("Saudi stocks fell 0.66%.", None) == "Saudi stocks fell 0.66%."        # nothing else to say: kept
+    ranked = dg.rank_items([{"id": 1, "title": "Fed holds rates as inflation cools", "tag": "ריבית", "source": "Reuters"},
+                            {"id": 2, "title": "Vanguard economists say inflation may be better than it looks", "tag": "אינפלציה",
+                             "source": "The Motley Fool"}])
+    assert [i["id"] for i in ranked] == [1]
 
 
 def test_news_of_the_live_feed_of_11_11(api):

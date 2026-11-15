@@ -294,7 +294,8 @@ window.addEventListener('load', function(){
   .today-more:hover{border-color:var(--amber);}
   .today-text{font-size:14.5px;line-height:1.6;color:var(--text);max-width:980px;margin-bottom:10px;}
   .today-text:empty,.today-intro:empty{display:none;}
-  .today-intro{font-size:12px;color:var(--text-dim);margin-top:8px;}
+  .today-intro{font-size:13px;line-height:1.6;color:var(--text-dim);margin-top:10px;padding-top:10px;border-top:1px solid var(--line);}
+  .intro-tour{background:none;border:0;padding:0;color:var(--amber);font:inherit;font-weight:700;text-decoration:underline;cursor:pointer;}
   @media(min-width:901px){
     .home-grid{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);align-items:start;}
     .home-main{min-width:0;border-right:1px solid var(--line);}
@@ -1126,8 +1127,8 @@ window.addEventListener('load', function(){
 
 <div class="page-nav">
   <button class="page-nav-btn active" id="page-nav-home" onclick="setPage('home')">בית</button>
-  <button class="page-nav-btn" id="page-nav-pulse" onclick="setPage('pulse')">פעימת השוק</button>
-  <button class="page-nav-btn" id="page-nav-backtest" onclick="setPage('backtest')">בדיקה היסטורית</button>
+  <button class="page-nav-btn" id="page-nav-pulse" onclick="setPage('pulse')">השוק</button>
+  <button class="page-nav-btn" id="page-nav-backtest" onclick="setPage('backtest')">ביצועים</button>
   <button class="page-nav-btn" id="page-nav-deepdive" onclick="setPage('deepdive')">ניתוח מניה</button>
   <button class="page-nav-btn" id="page-nav-portfolio" onclick="setPage('portfolio')">התיק שלי</button>
 </div>
@@ -3260,7 +3261,7 @@ function renderDemoPortfolio(){
     <div style="overflow-x:auto;"><table class="bt-signals-table"><thead><tr>
       <th>${en?'Stock':'מניה'}</th><th>${en?'Score':'ציון'}</th><th>${en?'Bought':'קנייה'}</th><th>${en?'Entry':'כניסה'}</th><th>${en?'Stop / target':'סטופ / יעד'}</th><th>${en?'Exit':'יציאה'}</th><th>${en?'Days':'ימים'}</th><th>%</th><th>$</th></tr></thead><tbody>
       ${d.trades.map(t => `<tr>
-        <td><b>${t.ticker}</b></td><td>${t.score ?? '—'}</td><td>${t.entry_date}</td><td>${t.entry_price!=null?'$'+t.entry_price.toFixed(2):'—'}</td>
+        <td><b>${t.ticker}</b></td><td>${t.score ?? '—'}</td><td>${_dm(t.entry_date)}</td><td>${t.entry_price!=null?'$'+t.entry_price.toFixed(2):'—'}</td>
         <td style="color:var(--text-dim)">${t.stop!=null?t.stop.toFixed(2):'—'} / ${t.target!=null?t.target.toFixed(2):'—'}</td>
         <td><span class="demo-badge ${t.reason||'open'}">${reasonLbl(t.reason)}</span></td><td>${t.days ?? '—'}</td>
         <td style="color:${col(t.return_pct)}">${pct(t.return_pct)}</td><td style="color:${col(t.pnl)}">${usdS(t.pnl)}</td></tr>`).join('')}
@@ -7606,8 +7607,8 @@ async function tryLoadOnce(timeoutMs){
 }
 
 // ---- v26: first-visit guide ----
-// Six short steps. Shown once on the first visit (not when the visit starts from a stock link), any time again from
-// the "?" button in the header. Each step opens its page, scrolls the area into view and highlights it; nothing is
+// Six short steps. v52: opened only by the visitor — the "?" button in the header, or the offer the first visits see
+// under "the market today". Each step opens its page, scrolls the area into view and highlights it; nothing is
 // loaded or changed. Seen = localStorage 'swing_tour_v1' (a private window simply sees it again).
 var TOUR_KEY = 'swing_tour_v1';
 var TOUR_STEPS = [
@@ -7721,16 +7722,11 @@ function endTour(){
   window.removeEventListener('resize', _tourPlace);
   window.removeEventListener('scroll', _tourPlace);
   try { localStorage.setItem(TOUR_KEY, '1'); } catch(e){}
+  if(typeof renderToday === 'function') renderToday();     // v52: the offer of the guide leaves the home page
   setPage(_tourReturnPage || 'home');            // back where the guide was opened (the first visit: the home page)
   window.scrollTo({top: 0});
 }
 
-function maybeStartTour(){
-  let seen = false;
-  try { seen = !!localStorage.getItem(TOUR_KEY); } catch(e){ seen = true; }   // no storage = don't nag on every visit
-  if(seen || window.__isBot || _parseRoute(location.pathname).page !== 'home' || /[?&](ticker|page)=/.test(location.search)) return;
-  setTimeout(() => { if(tourStep < 0 && currentPage === 'home') startTour(); }, 1800);
-}
 
 // ---- v24: MY PORTFOLIO + TRADE JOURNAL ----
 // The person records each trade once (/api/trades, per account). Open = a position in the portfolio, valued with
@@ -7812,7 +7808,14 @@ function pfSignInHtml(){
   const en = lang==='en';
   return `<div class="hx-card"><div class="al-text" style="line-height:1.7">${en
     ? 'Record your trades and the site keeps your portfolio (current value, profit/loss, distance to your stop and target, upcoming earnings) and a trade journal with your statistics: win rate, average win and loss, R multiples, results by setup. Sign in with Google (the person icon at the top) — your trades are saved to your account and only you can see them.'
-    : 'רושמים כאן את העסקאות שלכם, והאתר מנהל לכם תיק (שווי נוכחי, רווח/הפסד, מרחק מהסטופ ומהיעד, דוחות קרובים) ויומן עסקאות עם הסטטיסטיקה שלכם: אחוז הצלחה, רווח והפסד ממוצעים, מכפילי R ותוצאות לפי סוג כניסה. התחברו עם Google (סמל האדם למעלה) — העסקאות נשמרות בחשבון שלכם ורק אתם רואים אותן.'}</div></div>`;
+    : 'רושמים כאן את העסקאות שלכם, והאתר מנהל לכם תיק (שווי נוכחי, רווח/הפסד, מרחק מהסטופ ומהיעד, דוחות קרובים) ויומן עסקאות עם הסטטיסטיקה שלכם: אחוז הצלחה, רווח והפסד ממוצעים, מכפילי R ותוצאות לפי סוג כניסה. התחברו עם Google (סמל האדם למעלה) — העסקאות נשמרות בחשבון שלכם ורק אתם רואים אותן.'}</div>
+    <button type="button" onclick="pfOpenSignIn(event)" style="margin-top:12px;background:var(--amber);color:var(--on-amber);border:none;border-radius:9px;padding:10px 18px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;">${en?'Sign in with Google':'התחברות עם Google'}</button></div>`;
+}
+// v51: the page told a visitor to find the person icon at the top; now the button opens that menu for them
+function pfOpenSignIn(ev){
+  window.scrollTo({top:0, behavior:'smooth'});
+  const m = document.getElementById('profile-menu');
+  if(m && m.style.display === 'none') toggleProfileMenu(ev);
 }
 
 function renderPortfolio(){
@@ -8412,13 +8415,20 @@ function renderToday(){
   document.getElementById('today-sub').textContent = notes.join(' · ');
   document.getElementById('today-text').textContent = text;
   document.getElementById('today-more').textContent = en ? 'Full summary' : 'לסיכום המלא';
+  // v52: what the site is, and the short guide as an offer. The guide used to open by itself on the first visit, on top
+  // of the page and together with the statistics banner. Shown on the first 3 visits, until the guide was taken or skipped.
   if(_introFirstVisit === null){
-    try { _introFirstVisit = !localStorage.getItem('swing_intro_v1'); localStorage.setItem('swing_intro_v1', '1'); }
-    catch(e){ _introFirstVisit = false; }
+    try {
+      const n = +(localStorage.getItem('swing_intro_n') || 0);
+      _introFirstVisit = n < 3 && !localStorage.getItem(TOUR_KEY);
+      if(_introFirstVisit) localStorage.setItem('swing_intro_n', String(n + 1));
+    } catch(e){ _introFirstVisit = false; }
   }
-  document.getElementById('today-intro').textContent = !_introFirstVisit ? '' : (en
-    ? 'Swing Desk scans hundreds of US stocks for technical patterns during the trading day. Information only, not investment advice.'
-    : 'Swing Desk סורק מאות מניות אמריקאיות ומחפש תבניות טכניות במהלך יום המסחר. מידע בלבד, לא ייעוץ השקעות.');
+  let tourTaken = false;
+  try { tourTaken = !!localStorage.getItem(TOUR_KEY); } catch(e){}
+  document.getElementById('today-intro').innerHTML = (!_introFirstVisit || tourTaken) ? '' : (en
+    ? 'Swing Desk scans about 860 US stocks every trading day, explains each pattern it finds in plain words, and shows openly how earlier scans turned out. Information only, not investment advice. <button type="button" class="intro-tour" onclick="startTour()">Take the short tour</button>'
+    : 'Swing Desk סורק כ-860 מניות אמריקאיות בכל יום מסחר, מסביר בעברית כל תבנית שמצא, ומציג בגלוי איך הסריקות הקודמות הסתיימו. מידע בלבד, לא ייעוץ השקעות. <button type="button" class="intro-tour" onclick="startTour()">סיור קצר באתר</button>');
 }
 
 function renderRegimeHome(){
@@ -9060,7 +9070,7 @@ const UI = {
     scanner_title: 'סריקות',
     macro_title: 'חדשות מאקרו ושווקים',
     charts_title: 'גרפי מדדים',
-    nav_backtest: 'בדיקה היסטורית',
+    nav_backtest: 'ביצועים',
     nav_deepdive: 'ניתוח מניה',
     dd_placeholder: 'הקלידו טיקר, למשל AAPL',
     no_stocks: 'אין מניות מסומנות כרגע — הסורק ירוץ בשעות המסחר הבאות',
@@ -9073,7 +9083,7 @@ const UI = {
     movers_title: 'הכי זזות היום בשוק',
     movers_empty: 'אין עדיין נתוני שינוי יומי להצגה',
     nav_home: 'בית',
-    nav_pulse: 'פעימת השוק',
+    nav_pulse: 'השוק',
     info_badge_title: 'מקורות המידע',
     mode_indices: 'מדדים',
     mode_sectors: 'סקטורים',
@@ -9108,7 +9118,7 @@ const UI = {
     scanner_title: 'Scans',
     macro_title: 'Macro & markets news',
     charts_title: 'Market Charts',
-    nav_backtest: 'Backtest',
+    nav_backtest: 'Track record',
     nav_deepdive: 'Deep Dive',
     dd_placeholder: 'Enter a ticker, e.g. AAPL',
     no_stocks: 'No stocks flagged yet — scanner runs during market hours',
@@ -9121,7 +9131,7 @@ const UI = {
     movers_title: "Today's Biggest Movers",
     movers_empty: 'No daily change data yet',
     nav_home: 'Home',
-    nav_pulse: 'Market Pulse',
+    nav_pulse: 'Market',
     info_badge_title: 'Data Sources',
     mode_indices: 'Indices',
     mode_sectors: 'Sectors',
@@ -9363,7 +9373,7 @@ const hebDir = (function(){
 })();
 
 restoreSnapshot();          // v20c: draw the last saved data at once, then refresh from the server
-maybeStartTour();           // v26: the short guide, on the first visit only
+// v52: the short guide no longer opens by itself; the first visits see an offer under "the market today" (renderToday)
 // v34: the scanner and the news used to be asked for every 20 seconds, even in a tab left in the background — all day, for
 // data that changes every 30 minutes at most — and that alone kept the database awake (its monthly compute hours are limited).
 // Now every 5 minutes, only while the tab is on the screen; coming back to the tab after a while refreshes at once.

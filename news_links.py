@@ -93,13 +93,33 @@ PROMO_RE = re.compile(r"\b(stocks? to (buy|watch|own|bet on)|to bet on|should yo
                       # v44 (live feed 10.11.2026): "As Crude Oil Prices Retreat, Sell Soybean Oil Now" \u2014 advice, not news
                       r"(buy|sell|short)\s+(?:[\w&'-]+\s+){1,4}now(?!\s+that)|buying opportunity|"
                       r"screaming buys?)\b"       # "Tech Sell-Off: Two AI Stocks That Are Screaming Buys Right Now" (11.11.2026)
-                      r"|^\s*(?:top\s+)?\d+\s+[\w\s&'-]{0,40}\bstocks?\b", re.I)
+                      r"|^\s*(?:top\s+)?\d+\s+[\w\s&'-]{0,40}\bstocks?\b"
+                      # v51 (live feed 15.11.2026): "Bank of America names 5 bullish stocks amid market fears"
+                      r"|\b(?:names?|named|picks?|lists?|reveals?|highlights?)\s+\d+\s+(?:[\w&'-]+\s+){0,3}stocks?\b", re.I)
+# v51 (live feed 15.11.2026): articles about one imaginary reader's money, written to be clicked. They sat on the home page
+# between the Fed and Nvidia: "A 64-year-old farmer plans to lease land ... and start Social Security", "... Here's what it
+# means for a 72-year-old widow with $150,000 of Disney", "Investors: if a market correction arrives, this move will make
+# or break your portfolio", "Bitcoin vs. stocks: ... The results may surprise you", "Laird Superfood: 3 key options for
+# long-term investors", "... Here's what that means and doesn't mean for you."
+PERSONAL_RE = re.compile(r"\b\d{2}-year-old\b|\bwidow(?:er|s)?\b|\bsocial security\b|\bnest egg\b|\b401\(?k\)?|\broth ira\b|"
+                         r"\byour (?:portfolio|retirement|savings|money|wallet)\b|\bmay surprise you\b|\bbest investment\b|"
+                         r"\bfor long-term investors\b|\bmeans?(?: and [\w' ]{3,30})? for you\b|^\s*investors:\s", re.I)
+# v51: outlets whose articles are advice to the reader ("3 stocks to ...", "here is what to do"), not news. The site shows
+# facts and no recommendations, so they are left out of every feed. The stock's own news page is not touched.
+ADVICE_OUTLETS_RE = re.compile(r"motley fool|24/7 wall st|zacks|investorplace|insider monkey|stocks down under", re.I)
+
+
+def is_advice_outlet(name: str) -> bool:
+    return bool(ADVICE_OUTLETS_RE.search(name or ""))
 # v44: a newsletter's table of contents as a headline ("Hot inflation report puts Fed on track ...; The best banks to
 # work for in 2026\u2014and more in Bankers' Hours")
 # v47: a quote page and round-ups as headlines ("Crude Oil Dec 26 (CL=F) Stock Price, News, Quote & History", "AM Markets
 # Need to Know: Fed faces inflation test, Anthropic IPO demand surges, and more", "Dow Jones Top Energy Headlines at 4 AM ET: ...")
 _FORMAT_JUNK_RE = re.compile(r"^\s*(watch|video|listen|podcast)\s*[:\-\u2013\u2014]|^\s*q\s*[.:]\s|\band more (in|from)\b|"
-                             r"\bstock price, news, quote\b|,? and more\s*$|\btop [\w ]{0,20}headlines at \d", re.I)
+                             r"\bstock price, news, quote\b|,? and more\s*$|\btop [\w ]{0,20}headlines at \d|"
+                             # v51 (live feed 15.11.2026): a photo caption and a readers' poll as headlines ("FILE PHOTO: The
+                             # Federal Reserve Board building is seen in Washington", "SA Asks: What are the most attractive ...")
+                             r"^\s*file photo\b|^\s*(?:photos?|pictures?)\s*:|^\s*sa asks\b", re.I)
 # v37: machine-made pages about one company's report: 1,029 of the 1,564 headlines of 5.11.2026 were tagged as earnings, most
 # of them these. The stock's own page finds its company's news separately (_feed_clean with promo_only).
 EARNINGS_CHATTER_RE = re.compile(r":\s*(fiscal\s+)?q[1-4]\s+earnings snapshot\s*$|\bearnings call (highlights|transcript|is live)\b|"
@@ -126,7 +146,16 @@ LOCAL_RE = re.compile(r"\b(india|indian|russians?|ethiopia|ethiopian|pakistan|pa
                       r"turkmenistan|azerbaijan|kazakhstan|uzbekistan|lebanon|lebanese)\b", re.I)
 # v44: another country's own stock index is not US market news even when the headline names the US as the reason
 # ("Canadian stock market today: TSX futures drift higher in critical US inflation test")
-FOREIGN_INDEX_RE = re.compile(r"\b(tsx|canadian (stocks?|shares|markets?|stock market)|sensex|nifty|asx ?200|bovespa)\b", re.I)
+FOREIGN_INDEX_RE = re.compile(r"\b(tsx|canadian (stocks?|shares|markets?|stock market)|sensex|nifty|asx ?200|bovespa|"
+                              # v51: "Saudi stocks fell 0.66% as inflation eased to 1.7%" was a sentence of the home page's
+                              # summary of 15.11.2026
+                              r"tadawul|(saudi|gulf|dubai|abu dhabi|qatari?|kuwaiti?|egyptian) (stocks?|shares|bourses?|markets?|index))\b",
+                              re.I)
+# v51: Israel's own price index and home prices are not US market news ("Israel inflation rate drops to 1.1% in October",
+# "Contrary to forecasts, CPI falls, inflation drops and home prices fall across Israel"). Israel in a war or oil story
+# is not touched.
+_ISRAEL_LOCAL_RE = re.compile(r"\bisrael(?:i|'s|’s)?\b[^.]*\b(inflation|cpi|consumer prices?|home prices?|housing|shekel|bank of israel)\b|"
+                              r"\b(inflation|cpi|consumer price index|home prices?)\b[^.]*\bisrael\b", re.I)
 GLOBAL_RE = re.compile(r"\bU\.?S\.?\b|(?i:\b(america|american|fed|wall street|trump|washington|oil|crude|opec|global|"
                        r"world|dollar|treasur(y|ies)|tariffs?|nasdaq|s&p|chips?)\b)")
 # v47: "sanctions" used to be in the list above, so the word itself let far-away news in ("Poland passes bill targeting
@@ -145,6 +174,8 @@ def is_unwanted_headline(title: str) -> bool:
     """True for promotional listicles, video/Q&A items, too-short meaningless titles and far-away domestic news."""
     t = (title or "").strip()
     if not t or PROMO_RE.search(t) or _FORMAT_JUNK_RE.search(t) or EARNINGS_CHATTER_RE.search(t) or FOREIGN_INDEX_RE.search(t):
+        return True
+    if PERSONAL_RE.search(t) or (_ISRAEL_LOCAL_RE.search(t) and not GLOBAL_RE.search(t)):
         return True
     if len(t.split()) < 5 and not _SUBSTANCE_RE.search(t):
         return True

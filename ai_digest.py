@@ -45,6 +45,7 @@ import requests
 
 import llm_provider
 from news_links import is_unwanted_headline, LOCAL_RE, GLOBAL_RE
+from news_links import is_advice_outlet, FOREIGN_INDEX_RE          # v51
 from translation_fixes import fix_he
 
 MAX_ITEMS = 70          # stories sent to the model
@@ -355,7 +356,7 @@ def rank_items(items, cap=MAX_ITEMS):
     """One entry per story, the most important first. `outlets` = how many different outlets ran it."""
     clusters = []
     for it in items:
-        if is_unwanted_headline(it["title"]):
+        if is_unwanted_headline(it["title"]) or is_advice_outlet(it.get("source") or ""):
             continue
         words = _words(it["title"])
         home = None
@@ -758,6 +759,20 @@ def _shorter(text, limit):
     return out
 
 
+_CRYPTO_LEAD = re.compile(r"^\s*(bitcoin|ethereum|crypto\w*)\b", re.I)
+
+
+def _home_first(overview, market):
+    """v51, the home page of Sunday 15.11.2026: "Bitcoin rose 1.03%. Nvidia faces a $109 billion earnings test ... Saudi stocks
+    fell 0.66% as inflation eased to 1.7%." Another country's own market is not in the overview (rule 4 of the prompt, which the
+    model does not always keep), and on a day with no US session the overview does not open with the one price that moved."""
+    parts = [s for s in re.split(r"(?<=[.!?])\s+", overview or "") if s]
+    kept = [s for s in parts if not (FOREIGN_INDEX_RE.search(s) or (LOCAL_RE.search(s) and not GLOBAL_RE.search(s)))] or parts
+    if market and not market.get("same_day") and len(kept) > 1 and _CRYPTO_LEAD.search(kept[0]):
+        kept = kept[1:] + kept[:1]
+    return " ".join(kept).strip()
+
+
 def clean_answer(text, items, market, strict=True):
     """The model's answer as the English part of the digest. ValueError (with a reason the model can act on) when rejected.
     strict=False, after the attempts ran out: what can be saved is saved. A topic with an invented number is dropped, a
@@ -864,6 +879,7 @@ def clean_answer(text, items, market, strict=True):
     if strict and len(overview) > MAX_OVERVIEW:
         raise ValueError(f"the overview is {len(overview)} characters, at most 380. Do not list the numbers: the main move, its reason, nothing else")
     overview = _shorter(_sentences_without_guess(overview, all_titles), MAX_OVERVIEW) or overview
+    overview = _home_first(overview, market)
     if not opens_with_the_move(overview, market):
         if strict:
             raise ValueError("the MARKET NUMBERS say the day was extreme, and the overview does not say so. Open the overview "
@@ -906,6 +922,26 @@ def _english_blob(payload):
             "topics": [{"title": t["title_en"], "summary": t["summary_en"], "impact": t["impact_en"]} for t in payload["topics"]]}
 
 
+# v51, the home page of 15.11.2026: "Nvidia faces a $109 billion earnings test" came back as "ניידות נמוטרון נותרת במבחן
+# רווחים" — the model made a Hebrew word out of the name. A name in the English must be in the Hebrew, in English letters
+# or in its usual Hebrew spelling. Only names whose Hebrew spelling is known are checked.
+_NAMES_HE = {"Nvidia": "אנבידיה|נבידיה|אנוידיה", "Apple": "אפל", "Microsoft": "מיקרוסופט", "Amazon": "אמזון", "Alphabet": "אלפבית",
+             "Google": "גוגל", "Meta": "מטא", "Tesla": "טסלה", "Broadcom": "ברודקום", "AMD": "", "Intel": "אינטל",
+             "Micron": "מיקרון", "Oracle": "אורקל", "Netflix": "נטפליקס", "Palantir": "פלנטיר", "Walmart": "וולמארט|וולמרט",
+             "Anthropic": "אנתרופיק|אנת'רופיק", "OpenAI": "", "Disney": "דיסני", "Boeing": "בואינג", "JPMorgan": "מורגן",
+             "Goldman": "גולדמן", "TSMC": "", "Samsung": "סמסונג", "Trump": "טראמפ", "Powell": "פאוול|פאואל", "Warsh": "וו?א?רש",
+             "Nasdaq": "נאסד", "Bitcoin": "ביטקוין", "Iran": "איראנ|איראן", "China": "סין|סינ"}
+
+
+def lost_name(en_text, he_text):
+    """The first name of the list that the English has and the Hebrew does not, or None."""
+    for name, heb in _NAMES_HE.items():
+        if re.search(rf"\b{name}\b", en_text or "") and name.lower() not in (he_text or "").lower() \
+                and not (heb and re.search(heb, he_text or "")):
+            return name
+    return None
+
+
 def clean_hebrew(text, en):
     raw = _parse(text)
     topics = raw.get("topics") or []
@@ -929,6 +965,9 @@ def clean_hebrew(text, en):
         left = [w for w in re.findall(r"\b[a-z][a-z-]{2,}\b", he)]      # names start with a capital; "typicall risk-off" does not
         if left:
             raise ValueError(f"the field '{field}' has English words left: {left[:4]}. Translate them into Hebrew")
+        gone = lost_name(en_text, he)
+        if gone:
+            raise ValueError(f"the field '{field}' lost the name {gone}. Write {gone} in English letters, exactly as in the English")
     out["overview"] = fix_he(_GLUED_HE.sub(r"\1 ", out["overview"]))
     for t in out["topics"]:
         for k in t:

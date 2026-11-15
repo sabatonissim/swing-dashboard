@@ -71,6 +71,12 @@ EN_REWRITES = [
     (r"\btop (senate|house) republican\b", r"the senior Republican in the \1"),
     (r"\bdems\b", "Democrats"),
     (r"\bdem\b(?=\s+(?:says|said|senator|lawmakers?|leader))", "Democrat"),
+    # v51 (live feed 15.11.2026): "GOP midterm losses" -> "הפסדי אמצע הטווח של הרפובליקה הצרפתית";
+    # "after every midterm since 1950" -> "כל טווח אמצע"
+    (r"\bGOP\b", "Republican"),
+    (r"\bmidterm\b(?![\s-]+elections?)", "midterm election"),
+    # "Fed minutes" -> "דקות הפד"
+    (r"\b(fed|fomc|ecb|boe|boj|meeting)\s+minutes\b", r"\1 meeting protocol"),
     # v38c: "Visa slips" -> "תלושי ויזה"
     (r"\bslips\b", "falls slightly"),
     (r"\bslipped\b", "fell slightly"),
@@ -78,6 +84,9 @@ EN_REWRITES = [
 ]
 
 HE_FIXES = [
+    # v51 (live feed 15.11.2026)
+    ("דקות הפד", "פרוטוקול הפד"),
+    ("דקות ה-FOMC", "פרוטוקול ה-FOMC"),
     # v44 (live feed 10.11.2026): "rate" read as a tariff / a proportion, not the interest rate
     ("העלאת שיעור", "העלאת ריבית"),
     ("העלאות שיעור", "העלאות ריבית"),
@@ -182,7 +191,9 @@ _NIQQUD = re.compile(r"[֑-ׇֽֿׁׂׅׄ]")
 _LATIN_RUN = re.compile(r"[A-Za-z][A-Za-z'’-]*(?:\s+[A-Za-z][A-Za-z'’-]*){3,}")
 _PLAIN_EN = {"the", "a", "an", "of", "to", "in", "on", "at", "as", "is", "are", "was", "were", "for", "and", "or", "but", "with",
              "by", "from", "after", "before", "below", "above", "over", "under", "into", "amid", "its", "their", "that", "this",
-             "will", "says", "said", "fell", "rose", "falls", "rises", "than", "more", "not", "has", "have", "had", "be"}
+             "will", "says", "said", "fell", "rose", "falls", "rises", "than", "more", "not", "has", "have", "had", "be",
+             # v51: a headline in Title Case has no small words: "רווחי Nvidia ו-Anthropic IPO Lead Market Week" (15.11.2026)
+             "lead", "leads", "week", "market", "markets", "stocks", "shares", "ahead", "test", "tests", "faces", "face"}
 
 
 def half_translated(hebrew: str) -> bool:
