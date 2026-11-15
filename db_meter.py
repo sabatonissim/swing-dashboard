@@ -89,6 +89,25 @@ def add(source: str, connections: int = 0, queries: int = 0, rows: int = 0, nbyt
         c[1] += queries
         c[2] += rows
         c[3] += nbytes
+        day = datetime.now(timezone.utc).date()
+        if _today["day"] != day:
+            _today["day"], _today["bytes"] = day, {}
+        if nbytes or connections:
+            _today["bytes"][source] = _today["bytes"].get(source, 0) + nbytes + connections * CONNECT_BYTES
+
+
+# v50: what THIS process has read today (UTC), by source. _pending is emptied at every write to db_usage; this is not, so
+# the API server can stop answering strangers from the database once a day's reads pass its limit (api_server.get_conn).
+CONNECT_BYTES = 5000              # the handshake of one connection (= data_health.CONN_OVERHEAD_BYTES; a test compares them)
+_today = {"day": None, "bytes": {}}
+
+
+def bytes_today(skip: tuple = ()) -> int:
+    """Estimated bytes read today by this process, without the sources whose name starts with one of `skip`."""
+    with _lock:
+        if _today["day"] != datetime.now(timezone.utc).date():
+            return 0
+        return sum(n for source, n in _today["bytes"].items() if not (skip and source.startswith(skip)))
 
 
 def take_pending() -> dict:

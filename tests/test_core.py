@@ -568,10 +568,11 @@ def test_cached_endpoints_keep_their_parameters(api):
     """v34: the decorator must not hide an endpoint's query parameters from FastAPI."""
     params = {r.path: {p.name for p in r.dependant.query_params} for r in api.app.routes if hasattr(r, "dependant")}
     assert params["/api/stocks"] == {"limit"}
-    assert params["/api/macro-news/search"] == {"q", "days", "limit"}
-    assert params["/api/daily-digest"] == {"day", "top_n"}
+    assert params["/api/macro-news/search"] == {"q"}            # v50: days and limit are fixed (7, 60)
+    assert params["/api/daily-digest"] == {"day"}               # v50: top_n is fixed
     assert params["/api/heatmap"] == {"index"}
     assert params["/api/demo-portfolio"] == {"min_score", "top_per_day", "amount", "capital"}
+    assert params["/api/insider-buys"] == {"days", "min_value"} and params["/api/backtest"] == {"pattern", "horizon"}
     paths = {r.path: {p.name for p in r.dependant.path_params} for r in api.app.routes if hasattr(r, "dependant")}
     assert paths["/api/lookup/{ticker}"] == {"ticker"}
     assert paths["/api/sector-comparison/{ticker}"] == {"ticker"}
@@ -1893,19 +1894,138 @@ def test_today_line_comes_from_the_digest_kept_in_memory(api, monkeypatch):
         "overview_he": "עברית", "overview_en": "English", "generated_at": "2026-11-10T14:00:00+00:00",
         "market": {"status": "pre_open", "day": "2026-11-10", "session_day": "2026-11-09"}}}
     calls = []
-    monkeypatch.setattr(api, "get_daily_digest", lambda **kw: calls.append(kw) or digest)
+    monkeypatch.setattr(api, "get_daily_digest", lambda *a, **kw: calls.append((a, kw)) or digest)
     line = api.get_today_line.__wrapped__()
-    assert calls == [{"day": None, "top_n": 6}]
+    assert calls == [((None,), {})]                 # v50: exactly how get_daily_digest_endpoint calls it = the same kept answer
     assert line["available"] and line["is_today"] and line["overview_he"] == "עברית" and line["status"] == "pre_open"
     digest["is_today"] = False
     assert api.get_today_line.__wrapped__()["is_today"] is False
     digest["ai_summary"] = None
     assert api.get_today_line.__wrapped__() == {"available": False, "day": "2026-11-10"}
 
-    def down(**kw):
+    def down(*a, **kw):
         raise RuntimeError("no database")
     monkeypatch.setattr(api, "get_daily_digest", down)
     assert api.get_today_line.__wrapped__() == {"available": False}
+
+
+# ---- v50 (security review 15.11.2026): nobody outside can use up the database's monthly limits ----
+def test_public_requests_stop_at_the_daily_database_budget(api, monkeypatch):
+    """Past the day's limit a visitor's request gets no connection (503 / the answer in memory); a signed-in person's own
+    data, the scheduler and the alert loop always do."""
+    import db_meter
+    import data_health
+    assert db_meter.CONNECT_BYTES == data_health.CONN_OVERHEAD_BYTES
+    assert issubclass(api.DatabaseBudgetReached, api.psycopg2.OperationalError)        # -> the 503 handler
+    for src in ("server /api/macro-news", "server /api/daily-digest", "server", "server /api/fundamentals"):
+        assert api._budget_allows(src, 19.9, 20) and not api._budget_allows(src, 20.0, 20)
+    for src in ("server /api/watchlist", "server /api/watchlist-setups", "server /api/trades", "server /api/alerts",
+                "server /api/push", "server /api/auth", "server scheduler", "server alerts"):
+        assert api._budget_allows(src, 500, 20)
+
+    opened = []
+    monkeypatch.setattr(api.psycopg2, "connect", lambda *a, **k: opened.append(1) or "conn")
+    monkeypatch.setattr(api, "PUBLIC_DB_BUDGET_MB", 20.0)
+    monkeypatch.setattr(api, "_public_db_mb_today", lambda: 25.0)
+    token = db_meter.set_source("server /api/macro-news")
+    try:
+        with pytest.raises(api.DatabaseBudgetReached):
+            api.get_conn()
+        assert not opened
+    finally:
+        db_meter.reset_source(token)
+    token = db_meter.set_source("server /api/trades")
+    try:
+        assert api.get_conn() == "conn" and opened == [1]
+    finally:
+        db_meter.reset_source(token)
+
+
+def test_db_meter_counts_the_day_by_source():
+    import db_meter
+    saved = dict(db_meter._today)
+    db_meter._today.update(day=None, bytes={})
+    try:
+        db_meter.add("server /api/stocks", connections=1, nbytes=1000)
+        db_meter.add("server /api/trades", nbytes=700)
+        db_meter.add("server scheduler", connections=2)
+        db_meter.take_pending()                              # a write to db_usage does not empty the day's count
+        assert db_meter.bytes_today() == 1000 + 700 + 3 * db_meter.CONNECT_BYTES
+        assert db_meter.bytes_today(skip=("server scheduler", "server /api/trades")) == 1000 + db_meter.CONNECT_BYTES
+        db_meter._today["day"] = None                        # a new day starts from zero
+        assert db_meter.bytes_today() == 0
+    finally:
+        db_meter._today.update(saved)
+        db_meter.take_pending()
+
+
+def test_public_endpoints_take_only_the_sites_own_values(api, monkeypatch):
+    """Each free parameter was a way to make the server read the database again and again."""
+    import re
+    assert api._nearest_choice(77, (70, 75, 80)) == 75 and api._nearest_choice(1e9, (0, 100000)) == 100000
+    assert api._nearest_choice(0.3, api.INSIDER_BUY_MIN_VALUES) == 0
+
+    # the demo portfolio's buttons in the page = the server's list
+    page = ROOT / "index.html"
+    if page.exists():                                        # not among the files of the browser check (tests/local_check)
+        src = page.read_text(encoding="utf-8")
+        for key, choices in api.DEMO_CHOICES.items():
+            m = re.search(r"chips\('%s',\[([\d,]+)\]" % key, src)
+            assert m and tuple(int(x) for x in m.group(1).split(",")) == choices, key
+
+    calls = []
+    monkeypatch.setattr(api, "get_demo_portfolio", lambda **kw: calls.append(kw) or "demo")
+    assert api.get_demo_portfolio_endpoint(min_score=77, top_per_day=10, amount=99999, capital=1) == "demo"
+    assert calls == [{"min_score": 75, "top_per_day": 5, "amount": 5000, "capital": 10000}]
+
+    calls = []
+    monkeypatch.setattr(api, "get_insider_buys", lambda *a: calls.append(a) or "buys")
+    api.get_insider_buys_endpoint(days=31, min_value=123456.789)
+    api.get_insider_buys_endpoint(days=30, min_value=100000)
+    assert calls == [(30, 100000), (30, 100000)]
+
+    calls = []
+    monkeypatch.setattr(api, "search_macro_news", lambda q: calls.append(q) or [])
+    api.search_macro_news_endpoint(q="  Fed   RATE ")
+    assert calls == ["fed rate"]
+
+    monkeypatch.setattr(api, "get_backtest_patterns", lambda: ["cup_handle"])
+    monkeypatch.setattr(api, "get_backtest", lambda p, h: (p, h))
+    assert api.get_backtest_endpoint(pattern="cup_handle", horizon=20) == ("cup_handle", 20)
+    assert api.get_backtest_endpoint(pattern="all", horizon=10) == ("all", 10)
+    with pytest.raises(api.HTTPException):
+        api.get_backtest_endpoint(pattern="x' OR 1=1", horizon=10)
+    with pytest.raises(api.HTTPException):
+        api.get_backtest_endpoint(pattern="all", horizon=15)
+
+    calls = []
+    monkeypatch.setattr(api, "get_stocks", lambda n: calls.append(n) or list(range(n)))
+    assert len(api.get_stocks_endpoint(limit=7)) == 7 and len(api.get_stocks_endpoint(limit=150)) == 150
+    assert len(api.get_stocks_endpoint(limit=151)) == 151 and calls == [25, 150, 300]
+
+    import datetime as _dt
+    import ai_digest
+    today = ai_digest.today_local()
+    monkeypatch.setattr(api, "get_daily_digest", lambda day: day)
+    assert api.get_daily_digest_endpoint(day=None) is None
+    assert api.get_daily_digest_endpoint(day=today.isoformat()) == today.isoformat()
+    for bad in (today + _dt.timedelta(days=1), today - _dt.timedelta(days=api.DIGEST_MAX_DAYS_BACK + 1)):
+        with pytest.raises(api.HTTPException):
+            api.get_daily_digest_endpoint(day=bad.isoformat())
+
+
+def test_usage_events_and_health_do_not_touch_the_database(api, monkeypatch):
+    def forbidden(*a, **k):
+        raise AssertionError("the database was opened")
+    monkeypatch.setattr(api, "get_conn", forbidden)
+    monkeypatch.setattr(api, "db_cursor", forbidden)
+    api._track_buffer.clear()
+    for i in range(api._TRACK_FLUSH_MAX + 50):
+        api.track_event(api.TrackEvent(event_type="page_view", entity_id=str(i)))
+    assert len(api._track_buffer) == api._TRACK_FLUSH_MAX + 50
+    api._track_buffer.clear()
+    assert api.health() == {"status": "ok"}
+    assert "/api/ui-strings" not in {getattr(r, "path", "") for r in api.app.routes}
 
 
 def test_statistics_start_date_is_the_same_in_both_files(scanner, api):
@@ -1944,6 +2064,8 @@ def test_api_robots_opens_only_answers_from_memory(api):
     fns = {r.path: r.endpoint for r in api.app.routes if hasattr(r, "endpoint")}
     for path in api._ROBOTS_ALLOW:
         fn = fns[path]
+        if fn.__name__.endswith("_endpoint"):                # v50: the endpoint tidies the parameters, then asks the kept function
+            fn = getattr(api, fn.__name__[:-len("_endpoint")])
         assert hasattr(fn, "__wrapped__") or path == "/api/key-news", f"{path} is not kept in memory"
 
 

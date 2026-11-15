@@ -8,7 +8,6 @@ Run with:
 Endpoints:
     GET /api/stocks              -> latest flagged stocks (scanned_stocks)
     GET /api/macro-news          -> latest macro news items (macro_news)
-    GET /api/ui-strings?lang=he  -> UI text dictionary for a given language
     GET /api/market-movers       -> whole-US-market today's biggest movers
     GET /api/sector-performance  -> the 11 SPDR sector ETFs: 1D table + normalized period chart
     GET /api/heatmap             -> S&P 500 / Nasdaq 100 sector-grouped treemap data
@@ -206,6 +205,9 @@ async def security_middleware(request: Request, call_next):
             too_big = True
         if too_big:
             return _refuse(request, 413, "request too large")
+        # v50: a body sent in chunks has no Content-Length, so the limit above never saw it. The site never sends one.
+        if "chunked" in (request.headers.get("transfer-encoding") or "").lower():
+            return _refuse(request, 411, "content-length required")
     m = _TICKER_PATH_RE.match(path)
     if m and not _TICKER_OK_RE.match(m.group(1)):
         return _refuse(request, 404, "ticker not found")
@@ -326,7 +328,40 @@ def _canon_ticker(raw: str) -> str:
     return f"{m.group(1)}-{m.group(2)}" if m else t
 
 
+# v50 (security review 15.11.2026): the free Neon plan stops the database for the rest of the month after 5 GB of data read
+# from it, and anybody could use that up from outside: one search request read 203 KB (measured), 240 requests a minute are
+# allowed per address, so ~11 minutes of a simple loop from one computer would have finished November's last 0.54 GB.
+# Each endpoint below now takes only the values the site really sends, and behind them is this limit: what the server reads
+# from the database for visitors in one day (UTC), by db_meter's count. Past it, a public request gets no connection:
+# _cached_answer serves the last good answer, anything else answers 503. Signed-in people's own data (watchlist, trades,
+# alerts), the scheduler and the alert loop are not counted and never stopped.
+# A normal day of the server is ~3 MB (usage.db, 12.11.2026). Worst case: 20 MB x 30 days = 0.6 GB of the 5 GB.
+# More visitors one day -> raise PUBLIC_DB_BUDGET_MB in Render; /api/data-health shows today's count.
+PUBLIC_DB_BUDGET_MB = float(os.environ.get("PUBLIC_DB_BUDGET_MB", "20") or 20)
+_BUDGET_EXEMPT = ("server scheduler", "server alerts", "server /api/auth", "server /api/watchlist", "server /api/trades",
+                  "server /api/alerts", "server /api/push")
+_budget_logged = {"at": 0.0}
+
+
+class DatabaseBudgetReached(psycopg2.OperationalError):
+    """Today's limit of database reads for visitors is used up (answered as 503, like a database that is down)."""
+
+
+def _public_db_mb_today() -> float:
+    return db_meter.bytes_today(skip=_BUDGET_EXEMPT) / 1e6
+
+
+def _budget_allows(source: str, used_mb: float, budget_mb: float) -> bool:
+    return source.startswith(_BUDGET_EXEMPT) or used_mb < budget_mb
+
+
 def get_conn():
+    if not _budget_allows(db_meter.current_source(), _public_db_mb_today(), PUBLIC_DB_BUDGET_MB):
+        if time.time() - _budget_logged["at"] > 600:
+            _budget_logged["at"] = time.time()
+            print(f"[SECURITY WARNING] visitors' database reads passed {PUBLIC_DB_BUDGET_MB:.0f} MB today — public requests "
+                  f"get the answers in memory or 503 until midnight UTC (last: {db_meter.current_source()})")
+        raise DatabaseBudgetReached("daily database budget for public requests reached")
     # v35c: without a time limit a database that does not answer holds the request (and a server thread) for minutes
     conn = psycopg2.connect(DB_URL, connect_timeout=15)
     return conn
@@ -753,9 +788,16 @@ STOCKS_REREAD_SEC = 6 * 3600
 _stocks_last: dict = {}      # limit -> (time of the newest scan, when read, the answer)
 
 
+STOCKS_LIMITS = (25, 60, 150, 300)        # v50: 300 different limits were 300 different database reads; the site asks for 150
+
+
 @app.get("/api/stocks")
+def get_stocks_endpoint(limit: int = Query(default=25, ge=1, le=300)):   # v27: le 100 -> 300 (the scan covers ~2,000 stocks now)
+    return get_stocks(min(c for c in STOCKS_LIMITS if c >= limit))[:limit]
+
+
 @_cached_answer(max_keys=12)
-def get_stocks(limit: int = Query(default=25, ge=1, le=300)):   # v27: le 100 -> 300 (the scan covers ~2,000 stocks now)
+def get_stocks(limit: int = 25):
     """One row per ticker (its most recent signal), not one row per scan
     run. The scan runs twice a day and INSERTs a fresh row for every match
     without deduping — a stock that keeps re-qualifying (e.g. a strong
@@ -897,11 +939,18 @@ def _median(vals):
 
 
 @app.get("/api/backtest")
+def get_backtest_endpoint(pattern: str = Query(default="all", max_length=60), horizon: int = Query(default=10)):
+    # v50: only "all" or a pattern from the picker's own list (already in memory) reaches the database. Any other text
+    # used to be a new database query each time.
+    if horizon not in (10, 20):
+        raise HTTPException(status_code=400, detail="horizon must be 10 or 20")
+    if pattern != "all" and pattern not in get_backtest_patterns():
+        raise HTTPException(status_code=404, detail="unknown pattern")
+    return get_backtest(pattern, horizon)
+
+
 @_cached_answer(max_keys=64)
-def get_backtest(
-    pattern: str = Query(default="all"),
-    horizon: int = Query(default=10),
-):
+def get_backtest(pattern: str = "all", horizon: int = 10):
     """Backtest over our own scan history, built ONLY from independent signals
     (see the note above): win rate, average/median return, and a cohort-based
     equity curve + drawdown, an RS-rating breakdown, period breakdowns, and the
@@ -1147,15 +1196,31 @@ def _run_demo_portfolio(rows, min_score, top_per_day, amount, capital):
     return {"trades": trades, "summary": summary, "equity_curve": curve, "after_days": after_days, "exits": exits}
 
 
+# v50: the four settings are the buttons of the page (renderDemoControls in index.html; a test compares the lists). They were
+# free numbers, every combination was a new answer, and every new answer read the whole scan history from the database
+# again, although that read does not depend on the settings at all. Now the history is read once per refresh
+# (_demo_history), and a value that is not one of the buttons becomes the nearest button.
+DEMO_CHOICES = {"min_score": (70, 75, 80, 85, 90), "top_per_day": (1, 3, 5), "amount": (500, 1000, 2000, 5000),
+                "capital": (10000, 25000, 100000)}
+
+
+def _nearest_choice(value, choices):
+    return min(choices, key=lambda c: (abs(c - value), c))
+
+
 @app.get("/api/demo-portfolio")
-@_cached_answer(max_keys=64)
-def get_demo_portfolio(
-    min_score: int = Query(default=80, ge=50, le=100),
+def get_demo_portfolio_endpoint(
+    min_score: int = Query(default=80, ge=0, le=100),
     top_per_day: int = Query(default=3, ge=1, le=10),
-    amount: int = Query(default=1000, ge=100, le=100000),
-    capital: int = Query(default=10000, ge=1000, le=10000000),
+    amount: int = Query(default=1000, ge=1, le=100000),
+    capital: int = Query(default=10000, ge=1, le=10000000),
 ):
-    """Replays the demo portfolio over our scan history (see the note above)."""
+    asked = {"min_score": min_score, "top_per_day": top_per_day, "amount": amount, "capital": capital}
+    return get_demo_portfolio(**{k: _nearest_choice(v, DEMO_CHOICES[k]) for k, v in asked.items()})
+
+
+@_cached_answer(max_keys=1)
+def _demo_history():
     with db_cursor(dict_cursor=True) as (conn, cur):
         cur.execute(
             """
@@ -1175,7 +1240,13 @@ def get_demo_portfolio(
             (min(DEMO_SCORE_STEPS), STATS_SINCE),
         )
         pending = cur.fetchone()["pending"]
+    return rows, pending
 
+
+@_cached_answer(max_keys=200)        # 5 x 3 x 4 x 3 = 180 combinations of the buttons, computed from memory
+def get_demo_portfolio(min_score: int = 80, top_per_day: int = 3, amount: int = 1000, capital: int = 10000):
+    """Replays the demo portfolio over our scan history (see the note above)."""
+    rows, pending = _demo_history()
     main = _run_demo_portfolio(rows, min_score, top_per_day, amount, capital)
 
     by_min_score = []
@@ -1760,9 +1831,16 @@ def _news_rows_by_id(cur, ids: list) -> list:
     return [rows[i] for i in ids if i in rows]
 
 
+NEWS_LIMITS = (25, 50, 100)               # v50: as for /api/stocks
+
+
 @app.get("/api/macro-news")
+def get_macro_news_endpoint(limit: int = Query(default=25, ge=1, le=100)):
+    return get_macro_news(min(c for c in NEWS_LIMITS if c >= limit))[:limit]
+
+
 @_cached_answer(max_keys=12)
-def get_macro_news(limit: int = Query(default=25, ge=1, le=100)):
+def get_macro_news(limit: int = 25):
     with db_cursor(dict_cursor=True) as (conn, cur):
         # Critical-impact stories (Fed rate decisions, wars, etc.) stay relevant
         # for days, not just until the next batch of routine updates rolls in
@@ -1837,13 +1915,19 @@ def get_macro_news(limit: int = Query(default=25, ge=1, le=100)):
     return out
 
 
+NEWS_SEARCH_DAYS, NEWS_SEARCH_LIMIT = 7, 60      # what the site's search box asks for
+
+
 @app.get("/api/macro-news/search")
+def search_macro_news_endpoint(q: str = Query(default="", max_length=100)):
+    # v50: `days` (up to 30) and `limit` (up to 200) were the caller's choice: one request read 203 KB from the database.
+    # Nothing is deleted or hidden: the search still looks at every stored headline of the last 7 days and returns the 60
+    # newest that match, which is what the site always asked for. Upper/lower case and spaces around = the same search.
+    return search_macro_news(" ".join(q.lower().split()))
+
+
 @_cached_answer(ttl_sec=300, max_keys=64)
-def search_macro_news(
-    q: str = Query(default="", max_length=100),
-    days: int = Query(default=7, ge=1, le=30),
-    limit: int = Query(default=60, ge=1, le=200),
-):
+def search_macro_news(q: str = "", days: int = NEWS_SEARCH_DAYS, limit: int = NEWS_SEARCH_LIMIT):
     """Full search across macro_news, independent of the diversity/rotation
     algorithm the main feed (/api/macro-news) uses. That endpoint only ever
     returns ~25 recent items so the feed stays fresh and balanced across
@@ -1885,14 +1969,6 @@ def search_macro_news(
     return [_tidy_news_row(r) for r in rows]
 
 
-@app.get("/api/ui-strings")
-def get_ui_strings(lang: str = Query(default="he", pattern="^(he|en)$")):
-    with db_cursor(dict_cursor=True) as (conn, cur):
-        cur.execute("SELECT string_key, he, en FROM ui_strings")
-        rows = cur.fetchall()
-    return {r["string_key"]: r[lang] for r in rows}
-
-
 @app.get("/api/ping")
 def ping():
     """Cheapest possible answer — no database. Used by the server's own keep-alive."""
@@ -1903,7 +1979,11 @@ def ping():
 @_cached_answer(ttl_sec=60, max_keys=1)
 def scheduler_status():
     """When each workflow fires next (ET), what the scheduler started recently, and whether it is on. No secrets."""
-    return scheduler.status(get_conn)
+    out = scheduler.status(get_conn)
+    for r in out.get("recent_runs") or []:        # v50: a database error's text names the database's host
+        if "error" in r:
+            r["error"] = str(r["error"]).split(":", 1)[0]
+    return out
 
 
 @app.get("/api/data-health")
@@ -1919,19 +1999,17 @@ def get_data_health():
     if not rows:
         return {"available": False}
     return {"available": True, "day": rows[0]["day"].isoformat(), "checked_at": rows[0]["checked_at"].isoformat(),
+            # v50: today's reads for visitors against the daily limit (this server process, since its last restart)
+            "public_db_today_mb": round(_public_db_mb_today(), 2), "public_db_budget_mb": PUBLIC_DB_BUDGET_MB,
             "status": rows[0]["status"], "results": rows[0]["results"],
             "recent": [{"day": r["day"].isoformat(), "status": r["status"]} for r in rows]}
 
 
 @app.get("/api/health")
 def health():
-    try:
-        with db_cursor() as (conn, cur):
-            cur.execute("SELECT 1")
-        return {"status": "ok", "db": "connected"}
-    except Exception as e:
-        print(f"[error] health check failed: {type(e).__name__}: {e}")
-        return JSONResponse({"status": "error"}, status_code=503)
+    """v50: no database. It ran a query on every call, uncached: anyone asking once every few minutes kept the database
+    awake all month (180 compute-hours on a plan of 100). Nothing of ours reads it; the state of the data is /api/data-health."""
+    return {"status": "ok"}
 
 
 _headline_translation_cache: dict = {}
@@ -5504,6 +5582,7 @@ def _morning_brief_check():
 
 
 def _macro_alert_loop():
+    db_meter.set_source("server alerts")   # v50: its own name in the count, and outside the visitors' daily limit (get_conn)
     time.sleep(60)                         # let the server finish booting and the calendar warm up
     while True:
         try:
@@ -6126,10 +6205,30 @@ def _digest_ai_for_day(conn, day):
     return ai
 
 
+DIGEST_TOP_N = 6
+DIGEST_MAX_DAYS_BACK = 60        # = the most that /api/daily-digest/days lists
+
+
 @app.get("/api/daily-digest")
-@_cached_answer(max_keys=32)
-def get_daily_digest(day: Optional[str] = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
-                     top_n: int = Query(default=6, ge=1, le=15)):
+def get_daily_digest_endpoint(day: Optional[str] = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
+    # v50: `top_n` (1-15, never sent by the site) multiplied the answers kept per day by 15, and any past date was read from
+    # the database (~1,000 rows a day). Now: one answer per day, and only the days the site can list.
+    if day:
+        import ai_digest as aid
+        try:
+            d = date.fromisoformat(day)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="bad day")
+        today = aid.today_local()
+        if d > today:
+            raise HTTPException(status_code=400, detail="day is in the future")
+        if (today - d).days > DIGEST_MAX_DAYS_BACK:
+            raise HTTPException(status_code=404, detail="no summary for this day")
+    return get_daily_digest(day)
+
+
+@_cached_answer(max_keys=70)
+def get_daily_digest(day: Optional[str] = None, top_n: int = DIGEST_TOP_N):
     """Digest of ONE calendar day (DIGEST_TZ, default US Eastern). No `day` -> today, or yesterday while today is
     still thin. Response: rule-based sections (critical + most-covered topics) + the AI running summary."""
     import ai_digest as aid
@@ -6219,7 +6318,7 @@ def get_today_line():
     ~1 KB. Taken from the answer /api/daily-digest already keeps in memory, so it adds no database call of its own.
     `is_today` False = the digest shown is still yesterday's (the site says so); available False = no overview to show."""
     try:
-        d = get_daily_digest(day=None, top_n=6)        # the same key the site's own request uses
+        d = get_daily_digest(None)        # the same key the site's own request uses (get_daily_digest_endpoint)
     except Exception as e:  # noqa: BLE001
         print(f"[warn] today line: {type(e).__name__}: {e}")
         return {"available": False}
@@ -7061,6 +7160,7 @@ def get_earnings_guidance(day: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"))
 
 
 @app.get("/api/company-profile/{ticker}")
+@_cached_answer(ttl_sec=600, max_keys=256)      # v50: every call was a database read (and, without a profile, a write)
 def get_company_profile(ticker: str):
     """v30: "what the company does and how it makes money" — written by company_profiles.py (GitHub Actions) from the
     business section of the company's annual report to the SEC, organised by the AI. A stock without a profile yet ->
@@ -7313,9 +7413,18 @@ def get_signal_context(ticker: str = Query(..., max_length=12), pattern: str = Q
     }
 
 
+INSIDER_BUY_DAYS = (7, 30, 90)
+INSIDER_BUY_MIN_VALUES = (0, 100000, 250000, 1000000)
+
+
 @app.get("/api/insider-buys")
+def get_insider_buys_endpoint(days: int = Query(default=30, ge=1, le=90), min_value: float = Query(default=100000, ge=0)):
+    # v50: any number was a new database read (min_value is a decimal: endless values). The site asks for days=30 only.
+    return get_insider_buys(_nearest_choice(days, INSIDER_BUY_DAYS), _nearest_choice(min_value, INSIDER_BUY_MIN_VALUES))
+
+
 @_cached_answer(max_keys=20)
-def get_insider_buys(days: int = Query(default=30, ge=1, le=90), min_value: float = Query(default=100000, ge=0)):
+def get_insider_buys(days: int = 30, min_value: float = 100000):
     """Open-market insider PURCHASES filed in the last `days`, one row per stock (all insiders together),
     newest first. Feeds the home-page list and the scanner tag."""
     with db_cursor(dict_cursor=True) as (conn, cur):
@@ -7393,12 +7502,10 @@ def _track_flush_if_due() -> None:
 
 @app.post("/api/track")
 def track_event(event: TrackEvent):
+    # v50: only kept in memory here. It used to write to the database after every 200 events: 60 requests a minute from one
+    # address = a write every ~3 minutes, so the database never fell asleep (and the table filled up). The alert loop
+    # writes the buffer at most every 30 minutes (_track_flush_if_due); the buffer keeps the newest 5,000 events.
     _track_buffer.append((event.event_type, event.entity_id, event.session_id, dt.now(timezone.utc)))
-    if len(_track_buffer) >= _TRACK_FLUSH_MAX:
-        try:
-            _track_flush()
-        except Exception as e:  # noqa: BLE001 — a lost usage count must never turn into an error for the visitor
-            print(f"[track] flush failed: {type(e).__name__}: {e}")
     return {"status": "logged"}
 
 

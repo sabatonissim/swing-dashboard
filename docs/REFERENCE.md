@@ -21,7 +21,7 @@
          └── GitHub Actions (מחליף את ה-Cron Jobs של Railway — חינמי ללא הגבלה, כי הריפו ציבורי)
                ├── stock-scanner.yml          — מריץ pipeline_a_scanner.py, 2 טריגרים לכל סשן (ראשי + גיבוי ~15 דק' אחריו)
                ├── news-aggregator.yml        — מריץ pipeline_b_news_aggregator.py
-               ├── keep-render-awake.yml      — פינג ל-/api/health כל 13 דק' כדי ש-Render לא ירדם
+               ├── keep-render-awake.yml      — פינג ל-/api/ping כל 13 דק' כדי ש-Render לא ירדם
                ├── cleanup-stale-signals.yml  — ידני בלבד (workflow_dispatch), מריץ cleanup_stale_signals.py
                └── earnings-refresh.yml       — (v13) ריצה קצרה (~2-3 דק') ל-heatmap + תוצאות דוחות: `python pipeline_a_scanner.py --quick`
 ```
@@ -153,7 +153,7 @@ GitHub Actions מגביל ריפו **פרטי** ל-2,000 דקות ריצה/חו�
 
 | Endpoint | תיאור |
 |---|---|
-| `/api/health` | חיות + DB |
+| `/api/health` | חיות בלבד, בלי מסד (v50) |
 | `/api/stocks` | מניות מסומנות |
 | **`GET /api/seo/stock/{t}`**, **`GET /api/seo/index`** (v35) | העובדות שדף מניה מציג לגוגל (`api/page.js` ב-Vercel) / רשימת המניות עם פרופיל (למפת האתר ול-`/stocks`). שורה אחת למניה, מ-`_seo_table`: קריאה אחת למסד ב-6 שעות, השאר מהזיכרון |
 | **`POST /api/auth/google`** (v13) | מקבל `{credential}` של Google, מאמת מול מפתחות גוגל, יוצר/מעדכן משתמש, מחזיר `{token, user}` (טוקן 90 יום). המשתמש הראשון יורש את רשימת המעקב הישנה |
@@ -161,8 +161,8 @@ GitHub Actions מגביל ריפו **פרטי** ל-2,000 דקות ריצה/חו�
 | **`GET /api/ping`**, **`GET /api/scheduler/status`** (v13) | `ping` — תשובה מינימלית בלי DB (שמירת השרת ער בלי להעיר את Neon). `scheduler/status` — האם התזמון פעיל, מתי כל workflow ירוץ הבא (ET), ומה הופעל לאחרונה (`scheduler_runs`). בלי סודות |
 | **`GET /api/ticker-search?q=`** (v13) | חיפוש מניה/ETF לפי טיקר או שם חברה (לבורר ההשוואה): `universe_movers` (קידומת טיקר) + Yahoo search. כשל באחד המקורות לא שובר. קאש שעה (תשובה ריקה לא נשמרת) |
 | `/api/watchlist`, `/api/watchlist-setups` (v13) | **דורשים התחברות** (401 בלי טוקן); כל משתמש רואה רק את הרשימה שלו |
-| `/api/macro-news`, `/api/macro-news/search` | חדשות (`SELECT *` — כולל `body_*` כשקיימים) |
-| **`/api/daily-digest?day=YYYY-MM-DD&top_n=6`** (v16) | סיכום של **יום קלנדרי אחד** (לפי `DIGEST_TZ`). בלי `day`: היום, או אתמול כל עוד להיום פחות מ-15 כתבות. מחזיר `day`, `is_today`, `critical`, `hot_topics`, `total_items` (כולם של אותו יום) + **`ai_summary`** (הסיכום המצטבר/הסופי של היום או `null`; כולל `is_final`, `is_today`, `new_since`, `covers_from/to`, `item_count`, `updates`). `day` עתידי/לא תקין → 400 |
+| `/api/macro-news`, `/api/macro-news/search` | חדשות (`SELECT *` — כולל `body_*` כשקיימים). v50: החיפוש קבוע על 7 ימים ו-60 תוצאות, רק `q` |
+| **`/api/daily-digest?day=YYYY-MM-DD` (v50: בלי `top_n`, עד 60 יום אחורה)** (v16) | סיכום של **יום קלנדרי אחד** (לפי `DIGEST_TZ`). בלי `day`: היום, או אתמול כל עוד להיום פחות מ-15 כתבות. מחזיר `day`, `is_today`, `critical`, `hot_topics`, `total_items` (כולם של אותו יום) + **`ai_summary`** (הסיכום המצטבר/הסופי של היום או `null`; כולל `is_final`, `is_today`, `new_since`, `covers_from/to`, `item_count`, `updates`). `day` עתידי/לא תקין → 400 |
 | **`/api/daily-digest/days?limit=14`** (v16) | היסטוריה: כרטיס קצר לכל יום שיש לו סיכום AI, מהחדש לישן — `day`, `item_count`, `is_final`, `overview_en/he`, `topics_en/he` (כותרות בלבד). הפרונט מציג אותם תחת "📅 ימים קודמים" |
 | **`/api/market-ticker`** | **חדש.** S&P 500 / נאסד"ק / דאו / VIX / ביטקוין / את'ריום / זהב. yfinance `.history(5d)` לכל סמל, קאש 90 שניות, מחזיר `price`, `change_points`, `change_pct`. fallback לקאש האחרון בכשל |
 | **`/api/technical-setup/{ticker}`** | **חדש.** מבנה טכני נוכחי — ראה 7.1. מחזיר `candidates[]` (ממוינים), `scan_match`, `price_series` (OHLC, 160 נרות אחרונים) |
@@ -172,7 +172,7 @@ GitHub Actions מגביל ריפו **פרטי** ל-2,000 דקות ריצה/חו�
 | `/api/earnings-calendar` | יומן דוחות. חלון **-6/+7 ימים** (היה -2/+7), 40 הגדולים לפי שווי שוק **+ טיקרים שכבר דיווחו (יש `eps_actual`) מוגנים מדחיקה** |
 | `/api/fundamentals/{ticker}` | SEC EDGAR. **עודכן:** (א) התאמת טיקר מנרמלת מקף/נקודה (`BRK-B`→`BRKB`); (ב) fallback ל-**IFRS** (`ifrs-full` ממוזג עם `us-gaap` + שמות שדות מקבילים) לחברות זרות שמגישות 20-F |
 | **`/api/price-compare?tickers=A,B,C&period=1M\|3M\|6M\|YTD\|1Y`** | **שוחזר (חסר בשרת עד v5 — הפרונט קרא לו וקיבל 404).** עד 3 טיקרים, מחזיר `dates[]` + `series[{ticker, values[]}]` באחוזי שינוי מתחילת התקופה. קאש 5 דק' |
-| `/api/track` (POST), `/api/analytics/top-interest`, `/api/analytics/summary`, `/api/ui-strings` | אנליטיקה פנימית וטקסטי ממשק (היו קיימים ולא מתועדים) |
+| `/api/track` (POST), `/api/analytics/top-interest`, `/api/analytics/summary` | אנליטיקה פנימית (`/api/ui-strings` נמחקה ב-v50) |
 | `/api/lookup/{ticker}`, `/api/sector-comparison/{ticker}`, `/api/stock-news/{ticker}`, `/api/backtest*`, `/api/pattern-stats`, `/api/signal-history/{ticker}`, `/api/heatmap`, `/api/market-movers`, `/api/sector-performance`, `/api/fear-greed`, `/api/watchlist` | ללא שינוי מהותי. **כולם מנרמלים טיקר דרך `_canon_ticker`** (ראה למטה). `/api/lookup` מנסה פעמיים: 404 רק אם Yahoo החזיר ריק פעמיים בלי שגיאה; חריגה = 502 ("תקלה זמנית") |
 
 ### גרף המבנה הטכני ושפה (v7)
