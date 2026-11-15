@@ -2241,8 +2241,8 @@ function renderBacktestContent(data){
   const pfTxt = data.profit_factor==null ? '—' : data.profit_factor;
   const thinBanner = sm.thin ? `
     <div class="bt-warn">${t
-      ? `Thin sample: ${data.n} independent signals from only ${sm.distinct_days} scan day${sm.distinct_days===1?'':'s'} (${sm.first_date} → ${sm.last_date}). That is a snapshot of one market stretch, not statistical proof — treat these numbers as a first look, and let the history build up.`
-      : `מדגם דל: ${data.n} סריקות בלתי-תלויות מ-${sm.distinct_days} ימי סריקה בלבד (${sm.first_date} ← ${sm.last_date}). זו תמונת מצב של פרק שוק אחד ולא הוכחה סטטיסטית — להתייחס למספרים כמבט ראשוני, ולתת להיסטוריה להצטבר.`}</div>` : '';
+      ? `Thin sample: ${data.n} independent signals from only ${sm.distinct_days} scan day${sm.distinct_days===1?'':'s'} (${_dm(sm.first_date)} → ${_dm(sm.last_date)}). That is a snapshot of one market stretch, not statistical proof — treat these numbers as a first look, and let the history build up.`
+      : `מדגם דל: ${data.n} סריקות בלתי-תלויות מ-${sm.distinct_days} ימי סריקה בלבד (${_dm(sm.first_date)} ← ${_dm(sm.last_date)}). זו תמונת מצב של פרק שוק אחד ולא הוכחה סטטיסטית — להתייחס למספרים כמבט ראשוני, ולתת להיסטוריה להצטבר.`}</div>` : '';
   const extremeNote = data.extreme_returns ? `<div style="font-size:11px;color:var(--text-dim);margin:0 2px 10px;">${t
       ? `${data.extreme_returns} signal(s) moved 50%+ (possible splits / one-off events) — the median is a safer read than the average here.`
       : `ב-${data.extreme_returns} סריקות המניה זזה 50%+ (ייתכנו פיצולי מניה/אירועים חריגים) — החציון אמין יותר מהממוצע במקרה כזה.`}</div>` : '';
@@ -3140,6 +3140,7 @@ function setBtView(v){
 function retryHtml(call){
   return ` <span style="text-decoration:underline;cursor:pointer" onclick="${call}">${lang==='en'?'Try again':'נסה שוב'}</span>`;
 }
+function _dm(s){ const m = /^(\d{4})-(\d\d)-(\d\d)/.exec(s||''); return m ? `${+m[3]}.${+m[2]}` : (s||''); }   // 2026-11-03 -> 3.11, like the rest of the site
 function ensureBtViewLoaded(){
   if(btView === 'demo' && !demoLoaded){ demoLoaded = true; loadDemoPortfolio(); }
   if(btView === 'stats' && !backtestLoaded){
@@ -3215,11 +3216,11 @@ function renderDemoPortfolio(){
   }
 
   const thin = sm.thin ? `<div class="bt-warn">${en
-    ? `Early results: ${s.trades_closed} closed trades from ${sm.scan_days} scan day${sm.scan_days===1?'':'s'} (${sm.first_date} → ${sm.last_date}). Too little to tell skill from luck — the numbers get meaningful as the history builds up.`
-    : `תוצאות ראשוניות: ${s.trades_closed} עסקאות סגורות מ-${sm.scan_days} ימי סריקה (${sm.first_date} ← ${sm.last_date}). מעט מדי כדי להבדיל בין כישרון למזל — המספרים הופכים למשמעותיים ככל שההיסטוריה מצטברת.`}</div>` : '';
+    ? `Early results: ${s.trades_closed} closed trades from ${sm.scan_days} scan day${sm.scan_days===1?'':'s'} (${_dm(sm.first_date)} → ${_dm(sm.last_date)}). Too little to tell skill from luck — the numbers get meaningful as the history builds up.`
+    : `תוצאות ראשוניות: ${s.trades_closed} עסקאות סגורות מ-${sm.scan_days} ימי סריקה (${_dm(sm.first_date)} ← ${_dm(sm.last_date)}). מעט מדי כדי להבדיל בין כישרון למזל — המספרים הופכים למשמעותיים ככל שההיסטוריה מצטברת.`}</div>` : '';
   const pending = sm.signals_pending_simulation ? `<div style="font-size:11px;color:var(--text-dim);margin:-6px 2px 10px;">${en
-    ? `${sm.signals_pending_simulation} older signals are still waiting to be simulated by the scanner.`
-    : `${sm.signals_pending_simulation} סריקות ישנות עדיין ממתינות לסימולציה של הסורק.`}</div>` : '';
+    ? `${sm.signals_pending_simulation} scans of the last few days are not in yet: the scanner simulates each scan two days after it was made.`
+    : `${sm.signals_pending_simulation} סריקות מהימים האחרונים עוד לא נכנסו: הסורק מריץ סימולציה יומיים אחרי כל סריקה.`}</div>` : '';
 
   const cards = `
     <div class="bt-stats-row">
