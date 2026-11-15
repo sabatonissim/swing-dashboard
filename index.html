@@ -296,16 +296,47 @@ window.addEventListener('load', function(){
   .today-text:empty,.today-intro:empty{display:none;}
   .today-intro{font-size:13px;line-height:1.6;color:var(--text-dim);margin-top:10px;padding-top:10px;border-top:1px solid var(--line);}
   .intro-tour{background:none;border:0;padding:0;color:var(--amber);font:inherit;font-weight:700;text-decoration:underline;cursor:pointer;}
+  /* v54: what is new since the last visit, and one offer (sign in / install / notifications) from the second visit on */
+  .since-line{font-size:13.5px;line-height:1.7;color:var(--text);margin-top:10px;}
+  .since-line:empty,.home-nudge:empty{display:none;}
+  .since-line .since-when{color:var(--text-dim);}
+  .since-link{background:none;border:0;padding:0;color:var(--amber);font:inherit;font-weight:700;cursor:pointer;text-decoration:underline;text-underline-offset:3px;}
+  .new-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--amber);margin-left:6px;vertical-align:middle;}
+  .new-tag{color:var(--amber);font-weight:700;}
+  .home-nudge{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel-2);font-size:13px;line-height:1.5;}
+  .home-nudge .nudge-text{flex:1 1 260px;min-width:0;}
+  .home-nudge button{border-radius:8px;padding:7px 14px;font:inherit;font-size:13px;cursor:pointer;white-space:nowrap;}
+  .home-nudge .nudge-go{background:var(--amber);color:var(--on-amber);border:0;font-weight:700;}
+  .home-nudge .nudge-no{background:none;border:1px solid var(--line);color:var(--text-dim);}
+  html[lang="he"] .since-line{direction:rtl;text-align:right;}
+  html[lang="he"] .home-nudge{direction:rtl;}
+  .wl-local-note{color:var(--text-dim);font-size:11.5px;line-height:1.5;padding:8px 6px 4px;}
+  html[lang="he"] .wl-local-note{direction:rtl;text-align:right;}
   @media(min-width:901px){
-    .home-grid{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);align-items:start;}
-    .home-main{min-width:0;border-right:1px solid var(--line);}
-    .home-main > .col.left{border-top:1px solid var(--line);}
+    /* v53 (owner, 16.11.2026: "the news is longer and the other side is left empty"): measured at 1440px, the scanner
+       + 25 headlines were 3,175px tall next to a side column of 1,451px. Two other arrangements were tried and turned
+       down (the headlines in two columns under everything; the headlines moved to the side column) — the owner:
+       "do not change what there was, find a solution for it". So the page is as it was (the scanner and the news
+       under it | movers, key events, index chart, breadth, insider buys) and the two columns are made to end together:
+         - the news is one list inside a box that scrolls on its own (as "show all" of the scanner is);
+         - in the side column the movers list shows all its rows and the index chart is taller.
+       Whichever column is shorter stretches: the news box (never under NEWS_MIN) or the chart (CHART_MIN..CHART_MAX). */
+    .home-grid{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);align-items:stretch;}
+    .home-main{min-width:0;border-right:1px solid var(--line);display:flex;flex-direction:column;}
+    .home-main > .col.right{flex:0 0 auto;}
+    .home-main > .col.left{flex:1 1 auto;height:0;min-height:580px;border-top:1px solid var(--line);display:flex;flex-direction:column;}
+    .home-main > .col.left > *{flex:0 0 auto;}
+    .home-main > .col.left > #macro{flex:1 1 0;min-height:0;overflow-y:auto;border:1px solid var(--line);border-radius:10px;padding:0 10px;}
+    #macro::-webkit-scrollbar{width:6px;}
+    #macro::-webkit-scrollbar-thumb{background:var(--line-hover);border-radius:4px;}
     .home-side{min-width:0;display:flex;flex-direction:column;gap:16px;padding:20px 22px 40px;}
     /* v43b (owner): the watchlist (the second tab of the movers box) first — it was too far down to reach */
-    .home-side > .movers-col{order:1;}
-    .home-side > .breaking-bar{order:2;background:none;border:0;padding:0;}
-    .home-side > .chart-col{order:3;}
-    .home-side > .hx-card{order:4;}
+    .home-side > .movers-col{order:1;flex:0 0 auto;}
+    .home-side > .breaking-bar{order:2;flex:0 0 auto;background:none;border:0;padding:0;}
+    .home-side > .chart-col{order:3;flex:1 0 auto;display:flex;flex-direction:column;}
+    .home-side > .hx-card{order:4;flex:0 0 auto;}
+    .home-side .movers-list{height:auto;min-height:250px;max-height:470px;}
+    .home-side #market-tv-chart,.home-side .sector-chart-wrap{flex:1 1 380px;height:0;min-height:380px;max-height:520px;}
     /* in the side column the key events are a list, not a strip that scrolls sideways */
     .home-side .breaking-items{flex-direction:column;overflow:visible;cursor:default;}
     .home-side .breaking-card{max-width:none;}
@@ -1153,6 +1184,8 @@ window.addEventListener('load', function(){
   </div>
   <div class="today-text" id="today-text"></div>
   <div class="hx-regime" id="hx-regime"></div>
+  <div class="since-line" id="since-line"></div>
+  <div class="home-nudge" id="home-nudge"></div>
   <div class="today-intro" id="today-intro"></div>
 </div>
 
@@ -1494,7 +1527,7 @@ function winRateBadgeHtml(patternType){
 function stockRowHtml(s,i){
   return `
     <div class="stock-row" onclick="openDrawer(${i})">
-      <div class="ticker">${s.ticker}</div>
+      <div class="ticker">${s.ticker}${isNewScan(s) ? `<span class="new-dot" title="${lang==='en'?'New since your last visit':'חדש מאז הביקור האחרון שלך'}"></span>` : ''}</div>
       <div class="trend ${s.trend}">${s.trend==="up"?"▲":"▼"}</div>
       <div class="trigger">${lang==='en'?(s.trigger_en||s.trigger||''):(s.trigger||s.trigger_he||'')}${earningsSoonBadgeHtml(s)}${insiderBadgeHtml(s)}</div>
       ${repeatBadgeHtml(s.repeatCount)}
@@ -1888,7 +1921,7 @@ function renderMacro(){
       <div class="macro-tag ${m.impact==='Critical'?'tag-critical':'tag-high'}">${escH(tagLabel(m.tag))}</div>
       <div>
         <div class="macro-text">${escH(getNewsText(m))}</div>
-        <div class="macro-time">${macroMeta(m)}</div>
+        <div class="macro-time">${macroMeta(m)}${isNewSince(m.ts) ? ` · <span class="new-tag">${t?'new':'חדש'}</span>` : ''}</div>
         ${macroMoreBtn(m)}${macroMoreList(m)}
       </div>
     </div>
@@ -2669,6 +2702,7 @@ function renderDeepDive(quote, sector, signals, news){
     </div>
     <div class="dd-actions">
       <button class="dd-action-btn" onclick="openAlertsPanel('${escH(quote.ticker)}', ${Number(quote.price)||0})">${t?'Price alert':'התראת מחיר'}</button>
+      <button class="dd-action-btn" data-watch="${escH(quote.ticker)}" onclick="toggleWatchlist('${escH(quote.ticker)}')">${watchBtnLabel(quote.ticker)}</button>
       <button class="dd-action-btn" onclick="shareStock('${escH(quote.ticker)}')">${t?'Share':'שיתוף'}</button>
       <button class="dd-action-btn" onclick="openTradeForm({ticker:'${escH(quote.ticker)}', entry_price:${Number(quote.price)||'null'}})">${t?'Log a trade':'רישום עסקה'}</button>
     </div>
@@ -5270,7 +5304,7 @@ function setMoversPanelMode(mode){
   const addBtn = document.getElementById('watchlist-add-btn');
   if(addBtn) addBtn.style.display = mode==='watchlist' ? '' : 'none';
   const setupsBtn = document.getElementById('watchlist-setups-btn');
-  if(setupsBtn) setupsBtn.style.display = mode==='watchlist' ? '' : 'none';
+  if(setupsBtn) setupsBtn.style.display = mode==='watchlist' && authToken ? '' : 'none';   // "what is approaching" reads the account's list
   if(mode === 'watchlist'){
     loadWatchlist();
   } else {
@@ -5280,11 +5314,24 @@ function setMoversPanelMode(mode){
 
 async function promptAddToWatchlist(){
   const t = lang==='en';
-  if(!requireLogin()) return;
   const raw = prompt(t?'Ticker to add to your watchlist:':'טיקר להוספה לרשימת המעקב:');
   if(!raw) return;
   const ticker = canonTicker(raw);
   if(!ticker) return;
+  if(!authToken){                                  // v54: the list of a visitor who is not signed in, kept in this browser
+    if(!WL_TICKER_RE.test(ticker) || !localWatchAdd(ticker)) return;
+    await refreshWatchlistData();
+    const row = latestWatchlistData.find(r => r.ticker === ticker);
+    if(row && row.price == null && !row.pending){  // no price came back: not a ticker we know
+      localWatchRemove(ticker);
+      await refreshWatchlistData();
+      alert(t?'Could not find that ticker — check the symbol and try again.':'לא מצאנו את הטיקר הזה — בדקו את הסימול ונסו שוב.');
+    } else track('watchlist_add', ticker);
+    if(moversPanelMode === 'watchlist') renderWatchlistPanel();
+    syncWatchButtons(ticker);
+    renderSince();
+    return;
+  }
   try {
     const res = await authFetch(`${API_BASE}/api/watchlist`, {
       method: 'POST',
@@ -5295,17 +5342,87 @@ async function promptAddToWatchlist(){
     track('watchlist_add', ticker);
     await refreshWatchlistData();
     if(moversPanelMode === 'watchlist') renderWatchlistPanel();
-    // keep any open drawer's star in sync if this ticker happens to be showing
-    const starEl = document.getElementById(`watchlist-star-${ticker}`);
-    if(starEl) starEl.classList.add('active');
+    syncWatchButtons(ticker);      // keep an open drawer's star and the stock page's button in step
   } catch(e) {
     console.error('[watchlist] prompt-add failed', e);
     alert(t?'Could not add that ticker — check the symbol and try again.':'לא ניתן היה להוסיף את הטיקר — בדוק את הסימול ונסה שוב.');
   }
 }
 
+// ---- v54: a watchlist without signing in ----
+// Until now following a stock needed a Google account, and a first-time visitor does not sign in. The list of a visitor
+// who is not signed in lives in this browser only (localStorage, up to 30 tickers); prices come from /api/quotes (no
+// database). Signing in moves it into the account (mergeLocalWatchlist), where alerts and other devices work.
+var WL_LOCAL_KEY = 'swing_wl_local', WL_LOCAL_MAX = 30;
+var WL_TICKER_RE = /^[A-Z0-9][A-Z0-9.\-^=]{0,10}$/;
+function localWatchlist(){
+  try {
+    const a = JSON.parse(localStorage.getItem(WL_LOCAL_KEY) || '[]');
+    return Array.isArray(a) ? a.filter(x => typeof x === 'string' && WL_TICKER_RE.test(x)).slice(0, WL_LOCAL_MAX) : [];
+  } catch(e){ return []; }
+}
+function _saveLocalWatchlist(a){
+  try { localStorage.setItem(WL_LOCAL_KEY, JSON.stringify(a.slice(0, WL_LOCAL_MAX))); return true; }
+  catch(e){ alert(lang==='en' ? 'This browser does not let the site save the list (private window?). Sign in to keep a watchlist.' : 'הדפדפן הזה לא מאפשר לאתר לשמור את הרשימה (חלון פרטי?). התחברו כדי לשמור רשימת מעקב.'); return false; }
+}
+function localWatchAdd(ticker){
+  const a = localWatchlist();
+  if(a.includes(ticker)) return true;
+  if(a.length >= WL_LOCAL_MAX){
+    alert(lang==='en' ? `Up to ${WL_LOCAL_MAX} stocks without signing in. Sign in with Google for a longer list.` : `עד ${WL_LOCAL_MAX} מניות בלי התחברות. התחברו עם Google לרשימה ארוכה יותר.`);
+    return false;
+  }
+  return _saveLocalWatchlist([ticker, ...a]);
+}
+function localWatchRemove(ticker){ return _saveLocalWatchlist(localWatchlist().filter(x => x !== ticker)); }
+function watchBtnLabel(ticker){
+  const on = watchlistTickers.has(ticker), en = lang==='en';
+  return on ? (en ? '★ Watching' : '★ במעקב') : (en ? '☆ Watch' : '☆ מעקב');
+}
+function syncWatchButtons(ticker){
+  const on = watchlistTickers.has(ticker);
+  const star = document.getElementById(`watchlist-star-${ticker}`);
+  if(star) star.classList.toggle('active', on);
+  document.querySelectorAll(`[data-watch="${ticker}"]`).forEach(b => { b.textContent = watchBtnLabel(ticker); });
+}
+async function _loadLocalWatchlist(){
+  const tks = localWatchlist();
+  const old = Object.fromEntries(latestWatchlistData.map(r => [r.ticker, r]));
+  watchlistTickers = new Set(tks);
+  latestWatchlistData = tks.map(x => old[x] || {ticker: x, price: null, change_pct: null, pending: true});
+  if(!tks.length) return true;
+  try {
+    const r = await fetchWithTimeout(`${API_BASE}/api/quotes?tickers=${encodeURIComponent(tks.join(','))}`, 30000);
+    if(!r.ok) throw new Error('quotes ' + r.status);
+    const q = (await r.json()).quotes || {};
+    if(authToken) return true;                     // signed in meanwhile: the account's list is on its way
+    latestWatchlistData = localWatchlist().map(x => {
+      const p = q[x];
+      const chg = p && p.prev_close ? (p.price / p.prev_close - 1) * 100 : null;
+      return {ticker: x, price: p ? Math.round(p.price * 100) / 100 : null, change_pct: chg == null ? null : Math.round(chg * 100) / 100};
+    });
+    watchlistTickers = new Set(latestWatchlistData.map(r => r.ticker));
+  } catch(e){
+    console.warn('[watchlist] local quotes failed', e);     // the tickers stay on the list, prices at the next refresh
+  }
+  return true;
+}
+// after signing in: what was followed in this browser goes into the account, then the browser's copy is cleared
+async function mergeLocalWatchlist(){
+  const tks = localWatchlist();
+  if(!tks.length || !authToken) return;
+  let failed = false;
+  for(const ticker of tks.slice().reverse()){      // oldest first, so the newest ends up on top as it was here
+    try {
+      const res = await authFetch(`${API_BASE}/api/watchlist`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ticker})});
+      if(!res.ok && res.status !== 400) failed = true;
+    } catch(e){ failed = true; }
+  }
+  if(!failed){ try { localStorage.removeItem(WL_LOCAL_KEY); } catch(e){} }
+}
+
 async function refreshWatchlistData(){
-  if(!authToken){ latestWatchlistData = []; watchlistTickers = new Set(); return true; }
+  if(!authToken) return _loadLocalWatchlist();
   try {
     const res = await authFetch(`${API_BASE}/api/watchlist`);
     if(!res.ok) throw new Error('bad response');
@@ -5334,34 +5451,48 @@ async function loadWatchlist(){
 function renderWatchlistPanel(){
   const el = document.getElementById('movers-list');
   if(!el) return;
-  if(!authToken){
-    el.innerHTML = `<div class="movers-empty">${lang==='en'?'Sign in with Google (top of the page) to keep your own watchlist.':'התחבר עם Google (בראש העמוד) כדי לשמור רשימת מעקב אישית.'}</div>`;
-    return;
-  }
+  const en = lang==='en';
+  // v54: not signed in = the list kept in this browser, with what signing in adds said under it
+  const localNote = authToken ? '' : `<div class="wl-local-note">${en
+    ? 'This list is saved in this browser only. <button type="button" class="since-link" onclick="pfOpenSignIn(event)">Sign in</button> to get alerts on these stocks and see the list on every device.'
+    : 'הרשימה שמורה בדפדפן הזה בלבד. <button type="button" class="since-link" onclick="pfOpenSignIn(event)">התחברות</button> מוסיפה התראות על המניות האלה ורשימה אחת בכל המכשירים.'}</div>`;
   if(!latestWatchlistData.length){
-    el.innerHTML = `<div class="movers-empty">${lang==='en'?"No tickers yet — tap + above to add one.":'עדיין אין מניות ברשימת המעקב — לחץ על + למעלה כדי להוסיף אחת.'}</div>`;
+    el.innerHTML = `<div class="movers-empty">${en?'No stocks yet. Tap + above, or the star next to a stock\'s name.':'עדיין אין מניות ברשימה. לחצו על + למעלה, או על הכוכב ליד שם של מניה.'}</div>${authToken ? '' : `<div class="wl-local-note">${en ? 'No sign-in needed: the list is saved in this browser.' : 'לא צריך להתחבר: הרשימה נשמרת בדפדפן הזה.'}</div>`}`;
     return;
   }
   el.innerHTML = latestWatchlistData.map(r=>{
-    const has = r.price!=null;
+    const has = r.price!=null && r.change_pct!=null;
     const cls = has && r.change_pct>=0 ? 'up' : 'down';
     const sign = has && r.change_pct>=0 ? '+' : '';
     const name = r.name && r.name!==r.ticker ? escH(r.name) : '';
     const atrText = r.atr_pct!=null ? ` · ATR ${r.atr_pct}%` : '';
+    // the stock is on today's scanner list: say so on its row (the reason to look at the watchlist every day)
+    const sc = stocks.find(s => s.ticker === r.ticker);
+    const scanText = sc && sc.patternType ? ` · <span class="new-tag">${en ? 'on the scanner' : 'בסריקה'}: ${escH(patternLabel(sc.patternType))}</span>` : '';
+    const priceText = r.price!=null ? '$'+r.price : r.pending ? (en?'loading…':'טוען…') : (en?'price unavailable':'מחיר לא זמין');
     return `
       <div class="mover-row" onclick="showTickerDrawer('${r.ticker}')">
         <div class="mover-ticker">${r.ticker}</div>
-        <div class="mover-trigger">${name?name+' · ':''}${has ? '$'+r.price : (lang==='en'?'price unavailable':'מחיר לא זמין')}${atrText}</div>
+        <div class="mover-trigger">${name?name+' · ':''}${priceText}${atrText}${scanText}</div>
         <div class="mover-pct ${cls}">${has ? sign+r.change_pct.toFixed(2)+'%' : '—'}</div>
       </div>
     `;
-  }).join('');
+  }).join('') + localNote;
 }
 
 async function toggleWatchlist(ticker){
-  if(!requireLogin()) return;
   const starEl = document.getElementById(`watchlist-star-${ticker}`);
   const isActive = watchlistTickers.has(ticker);
+  if(!authToken){                                  // v54: the browser's own list
+    if(!(isActive ? localWatchRemove(ticker) : localWatchAdd(ticker))) return;
+    if(isActive){ watchlistTickers.delete(ticker); latestWatchlistData = latestWatchlistData.filter(r => r.ticker !== ticker); }
+    else { watchlistTickers.add(ticker); latestWatchlistData.unshift({ticker, price: null, change_pct: null, pending: true}); track('watchlist_add', ticker); }
+    syncWatchButtons(ticker);
+    if(moversPanelMode === 'watchlist') renderWatchlistPanel();
+    renderSince();
+    if(!isActive) refreshWatchlistData().then(() => { if(moversPanelMode === 'watchlist') renderWatchlistPanel(); });
+    return;
+  }
   try {
     if(isActive){
       const res = await authFetch(`${API_BASE}/api/watchlist/${ticker}`, { method: 'DELETE' });
@@ -5380,6 +5511,7 @@ async function toggleWatchlist(ticker){
       track('watchlist_add', ticker);
     }
     if(starEl) starEl.classList.toggle('active', !isActive);
+    syncWatchButtons(ticker);
     if(moversPanelMode === 'watchlist') renderWatchlistPanel();
   } catch(e) {
     console.error('[watchlist] toggle failed', e);
@@ -7364,8 +7496,12 @@ async function onGoogleCredential(resp){
     localStorage.setItem('swing_user', JSON.stringify(authUser));
     renderAuthBox();
     if(currentPage === 'portfolio') ensurePortfolioLoaded();     // v24
+    await mergeLocalWatchlist();                                 // v54: what was followed before signing in
     await refreshWatchlistData();
     if(moversPanelMode === 'watchlist') renderWatchlistPanel();
+    const sb = document.getElementById('watchlist-setups-btn');
+    if(sb) sb.style.display = moversPanelMode === 'watchlist' ? '' : 'none';
+    renderSince();
   } catch(e){
     console.error('[auth] login failed', e);
     alert(lang==='en' ? 'Sign-in failed. Please try again.' : 'ההתחברות נכשלה. נסה שוב.');
@@ -7396,6 +7532,9 @@ function signOut(){
   renderAuthBox();
   if(moversPanelMode === 'watchlist') renderWatchlistPanel();
   renderPortfolio();
+  const sb = document.getElementById('watchlist-setups-btn');
+  if(sb) sb.style.display = 'none';
+  refreshWatchlistData().then(() => { if(moversPanelMode === 'watchlist') renderWatchlistPanel(); renderSince(); });   // v54: back to this browser's list
 }
 
 const statusEl = document.createElement("div");
@@ -9269,6 +9408,8 @@ function applyLang(){
   renderMacro();
   renderBreakingNews();
   renderSectorFilter();
+  touchVisit();
+  renderSince();
 }
 
 function toggleLang(){
@@ -9372,6 +9513,125 @@ const hebDir = (function(){
   return {scan};
 })();
 
+// ==== v54 (owner, 16.11.2026: "how do I make a visitor come back"): what is new since the last visit ====
+// Everything is in this browser (localStorage), nothing is sent to the server and nothing touches the database.
+// A visit = the site was last on the screen more than 30 minutes ago. Kept: when the previous visit ended (`since`),
+// which tickers the scanner list held then (`seen`), and how many visits there were (`n`).
+//   - a scanner row is "new" when its ticker was not on the list at the previous visit (the scanner re-saves a stock
+//     that is still in its pattern, so the time of the row alone would call the whole list new twice a day);
+//   - a headline / key event is "new" when it was saved after the previous visit.
+var VISIT_KEY = 'swing_visit_v1', VISIT_GAP_MS = 30 * 60000, VISIT_MARK_MAX_MS = 5 * 86400000;
+var _visitState = null;
+function visitState(){
+  if(_visitState) return _visitState;
+  let s = null;
+  try { s = JSON.parse(localStorage.getItem(VISIT_KEY) || 'null'); } catch(e){}
+  const now = Date.now();
+  if(!s || !s.last) s = {since: null, last: now, n: 1, seen: null, cur: null};
+  else if(now - s.last > VISIT_GAP_MS) s = {since: s.last, last: now, n: (s.n || 1) + 1, seen: s.cur || null, cur: s.cur || null};
+  _visitState = s;
+  return s;
+}
+function touchVisit(){
+  const s = visitState();
+  if(document.hidden) return;
+  if(Date.now() - s.last > VISIT_GAP_MS){          // the tab was left open in the background and is looked at again
+    _visitState = {since: s.last, last: Date.now(), n: (s.n || 1) + 1, seen: s.cur || null, cur: s.cur || null};
+  }
+  _visitState.last = Date.now();
+  if(typeof stocks !== 'undefined' && stocks.length) _visitState.cur = stocks.map(x => x.ticker);
+  try { localStorage.setItem(VISIT_KEY, JSON.stringify(_visitState)); } catch(e){}
+}
+function _visitMarks(){ const s = visitState(); return !!s.since && Date.now() - s.since < VISIT_MARK_MAX_MS; }
+function isNewSince(ts){
+  if(!_visitMarks() || !ts) return false;
+  const t = new Date(ts).getTime();
+  return isFinite(t) && t > _visitState.since;
+}
+function isNewScan(s){
+  const v = visitState();
+  return _visitMarks() && Array.isArray(v.seen) && v.seen.length > 0 && !v.seen.includes(s.ticker) && isNewSince(s.timestamp);
+}
+function _sinceWhen(ms){
+  const d = new Date(ms), now = new Date(), en = lang==='en';
+  const hm = d.toLocaleTimeString(en ? 'en-GB' : 'he-IL', {hour: '2-digit', minute: '2-digit'});
+  const days = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
+  if(days === 0) return (en ? 'today ' : 'היום ') + hm;
+  if(days === 1) return (en ? 'yesterday ' : 'אתמול ') + hm;
+  return `${d.getDate()}.${d.getMonth() + 1} ${hm}`;
+}
+function homeGo(sel){
+  const el = document.querySelector(sel);
+  if(el) el.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+function renderSince(){
+  const el = document.getElementById('since-line');
+  if(!el) return;
+  const en = lang==='en';
+  let html = '';
+  if(_visitMarks()){
+    const scans = stocks.filter(isNewScan);
+    const events = (keyNews || []).filter(m => isNewSince(m.ts)).length;
+    const news = macro.filter(m => isNewSince(m.ts)).length;
+    const mine = scans.filter(s => watchlistTickers.has(s.ticker)).map(s => s.ticker);
+    const parts = [];
+    const link = (sel, text) => `<button type="button" class="since-link" onclick="homeGo('${sel}')">${text}</button>`;
+    if(scans.length) parts.push(link('#stocks', en ? `${scans.length} new on the scanner` : scans.length === 1 ? 'מניה חדשה אחת בסריקות' : `${scans.length} מניות חדשות בסריקות`));
+    if(events) parts.push(link('.breaking-bar', en ? `${events} key event${events > 1 ? 's' : ''}` : events === 1 ? 'אירוע מרכזי אחד' : `${events} אירועים מרכזיים`));
+    if(news) parts.push(link('#macro', en ? `${news}${news >= macro.length ? '+' : ''} headlines` : `${news}${news >= macro.length ? '+' : ''} ידיעות`));
+    if(parts.length){
+      html = `<span class="since-when">${en ? 'Since your last visit' : 'מאז הביקור האחרון שלך'} (${_sinceWhen(_visitState.since)}):</span> ${parts.join(' · ')}`;
+      if(mine.length) html += `<br><b>${en ? 'From your watchlist, now on the scanner' : 'מרשימת המעקב שלך, נכנסו לסריקה'}:</b> <span dir="ltr">${mine.slice(0, 6).map(escH).join(', ')}</span>`;
+    }
+  }
+  el.innerHTML = html;
+  renderNudge();
+}
+
+// ---- v54: one offer, at the right moment ----
+// Never on the first visit. From the second visit, or once a stock is on the watchlist: signing in (that is what turns
+// the browser's list into alerts), else installing the app, else notifications on this device. "Not now" = quiet for
+// 14 days. One line under "the market today", not a window on top of the page.
+var NUDGE_KEY = 'swing_nudge_off', NUDGE_QUIET_MS = 14 * 86400000;
+function nudgeKind(){
+  if(typeof tourStep !== 'undefined' && tourStep >= 0) return null;
+  let off = 0;
+  try { off = +localStorage.getItem(NUDGE_KEY) || 0; } catch(e){ return null; }
+  if(Date.now() - off < NUDGE_QUIET_MS) return null;
+  if(!(visitState().n >= 2 || watchlistTickers.size > 0)) return null;
+  if(!authToken && watchlistTickers.size > 0) return 'signin';
+  if(!_isStandalone() && (_installEvt || _isIOS())) return 'install';
+  if(authToken && pushSupported() && Notification.permission === 'default') return 'push';
+  return null;
+}
+function renderNudge(){
+  const el = document.getElementById('home-nudge');
+  if(!el) return;
+  const kind = nudgeKind(), en = lang==='en';
+  if(!kind){ el.innerHTML = ''; return; }
+  const T = {
+    signin: en ? ['Want an alert on your phone when a stock on your watchlist enters the scanner or is about to report? Sign in with Google and turn notifications on.', 'Sign in']
+               : ['רוצים התראה לטלפון כשמניה מרשימת המעקב שלכם נכנסת לסריקה או עומדת לפרסם דוח? מתחברים עם Google ומפעילים התראות.', 'התחברות'],
+    install: en ? ['Swing Desk also opens as an app from your home screen. No app store needed.', 'Install']
+                : ['Swing Desk נפתח גם כאפליקציה מהמסך הראשי, בלי חנות אפליקציות.', 'התקנה'],
+    push: en ? ['Turn on notifications on this device? A new scan on a stock you follow, its earnings, and your price alerts.', 'Turn on']
+             : ['להפעיל התראות במכשיר הזה? סריקה חדשה על מניה שבמעקב, דוחות שלה, והתראות המחיר שלכם.', 'הפעלה'],
+  }[kind];
+  el.innerHTML = `<span class="nudge-text">${T[0]}</span>
+    <button type="button" class="nudge-go" onclick="nudgeGo('${kind}', event)">${T[1]}</button>
+    <button type="button" class="nudge-no" onclick="nudgeOff()">${en ? 'Not now' : 'לא עכשיו'}</button>`;
+}
+function nudgeOff(){
+  try { localStorage.setItem(NUDGE_KEY, String(Date.now())); } catch(e){}
+  const el = document.getElementById('home-nudge');
+  if(el) el.innerHTML = '';
+}
+function nudgeGo(kind, ev){
+  if(kind === 'signin') pfOpenSignIn(ev);          // the offer stays until they signed in or said "not now"
+  else if(kind === 'install'){ nudgeOff(); installApp(); }
+  else if(kind === 'push'){ nudgeOff(); openAlertsPanel(); }
+}
+
 restoreSnapshot();          // v20c: draw the last saved data at once, then refresh from the server
 // v52: the short guide no longer opens by itself; the first visits see an offer under "the market today" (renderToday)
 // v34: the scanner and the news used to be asked for every 20 seconds, even in a tab left in the background — all day, for
@@ -9385,6 +9645,7 @@ setInterval(() => { if(!document.hidden) loadMarketMovers(); }, POLL_MOVERS_MS);
 loadMarketTicker();
 setInterval(() => { if(!document.hidden) loadMarketTicker(); }, POLL_TICKER_MS);
 document.addEventListener('visibilitychange', () => {
+  if(!document.hidden){ touchVisit(); renderSince(); }       // v54
   if(document.hidden || Date.now() - _apiLoadedAt < 2 * 60000) return;
   loadFromApi();
   loadMarketMovers();
@@ -9393,7 +9654,7 @@ document.addEventListener('visibilitychange', () => {
 const econViewActive = () => currentPage==='pulse' && pulseView==='events';
 setInterval(()=>{ if(!document.hidden && econLoaded && econViewActive()) loadEconActive(); }, 300000);
 setInterval(()=>{ if(!document.hidden && econLoaded && econViewActive()) renderEconActive(); }, 60000);
-refreshWatchlistData();
+refreshWatchlistData().then(() => { if(moversPanelMode === 'watchlist') renderWatchlistPanel(); renderSince(); });
 loadPatternStats();
 
 window.addEventListener('load', ()=>{
@@ -9424,6 +9685,7 @@ function renderInstallBtn(){
   if(!b) return;
   b.style.display = (!_isStandalone() && (_installEvt || _isIOS())) ? '' : 'none';
   b.textContent = lang==='en' ? 'Install app' : 'התקן אפליקציה';
+  if(typeof renderNudge === 'function') renderNudge();      // v54: the browser just said the app can be installed
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); _installEvt = e; renderInstallBtn(); });
 window.addEventListener('appinstalled', () => { _installEvt = null; renderInstallBtn(); });
