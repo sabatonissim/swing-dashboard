@@ -4220,6 +4220,73 @@ def _scanner_rule_ma150_bounce(hist: pd.DataFrame) -> Optional[dict]:
 _LEVEL_MIN_PRIOR_ABOVE = 0.6   # v27 twin of MIN_PRIOR_ABOVE_PCT in detect_horizontal_level_bounce (LEN came from below)
 
 
+_FLIP_TEST_BARS = 10       # twins of FLIP_TEST_BARS / FLIP_MAX_PIERCE in the scanner
+_FLIP_MAX_PIERCE = 0.03
+
+
+def _scanner_rule_flipped_level(hist: pd.DataFrame) -> Optional[dict]:
+    """Twin of flipped_level_bounce (v55b): old resistance — 2+ swing highs within 2%, all older than 10 bars, priced at
+    the first of them — tested from above today: low between 3% under and 1.5% over it, close above it, 6 of the 10
+    closes before today above it, and not crossed by the closes more times than it was touched."""
+    window = hist.tail(_TL_SEARCH_DAYS)
+    n = len(window)
+    if n < 60:
+        return None
+    closes = window["Close"].values
+    pts = sorted((p for p in _find_swing_points(window["High"].values, mode="high") if p[0] < n - _FLIP_TEST_BARS),
+                 key=lambda p: p[1])
+    if len(pts) < 2:
+        return None
+    clusters, current = [], [pts[0]]
+    for p in pts[1:]:
+        avg = sum(v for _, v in current) / len(current)
+        if abs(p[1] - avg) / avg <= 0.02:
+            current.append(p)
+        else:
+            clusters.append(current)
+            current = [p]
+    clusters.append(current)
+    today_low = float(window["Low"].iloc[-1])
+    close = float(closes[-1])
+    prior_closes = closes[-11:-1]
+    best = None
+    for c in clusters:
+        if len(c) < 2:
+            continue
+        first_idx, level = min(c, key=lambda p: p[0])
+        if level <= 0 or close <= level:
+            continue
+        if not (level * (1 - _FLIP_MAX_PIERCE) <= today_low <= level * 1.015):
+            continue
+        if float((prior_closes > level).mean()) < _LEVEL_MIN_PRIOR_ABOVE:
+            continue
+        if _crossings(closes[first_idx:], level * 0.99, level * 1.01) > len(c):
+            continue
+        dist = abs(today_low - level) / level
+        if best is None or dist < best[0]:
+            best = (dist, level, len(c), first_idx)
+    if not best:
+        return None
+    _, level, touches, first_idx = best
+    dates = window.index
+    return {
+        "pattern": "horizontal_support_bounce",
+        "stage": "holding",
+        "key_level": round(level, 2),
+        "distance_pct": round((close - level) / level * 100, 2),
+        "target_price": None,
+        "target_pct": None,
+        "touches": touches,
+        "days_since_test": 0,
+        "role_reversal": True,
+        "lines": [
+            {"type": "horizontal", "label_he": "התנגדות שהפכה לתמיכה", "label_en": "Old resistance, now support",
+             "price": round(level, 2),
+             "from": _fmt_date(dates[first_idx]), "to": _fmt_date(dates[-1])},
+        ],
+    }
+
+
 def _scanner_rule_level_bounce(hist: pd.DataFrame) -> Optional[dict]:
     """Twin of detect_horizontal_level_bounce: a level touched 2+ times
     (swing lows within 2%), today's LOW within 1.5% of it, close back above,
@@ -4230,7 +4297,7 @@ def _scanner_rule_level_bounce(hist: pd.DataFrame) -> Optional[dict]:
     dates = window.index
     swing_lows = _find_swing_points(window["Low"].values, mode="low")
     if len(swing_lows) < 2:
-        return None
+        return _scanner_rule_flipped_level(hist)
     vals = sorted(v for _, v in swing_lows)
     clusters, current = [], [vals[0]]
     for v in vals[1:]:
@@ -4243,7 +4310,7 @@ def _scanner_rule_level_bounce(hist: pd.DataFrame) -> Optional[dict]:
     clusters.append(current)
     levels = [(sum(c) / len(c), len(c)) for c in clusters if len(c) >= 2]
     if not levels:
-        return None
+        return _scanner_rule_flipped_level(hist)
     today_low = float(window["Low"].iloc[-1])
     close = float(window["Close"].iloc[-1])
     prior_closes = window["Close"].values[-11:-1]
@@ -4256,7 +4323,7 @@ def _scanner_rule_level_bounce(hist: pd.DataFrame) -> Optional[dict]:
                 and (best is None or dist < best[2]):
             best = (level, touches, dist)
     if not best:
-        return None
+        return _scanner_rule_flipped_level(hist)
     level, touches, _ = best
     anchor_idx = next(i for i, v in swing_lows if abs(v - level) / level <= 0.02)
     return {

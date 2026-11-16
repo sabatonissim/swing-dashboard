@@ -69,6 +69,7 @@ TWIN_CONSTANTS = [
     ("TRENDLINE_SEARCH_DAYS", "_TL_SEARCH_DAYS"), ("TRENDLINE_TOLERANCE", "_TL_TOLERANCE"),
     ("TRENDLINE_TOUCH_TOL", "_TL_TOUCH_TOL"), ("TRENDLINE_MIN_SPAN_BARS", "_TL_MIN_SPAN_BARS"),
     ("TRENDLINE_MIN_TOUCHES", "_TL_MIN_TOUCHES"), ("TRENDLINE_WICK_BARS", "_TL_WICK_BARS"),
+    ("FLIP_TEST_BARS", "_FLIP_TEST_BARS"), ("FLIP_MAX_PIERCE", "_FLIP_MAX_PIERCE"),
     ("CUP_SEARCH_BARS", "_CUP_SEARCH_BARS"), ("CUP_MIN_BARS", "_CUP_MIN_BARS"), ("CUP_MAX_BARS", "_CUP_MAX_BARS"),
     ("CUP_MIN_DEPTH", "_CUP_MIN_DEPTH"), ("CUP_MAX_DEPTH", "_CUP_MAX_DEPTH"), ("CUP_RIM_TOL", "_CUP_RIM_TOL"),
     ("CUP_FRESH_BARS", "_CUP_FRESH_BARS"), ("CUP_MAX_EXTENSION", "_CUP_MAX_EXTENSION"),
@@ -155,6 +156,7 @@ def test_signal_twins_agree(scanner, api, ticker):
         assert (s is None) == (a is None), f"support bounce: {where}"
         if s:
             assert (s["level"], s["touches"]) == (a["key_level"], a["touches"]), f"support bounce level: {where}"
+            assert bool(s.get("role_reversal")) == bool(a.get("role_reversal")), f"support bounce kind: {where}"
 
         s, a = scanner.detect_ma150_breakout(h), api._scanner_rule_ma150_breakout(h)
         assert (s is None) == (a is None), f"150-MA reclaim: {where}"
@@ -196,6 +198,23 @@ def test_drawings_the_owner_made_by_hand(api, scanner, monkeypatch):
     assert scanner.detect_descending_trendline_breakout(h.iloc[:-1]) is not None
     assert scanner.detect_descending_trendline_breakout(h) is None           # the next day it is not a new breakout
     assert api._scanner_rule_desc_trendline_breakout(h.iloc[:-1])["stage"] == "triggered"
+
+
+def test_scanner_flags_old_resistance_tested_as_support(scanner, api):
+    """v55b (approved by the owner 16.11.2026): ZS on 13.11.2026 — the $191.25 level of the May/August highs, broken in
+    September, tested from above — is a scan result, and the stock page shows the same level."""
+    h = _hist("ZS")
+    s = scanner.detect_horizontal_level_bounce(h)
+    assert s and s["role_reversal"] and s["level"] == 191.25 and s["touches"] == 3
+    a = api._scanner_rule_level_bounce(h)
+    assert a["key_level"] == 191.25 and a["role_reversal"] and a["lines"][0]["from"] == "2026-05-26"
+    assert scanner.detect_horizontal_level_bounce(h.iloc[:-1]) is None       # 12.11: the low went 3.5% under the level
+    assert (scanner.close_crossings(h["Close"].values, 190.0, 192.0)
+            == api._crossings(h["Close"].values, 190.0, 192.0))
+    # the score still reads the number of tests from the text
+    assert scanner.swing_score_of("horizontal_level_bounce", 0, None, 50, None,
+                                  "Testing old resistance at $191.25 as support (tested 4x as resistance before the breakout)") \
+        > scanner.swing_score_of("horizontal_level_bounce", 0, None, 50, None, "")
 
 
 def test_stock_with_no_pattern_still_gets_its_chart(api, monkeypatch):

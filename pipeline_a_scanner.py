@@ -723,7 +723,7 @@ def detect_horizontal_level_bounce(hist: pd.DataFrame, lookback: int = 150) -> O
 
     swing_lows = find_swing_points(window["Low"].values, mode="low")
     if len(swing_lows) < MIN_TOUCHES:
-        return None
+        return flipped_level_bounce(hist)
 
     vals = sorted(v for _, v in swing_lows)
     # Simple 1D clustering: walk the sorted lows, group consecutive ones
@@ -741,7 +741,7 @@ def detect_horizontal_level_bounce(hist: pd.DataFrame, lookback: int = 150) -> O
 
     validated_levels = [(sum(c) / len(c), len(c)) for c in clusters if len(c) >= MIN_TOUCHES]
     if not validated_levels:
-        return None
+        return flipped_level_bounce(hist)
 
     today_low = float(window["Low"].iloc[-1])
     today_close = float(window["Close"].iloc[-1])
@@ -765,6 +765,71 @@ def detect_horizontal_level_bounce(hist: pd.DataFrame, lookback: int = 150) -> O
             if best is None or dist_pct < best_dist:
                 best_dist = dist_pct
                 best = {"level": round(level, 2), "touches": touches, "distance_pct": round(dist_pct * 100, 2)}
+    return best or flipped_level_bounce(hist)
+
+
+def close_crossings(closes, lo: float, hi: float) -> int:
+    """How many times the closes moved from one side of the band lo..hi to the other (twin: api_server._crossings)."""
+    side = np.where(closes > hi, 1, np.where(closes < lo, -1, 0))
+    side = side[side != 0]
+    return int((side[1:] != side[:-1]).sum()) if len(side) > 1 else 0
+
+
+FLIP_TEST_BARS = 10            # the highs that make the level are all older than this
+FLIP_MAX_PIERCE = 0.03         # today's low may dip up to 3% under the level, as long as the close is back above it
+
+
+def flipped_level_bounce(hist: pd.DataFrame) -> Optional[dict]:
+    """v55b (owner, ZS 13.11.2026, approved 16.11): old RESISTANCE tested as support. ZS: three swing highs at $191
+    (26 May, 18 and 31 August), a breakout in September, and in November the price came back down onto $191 and closed
+    above it. detect_horizontal_level_bounce looks at swing LOWS only, so it never saw this.
+
+    A level = 2+ swing highs within 2% of each other in the last TRENDLINE_SEARCH_DAYS bars, all older than
+    FLIP_TEST_BARS; its price is the FIRST of those highs (the wick the line is drawn on). Flagged when today's low is
+    between 3% under and 1.5% over the level, today's close is above it, at least 6 of the 10 closes before today were
+    above it (it was broken, and this is a pullback from above), and the closes did not cross it more times than it
+    was touched (a level sliced again and again is not a level). Twin: api_server._scanner_rule_flipped_level."""
+    window = hist.tail(TRENDLINE_SEARCH_DAYS).reset_index(drop=True)
+    n = len(window)
+    if n < 60:
+        return None
+    closes = window["Close"].values
+    pts = sorted((p for p in find_swing_points(window["High"].values, mode="high") if p[0] < n - FLIP_TEST_BARS),
+                 key=lambda p: p[1])
+    if len(pts) < 2:
+        return None
+    clusters, current = [], [pts[0]]
+    for p in pts[1:]:
+        avg = sum(v for _, v in current) / len(current)
+        if abs(p[1] - avg) / avg <= 0.02:
+            current.append(p)
+        else:
+            clusters.append(current)
+            current = [p]
+    clusters.append(current)
+
+    today_low = float(window["Low"].iloc[-1])
+    today_close = float(closes[-1])
+    prior_closes = closes[-11:-1]
+    best = None
+    best_dist = None
+    for c in clusters:
+        if len(c) < 2:
+            continue
+        first_idx, level = min(c, key=lambda p: p[0])
+        if level <= 0 or today_close <= level:
+            continue
+        if not (level * (1 - FLIP_MAX_PIERCE) <= today_low <= level * 1.015):
+            continue
+        if float((prior_closes > level).mean()) < 0.6:
+            continue
+        if close_crossings(closes[first_idx:], level * 0.99, level * 1.01) > len(c):
+            continue
+        dist = abs(today_low - level) / level
+        if best is None or dist < best_dist:
+            best_dist = dist
+            best = {"level": round(level, 2), "touches": len(c), "distance_pct": round(dist * 100, 2),
+                    "role_reversal": True, "first_bar": int(first_idx)}
     return best
 
 
@@ -1915,6 +1980,9 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         elif level_bounce:
             trigger_en = f"Bouncing off horizontal support at ${level_bounce['level']} (tested {level_bounce['touches']}x)"
             trigger_he = f"התאוששות מרמת תמיכה אופקית ב-${level_bounce['level']} ({_tested_he(level_bounce['touches'])})"
+            if level_bounce.get("role_reversal"):       # v55b: old resistance, broken, now tested from above
+                trigger_en = f"Testing old resistance at ${level_bounce['level']} as support (tested {level_bounce['touches']}x as resistance before the breakout)"
+                trigger_he = f"בדיקה מלמעלה של רמת ${level_bounce['level']}: התנגדות שנפרצה ונבחנת כתמיכה ({level_bounce['touches']} שיאים ברמה לפני הפריצה)"
             pattern_type = "horizontal_level_bounce"
         # Below this point: pure-indicator patterns (MACD crossover,
         # momentum/volume surge, RSI bounce) — no real chart structure

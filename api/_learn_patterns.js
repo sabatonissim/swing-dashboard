@@ -533,6 +533,7 @@ module.exports = [
 <li>It looks at the last 150 trading days for swing lows within 2% of each other, with at least 2 touches. Together they define the level.</li>
 <li>Today's low is within 1.5% of the level, and today's close is above it.</li>
 <li>At least 60% of the previous 10 closes were above the level. The stock is pulling back to support from above, and it has not been living below it. A stock under the level that spikes up to it is a different situation.</li>
+<li>Old resistance tested as support is listed too: at least 2 swing highs within 2% of each other in the last 250 trading days, all more than 10 days old, that the stock has since closed above. The level is the first of those highs. Today's low is between 3% under it and 1.5% over it, today's close is above it, and the closes have not crossed the level more times than it was touched.</li>
 </ul>
 <p>A volume condition is not used, since the level has already been tested. ${QUALITY_EN}</p>
 <h2>On the stock page</h2>
@@ -552,6 +553,7 @@ module.exports = [
 <li>הוא מסתכל על 150 ימי המסחר האחרונים ומחפש שפלים מקומיים במרחק של עד 2% זה מזה, עם לפחות 2 נגיעות. יחד הם מגדירים את הרמה.</li>
 <li>השפל של היום במרחק של עד 1.5% מהרמה, ומחיר הסגירה מעליה.</li>
 <li>לפחות 60% מ-10 הסגירות הקודמות היו מעל הרמה. המניה מתקנת אל התמיכה מלמעלה, ולא חיה מתחתיה. מניה מתחת לרמה שקופצת אליה היא מצב אחר.</li>
+<li>גם התנגדות ישנה שנבחנת כתמיכה מוצגת: לפחות 2 שיאים מקומיים במרחק של עד 2% זה מזה ב-250 ימי המסחר האחרונים, כולם לפני יותר מ-10 ימים, שהמניה נסגרה מאז מעליהם. הרמה היא הראשון מבין השיאים האלה. השפל של היום נמצא בין 3% מתחתיה ל-1.5% מעליה, הסגירה של היום מעליה, והסגירות לא חצו את הרמה יותר פעמים משנגעו בה.</li>
 </ul>
 <p>לא משתמשים בתנאי של נפח מסחר, כי הרמה כבר נבחנה. ${QUALITY_HE}</p>
 <h2>בעמוד המניה</h2>
