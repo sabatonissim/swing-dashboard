@@ -1594,6 +1594,20 @@ def test_analyst_rating_changes(api):
     assert ar.previous_trading_day(_dt.datetime(2026, 11, 27, 14, 0, tzinfo=utc)) == _dt.date(2026, 11, 25)   # Thanksgiving
     assert ar.latest_grade(df) == _dt.datetime(2026, 11, 9, 10, 17, tzinfo=utc)
     assert ar.latest_grade(pd.DataFrame()) is None
+    # v57c: our own request makes the same table as yfinance (NVDA as Yahoo gave it from home, 16.11.2026)
+    js = {"quoteSummary": {"result": [{"upgradeDowngradeHistory": {"history": [
+        {"epochGradeDate": 1794833564, "firm": "TD Cowen", "toGrade": "Buy", "fromGrade": "Buy", "action": "main",
+         "priceTargetAction": "Lowers", "currentPriceTarget": 200.0, "priorPriceTarget": 275.0},
+        {"epochGradeDate": 1794580480, "firm": "Truist Securities", "toGrade": "Hold", "fromGrade": "Buy", "action": "down",
+         "priceTargetAction": "Lowers", "currentPriceTarget": 174.0, "priorPriceTarget": 0}]}}]}}
+    own = ar.history_from_json(js)
+    got = ar.rows_from_history("NVDA", own, 4e12, _dt.datetime(2026, 11, 11, tzinfo=utc))
+    assert [(r["firm"], r["action"], r["day"]) for r in got] == [("TD Cowen", "main", _dt.date(2026, 11, 16)),
+                                                                  ("Truist Securities", "down", _dt.date(2026, 11, 13))]
+    assert ar.latest_grade(own) == _dt.datetime(2026, 11, 16, 12, 52, 44, tzinfo=utc)
+    assert ar.history_from_json({"quoteSummary": {"result": None}}).empty
+    names = [v[0] for v in ar._variants()]
+    assert names[0] == "yfinance" and len(set(names)) == len(names)
     # the API: rows and counts
     class Cur:
         def __init__(self): self.n = 0

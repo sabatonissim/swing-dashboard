@@ -127,9 +127,76 @@ def latest_grade(df):
     return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
 
 
-def fetch(tickers, now=None):
-    """-> (rows, stats). stats: asked, empty, failed, rows, newest (the newest grade of ALL the histories read)."""
+PROBE_TICKERS = ("NVDA", "AAPL", "MSFT")   # rated by many firms: something new every trading day
+
+
+def _variants():
+    """v57c: ways to ask Yahoo for the same history. 16.11.2026: yfinance's own request, from GitHub Actions, came back with
+    a history that stopped at 12.11 19:53 UTC (the run said so: 'an old answer'), while from home every one of these was
+    fresh. Each run asks the probe tickers in every way and uses the freshest one (cache_bust = a parameter that changes
+    every run, so no stored copy of the address can be served)."""
+    bust = str(int(time.time()))
+    q1, q2 = "https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com"
+    base = {"modules": "upgradeDowngradeHistory", "corsDomain": "finance.yahoo.com", "formatted": "false",
+            "lang": "en-US", "region": "US"}
+    return [("yfinance", None, None),
+            ("q2 cache_bust", q2 + "/v10/finance/quoteSummary/{t}", dict(base, _cb=bust)),
+            ("q1 cache_bust", q1 + "/v10/finance/quoteSummary/{t}", dict(base, _cb=bust)),
+            ("q1 plain", q1 + "/v10/finance/quoteSummary/{t}", {"modules": "upgradeDowngradeHistory"}),
+            ("q2 GB", q2 + "/v10/finance/quoteSummary/{t}", dict(base, lang="en-GB", region="GB", _cb=bust)),
+            ("q1 v11", q1 + "/v11/finance/quoteSummary/{t}", dict(base, _cb=bust))]
+
+
+def history_from_json(result):
+    """quoteSummary JSON -> the same table yfinance makes of it (GradeDate index, Firm, ToGrade ...)."""
+    import pandas as pd
+    try:
+        data = result["quoteSummary"]["result"][0]["upgradeDowngradeHistory"]["history"]
+    except (KeyError, IndexError, TypeError):
+        return pd.DataFrame()
+    if not data:
+        return pd.DataFrame()
+    df = pd.DataFrame(data).rename(columns={"epochGradeDate": "GradeDate", "firm": "Firm", "toGrade": "ToGrade",
+                                            "fromGrade": "FromGrade", "action": "Action"})
+    df = df.set_index("GradeDate")
+    df.index = pd.to_datetime(df.index, unit="s")
+    return df
+
+
+def _history(ticker, variant):
     import yfinance as yf
+    name, url, params = variant
+    if url is None:
+        return yf.Ticker(ticker).upgrades_downgrades
+    from yfinance.data import YfData
+    return history_from_json(YfData().get_raw_json(url.format(t=ticker), params=dict(params, symbol=ticker)))
+
+
+def pick_variant(probe=PROBE_TICKERS):
+    """The way of asking whose newest change (over the probe tickers) is the newest; printed for every way."""
+    best, best_ts = None, None
+    for v in _variants():
+        newest = None
+        for t in probe:
+            try:
+                ts = latest_grade(_history(t, v))
+            except Exception as e:  # noqa: BLE001
+                print(f"[probe] {v[0]:14} {t}: {type(e).__name__}: {str(e)[:120]}")
+                continue
+            if ts and (newest is None or ts > newest):
+                newest = ts
+            time.sleep(PAUSE_SEC)
+        print(f"[probe] {v[0]:14} newest change {newest}")
+        if newest and (best_ts is None or newest > best_ts):
+            best, best_ts = v, newest
+    best = best or _variants()[0]
+    print(f"[info] reading every company with: {best[0]}")
+    return best
+
+
+def fetch(tickers, now=None, variant=None):
+    """-> (rows, stats). stats: asked, empty, failed, rows, newest (the newest grade of ALL the histories read)."""
+    variant = variant or _variants()[0]
     since = (now or datetime.now(timezone.utc)) - timedelta(days=LOOKBACK_DAYS)
     rows, failed, empty, asked, newest, t0 = [], [], 0, 0, None, time.time()
     for n, (ticker, cap) in enumerate(tickers):
@@ -138,7 +205,7 @@ def fetch(tickers, now=None):
             break
         asked += 1
         try:
-            df = yf.Ticker(ticker).upgrades_downgrades
+            df = _history(ticker, variant)
             if df is None or getattr(df, "empty", True):
                 empty += 1                   # every large company has a history; none = Yahoo refused (no exception)
             last = latest_grade(df)
@@ -193,7 +260,8 @@ def save(cur, rows, stats=None):
     # (from_grade = the newest change of all histories, to_grade = the counts), so data_health.py can say why a day is empty
     s = stats or {}
     newest = s.get("newest")
-    counts = f"asked {s.get('asked', 0)}, empty {s.get('empty', 0)}, failed {s.get('failed', 0)}, kept {s.get('rows', 0)}"
+    counts = (f"asked {s.get('asked', 0)}, empty {s.get('empty', 0)}, failed {s.get('failed', 0)}, kept {s.get('rows', 0)}"
+              f", via {s.get('way', '?')}")
     cur.execute("""INSERT INTO analyst_ratings (ticker, firm, graded_at, day, action, from_grade, to_grade)
                    VALUES ('_run', '_run', NOW(), CURRENT_DATE, 'run', %s, %s) ON CONFLICT DO NOTHING""",
                 (newest.isoformat(timespec="minutes") if newest else "none", counts))
@@ -209,7 +277,9 @@ def main(only=None):
     finally:
         conn.close()                    # Yahoo takes minutes; Neon would drop an idle connection
     print(f"[info] reading the rating history of {len(tickers)} companies")
-    rows, stats = fetch(tickers)
+    variant = pick_variant()
+    rows, stats = fetch(tickers, variant=variant)
+    stats["way"] = variant[0]
     bad_share = (stats["empty"] + stats["failed"]) / stats["asked"] if stats["asked"] else 0.0
     ratings = [r for r in rows if r["action"] in RATING_ACTIONS]
     print(f"[info] {len(rows)} changes in the last {LOOKBACK_DAYS} days: {len(ratings)} ratings, {len(rows) - len(ratings)} targets only")
