@@ -1585,6 +1585,15 @@ def test_analyst_rating_changes(api):
     # v56: 13.11.2026 saved nothing; a run where Yahoo did not answer most companies now ends red, and Monday reaches Friday
     assert ar.run_failed(0.9) and not ar.run_failed(0.1) and not ar.run_failed(0.9, only=["AMD"])
     assert ar.LOOKBACK_DAYS >= 4
+    # v57: the answer Actions got stopped at 12.11 while Yahoo had newer changes -> an old answer = the run ends red
+    mon = _dt.datetime(2026, 11, 16, 14, 50, tzinfo=utc)                       # Monday 09:50 ET
+    assert ar.previous_trading_day(mon) == _dt.date(2026, 11, 13)
+    assert ar.answer_is_old(_dt.datetime(2026, 11, 12, 18, 17, tzinfo=utc), mon)
+    assert not ar.answer_is_old(_dt.datetime(2026, 11, 13, 21, 32, tzinfo=utc), mon)
+    assert ar.answer_is_old(None, mon) and not ar.answer_is_old(None, mon, only=["AMD"])
+    assert ar.previous_trading_day(_dt.datetime(2026, 11, 27, 14, 0, tzinfo=utc)) == _dt.date(2026, 11, 25)   # Thanksgiving
+    assert ar.latest_grade(df) == _dt.datetime(2026, 11, 9, 10, 17, tzinfo=utc)
+    assert ar.latest_grade(pd.DataFrame()) is None
     # the API: rows and counts
     class Cur:
         def __init__(self): self.n = 0
@@ -1604,10 +1613,19 @@ def test_analyst_rating_changes(api):
     seen = {}
 
     class HCur:
-        def execute(self, sql, params=None): seen["params"] = params
-        def fetchone(self): return {"ok": True} if seen.get("params") is None else {"ratings": 0, "all_changes": 0}
+        def execute(self, sql, params=None):
+            seen["sql"] = sql
+            if params is not None:
+                seen["params"] = params
+        def fetchone(self):
+            if "to_regclass" in seen["sql"]:
+                return {"ok": True}
+            if "'_run'" in seen["sql"]:      # v57: what the last run read
+                return {"from_grade": "2026-11-12T18:17+00:00", "to_grade": "asked 480, empty 3, failed 0, kept 0"}
+            return {"ratings": 0, "all_changes": 0}
     line = dh.check_ratings(HCur(), _dt.datetime(2026, 11, 9, 12, 30, tzinfo=utc))[0]
     assert line["status"] == "warn" and seen["params"] == (_dt.date(2026, 11, 6),)
+    assert "newest change 2026-11-12T18:17" in line["detail"] and "kept 0" in line["detail"]
     dh.check_ratings(HCur(), _dt.datetime(2026, 11, 27, 12, 30, tzinfo=utc))
     assert seen["params"] == (_dt.date(2026, 11, 25),)    # Thanksgiving in between
 

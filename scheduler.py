@@ -79,7 +79,9 @@ JOBS = [
     dict(name="profiles_day", workflow="company-profiles.yml", kind="daily",  at=(13, 0),  weekdays_only=False, grace_min=180),
     # v39: analyst rating changes (analyst_ratings.py) for the daily summary — most come out before the open, the rest
     # during the day; both on minutes when the news job keeps the database awake anyway
-    dict(name="ratings_am",  workflow="analyst-ratings.yml", kind="daily",    at=(9, 50),  weekdays_only=True,  grace_min=120),
+    # v57 (owner, 16.11.2026): ready half an hour before the open — 09:00 ET (the run takes ~4 min, the summary's stored
+    # answer is renewed at :07, so on the site by ~09:07); the database is awake then anyway (news, quick, econ, insider)
+    dict(name="ratings_am",  workflow="analyst-ratings.yml", kind="daily",    at=(9, 0),   weekdays_only=True,  grace_min=120),
     dict(name="ratings_pm",  workflow="analyst-ratings.yml", kind="daily",    at=(17, 40), weekdays_only=True,  grace_min=180),
     # v32: read-only data check (data_health.py) — after the evening jobs and the first quick refresh of the morning
     dict(name="data_health", workflow="data-health.yml",     kind="daily",    at=(7, 30),  weekdays_only=True,  grace_min=300),

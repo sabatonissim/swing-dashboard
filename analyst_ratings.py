@@ -1,7 +1,7 @@
 """
 Analyst rating changes (v39) — what the brokerages changed today, for the last section of the daily summary
 ==========================================================================================================
-Runs in GitHub Actions (analyst-ratings.yml), started by scheduler.py on weekdays at 09:50 ET (most changes come out before
+Runs in GitHub Actions (analyst-ratings.yml), started by scheduler.py on weekdays at 09:00 ET (v57; most changes come out before
 the open) and 17:40 ET (the rest of the day). Reads Yahoo's rating history of each large company (yfinance, which works from
 Actions; Yahoo blocks Render) and keeps the changes of the last few days in `analyst_ratings`. The site shows them as they
 are, not through the AI: the firm, the old and new rating, the price target.
@@ -115,10 +115,23 @@ def rows_from_history(ticker, df, market_cap, since):
     return out
 
 
+def latest_grade(df):
+    """The newest grade time in one company's history (UTC), None when there is none."""
+    if df is None or getattr(df, "empty", True):
+        return None
+    try:
+        ts = df.index.max()
+        ts = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else datetime.fromtimestamp(int(ts), tz=timezone.utc)
+    except Exception:  # noqa: BLE001
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
 def fetch(tickers, now=None):
+    """-> (rows, stats). stats: asked, empty, failed, rows, newest (the newest grade of ALL the histories read)."""
     import yfinance as yf
     since = (now or datetime.now(timezone.utc)) - timedelta(days=LOOKBACK_DAYS)
-    rows, failed, empty, asked, t0 = [], [], 0, 0, time.time()
+    rows, failed, empty, asked, newest, t0 = [], [], 0, 0, None, time.time()
     for n, (ticker, cap) in enumerate(tickers):
         if time.time() - t0 > BUDGET_SEC:
             print(f"[warn] time budget used up after {n} of {len(tickers)} companies; the rest wait for the next run")
@@ -128,14 +141,17 @@ def fetch(tickers, now=None):
             df = yf.Ticker(ticker).upgrades_downgrades
             if df is None or getattr(df, "empty", True):
                 empty += 1                   # every large company has a history; none = Yahoo refused (no exception)
+            last = latest_grade(df)
+            if last and (newest is None or last > newest):
+                newest = last
             rows += rows_from_history(ticker, df, cap, since)
         except Exception as e:  # noqa: BLE001
             failed.append(f"{ticker} ({type(e).__name__})")
         time.sleep(PAUSE_SEC)
     if failed:
         print(f"[warn] {len(failed)} companies failed: {', '.join(failed[:30])}")
-    print(f"[info] {empty} of {asked} companies came back with no rating history")
-    return rows, (len(failed) + empty) / asked if asked else 0.0
+    print(f"[info] {empty} of {asked} companies came back with no rating history; newest change read: {newest}")
+    return rows, dict(asked=asked, empty=empty, failed=len(failed), rows=len(rows), newest=newest)
 
 
 def run_failed(bad_share: float, only=None) -> bool:
@@ -143,7 +159,28 @@ def run_failed(bad_share: float, only=None) -> bool:
     return not only and bad_share > MAX_EMPTY_SHARE
 
 
-def save(cur, rows):
+def previous_trading_day(now):
+    day = now.astimezone(ET).date() - timedelta(days=1)
+    try:
+        from ai_digest import nyse_holidays
+        holidays = set(nyse_holidays(day.year)) | set(nyse_holidays(day.year - 1))
+    except Exception:  # noqa: BLE001
+        holidays = set()
+    while day.weekday() >= 5 or day in holidays:
+        day -= timedelta(days=1)
+    return day
+
+
+def answer_is_old(newest, now, only=None) -> bool:
+    """v57: since 13.11.2026 the runs read histories (most not empty, the run green) but saved nothing, while Yahoo showed
+    new changes from home: the answer Actions got stopped at 12.11. Among ~500 of the largest companies some rating or
+    target changes every trading day, so the newest change of all of them must be from the previous trading day or later."""
+    if only:
+        return False
+    return newest is None or newest.astimezone(ET).date() < previous_trading_day(now)
+
+
+def save(cur, rows, stats=None):
     for r in rows:
         cur.execute("""INSERT INTO analyst_ratings (ticker, firm, graded_at, day, action, from_grade, to_grade, pt_action,
                                                     pt_now, pt_prior, market_cap)
@@ -152,9 +189,14 @@ def save(cur, rows):
                        ON CONFLICT (ticker, firm, graded_at) DO UPDATE SET seen_at = NOW(), to_grade = EXCLUDED.to_grade,
                            pt_now = EXCLUDED.pt_now, pt_prior = EXCLUDED.pt_prior, pt_action = EXCLUDED.pt_action""", r)
     cur.execute("DELETE FROM analyst_ratings WHERE day < CURRENT_DATE - %s", (KEEP_DAYS,))
-    # the run itself, so the health check sees a run on a day with no change at all
-    cur.execute("""INSERT INTO analyst_ratings (ticker, firm, graded_at, day, action) VALUES ('_run', '_run', NOW(), CURRENT_DATE, 'run')
-                   ON CONFLICT DO NOTHING""")
+    # the run itself, so the health check sees a run on a day with no change at all. v57: with what it read
+    # (from_grade = the newest change of all histories, to_grade = the counts), so data_health.py can say why a day is empty
+    s = stats or {}
+    newest = s.get("newest")
+    counts = f"asked {s.get('asked', 0)}, empty {s.get('empty', 0)}, failed {s.get('failed', 0)}, kept {s.get('rows', 0)}"
+    cur.execute("""INSERT INTO analyst_ratings (ticker, firm, graded_at, day, action, from_grade, to_grade)
+                   VALUES ('_run', '_run', NOW(), CURRENT_DATE, 'run', %s, %s) ON CONFLICT DO NOTHING""",
+                (newest.isoformat(timespec="minutes") if newest else "none", counts))
 
 
 def main(only=None):
@@ -167,7 +209,8 @@ def main(only=None):
     finally:
         conn.close()                    # Yahoo takes minutes; Neon would drop an idle connection
     print(f"[info] reading the rating history of {len(tickers)} companies")
-    rows, bad_share = fetch(tickers)
+    rows, stats = fetch(tickers)
+    bad_share = (stats["empty"] + stats["failed"]) / stats["asked"] if stats["asked"] else 0.0
     ratings = [r for r in rows if r["action"] in RATING_ACTIONS]
     print(f"[info] {len(rows)} changes in the last {LOOKBACK_DAYS} days: {len(ratings)} ratings, {len(rows) - len(ratings)} targets only")
     for r in sorted(ratings, key=lambda r: -(r["market_cap"] or 0))[:15]:
@@ -175,13 +218,16 @@ def main(only=None):
     conn = get_conn()
     try:
         cur = conn.cursor()
-        save(cur, rows)
+        save(cur, rows, stats)
         conn.commit()
     finally:
         conn.close()
     print("[info] saved")
     if run_failed(bad_share, only):
         print(f"[error] {bad_share:.0%} of the companies came back empty or failed: Yahoo did not answer this run")
+        sys.exit(1)
+    if answer_is_old(stats["newest"], datetime.now(timezone.utc), only):
+        print(f"[error] the newest change Yahoo gave is {stats['newest']}, before the last trading day: an old answer")
         sys.exit(1)
 
 

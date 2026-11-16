@@ -395,8 +395,14 @@ def check_ratings(cur, now: datetime) -> List[dict]:
                           COUNT(*) FILTER (WHERE action <> 'run') AS all_changes
                    FROM analyst_ratings WHERE day = %s""", (day,))
     r = cur.fetchone()
+    # v57: what the last run read (analyst_ratings.save): the newest change of all histories and the counts — an empty
+    # day then says whether Yahoo answered at all, answered old data (13.11.2026), or the rows were filtered out
+    cur.execute("""SELECT from_grade, to_grade FROM analyst_ratings WHERE ticker = '_run' AND from_grade IS NOT NULL
+                   ORDER BY graded_at DESC LIMIT 1""")
+    last = cur.fetchone()
+    run = f"; last run: newest change {last['from_grade']}, {last['to_grade']}" if last else ""
     return [_line("value.analyst_ratings", "ok" if r["all_changes"] else "warn",
-                  f"{day}: {r['ratings']} rating changes, {r['all_changes'] - r['ratings']} target changes", r["all_changes"])]
+                  f"{day}: {r['ratings']} rating changes, {r['all_changes'] - r['ratings']} target changes{run}", r["all_changes"])]
 
 
 def check_digest(cur) -> List[dict]:
