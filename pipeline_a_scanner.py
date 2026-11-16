@@ -536,18 +536,28 @@ TRENDLINE_TOLERANCE = 0.005        # a wick may pierce the line by at most 0.5% 
 TRENDLINE_TOUCH_TOL = 0.01         # a swing point within 1% of the line counts as a touch
 TRENDLINE_MIN_SPAN_BARS = 15       # anchors must be at least this many bars apart
 TRENDLINE_MIN_TOUCHES = 3          # 2 anchors + at least 1 more real touch = a confirmed line
+TRENDLINE_WICK_BARS = 3            # v55 (owner, AVGO 12.11.2026): on the 3 sessions just before a breakout only the CLOSE
+                                   # has to stay under a falling line. AVGO gapped up on 11.11, its high went 3.9% over
+                                   # the line from the 3.6 high and it closed $1 under it; the next day it closed 6.5%
+                                   # above — and the scanner said nothing, because the 11.11 wick had "cut" the line.
 
 
-def fit_trendline(window: pd.DataFrame, kind: str, accept=None) -> Optional[dict]:
+def fit_trendline(window: pd.DataFrame, kind: str, accept=None, free_bars: int = 1) -> Optional[dict]:
     """kind='support': rising line under swing lows. kind='resistance':
     falling line over swing highs. `accept(fit)` lets the caller keep only
-    lines that are relevant today (e.g. price is right at the line)."""
+    lines that are relevant today (e.g. price is right at the line).
+    `free_bars` (resistance only): how many of the last bars may be above the
+    line — 1 = today may break out (the scanner); the stock page passes more
+    to find a line that was broken a few sessions ago."""
     support = (kind == "support")
     vals = window["Low"].values if support else window["High"].values
+    all_closes = window["Close"].values
     n = len(vals)
     if n < 40:
         return None
     pts = find_swing_points(vals, mode="low" if support else "high")
+    if not support:
+        pts = [p for p in pts if p[0] < n - free_bars]
     if len(pts) < 2:
         return None
     close = float(window["Close"].iloc[-1])
@@ -570,7 +580,12 @@ def fit_trendline(window: pd.DataFrame, kind: str, accept=None) -> Optional[dict
             if support:
                 viol = float(((line - seg) / line).max())              # wicks below the line
             else:
-                viol = float(((seg[:-1] - line[:-1]) / line[:-1]).max())  # highs above it (today may break out)
+                # highs above the line, up to the free bars; on the TRENDLINE_WICK_BARS bars before them only the close
+                end = n - free_bars - i1
+                body = max(1, end - TRENDLINE_WICK_BARS)
+                viol = float(((seg[:body] - line[:body]) / line[:body]).max())
+                if end > body:
+                    viol = max(viol, float(((all_closes[i1 + body:i1 + end] - line[body:end]) / line[body:end]).max()))
             if viol > TRENDLINE_TOLERANCE:
                 continue
             touches = [(i, v) for (i, v) in pts if i >= i1

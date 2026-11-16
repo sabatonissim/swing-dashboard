@@ -3035,13 +3035,46 @@ def _setup_ascending_trendline_support(hist: pd.DataFrame) -> Optional[dict]:
     }
 
 
+_TL_BREAK_MAX_AGE = 10     # stock page only: a falling line broken up to this many sessions ago is still shown
+
+
 def _setup_descending_trendline_breakout(hist: pd.DataFrame) -> Optional[dict]:
     scan_rule = _scanner_rule_desc_trendline_breakout(hist)  # scanner parity: see SCANNER PARITY note
     if scan_rule:
+        scan_rule["days_since_breakout"] = 0
         return scan_rule
-    # Not a fresh breakout today: show a VALID falling resistance line if
-    # price is up to 12% below it (approaching) or up to 5% above it.
     window = hist.tail(_TL_SEARCH_DAYS)
+    # v55 (owner, AVGO 13.11.2026: "it broke the line of falling highs and is testing it as support" — the page showed
+    # nothing, because one day after a breakout the line no longer passed "no high above it"): a line that was valid
+    # until a close broke it 1-10 sessions ago, with every close since then still above it.
+    closes, lows = window["Close"].values, window["Low"].values
+    n = len(closes)
+    for age in range(1, _TL_BREAK_MAX_AGE + 1):
+        b = n - 1 - age                                   # the bar that broke out
+
+        def held(f, b=b):
+            def lv(k):
+                return f["first_val"] + f["slope"] * (k - f["first_idx"])
+            return (closes[b] > lv(b) and closes[b - 1] <= lv(b - 1)
+                    and all(closes[k] >= lv(k) * 0.985 for k in range(b + 1, n)) and closes[-1] > lv(n - 1))
+        fit = _fit_trendline(window, "resistance", held, free_bars=age + 1)
+        if not fit:
+            continue
+        retest = any(lows[k] <= (fit["first_val"] + fit["slope"] * (k - fit["first_idx"])) * 1.015 for k in range(b + 1, n))
+        return {
+            "pattern": "descending_trendline_breakout",
+            "stage": "triggered",
+            "days_since_breakout": age,
+            "retest": bool(retest),
+            "key_level": round(fit["value_today"], 2),
+            "distance_pct": round((fit["value_today"] - fit["close"]) / fit["close"] * 100, 2),
+            "target_price": None,
+            "target_pct": None,
+            "touches": len(fit["touches"]),
+            "lines": [_trendline_line_dict(fit, window, "קו התנגדות יורד (נפרץ)", "Descending resistance line (broken)")],
+        }
+    # Not a breakout: show a VALID falling resistance line if
+    # price is up to 12% below it (approaching) or up to 5% above it.
     fit = _fit_trendline(
         window, "resistance",
         lambda f: -5.0 <= (f["value_today"] - f["close"]) / f["close"] * 100 <= 12.0,
@@ -3132,6 +3165,9 @@ def _setup_horizontal_resistance_breakout(hist: pd.DataFrame) -> Optional[dict]:
     return {
         "pattern": "horizontal_resistance_breakout",
         "stage": stage,
+        # v55: the closes crossed this level again and again since its first touch — it is listed after every other
+        # structure (AVGO's $341 "breakout" was the headline over the trendline break the owner was looking at)
+        "choppy": _crossings(closes[anchor_idx:], level * 0.99, level * 1.01) > touches + 1,
         "key_level": round(level, 2),
         "distance_pct": round(distance_pct, 2),
         "target_price": None,
@@ -3258,10 +3294,106 @@ def _ma150_context(hist: pd.DataFrame) -> Optional[dict]:
     }
 
 
+def _crossings(closes, lo: float, hi: float) -> int:
+    """How many times the closes moved from one side of the band lo..hi to the other. A level the price keeps slicing
+    through is not support or resistance (v55, owner on AVGO: lines drawn through the middle of months of chop)."""
+    side = np.where(closes > hi, 1, np.where(closes < lo, -1, 0))
+    side = side[side != 0]
+    return int((side[1:] != side[:-1]).sum()) if len(side) > 1 else 0
+
+
+_LEVEL_TEST_BARS = 10      # stock page only: "tested recently" = a low reached the level in the last 10 sessions
+
+
+def _recently_tested_support(hist: pd.DataFrame) -> Optional[dict]:
+    """v55 (owner, ZS and AVGO 13.11.2026). Two things the page did not see:
+    - ZS: the May/August highs at $191 (resistance), broken in September, and price back ON that level now — old
+      resistance tested as support. The support rule looked at swing LOWS only.
+    - AVGO: the 30 March low ($289.96) touched again on 5-6 November and a sharp bounce from it; price was already
+      far above, and the March low was older than the 150-bar window.
+    A level = 2+ swing highs/lows within 2% of each other (all older than the test), over the charted period. It
+    counts when a low reached it (within 1.5%) in the last _LEVEL_TEST_BARS sessions, no close since then fell under
+    it, price had been above it before, and the closes did not keep crossing it (_crossings). The line sits on a real
+    wick: the first high for a level that was resistance, the lowest low otherwise. Display only — no scanner twin."""
+    window = hist.tail(_TL_SEARCH_DAYS)
+    n = len(window)
+    if n < 60:
+        return None
+    highs, lows, closes = window["High"].values, window["Low"].values, window["Close"].values
+    cut = n - _LEVEL_TEST_BARS
+    piv = [(i, v, "H") for i, v in _find_swing_points(highs, mode="high") if i < cut] + \
+          [(i, v, "L") for i, v in _find_swing_points(lows, mode="low") if i < cut]
+    if len(piv) < 2:
+        return None
+    piv.sort(key=lambda p: p[1])
+    clusters, current = [], [piv[0]]
+    for p in piv[1:]:
+        avg = sum(x[1] for x in current) / len(current)
+        if abs(p[1] - avg) / avg <= 0.02:
+            current.append(p)
+        else:
+            clusters.append(current)
+            current = [p]
+    clusters.append(current)
+    close = float(closes[-1])
+    best = None
+    for c in clusters:
+        if len(c) < 2:
+            continue
+        first = min(c, key=lambda p: p[0])
+        flipped = first[2] == "H"                     # it was resistance first
+        anchor = first if flipped else min(c, key=lambda p: p[1])
+        level = float(anchor[1])
+        if level <= 0 or close <= level:
+            continue
+        tests = [k for k in range(cut, n) if lows[k] <= level * 1.015]
+        if not tests:
+            continue
+        if (closes[tests[0]:] < level * 0.99).any():  # a close under it = the level gave way
+            continue
+        before = closes[max(0, tests[0] - 10):tests[0]]
+        if len(before) < 5 or float((before > level).mean()) < _LEVEL_MIN_PRIOR_ABOVE:
+            continue
+        if _crossings(closes[first[0]:], level * 0.99, level * 1.01) > len(c):
+            continue
+        score = (tests[-1], len(c))
+        if best is None or score > best[0]:
+            best = (score, level, anchor, flipped, len(c), tests[-1])
+    if not best:
+        return None
+    _, level, anchor, flipped, touches, last_test = best
+    dates = window.index
+    line = {"type": "horizontal",
+            "label_he": "התנגדות שהפכה לתמיכה" if flipped else "תמיכה אופקית",
+            "label_en": "Old resistance, now support" if flipped else "Horizontal support",
+            "price": round(level, 2), "from": _fmt_date(dates[anchor[0]]), "to": _fmt_date(dates[-1])}
+    if not flipped:
+        line["wick"] = "low"
+    return {
+        "pattern": "horizontal_support_bounce",
+        "stage": "holding",
+        "key_level": round(level, 2),
+        "distance_pct": round((close - level) / level * 100, 2),
+        "target_price": None,
+        "target_pct": None,
+        "touches": touches,
+        "days_since_test": n - 1 - last_test,
+        "role_reversal": flipped,
+        "lines": [line],
+    }
+
+
 def _setup_horizontal_support_bounce(hist: pd.DataFrame) -> Optional[dict]:
     scan_rule = _scanner_rule_level_bounce(hist)  # scanner parity: see SCANNER PARITY note
     if scan_rule:
         return scan_rule
+    tested = _recently_tested_support(hist)
+    if tested and tested["distance_pct"] <= 10:
+        return tested
+    return _horizontal_support_nearby(hist) or tested
+
+
+def _horizontal_support_nearby(hist: pd.DataFrame) -> Optional[dict]:
     """Mirror of _setup_horizontal_resistance_breakout: the SAME horizontal
     level tested 2+ times, but from below as support, with price currently
     bouncing off (or just dipping under) it — the "AMZN/AVGO" pattern from
@@ -3524,7 +3656,9 @@ def _setup_double_bottom(hist: pd.DataFrame) -> Optional[dict]:
 
     neckline = float(closes[lo_idx:hi_idx+1].max())
     bottom_price = float(min(lo_low, hi_low))
-    if bottom_price <= 0 or (neckline - bottom_price) / bottom_price < 0.08:
+    # v55: measured from the FIRST bottom, as the scanner does (the lower of the two was used here — on AVGO, 5.10.2026,
+    # the page announced a breakout the scanner had not flagged; found when AVGO joined the twin test)
+    if lo_low <= 0 or (neckline - lo_low) / lo_low < 0.08:
         return None
 
     today_close = float(closes[-1])
@@ -3659,15 +3793,19 @@ _TL_TOLERANCE = 0.005   # v18: was 0.015 — twin of TRENDLINE_TOLERANCE in the 
 _TL_TOUCH_TOL = 0.01
 _TL_MIN_SPAN_BARS = 15
 _TL_MIN_TOUCHES = 3
+_TL_WICK_BARS = 3       # v55: twin of TRENDLINE_WICK_BARS — see the note there (AVGO 12.11.2026)
 
 
-def _fit_trendline(window: pd.DataFrame, kind: str, accept=None) -> Optional[dict]:
+def _fit_trendline(window: pd.DataFrame, kind: str, accept=None, free_bars: int = 1) -> Optional[dict]:
     support = (kind == "support")
     vals = window["Low"].values if support else window["High"].values
+    all_closes = window["Close"].values
     n = len(vals)
     if n < 40:
         return None
     pts = _find_swing_points(vals, mode="low" if support else "high")
+    if not support:
+        pts = [p for p in pts if p[0] < n - free_bars]
     if len(pts) < 2:
         return None
     close = float(window["Close"].iloc[-1])
@@ -3690,7 +3828,11 @@ def _fit_trendline(window: pd.DataFrame, kind: str, accept=None) -> Optional[dic
             if support:
                 viol = float(((line - seg) / line).max())
             else:
-                viol = float(((seg[:-1] - line[:-1]) / line[:-1]).max())
+                end = n - free_bars - i1
+                body = max(1, end - _TL_WICK_BARS)
+                viol = float(((seg[:body] - line[:body]) / line[:body]).max())
+                if end > body:
+                    viol = max(viol, float(((all_closes[i1 + body:i1 + end] - line[body:end]) / line[body:end]).max()))
             if viol > _TL_TOLERANCE:
                 continue
             touches = [(i, v) for (i, v) in pts if i >= i1
@@ -3796,8 +3938,14 @@ def _sr_zones(window: pd.DataFrame) -> list:
         hs = [p[0] for p in grp if p[2] == "H"]
         ls = [p[0] for p in grp if p[2] == "L"]
         kind = "support" if mid < close else "resistance"
-        # role reversal: highs came first and later lows held there (support), or the other way round (resistance)
-        flipped = bool(hs and ls) and (min(hs) < max(ls) if kind == "support" else min(ls) < max(hs))
+        # v55 (owner, AVGO 13.11.2026: two rectangles through the middle of nine months of sideways trading): a zone
+        # the closes crossed more times than it was touched is not a level. KO's 85.13-85.68 was crossed once, ZS's
+        # 190.47-191.25 once; AVGO's 339.99-342.33 nine times.
+        if _crossings(window["Close"].values[min(p[0] for p in grp):], lo, hi) > len(grp):
+            continue
+        # role reversal: swing highs under today's price were resistance and are support now (ZS: three highs at $191,
+        # then the breakout), and swing lows above it the other way round
+        flipped = bool(hs) if kind == "support" else bool(ls)
         zones.append({"lo": lo, "hi": hi, "n": len(grp), "both": flipped,
                       "first": min(p[0] for p in grp), "kind": kind, "dist": abs(mid - close) / close})
     out = []
@@ -4273,36 +4421,60 @@ _SETUP_EXPLANATIONS = {
     "descending_trendline_breakout": {
         "he": lambda d: (
             f"קו התנגדות יורד (דרך שיאים יורדים) עומד כרגע סביב ${d['key_level']}. "
-            + (f"המחיר כבר פרץ מעליו." if d['stage']=='triggered' else f"המחיר כ-{abs(d['distance_pct'])}% מתחת לקו — התקרבות אפשרית לפריצה.")
+            + ((f"המחיר פרץ מעליו {_ago_he(d.get('days_since_breakout'))}"
+                + (" ומאז ירד לבדוק אותו מלמעלה ונסגר מעליו — קו שהיה התנגדות ונבחן עכשיו כתמיכה." if d.get('retest')
+                   else f" וכרגע הוא כ-{abs(d['distance_pct'])}% מעליו.")) if d['stage']=='triggered'
+               else f"המחיר כ-{abs(d['distance_pct'])}% מתחת לקו — התקרבות אפשרית לפריצה.")
             + " אין כאן יעד מדידת-גובה סטנדרטי — רק מבנה טכני, לא המלצה."
         ),
         "en": lambda d: (
             f"A descending resistance line (through lower highs) currently sits around ${d['key_level']}. "
-            + (f"Price has already broken above it." if d['stage']=='triggered' else f"Price is about {abs(d['distance_pct'])}% below the line — a possible approach toward a breakout.")
+            + ((f"Price broke above it {_ago_en(d.get('days_since_breakout'))}"
+                + (" and has since come back down to test it from above, closing over it — a line that was resistance, now being tested as support." if d.get('retest')
+                   else f" and is now about {abs(d['distance_pct'])}% above it.")) if d['stage']=='triggered'
+               else f"Price is about {abs(d['distance_pct'])}% below the line — a possible approach toward a breakout.")
             + " There's no standard measured-move target for this one — just a structural read, not a recommendation."
         ),
     },
     "horizontal_resistance_breakout": {
         "he": lambda d: (
             f"רמת התנגדות אופקית ({_tested_times_he(d.get('touches'))}) נמצאת סביב ${d['key_level']}. "
-            + (f"המחיר כבר פרץ מעליה." if d['stage']=='triggered' else f"המחיר כרגע כ-{abs(d['distance_pct'])}% מתחתיה.")
+            + ((f"המחיר כבר פרץ מעליה"
+                + ("." if d.get('retest_days') is None else
+                   (", וביום המסחר האחרון" if not d['retest_days'] else f", ו{_ago_he(d['retest_days'])}")
+                   + " ירד לבדוק אותה מלמעלה ונסגר מעליה — התנגדות שנבחנת עכשיו כתמיכה.")) if d['stage']=='triggered'
+               else f"המחיר כרגע כ-{abs(d['distance_pct'])}% מתחתיה.")
             + " ניתוח מבני בלבד, לא המלצת השקעה."
         ),
         "en": lambda d: (
             f"A horizontal resistance level (tested {d.get('touches','a few')} times before) sits around ${d['key_level']}. "
-            + (f"Price has already broken above it." if d['stage']=='triggered' else f"Price is currently about {abs(d['distance_pct'])}% below it.")
+            + ((f"Price has already broken above it"
+                + ("." if d.get('retest_days') is None else
+                   (", and in the latest session" if not d['retest_days'] else f", and {_ago_en(d['retest_days'])}")
+                   + " it came back down to test it from above and closed over it — resistance now being tested as support.")) if d['stage']=='triggered'
+               else f"Price is currently about {abs(d['distance_pct'])}% below it.")
             + " Structural read only, not investment advice."
         ),
     },
     "horizontal_support_bounce": {
         "he": lambda d: (
-            f"רמת תמיכה אופקית ({_tested_times_he(d.get('touches'))}) נמצאת סביב ${d['key_level']}. "
-            + (f"המחיר מחזיק מעליה כרגע — נראה כמו ריבאונד תקין." if d['stage']=='holding' else f"המחיר ירד קלות מתחתיה (כ-{abs(d['distance_pct'])}%) — שווה לעקוב אם היא תחזיק.")
+            (f"הרמה סביב ${d['key_level']} הייתה התנגדות ({_tested_times_he(d.get('touches'))}), המחיר פרץ מעליה, ועכשיו היא נבחנת כתמיכה. "
+             if d.get('role_reversal') else
+             f"רמת תמיכה אופקית ({_tested_times_he(d.get('touches'))}) נמצאת סביב ${d['key_level']}. ")
+            + ((("המחיר ירד אליה ביום המסחר האחרון" if not d['days_since_test'] else f"המחיר ירד אליה {_ago_he(d['days_since_test'])}")
+                + f" ונסגר מעליה; כרגע הוא כ-{abs(d['distance_pct'])}% מעליה.") if d.get('days_since_test') is not None
+               else f"המחיר מחזיק מעליה כרגע — נראה כמו ריבאונד תקין." if d['stage']=='holding'
+               else f"המחיר ירד קלות מתחתיה (כ-{abs(d['distance_pct'])}%) — שווה לעקוב אם היא תחזיק.")
             + " ניתוח מבני בלבד, לא המלצת השקעה."
         ),
         "en": lambda d: (
-            f"A horizontal support level (tested {d.get('touches','a few')} times before) sits around ${d['key_level']}. "
-            + (f"Price is currently holding above it — looks like a normal bounce." if d['stage']=='holding' else f"Price has dipped slightly below it (about {abs(d['distance_pct'])}%) — worth watching whether it holds.")
+            (f"The level around ${d['key_level']} was resistance (tested {d.get('touches','a few')} times), price broke above it, and it is now being tested as support. "
+             if d.get('role_reversal') else
+             f"A horizontal support level (tested {d.get('touches','a few')} times before) sits around ${d['key_level']}. ")
+            + ((("Price came down to it in the latest session" if not d['days_since_test'] else f"Price came down to it {_ago_en(d['days_since_test'])}")
+                + f" and closed above it; it is now about {abs(d['distance_pct'])}% above.") if d.get('days_since_test') is not None
+               else f"Price is currently holding above it — looks like a normal bounce." if d['stage']=='holding'
+               else f"Price has dipped slightly below it (about {abs(d['distance_pct'])}%) — worth watching whether it holds.")
             + " Structural read only, not investment advice."
         ),
     },
@@ -4406,16 +4578,30 @@ def _compute_setup_candidates(hist: pd.DataFrame, ticker: str) -> list:
         if result:
             if result["pattern"] in _LEVEL_MINUS_PRICE_PATTERNS:
                 result["distance_pct"] = -result["distance_pct"]
-            _explain_setup(result)
             candidates.append(result)
 
+    # v55: the same level found twice — as a resistance that was broken and as "old resistance, now tested as support"
+    # (KO 29.10.2026, $90.92) — is one structure: the breakout keeps the line and says that it was tested from above
+    rb = next((c for c in candidates if c["pattern"] == "horizontal_resistance_breakout" and c["stage"] == "triggered"), None)
+    sb = next((c for c in candidates if c["pattern"] == "horizontal_support_bounce" and c.get("role_reversal")), None)
+    if rb and sb and abs(sb["key_level"] / rb["key_level"] - 1) <= 0.02:
+        rb["retest_days"] = sb["days_since_test"]
+        candidates.remove(sb)
+    for c in candidates:
+        _explain_setup(c)
+
     def sort_key(c):
+        if c["pattern"] == "descending_trendline_breakout" and c["stage"] == "triggered" \
+                and (c.get("days_since_breakout") or 0) <= _CUP_FRESH_BARS:
+            return (0, 3.5)       # v55: a months-long line of falling highs broken this week is the headline (AVGO)
         already = 0 if c["stage"] in ("triggered", "holding") else 1
         if already == 0:
             # a cup that broke out weeks ago is shown for context but must not outrank fresh signals
             stale = c.get("days_since_breakout") is not None and (
                 c["days_since_breakout"] > _CUP_FRESH_BARS or c.get("extension_pct", 0) > _CUP_MAX_EXTENSION * 100)
-            return (0, _SETUP_PRIORITY.get(c["pattern"], 99) + (50 if stale else 0))
+            # v55: a support level the price already left more than 10% behind comes after what is happening now
+            far = c.get("days_since_test") is not None and c["distance_pct"] > 10
+            return (0, _SETUP_PRIORITY.get(c["pattern"], 99) + (50 if stale or c.get("choppy") else 0) + (5 if far else 0))
         return (1, round(abs(c["distance_pct"]), 1), _SETUP_PRIORITY.get(c["pattern"], 99))
     candidates.sort(key=sort_key)
     return candidates
@@ -4482,9 +4668,9 @@ def get_technical_setup(ticker: str):
     except Exception as e:
         print(f"[warn] technical-setup {ticker}: ma150 context failed: {type(e).__name__}: {e}")
 
-    if not candidates:
-        return {"ticker": ticker, "has_setup": False, "candidates": [], "scan_signal": scan_signal, "ma150": ma150}
-
+    # v55 (owner, ZS 13.11.2026): with no pattern found the answer used to stop here — no chart and no zones, although
+    # the support zone the price was sitting on had been found. The chart, the zones and the main trendline are now
+    # returned for every stock; has_setup only says whether a pattern is named.
     tail_hist = hist.tail(160)
     price_series = [
         [_fmt_date(idx), round(float(o), 2), round(float(h), 2), round(float(l), 2), round(float(c), 2)]
@@ -4563,7 +4749,7 @@ def get_technical_setup(ticker: str):
 
     return {
         "ticker": ticker,
-        "has_setup": True,
+        "has_setup": bool(candidates),
         "scan_match": scan_match,
         "scan_signal": scan_signal,
         "current_price": round(float(hist["Close"].iloc[-1]), 2),

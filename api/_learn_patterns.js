@@ -574,7 +574,7 @@ module.exports = [
 <h2>The rules the scanner checks</h2>
 <ul>
 <li>It searches up to 250 trading days back for a line of highs with at least 3 touches, counted within 1% of the line, with anchor points at least 15 trading days apart.</li>
-<li>No high in the period crosses above the line by more than 0.5%, the same strictness as an <a href="/learn/ascending-trendline-support">ascending trendline</a>.</li>
+<li>No high in the period crosses above the line by more than 0.5%, the same strictness as an <a href="/learn/ascending-trendline-support">ascending trendline</a>. On the three trading days just before the breakout only the close has to stay under the line: a high that poked above it and closed back below does not cancel the line.</li>
 <li>Yesterday's close was at or below the line, and today's is above it. Only the first day is listed.</li>
 <li>${VOLUME_EN}</li>
 </ul>
@@ -592,7 +592,7 @@ module.exports = [
 <h2>הכללים שהסורק בודק</h2>
 <ul>
 <li>הוא מחפש עד 250 ימי מסחר אחורה קו שיאים עם לפחות 3 נגיעות, שנספרות במרחק של עד 1% ממנו, ולפחות 15 ימי מסחר בין נקודות העיגון.</li>
-<li>אף שיא בתקופה לא חוצה את הקו ביותר מ-0.5%, אותה חומרה כמו ב<a href="/he/learn/ascending-trendline-support">קו מגמה עולה</a>.</li>
+<li>אף שיא בתקופה לא חוצה את הקו ביותר מ-0.5%, אותה חומרה כמו ב<a href="/he/learn/ascending-trendline-support">קו מגמה עולה</a>. בשלושת ימי המסחר שלפני הפריצה רק הסגירה צריכה להישאר מתחת לקו: שיא שהציץ מעליו ונסגר בחזרה מתחתיו לא מבטל את הקו.</li>
 <li>הסגירה של אתמול הייתה על הקו או מתחתיו, והסגירה של היום מעליו. רק היום הראשון מוצג.</li>
 <li>${VOLUME_HE}</li>
 </ul>

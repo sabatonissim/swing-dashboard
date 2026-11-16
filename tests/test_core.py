@@ -68,7 +68,7 @@ def _constants(path):
 TWIN_CONSTANTS = [
     ("TRENDLINE_SEARCH_DAYS", "_TL_SEARCH_DAYS"), ("TRENDLINE_TOLERANCE", "_TL_TOLERANCE"),
     ("TRENDLINE_TOUCH_TOL", "_TL_TOUCH_TOL"), ("TRENDLINE_MIN_SPAN_BARS", "_TL_MIN_SPAN_BARS"),
-    ("TRENDLINE_MIN_TOUCHES", "_TL_MIN_TOUCHES"),
+    ("TRENDLINE_MIN_TOUCHES", "_TL_MIN_TOUCHES"), ("TRENDLINE_WICK_BARS", "_TL_WICK_BARS"),
     ("CUP_SEARCH_BARS", "_CUP_SEARCH_BARS"), ("CUP_MIN_BARS", "_CUP_MIN_BARS"), ("CUP_MAX_BARS", "_CUP_MAX_BARS"),
     ("CUP_MIN_DEPTH", "_CUP_MIN_DEPTH"), ("CUP_MAX_DEPTH", "_CUP_MAX_DEPTH"), ("CUP_RIM_TOL", "_CUP_RIM_TOL"),
     ("CUP_FRESH_BARS", "_CUP_FRESH_BARS"), ("CUP_MAX_EXTENSION", "_CUP_MAX_EXTENSION"),
@@ -99,7 +99,7 @@ def _norm(v):
     return v
 
 
-FIXTURE_TICKERS = ["KO", "ANET", "NOW", "NVDA"]
+FIXTURE_TICKERS = ["KO", "ANET", "NOW", "NVDA", "ZS", "AVGO", "RBRK"]     # the last three: downloaded 16.11.2026 (v55)
 END_OFFSETS = range(0, 120, 7)       # 18 different "today"s per stock
 
 
@@ -113,6 +113,9 @@ def test_trendline_twins_agree(scanner, api, ticker, kind):
         a = scanner.fit_trendline(window, kind)
         b = api._fit_trendline(window, kind)
         assert _norm(a) == _norm(b), f"{ticker} {kind} (today = {off} bars before the last): scanner and stock page differ"
+        if kind == "resistance":     # v55: also with the last bars left free (a line broken a few sessions ago)
+            assert _norm(scanner.fit_trendline(window, kind, None, 4)) == _norm(api._fit_trendline(window, kind, None, 4)), \
+                f"{ticker} broken line (today = {off} bars before the last): scanner and stock page differ"
         found += a is not None
     assert found >= 0     # the point is agreement; a stock may have no line on some days
 
@@ -157,6 +160,58 @@ def test_signal_twins_agree(scanner, api, ticker):
         assert (s is None) == (a is None), f"150-MA reclaim: {where}"
         if s:
             assert a["days_since_cross"] == (1 if s["held"] else 0) and s["ma150"] == a["key_level"], f"150-MA reclaim: {where}"
+
+
+def _setup_answer(api, monkeypatch, ticker, drop_last=0):
+    hist = _hist(ticker)
+    hist = hist.iloc[:len(hist) - drop_last]
+    monkeypatch.setattr(api.yf, "Ticker", lambda t: type("T", (), {"history": lambda self, **k: hist})())
+    monkeypatch.setattr(api, "_latest_scan_signal", lambda t: None)
+    return getattr(api.get_technical_setup, "__wrapped__", api.get_technical_setup)(ticker)
+
+
+def test_drawings_the_owner_made_by_hand(api, scanner, monkeypatch):
+    """v55 (owner's TradingView screenshots, 13.11.2026). What the stock page has to find by itself:
+    ZS: the May/August highs at $191.25, broken in September, tested from above now (the page showed nothing at all).
+    AVGO: the line of falling highs from the $495 high of 3 June, broken on 12.11 and tested on 13.11, and the support
+    at the 30 March low, $289.96, touched on 5-6 November. No rectangle through the middle of the sideways months."""
+    zs = _setup_answer(api, monkeypatch, "ZS")
+    c = zs["candidates"][0]
+    assert zs["has_setup"] and c["pattern"] == "horizontal_support_bounce" and c["role_reversal"] and c["key_level"] == 191.25
+    assert [(z["kind"], z["lo"], z["hi"]) for z in zs["zones"]] == [("support", 190.47, 191.25)]
+    assert "התנגדות" in c["explanation_he"] and "resistance" in c["explanation_en"]
+
+    av = _setup_answer(api, monkeypatch, "AVGO")
+    by = {c["pattern"]: c for c in av["candidates"]}
+    line = by["descending_trendline_breakout"]
+    assert av["candidates"][0] is line and line["days_since_breakout"] == 1 and line["retest"]
+    assert line["lines"][0]["points"][0] == ["2026-06-03", 495.0] and 340 < line["key_level"] < 347
+    sup = by["horizontal_support_bounce"]
+    assert sup["key_level"] == 289.96 and sup["lines"][0]["from"] == "2026-03-30" and sup["days_since_test"] == 5
+    assert not [z for z in av["zones"] if z["lo"] < 347.01 < z["hi"] * 1.03], "a zone drawn through the sideways months"
+    assert av["price_series"][0][0] <= "2026-03-30"          # the chart reaches back to the line's first wick
+
+    # the scanner: the breakout day itself is found although the day before poked its high over the line
+    h = _hist("AVGO")
+    assert scanner.detect_descending_trendline_breakout(h.iloc[:-1]) is not None
+    assert scanner.detect_descending_trendline_breakout(h) is None           # the next day it is not a new breakout
+    assert api._scanner_rule_desc_trendline_breakout(h.iloc[:-1])["stage"] == "triggered"
+
+
+def test_stock_with_no_pattern_still_gets_its_chart(api, monkeypatch):
+    """v55: no named pattern used to mean no chart and no zones. The chart and what was found near the price are returned
+    for every stock, and has_setup only says whether a pattern is named."""
+    monkeypatch.setattr(api, "_compute_setup_candidates", lambda hist, ticker: [])
+    r = _setup_answer(api, monkeypatch, "ZS")
+    assert r["has_setup"] is False and r["candidates"] == [] and len(r["price_series"]) >= 160
+    assert r["zones"] and r["zones"][0]["kind"] == "support"
+
+
+def test_a_level_the_price_keeps_crossing_is_not_a_level(api):
+    import numpy as _np
+    c = _np.array([10, 12, 10, 12, 10, 12, 11, 12.0])
+    assert api._crossings(c, 10.9, 11.1) == 5 and api._crossings(_np.array([10, 10.5, 12, 13.0]), 10.9, 11.1) == 1
+    assert api._crossings(_np.array([11.0]), 10.9, 11.1) == 0
 
 
 # ------------------------------------------------------------------ 4. fixed rules shown on the site

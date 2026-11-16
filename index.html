@@ -2884,9 +2884,13 @@ function updateDdOwnEmpty(){
 let _ddChartObserver = null;
 var _ddChartStale = false;      // v26e: the box changed size while the browser tab was hidden — rebuild when shown
 document.addEventListener('visibilitychange', () => {
-  if(document.visibilityState !== 'visible' || !_ddChartStale) return;
-  _ddChartStale = false;
+  if(document.visibilityState !== 'visible') return;
   const box = document.getElementById('dd-tv-chart');
+  if(!_ddChartStale){      // v55: a chart that loaded while the tab was in the background re-measures when it is shown
+    if(box && box.dataset.tvKey) setTimeout(() => _ddNudgeChart(box, box.dataset.tvKey), 300);
+    return;
+  }
+  _ddChartStale = false;
   if(box && box.offsetWidth > 0 && typeof TradingView !== 'undefined') _ddMountChart(true);
 });
 function _ddMountChart(force){
@@ -2917,7 +2921,7 @@ function _ddMountChart(force){
           else _ddChartStale = true;                                   // rebuild when the tab is visible again
         }, 450);
       } else {
-        timer = setTimeout(() => { try { window.dispatchEvent(new Event('resize')); } catch(e){} }, 120);
+        timer = setTimeout(() => _ddNudgeChart(box, key), 120);
       }
     });
     _ddChartObserver.observe(box);
@@ -2946,8 +2950,20 @@ function _ddMountChart(force){
       "Moving Average.plot.linewidth": 1,
     },
   });
-  // one nudge after the chart has appeared so its automatic sizing re-measures the box
-  setTimeout(() => { try { window.dispatchEvent(new Event('resize')); } catch(e){} }, 1200);
+  // v55 (owner's screenshot, RBRK 16.11: the chart drawn narrower and taller than its frame, a grey strip on the right
+  // and the dates cut off): TradingView's page inside the iframe lays itself out once, by the size it sees while
+  // loading, and listens only to ITS OWN window's resize. A resize event on our window (what was sent here until now)
+  // never reaches it. Changing the iframe's own size by one pixel and back does: its window resizes twice and the
+  // chart re-measures the real box. Done when the iframe finishes loading and again a little later.
+  [1200, 3500, 7000].forEach(ms => setTimeout(() => _ddNudgeChart(box, key), ms));
+}
+function _ddNudgeChart(box, key){
+  if(document.getElementById('dd-tv-chart') !== box || box.dataset.tvKey !== key || box.offsetWidth === 0) return;
+  const f = box.querySelector('iframe');
+  if(!f) return;
+  const w = f.style.width, h = f.style.height;
+  f.style.width = 'calc(100% - 1px)'; f.style.height = 'calc(100% - 1px)';
+  setTimeout(() => { f.style.width = w; f.style.height = h; }, 80);
 }
 
 function formatMarketCap(n){
@@ -6276,13 +6292,21 @@ function renderTechnicalSetup(data, elId){
       <span style="flex:0 0 auto;width:14px;height:0;border-top:2px solid var(--ma150);transform:translateY(-3px);"></span>
       <span>${escH(t ? ma.text_en : ma.text_he)}</span></div>` : '';
   if(!data || !data.has_setup || !data.candidates || !data.candidates.length){
+    // v55 (owner, ZS): no named pattern is not "nothing to draw" — the support / resistance zones near the price and
+    // the main trendline are still shown on the chart
+    const marks = data ? [...(data.context_lines || []), ...(data.zones || [])] : [];
+    const chart = marks.length && data.price_series
+      ? buildTechnicalSetupSvg(data.price_series, [...marks, ...(ma && ma.line ? [ma.line] : [])]) : '';
     el.innerHTML = `
       <div class="dd-section-title">${t?'Current Technical Setup':'מבנה טכני נוכחי'}</div>
       ${scanSignalBannerHtml(data && data.scan_signal)}
       ${maHtml}
-      <div class="bt-empty" style="padding:10px 0;">${t
-        ? 'No clear pattern forming right now — looks like plain consolidation or trend, nothing specific to flag.'
-        : 'אין כרגע תבנית ברורה שנבנית — נראה כמו התכנסות או מגמה רגילה, אין משהו ספציפי לסמן.'}</div>
+      <div class="bt-empty" style="padding:10px 0;">${chart
+        ? (t ? 'No named pattern is forming right now. The levels near the price are marked on the chart.'
+             : 'אין כרגע תבנית מוגדרת שנבנית. הרמות הקרובות למחיר מסומנות בגרף.')
+        : (t ? 'No clear pattern forming right now — looks like plain consolidation or trend, nothing specific to flag.'
+             : 'אין כרגע תבנית ברורה שנבנית — נראה כמו התכנסות או מגמה רגילה, אין משהו ספציפי לסמן.')}</div>
+      ${chart}
     `;
     return;
   }
@@ -6301,8 +6325,14 @@ function renderTechnicalSetup(data, elId){
   // noise. Capped at 3 total so the chart doesn't turn into a tangle.
   const others = data.candidates.slice(1).filter(o =>
     o.stage === 'triggered' || o.stage === 'holding' || Math.abs(o.distance_pct) <= 6
-  ).slice(0, 2);
-  const drawCandidates = [c, ...others.slice(0, 1)];   // v18: one extra pattern on the chart (owner: too many lines); all are listed below
+  ).slice(0, 3);      // v55: was 2 — AVGO's support at the March low was the third and never reached the chart
+  // v18: one extra pattern on the chart (owner: too many lines); all are listed below.
+  // v55 (owner, AVGO): the extra one is the first that HAS something to draw and is not the same area as the headline
+  // (a momentum reading has no line; a level within 2.5% of the headline's level is the same place on the chart)
+  const hasLines = o => (o.lines || []).length > 0;
+  const sameArea = o => c.key_level && o.key_level && hasLines(c) && Math.abs(o.key_level / c.key_level - 1) <= 0.025;
+  const extra = others.filter(o => hasLines(o) && !sameArea(o)).slice(0, hasLines(c) ? 1 : 2);
+  const drawCandidates = [c, ...extra];
   const svg = buildTechnicalSetupSvg(data.price_series, [...drawCandidates.flatMap(dc => dc.lines), ...(data.context_lines || []), ...(data.zones || []), ...(ma && ma.line ? [ma.line] : [])]);
 
   // RSI and momentum have no price level: their key_level is the RSI threshold (30) / today's close, not a "$ level"
