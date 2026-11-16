@@ -2526,3 +2526,38 @@ def test_sign_out_other_devices_ends_older_tokens(api, monkeypatch):
     api._remember_token_version(8, 0)                              # a token from before v38 has no "tv": still good
     old = api.pyjwt.encode({"sub": "8", "exp": 4102444800}, api.JWT_SECRET, algorithm="HS256")
     assert api.current_user_id("Bearer " + old) == 8
+
+def test_index_members_tag_lists(api, monkeypatch):
+    """v59: the S&P 500 / Nasdaq-100 tag. From the two public lists in memory, never the database; a cut list (a failed
+    download) is not served, so a real member is never shown as "not in the index"."""
+    monkeypatch.setattr(api, "_index_members_cache", {"data": None, "ts": 0.0, "tried": 0.0})
+    monkeypatch.setattr(api, "db_cursor", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no database")))
+    sp = {f"S{i}": {} for i in range(500)}
+    sp["BRK-B"] = {}
+    monkeypatch.setattr(api, "get_sp500_info_map", lambda: sp)
+
+    class _Resp:
+        def __init__(self, text): self.text = text
+        def raise_for_status(self): pass
+    ndx_csv = "Symbol,Name\n" + "".join(f"N{i},x\n" for i in range(100)) + "BRK.B,y\n"
+    monkeypatch.setattr(api.requests, "get", lambda url, timeout=15: _Resp(ndx_csv))
+    d = api.get_index_members()
+    assert d["available"] and "BRK-B" in d["sp500"] and "BRK-B" in d["nasdaq100"] and len(d["nasdaq100"]) == 101
+    monkeypatch.setattr(api, "_index_members_cache", {"data": None, "ts": 0.0, "tried": 0.0})
+    monkeypatch.setattr(api.requests, "get", lambda url, timeout=15: _Resp("Symbol\nAAPL\n"))     # cut list
+    assert api.get_index_members() == {"available": False}
+
+
+def test_stock_news_google_items_carry_the_outlet_site(api, monkeypatch):
+    """v59: a Google News link can open Google's "We're sorry" page on a phone — the site searches the headline on the
+    outlet's site instead, so the item carries that site (from <source url=...>) and the English headline."""
+    rss = (b'<rss><channel><item><title>Zeta rises - The Motley Fool</title><link>https://news.google.com/rss/articles/X</link>'
+           b'<source url="https://www.fool.com">The Motley Fool</source><pubDate>Sun, 15 Nov 2026 15:21:35 GMT</pubDate></item>'
+           b'</channel></rss>')
+
+    class _Resp:
+        content = rss
+        def raise_for_status(self): pass
+    monkeypatch.setattr(api.requests, "get", lambda *a, **k: _Resp())
+    it = api._rss_items("https://news.google.com/rss/search?q=x", google=True)[0]
+    assert it["title"] == "Zeta rises" and it["site"] == "fool.com"

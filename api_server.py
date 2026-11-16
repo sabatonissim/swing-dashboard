@@ -2106,7 +2106,7 @@ def stock_news(ticker: str, limit: int = 6, lang: str = Query(default="en", patt
     items = []
     for it in raw[:limit]:
         display_title = _translate_headline_free(it["title"]) if lang == "he" else it["title"]
-        items.append({**it, "title": display_title})
+        items.append({**it, "title": display_title, "title_en": it["title"]})   # v59: the site searches the English one
     return items
 
 
@@ -2132,9 +2132,19 @@ def _rss_items(url: str, google: bool = False) -> list:
         publisher = (item.findtext("source") or "").strip() or None
         if google and publisher and title.endswith(" - " + publisher):
             title = title[: -len(" - " + publisher)].strip()    # Google appends " - Outlet" to every title
+        # v59: Google's <source url="https://www.fool.com"> = the outlet's site. A Google News link opens Google's own page,
+        # which some phone networks get as "We're sorry... automated queries" (owner 16.11.2026) — the site then
+        # searches the headline on the outlet's site instead.
+        src = item.find("source")
+        site = ""
+        if google and src is not None:
+            try:
+                site = (urlparse(src.get("url") or "").hostname or "").lower().removeprefix("www.")
+            except Exception:  # noqa: BLE001
+                site = ""
         if title and link:
             out.append({"title": title, "link": link, "publisher": publisher or ("Yahoo Finance" if not google else None),
-                        "published": (item.findtext("pubDate") or "").strip() or None})
+                        "published": (item.findtext("pubDate") or "").strip() or None, "site": site or None})
 
     def when(it):                   # Google's search feed is ordered by relevance, not date
         try:
@@ -2231,7 +2241,7 @@ def _stock_news_raw(ticker: str) -> list:
         items = [it for it in items if (about is None or about.search(it["title"]))
                  and not _NEWS_QUOTE_PAGE_RE.search(it["title"])]
         rows = _feed_clean([{**it, "summary_en": it["title"]} for it in items], set(), promo_only=True)
-        return [{k: r[k] for k in ("title", "link", "publisher", "published")} for r in rows]
+        return [{**{k: r[k] for k in ("title", "link", "publisher", "published")}, "site": r.get("site")} for r in rows]
 
     from urllib.parse import quote
     google_q = (f'"{name}" stock when:7d' if name else f'"{ticker.split("-")[0]}" stock when:14d')
@@ -2403,6 +2413,44 @@ def _sp500_map_nowait() -> dict:
             finally:
                 c["loading"] = False
         threading.Thread(target=run, daemon=True).start()
+    return c["data"]
+
+
+# v59 (owner 16.11.2026): a small "S&P 500" / "Nasdaq-100" tag on the stock page. The same two public lists the scanner
+# uses (pipeline_a_scanner.fetch_sp500_tickers / fetch_nasdaq100_tickers), kept in memory for a day — no database. The
+# site asks once and keeps the answer in the browser for a day.
+NASDAQ100_URL = "https://yfiua.github.io/index-constituents/constituents-nasdaq100.csv"
+_index_members_cache = {"data": None, "ts": 0.0, "tried": 0.0}
+
+
+def _fetch_nasdaq100() -> list:
+    import csv
+    resp = requests.get(NASDAQ100_URL, timeout=15)
+    resp.raise_for_status()
+    rows = list(csv.reader(io.StringIO(resp.text)))
+    if not rows:
+        return []
+    col = rows[0].index("Symbol") if "Symbol" in rows[0] else 0
+    return sorted({r[col].strip().replace(".", "-") for r in rows[1:] if len(r) > col and r[col].strip()})
+
+
+@app.get("/api/index-members")
+def get_index_members():
+    c = _index_members_cache
+    if c["data"] and time.time() - c["ts"] < SP500_INFO_CACHE_TTL:
+        return c["data"]
+    if c["data"] and time.time() - c["tried"] < 600:      # a failing source is asked again after 10 minutes, not per visitor
+        return c["data"]
+    c["tried"] = time.time()
+    sp = sorted(get_sp500_info_map().keys())
+    try:
+        ndx = _fetch_nasdaq100()
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] index-members: Nasdaq-100 list failed: {type(e).__name__}: {e}")
+        ndx = (c["data"] or {}).get("nasdaq100") or []
+    if len(sp) < 400 or len(ndx) < 90:          # a cut list would tag real members as "not in the index"
+        return c["data"] or {"available": False}
+    c["data"], c["ts"] = {"available": True, "sp500": sp, "nasdaq100": ndx}, time.time()
     return c["data"]
 
 
