@@ -453,6 +453,7 @@ window.addEventListener('load', function(){
   /* v20e: a small tag on its own line under the signal text (as a separate column it squeezed the text on a phone) */
   .earn-soon-badge{display:table;margin-top:4px;font-size:10px;font-weight:600;padding:1px 7px;border-radius:20px;border:1px solid var(--line-hover);color:var(--text);white-space:nowrap;font-family:'Heebo',sans-serif;}
   html[lang="he"] .earn-soon-badge{margin-left:auto;}
+  .below-ma-badge{border-color:var(--red);color:var(--red);}
   /* v22: insider buying tag on scanner rows, home-page row (market breadth + insider buys) */
   .insider-badge{display:table;margin-top:4px;font-size:10px;font-weight:600;padding:1px 7px;border-radius:20px;border:1px solid var(--green);color:var(--green);white-space:nowrap;font-family:'Heebo',sans-serif;}
   html[lang="he"] .insider-badge{margin-left:auto;}
@@ -1474,7 +1475,19 @@ html[lang="he"] .only-en, html[lang="en"] .only-he{display:none;}
 :focus-visible:not(input):not(textarea):not(select){outline:2px solid var(--amber);outline-offset:2px;}
 [data-kbd]:focus-visible{outline-offset:-2px;}
 .skip-link{position:fixed;top:-60px;left:12px;z-index:100000;background:var(--amber);color:var(--on-amber);padding:8px 14px;border-radius:8px;font-weight:700;text-decoration:none;}
-.skip-link:focus{top:10px;}</style>
+.skip-link:focus{top:10px;}
+/* v58 (phone review, 16.11.2026): on a touch screen these small buttons and links (16-30px high) were hard to hit with
+   a finger. An invisible touch area of ~40px is added around each one: nothing moves, nothing looks different. A new
+   small button = add its class here. */
+@media (pointer:coarse){
+  .today-more,.rg-more,.since-link,.focus-more,.daily-digest-btn,.sector-btn,.macro-more-btn,.mode-btn,.chart-tab,
+  .movers-toggle-btn,.hx-link,.demo-chip,.rg-chip,.pf-tk,.cal-nav-btn,#lang-toggle,#site-links a{position:relative;}
+  .today-more::after,.rg-more::after,.since-link::after,.focus-more::after,.daily-digest-btn::after,.sector-btn::after,
+  .macro-more-btn::after,.mode-btn::after,.chart-tab::after,.movers-toggle-btn::after,.hx-link::after,.demo-chip::after,
+  .rg-chip::after,.pf-tk::after,.cal-nav-btn::after,#lang-toggle::after,#site-links a::after{
+    content:"";position:absolute;left:-3px;right:-3px;top:50%;height:40px;transform:translateY(-50%);}
+  .fund-info::after{content:"";position:absolute;left:50%;top:50%;width:36px;height:36px;transform:translate(-50%,-50%);}
+}</style>
 
 <div class="overlay" id="overlay">
   <div class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="פרטי מניה / Stock details"></div>
@@ -1537,12 +1550,22 @@ function stockRowHtml(s,i){
     <div class="stock-row" onclick="openDrawer(${i})">
       <div class="ticker">${s.ticker}${isNewScan(s) ? `<span class="new-dot" title="${lang==='en'?'New since your last visit':'חדש מאז הביקור האחרון שלך'}"></span>` : ''}</div>
       <div class="trend ${s.trend}">${s.trend==="up"?"▲":"▼"}</div>
-      <div class="trigger">${lang==='en'?(s.trigger_en||s.trigger||''):(s.trigger||s.trigger_he||'')}${earningsSoonBadgeHtml(s)}${insiderBadgeHtml(s)}</div>
+      <div class="trigger">${lang==='en'?(s.trigger_en||s.trigger||''):(s.trigger||s.trigger_he||'')}${earningsSoonBadgeHtml(s)}${belowMa150BadgeHtml(s)}${insiderBadgeHtml(s)}</div>
       ${repeatBadgeHtml(s.repeatCount)}
       ${winRateBadgeHtml(s.patternType)}
       <div class="score-badge ${scoreClass(s.score)}">${s.score}</div>
     </div>
   `;
+}
+
+// v58 (owner, 16.11.2026): giant companies (> $300B) may now be listed for a structure-repair pattern even below their
+// 150-day average (scanner MEGA_CAP_MIN). Below the 150 MA is still weakness, so every such row says so — any stock,
+// from the price and the average stored with the scan.
+function belowMa150BadgeHtml(s){
+  const p = Number(s.entry), m = Number(s.sma150);
+  if(!(p > 0) || !(m > 0) || p >= m) return '';
+  const en = lang==='en';
+  return `<span class="earn-soon-badge below-ma-badge" title="${en ? 'The price is below its 150-day average — a sign of weakness, even if the pattern holds' : 'המחיר מתחת לממוצע 150 — סימן לחולשה, גם אם התבנית מחזיקה'}">${en ? 'Below 150-day MA' : 'מתחת לממוצע 150'}</span>`;
 }
 
 // v20e: a report within the next 7 days is a known swing risk (gap on the report) — shown on the row itself, not only

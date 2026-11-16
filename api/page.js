@@ -598,8 +598,32 @@ module.exports = async (req, res) => {
     return;
   }
   res.setHeader('Content-Type', out.type || 'text/html; charset=utf-8');
+  // v58 (speed check 16.11.2026): "/" is a plain file and the browser asks "changed?" (304, ~0.3s), but these pages
+  // (/he, /stock/KO ...) had no ETag, so every visit downloaded the whole page again (~200 KB compressed, 650 KB).
+  if (out.status === 200 && out.body) {
+    const tag = etagOf(out.body);
+    res.setHeader('ETag', tag);
+    const asked = String(((req.headers || {})['if-none-match']) || '');
+    if (asked.split(',').map(s => s.trim()).includes(tag)) {
+      res.statusCode = 304;
+      res.end();
+      return;
+    }
+  }
   res.end(out.body);
 };
+
+// A weak tag from the page itself (FNV-1a, two passes): no dependency, a few ms for 650 KB.
+function etagOf(body) {
+  let a = 0x811c9dc5, b = 0x01000193 ^ body.length;
+  for (let i = 0; i < body.length; i++) {
+    const c = body.charCodeAt(i);
+    a = Math.imul(a ^ c, 0x01000193);
+    b = Math.imul(b ^ c, 0x5bd1e995);
+  }
+  return `W/"${(a >>> 0).toString(16)}${(b >>> 0).toString(16)}-${body.length.toString(16)}"`;
+}
+module.exports.etagOf = etagOf;
 module.exports.shortName = shortName;
 module.exports.cut = cut;
 module.exports.APP_VIEWS = APP_VIEWS;

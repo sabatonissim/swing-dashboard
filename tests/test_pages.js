@@ -198,6 +198,15 @@ async function run() {
   ok(has(r, '<div id="page-home">') && !has(r, 'id="seo-stock"'), 'he home shows the home page');
   ok(has(r, `hreflang="en" href="${SITE}/"`) && has(r, `hreflang="he" href="${SITE}/he"`), 'he home hreflang');
   ok(types(r).includes('WebSite'), 'he home structured data');
+  // v58: a page the browser already has comes back as "not changed" (304), not 650 KB again
+  const tag = r.headers.etag;
+  ok(/^W\/"[0-9a-f]+-[0-9a-f]+"$/.test(tag || ''), `he home has an ETag (${tag})`);
+  const again = { statusCode: 0, headers: {}, body: '', setHeader(k, v) { this.headers[k.toLowerCase()] = v; }, end(b) { this.body = b || ''; } };
+  await page({ query: { kind: 'home', lang: 'he' }, url: '/api/page', headers: { 'if-none-match': tag } }, again);
+  ok(again.statusCode === 304 && again.body === '', 'the same page asked with its ETag = 304, no body');
+  const other = await get({ kind: 'home', lang: 'en' });
+  ok(other.headers.etag && other.headers.etag !== tag, 'another page, another ETag');
+  ok(page.etagOf('a') !== page.etagOf('b') && page.etagOf('ab') === page.etagOf('ab'), 'etagOf');
 
   // ---- v49: the app's other screens ----
   r = await get({ kind: 'app', lang: 'en', view: 'market' });

@@ -2104,7 +2104,9 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
     # no difference, so it is not part of it.
     before = len(results)
     results = [r for r in results if passes_quality_gate(r)]
-    print(f"[info] quality gate: {len(results)} of {before} scan result(s) kept")
+    mega = [r.ticker for r in results if not passes_quality_gate(r, mega=False)]
+    print(f"[info] quality gate: {len(results)} of {before} scan result(s) kept"
+          + (f"; through the giant-company exception: {', '.join(mega)}" if mega else ""))
 
     upsert_universe_movers(all_changes)
     update_earnings_calendar(earnings_candidates)
@@ -2128,8 +2130,19 @@ FOCUS_MAX = 5
 
 MA150_BOUNCE_MIN_ATR_PCT = 2.5
 
+# v58 (owner, 16.11.2026, about AVGO: "below the 150 MA is still weakness — but Google, Broadcom and such giants below
+# it can still make patterns"): a narrow exception to the gate. Only companies worth more than MEGA_CAP_MIN (the owner
+# raised it from $200B to $300B), and only patterns that REPAIR a structure: a broken descending line, a level holding
+# as support (also old resistance), a double bottom. The site tags every result below its 150-day MA. "Today's focus"
+# needs a Stage 2 uptrend, so these never enter it. To be judged on their own results about a month later (~16.12):
+# a result that failed the old gate = market_cap >= MEGA_CAP_MIN and not passes_quality_gate(..., mega=False).
+MEGA_CAP_MIN = 300e9
+MEGA_CAP_PATTERNS = ("descending_trendline_breakout", "horizontal_level_bounce", "double_bottom")
 
-def passes_quality_gate(r) -> bool:
+
+def passes_quality_gate(r, mega: bool = True) -> bool:
+    if mega and (r.market_cap or 0) >= MEGA_CAP_MIN and r.pattern_type in MEGA_CAP_PATTERNS:
+        return True
     # v27 (owner: "crossing the 150 MA and holding, and support on the MA, are setups I like"): the two 150-MA setups
     # have their own rule. Bounce: ATR >= 2.5% (history: 55% higher after 20 days, avg +1.2%, vs 31% / -2.6% for quieter
     # stocks; 184 results). Reclaim (cross / second close above): kept as is — 19 past results are too few to judge;

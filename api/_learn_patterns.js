@@ -1,7 +1,7 @@
 // v35: the guides (/learn/...), part 1: where to start and the chart patterns. The rules under "The rules the scanner checks"
 // are the code of pipeline_a_scanner.py in words: when a rule changes there, change it here too. Facts and definitions only.
-const QUALITY_EN = 'Like most scans on the site, it is listed only when the stock also passes the quality rule: <a href="/learn/rs-rating">RS</a> of at least 90, or RS of at least 70 together with a <a href="/learn/stage-analysis">Stage 2</a> uptrend and <a href="/learn/atr">ATR</a> of at least 3%.';
-const QUALITY_HE = 'כמו רוב הסריקות באתר, היא מוצגת רק כשהמניה עומדת גם בכלל האיכות: <a href="/he/learn/rs-rating">RS</a> של 90 לפחות, או RS של 70 לפחות יחד עם מגמת עלייה ב<a href="/he/learn/stage-analysis">שלב 2</a> ו-<a href="/he/learn/atr">ATR</a> של 3% לפחות.';
+const QUALITY_EN = 'Like most scans on the site, it is listed only when the stock also passes the quality rule: <a href="/learn/rs-rating">RS</a> of at least 90, or RS of at least 70 together with a <a href="/learn/stage-analysis">Stage 2</a> uptrend and <a href="/learn/atr">ATR</a> of at least 3%. One exception: companies worth more than $300 billion, for a broken descending trendline, a level holding as support or a double bottom; when such a stock is below its 150-day average, the scan says so.';
+const QUALITY_HE = 'כמו רוב הסריקות באתר, היא מוצגת רק כשהמניה עומדת גם בכלל האיכות: <a href="/he/learn/rs-rating">RS</a> של 90 לפחות, או RS של 70 לפחות יחד עם מגמת עלייה ב<a href="/he/learn/stage-analysis">שלב 2</a> ו-<a href="/he/learn/atr">ATR</a> של 3% לפחות. חריגה אחת: חברות ששוות יותר מ-300 מיליארד דולר, בפריצת קו מגמה יורד, ברמה שמחזיקה כתמיכה או בתחתית כפולה; כשמניה כזו מתחת לממוצע 150 שלה, הסריקה אומרת את זה.';
 const VOLUME_EN = 'Volume on the day of the move must be at least 20% above the stock\'s 20-day average.';
 const VOLUME_HE = 'נפח המסחר ביום התנועה חייב להיות גבוה ב-20% לפחות מהממוצע של 20 הימים האחרונים.';
 

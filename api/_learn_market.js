@@ -18,7 +18,7 @@ module.exports = [
 </ul>
 <p>So the rating is relative twice: against the index, and then against the other stocks in the scan on that day.</p>
 <h2>How it is used on the site</h2>
-<p>Most scans are listed only if RS is at least 90, or at least 70 together with a <a href="/learn/stage-analysis">Stage 2</a> uptrend and an <a href="/learn/atr">ATR</a> of at least 3%. The "Leading stocks" table lists stocks with RS of at least 80 in Stage 2. "Today's focus" asks for RS of at least 90 and no earnings report in the next 7 days.</p>
+<p>Most scans are listed only if RS is at least 90, or at least 70 together with a <a href="/learn/stage-analysis">Stage 2</a> uptrend and an <a href="/learn/atr">ATR</a> of at least 3%; companies worth more than $300 billion may also be listed for a broken descending trendline, a level holding as support or a double bottom. The "Leading stocks" table lists stocks with RS of at least 80 in Stage 2. "Today's focus" asks for RS of at least 90 and no earnings report in the next 7 days.</p>
 <h2>RS and RSI are different things</h2>
 <p>RS compares a stock with the market over a year. <a href="/learn/rsi-oversold-bounce">RSI</a> compares a stock's recent up days with its own recent down days, over two weeks. A stock can have a high RS and a low RSI at the same time, for example during a short pullback in a long rise.</p>
 <h2>What it does not tell you</h2>
@@ -37,7 +37,7 @@ module.exports = [
 </ul>
 <p>לכן הדירוג יחסי פעמיים: מול המדד, ואחר כך מול שאר המניות בסריקה באותו יום.</p>
 <h2>איך משתמשים בה באתר</h2>
-<p>רוב הסריקות מוצגות רק אם RS הוא 90 לפחות, או 70 לפחות יחד עם מגמת עלייה ב<a href="/he/learn/stage-analysis">שלב 2</a> ו-<a href="/he/learn/atr">ATR</a> של 3% לפחות. הטבלה "מניות מובילות" מציגה מניות עם RS של 80 לפחות בשלב 2. "המוקד של היום" דורש RS של 90 לפחות ובלי דוח ב-7 הימים הקרובים.</p>
+<p>רוב הסריקות מוצגות רק אם RS הוא 90 לפחות, או 70 לפחות יחד עם מגמת עלייה ב<a href="/he/learn/stage-analysis">שלב 2</a> ו-<a href="/he/learn/atr">ATR</a> של 3% לפחות; חברות ששוות יותר מ-300 מיליארד דולר יכולות להופיע גם בפריצת קו מגמה יורד, ברמה שמחזיקה כתמיכה או בתחתית כפולה. הטבלה "מניות מובילות" מציגה מניות עם RS של 80 לפחות בשלב 2. "המוקד של היום" דורש RS של 90 לפחות ובלי דוח ב-7 הימים הקרובים.</p>
 <h2>RS ו-RSI הם דברים שונים</h2>
 <p>RS משווה מניה לשוק על פני שנה. <a href="/he/learn/rsi-oversold-bounce">RSI</a> משווה את ימי העלייה האחרונים של מניה לימי הירידה האחרונים שלה עצמה, על פני שבועיים. למניה יכולים להיות בו זמנית RS גבוה ו-RSI נמוך, למשל בתיקון קצר בתוך עלייה ארוכה.</p>
 <h2>מה היא לא אומרת</h2>

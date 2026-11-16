@@ -1644,6 +1644,22 @@ def test_analyst_rating_changes(api):
     assert seen["params"] == (_dt.date(2026, 11, 25),)    # Thanksgiving in between
 
 
+def test_quality_gate_giant_company_exception():
+    """v58 (owner, 16.11.2026, AVGO): companies over $300B pass for structure-repair patterns even below the 150 MA."""
+    from types import SimpleNamespace as R
+    import pipeline_a_scanner as sc
+    avgo = dict(ticker="AVGO", market_cap=1.6e12, rs_rating=35, trend_stage="Stage 4 - Downtrend", atr_pct=2.4)
+    assert sc.passes_quality_gate(R(pattern_type="descending_trendline_breakout", **avgo))
+    assert sc.passes_quality_gate(R(pattern_type="horizontal_level_bounce", **avgo))
+    assert sc.passes_quality_gate(R(pattern_type="double_bottom", **avgo))
+    assert not sc.passes_quality_gate(R(pattern_type="descending_trendline_breakout", **avgo), mega=False)
+    assert not sc.passes_quality_gate(R(pattern_type="momentum_surge", **avgo))             # not a repair pattern
+    small = dict(avgo, market_cap=250e9)                                                      # under the owner's $300B
+    assert not sc.passes_quality_gate(R(pattern_type="descending_trendline_breakout", **small))
+    # "today's focus" still needs a Stage 2 uptrend
+    assert sc.pick_focus([R(pattern_type="double_bottom", swing_score=80, days_to_earnings=None, **avgo)]) == []
+
+
 def test_company_names_stay_in_english():
     """v38c: Google made "כדור" of Ball and "תלושי ויזה" of "Visa slips"; with " Inc" after the name it keeps it (9.11.2026)."""
     import translation_fixes as tf
