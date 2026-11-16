@@ -27,7 +27,9 @@ import psycopg2
 ET = ZoneInfo("America/New_York")
 MIN_CAP = 10e9
 MAX_TICKERS = 600
-LOOKBACK_DAYS = 3        # a change can show up in Yahoo's history hours late; the key keeps it once
+LOOKBACK_DAYS = 5        # a change can show up in Yahoo's history hours late; the key keeps it once. v56: 3 -> 5, so
+                         # Monday's runs still reach a Friday whose runs read nothing (13.11.2026: 0 changes saved)
+MAX_EMPTY_SHARE = 0.5    # v56: more companies than this with no history at all = Yahoo did not answer -> the run fails
 KEEP_DAYS = 90           # as long as the daily summaries and the news
 PAUSE_SEC = 0.35
 BUDGET_SEC = 20 * 60     # the workflow stops at 30 minutes
@@ -116,19 +118,29 @@ def rows_from_history(ticker, df, market_cap, since):
 def fetch(tickers, now=None):
     import yfinance as yf
     since = (now or datetime.now(timezone.utc)) - timedelta(days=LOOKBACK_DAYS)
-    rows, failed, t0 = [], [], time.time()
+    rows, failed, empty, asked, t0 = [], [], 0, 0, time.time()
     for n, (ticker, cap) in enumerate(tickers):
         if time.time() - t0 > BUDGET_SEC:
             print(f"[warn] time budget used up after {n} of {len(tickers)} companies; the rest wait for the next run")
             break
+        asked += 1
         try:
-            rows += rows_from_history(ticker, yf.Ticker(ticker).upgrades_downgrades, cap, since)
+            df = yf.Ticker(ticker).upgrades_downgrades
+            if df is None or getattr(df, "empty", True):
+                empty += 1                   # every large company has a history; none = Yahoo refused (no exception)
+            rows += rows_from_history(ticker, df, cap, since)
         except Exception as e:  # noqa: BLE001
             failed.append(f"{ticker} ({type(e).__name__})")
         time.sleep(PAUSE_SEC)
     if failed:
         print(f"[warn] {len(failed)} companies failed: {', '.join(failed[:30])}")
-    return rows
+    print(f"[info] {empty} of {asked} companies came back with no rating history")
+    return rows, (len(failed) + empty) / asked if asked else 0.0
+
+
+def run_failed(bad_share: float, only=None) -> bool:
+    """v56: True = Yahoo did not answer for most companies; the workflow then ends red (visible in the Actions run list)."""
+    return not only and bad_share > MAX_EMPTY_SHARE
 
 
 def save(cur, rows):
@@ -155,7 +167,7 @@ def main(only=None):
     finally:
         conn.close()                    # Yahoo takes minutes; Neon would drop an idle connection
     print(f"[info] reading the rating history of {len(tickers)} companies")
-    rows = fetch(tickers)
+    rows, bad_share = fetch(tickers)
     ratings = [r for r in rows if r["action"] in RATING_ACTIONS]
     print(f"[info] {len(rows)} changes in the last {LOOKBACK_DAYS} days: {len(ratings)} ratings, {len(rows) - len(ratings)} targets only")
     for r in sorted(ratings, key=lambda r: -(r["market_cap"] or 0))[:15]:
@@ -168,6 +180,9 @@ def main(only=None):
     finally:
         conn.close()
     print("[info] saved")
+    if run_failed(bad_share, only):
+        print(f"[error] {bad_share:.0%} of the companies came back empty or failed: Yahoo did not answer this run")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

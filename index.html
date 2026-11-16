@@ -1123,6 +1123,7 @@ window.addEventListener('load', function(){
 </script>
 </head>
 <body>
+<a href="#" id="skip-link" class="skip-link" onclick="event.preventDefault(); kbd.skip();">דלג לתוכן</a>
 
 <div class="top-sticky" id="top-sticky">
 <header>
@@ -1466,7 +1467,14 @@ html[lang="he"] .only-en, html[lang="en"] .only-he{display:none;}
 .seo-facts dt{font-size:11.5px;color:var(--text-dim);}
 .seo-facts dd{margin:0;font-weight:600;}
 /* Google's sign-in button lives in an iframe whose page is light; with the site in dark mode the browser paints an opaque white box behind it. Matching the colour scheme keeps the iframe transparent. */
-#g-btn, #g-btn iframe, #g-btn div[role=button]{color-scheme: light;}</style>
+#g-btn, #g-btn iframe, #g-btn div[role=button]{color-scheme: light;}
+/* v57 (owner, 16.11.2026): keyboard. The ring shows only when the keyboard moved the focus (:focus-visible), never on a
+   mouse click. Rows sit inside boxes that scroll (overflow), so their ring is drawn inside them. Text fields keep their
+   own focus border. */
+:focus-visible:not(input):not(textarea):not(select){outline:2px solid var(--amber);outline-offset:2px;}
+[data-kbd]:focus-visible{outline-offset:-2px;}
+.skip-link{position:fixed;top:-60px;left:12px;z-index:100000;background:var(--amber);color:var(--on-amber);padding:8px 14px;border-radius:8px;font-weight:700;text-decoration:none;}
+.skip-link:focus{top:10px;}</style>
 
 <div class="overlay" id="overlay">
   <div class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="פרטי מניה / Stock details"></div>
@@ -9334,6 +9342,8 @@ function applyLang(){
   document.documentElement.setAttribute('dir', 'ltr');
   document.documentElement.setAttribute('lang', lang === 'he' ? 'he' : 'en');
   syncLangAddress();    // v35: /stock/KO <-> /he/stock/KO
+  const skip = document.getElementById('skip-link');      // v57: keyboard
+  if(skip) skip.textContent = lang === 'en' ? 'Skip to content' : 'דלג לתוכן';
   // v26: applyLang runs every few minutes — keep the title of the screen that is open (v49: every screen has one)
   document.title = _routeTitle();
   document.getElementById('header-sub').textContent = t.sub;
@@ -9541,6 +9551,141 @@ const hebDir = (function(){
     }
   }).observe(document.body, {childList:true, subtree:true, characterData:true});
   return {scan};
+})();
+
+// ==== v57 (owner, 16.11.2026): the whole site with the keyboard ====
+// (1) Every element the page made clickable with onclick (scanner rows, headlines, movers, key events...) can be
+//     reached with Tab and opened with Enter or Space — marked here, so no list template has to remember it.
+// (2) Esc closes the window on top; a window that opens takes the focus, and closing it gives the focus back to the
+//     row that opened it (or the row drawn in its place: the lists are drawn again every few minutes).
+// (3) Tab stays inside an open window. (4) "Skip to content" = the screen that is open, past the header and the menu.
+// Nothing here talks to the server.
+const kbd = (function(){
+  const NATIVE = 'a[href],button,input,select,textarea,summary,iframe,[tabindex],[contenteditable="true"]';
+  const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+  // overlay id -> how it closes; later in the list = drawn above the earlier ones
+  const WINDOWS = [['overlay', () => closeDrawer()], ['digest-overlay', () => closeDailyDigest()],
+                   ['risk-calc-overlay', () => closeRiskCalc()], ['info-modal-overlay', () => closeInfoModal()],
+                   ['compare-search-overlay', () => closeCompareSearch()]];
+  // A grid of hundreds of tiles (the heatmap: 503) is one Tab stop: Tab enters it, the arrow keys move inside it,
+  // the next Tab leaves it ("roving" focus: only the current tile has tabindex 0).
+  const GRID = '.heatmap-tile';
+  const openers = {};
+  function wants(el){
+    const a = el.getAttribute('onclick') || '';
+    if(el.matches(NATIVE) || el.closest('svg')) return false;
+    if(/event\.target\s*===?\s*this/.test(a)) return false;                   // a backdrop: closes on a click outside
+    if(/^\s*event\.stopPropagation\(\);?\s*$/.test(a)) return false;          // only stops the row's click
+    return true;
+  }
+  function mark(root){
+    if(!root || root.nodeType !== 1) return;
+    const list = root.matches('[onclick]') ? [root] : [];
+    root.querySelectorAll('[onclick]').forEach(e => list.push(e));
+    let grid = false;
+    for(const el of list){
+      if(el.hasAttribute('data-kbd') || !wants(el)) continue;
+      el.setAttribute('data-kbd', '');
+      const inGrid = el.matches(GRID);
+      grid = grid || inGrid;
+      el.tabIndex = inGrid ? -1 : 0;
+      if(!el.hasAttribute('role')) el.setAttribute('role', 'button');
+    }
+    if(grid) gridEntry();
+  }
+  function gridEntry(){
+    const tiles = document.querySelectorAll(GRID + '[data-kbd]');
+    if(tiles.length && !Array.from(tiles).some(t => t.tabIndex === 0)) tiles[0].tabIndex = 0;
+  }
+  function gridMove(el, step){
+    const tiles = Array.from(document.querySelectorAll(GRID + '[data-kbd]')).filter(visible);
+    const i = tiles.indexOf(el);
+    const next = tiles[Math.max(0, Math.min(tiles.length - 1, i + step))];
+    if(!next || next === el) return;
+    el.tabIndex = -1; next.tabIndex = 0; next.focus();
+  }
+  function visible(el){ return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length); }
+  function openWindows(){ return WINDOWS.map(w => document.getElementById(w[0])).filter(o => o && o.classList.contains('open')); }
+  function topWindow(){ const o = openWindows(); return o.length ? o[o.length - 1] : null; }
+  function firstIn(box){ return Array.from(box.querySelectorAll(FOCUSABLE)).find(visible); }
+  function focusInto(o){
+    const box = o.firstElementChild || o;
+    const target = box.querySelector('.close-btn') || firstIn(box);
+    if(target) target.focus({preventScroll:true});
+    else { box.tabIndex = -1; box.focus({preventScroll:true}); }
+  }
+  function giveBack(id){
+    const was = openers[id]; delete openers[id];
+    if(!was) return;
+    let el = was.el;
+    if(!el.isConnected && was.click) el = Array.from(document.querySelectorAll('[onclick]')).find(e => e.getAttribute('onclick') === was.click);
+    if(el && el.isConnected && visible(el) && !topWindow()) el.focus({preventScroll:true});
+  }
+  function watch(){
+    for(const [id] of WINDOWS){
+      const o = document.getElementById(id);
+      if(!o) continue;
+      let wasOpen = o.classList.contains('open');
+      new MutationObserver(() => {
+        const isOpen = o.classList.contains('open');
+        if(isOpen === wasOpen) return;
+        wasOpen = isOpen;
+        if(isOpen){
+          const a = document.activeElement;
+          if(a && a !== document.body && !o.contains(a)) openers[id] = {el: a, click: a.getAttribute('onclick')};
+          // the window's content may be drawn a moment after it opens
+          requestAnimationFrame(() => setTimeout(() => { if(o.classList.contains('open') && !o.contains(document.activeElement)) focusInto(o); }, 60));
+        } else {
+          giveBack(id);
+        }
+      }).observe(o, {attributes:true, attributeFilter:['class']});
+    }
+  }
+  document.addEventListener('keydown', e => {
+    if(e.defaultPrevented) return;
+    if(e.key === 'Escape'){
+      const o = topWindow();
+      if(!o) return;
+      const w = WINDOWS.find(w => w[0] === o.id);
+      e.preventDefault();
+      try { w[1](); } catch(err){ o.classList.remove('open'); }
+      return;
+    }
+    const el = e.target;
+    if((e.key === 'Enter' || e.key === ' ') && el && el.hasAttribute && el.hasAttribute('data-kbd') && !e.repeat){
+      e.preventDefault();                      // Space would scroll the page
+      el.click();
+      return;
+    }
+    if(el && el.matches && el.matches(GRID + '[data-kbd]') && /^Arrow/.test(e.key)){
+      e.preventDefault();
+      gridMove(el, e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : -1);
+      return;
+    }
+    if(e.key === 'Tab'){
+      const o = topWindow();
+      if(!o) return;
+      const items = Array.from(o.querySelectorAll(FOCUSABLE)).filter(visible);
+      if(!items.length) return;
+      const first = items[0], last = items[items.length - 1];
+      if(!o.contains(document.activeElement)){ e.preventDefault(); first.focus(); }
+      else if(e.shiftKey && document.activeElement === first){ e.preventDefault(); last.focus(); }
+      else if(!e.shiftKey && document.activeElement === last){ e.preventDefault(); first.focus(); }
+    }
+  });
+  function skip(){
+    const page = Array.from(document.querySelectorAll('[id^="page-"]')).find(p => /^page-[a-z]+$/.test(p.id) && visible(p));
+    if(!page) return;
+    const target = firstIn(page);
+    if(target) target.focus();
+    else { page.tabIndex = -1; page.focus(); }
+  }
+  mark(document.body);
+  new MutationObserver(records => {
+    for(const r of records) r.addedNodes.forEach(n => { if(n.nodeType === 1) mark(n); });
+  }).observe(document.body, {childList:true, subtree:true});
+  watch();
+  return {skip, mark};
 })();
 
 // ==== v54 (owner, 16.11.2026: "how do I make a visitor come back"): what is new since the last visit ====

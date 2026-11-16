@@ -69,6 +69,7 @@ from translation_fixes import prep_en, fix_he   # shared EN->HE translation fixe
 from news_links import is_google_news, decode_google_news_url   # v18d: Google News link -> real article (also pipeline_b)
 from news_links import PROMO_RE, is_unwanted_headline, clean_publisher, strip_outlet_suffix   # v28: headline clean-up
 from news_links import story_groups                                                          # v47: one line per story
+from news_links import is_advice_outlet                                                      # v56: shown rows too
 import push_alerts    # v19: push notifications (watchlist signals, price alerts) — also used by the scanner
 import fundamentals as fundlib   # v21: SEC fundamentals build + stored copies (also the nightly warm-up job)
 import scheduler      # starts the GitHub Actions workflows at exact ET times (see scheduler.py): providers -> processing -> uniform events (see econ_calendar.py)
@@ -1771,6 +1772,9 @@ def _feed_clean(rows, seen: set, promo_only: bool = False) -> list:
     for r in rows:
         title = r.get("summary_en") or ""
         if PROMO_RE.search(title) if promo_only else is_unwanted_headline(title):
+            continue
+        # v56: rows saved before v51 still came from advice outlets (Motley Fool showed under "more sources" 16.11)
+        if is_advice_outlet(r.get("source_name") or r.get("publisher") or ""):
             continue
         k = _feed_key(title)
         if len(k) < 12:            # too short to say two headlines are the same story

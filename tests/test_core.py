@@ -1582,6 +1582,9 @@ def test_analyst_rating_changes(api):
     assert up["day"] == _dt.date(2026, 11, 9) and up["pt_now"] == 600.0 and up["pt_prior"] is None and up["from_grade"] == "Perform"
     assert rows[1]["day"] == _dt.date(2026, 11, 8)        # 22:46 UTC = 17:46 in New York, the same day
     assert ar.rows_from_history("X", pd.DataFrame(), 1e11, _dt.datetime(2026, 11, 6, tzinfo=utc)) == []
+    # v56: 13.11.2026 saved nothing; a run where Yahoo did not answer most companies now ends red, and Monday reaches Friday
+    assert ar.run_failed(0.9) and not ar.run_failed(0.1) and not ar.run_failed(0.9, only=["AMD"])
+    assert ar.LOOKBACK_DAYS >= 4
     # the API: rows and counts
     class Cur:
         def __init__(self): self.n = 0
@@ -1821,6 +1824,12 @@ def test_news_of_the_live_feed_of_11_11(api):
     assert [m["source_name"] for m in oil["more_sources"]] == ["KBOI", "Benzinga"] and oil["story_ids"] == [1, 2, 4, 6]
     assert oil["more_sources"][0]["url"] == "https://x.example/1" and oil["more_sources"][1]["url"] == "https://news.google.com/2"
     assert nvda["more_sources"] == [] and nvda["story_ids"] == [3, 5]   # the same outlet twice = its newest headline only
+    # v56: a row saved before v51 from an advice outlet is not shown (16.11: Motley Fool under "more sources")
+    kept = api._feed_clean([row(7, "The Motley Fool", "Tariffs and inflation: what the data says about prices", 5),
+                            row(8, "MarketWatch", "Tariffs and inflation: what the data says about prices now", 6)], set())
+    assert [r["id"] for r in kept] == [8]
+    assert api._feed_clean([{"summary_en": "Nvidia stock: 3 reasons it can rally", "publisher": "The Motley Fool"}],
+                           set(), promo_only=True) == []
 
 
 def test_headline_filters_of_this_round():
