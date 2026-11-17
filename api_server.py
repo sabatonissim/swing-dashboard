@@ -6104,6 +6104,26 @@ def _fetch_fallback_movers_from_db(limit: int) -> List[dict]:
 # (3 hours outside the trading day): ~8 Google News searches per rebuild.
 MOVE_NEWS_MIN_PCT = 4.0
 MOVE_NEWS_MAX = 8
+# v61b (first live answer, 17.11.2026: "Stock Price Prediction: Bearish structure persists", "Form 4 ... Director",
+# "Why Is Natera Stock Up Nearly 41% Since May?", "schedules Q3 results for December 1"): a headline is shown only when
+# it speaks of a move or of an event that moves a stock, and is none of the kinds that never explain today's move.
+# Nothing that fits = nothing shown.
+MOVE_NEWS_WORDS_RE = re.compile(
+    r"\b(jump|jumps|jumped|surge|surges|surged|soar|soars|soared|plunge|plunges|plunged|sink|sinks|sank|tumble|tumbles|"
+    r"tumbled|slide|slides|slid|slump|slumps|slumped|drop|drops|dropped|fall|falls|fell|rally|rallies|rallied|climb|"
+    r"climbs|climbed|spike|spikes|spiked|rocket|rockets|skyrocket\w*|tank|tanks|tanked|crater\w*|plummet\w*|sell-?off|"
+    r"earnings|results|revenue|profit|loss|guidance|outlook|forecast|beat|beats|miss|misses|upgrade[sd]?|downgrade[sd]?|"
+    r"price target|deal|acqui\w+|merger|buyout|takeover|FDA|approval|trial|contract|offering|lawsuit|probe|"
+    r"investigation|recall|bankrupt\w*|layoffs?|CEO|tariffs?)\b", re.I)
+MOVE_NEWS_JUNK_RE = re.compile(
+    r"price prediction|stock prediction|forecast \d{4}|\bform 4\b|\b13[dfg]\b|gf score|undervalued\?|overvalued\?|"
+    r"\bsince (january|february|march|april|may|june|july|august|september|october|november|december|\d{4})\b|"
+    r"\bschedules?\b|to report|will report|to announce|conference call|webcast|presented|to present|annual meeting|"
+    r"dividend|technical analysis|should you buy|is it time|stocks? to (buy|watch)", re.I)
+
+
+def move_headline_ok(title: str) -> bool:
+    return bool(title) and bool(MOVE_NEWS_WORDS_RE.search(title)) and not MOVE_NEWS_JUNK_RE.search(title)
 MOVE_NEWS_MAX_AGE_H = 30
 MOVE_REASONS_TTL = 30 * 60
 _move_reasons_cache = {"ts": 0.0, "data": None, "key": None}
@@ -6149,13 +6169,16 @@ def _build_move_reasons(movers: list) -> dict:
     except Exception as e:  # noqa: BLE001
         print(f"[warn] move-reasons: ATR download failed: {type(e).__name__}: {e}")
 
-    big = [m for m in movers if m.get("ticker") in out and abs(float(m.get("change_pct") or 0)) >= MOVE_NEWS_MIN_PCT][:MOVE_NEWS_MAX]
+    # v61b: only a move that is big FOR THIS STOCK (1.5 ATR and more) gets a headline — a usual move needs none, and
+    # it saves Google searches
+    big = [m for m in movers if m.get("ticker") in out and abs(float(m.get("change_pct") or 0)) >= MOVE_NEWS_MIN_PCT
+           and out[m["ticker"]]["size"] in ("large", "rare")][:MOVE_NEWS_MAX]
     cutoff = time.time() - MOVE_NEWS_MAX_AGE_H * 3600
 
     def headline(m):
         try:
             for it in _stock_news_raw(m["ticker"], name_hint=m.get("name")):
-                if _news_ts(it.get("published")) >= cutoff:
+                if _news_ts(it.get("published")) >= cutoff and move_headline_ok(it.get("title", "")):
                     return m["ticker"], it
         except Exception as e:  # noqa: BLE001
             print(f"[warn] move-reasons: news for {m['ticker']}: {type(e).__name__}: {e}")

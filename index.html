@@ -2610,8 +2610,9 @@ function atrCard(q){
   let sub = en ? 'a usual day' : 'תנועה יומית רגילה';
   if(q.change_pct != null){
     const ratio = Math.abs(Number(q.change_pct)) / a;
-    sub = ratio < 1.5 ? (en ? 'today: a usual move' : 'היום: תנועה רגילה')
-        : (en ? `today: ${ratio.toFixed(1)}× the usual` : `היום: פי ${ratio.toFixed(1)} מהרגיל`);
+    // "the last move": before the open the quote's change is the previous session's, not today's
+    sub = ratio < 1.5 ? (en ? 'last move: a usual one' : 'התנועה האחרונה: רגילה')
+        : (en ? `last move: ${ratio.toFixed(1)}× the usual` : `התנועה האחרונה: פי ${ratio.toFixed(1)} מהרגיל`);
   }
   return `<div class="dd-stat-card" title="${en ? 'Average True Range: how much the stock usually moves in a day' : 'ממוצע הטווח האמיתי: כמה המניה זזה בדרך כלל ביום'}"><div class="k">${title}</div><div class="v">${a.toFixed(1)}%<span style="font-size:12px;opacity:.7;">${usd}</span></div><div class="s">${sub}</div></div>`;
 }
