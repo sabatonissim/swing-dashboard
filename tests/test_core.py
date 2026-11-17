@@ -514,11 +514,11 @@ def test_line_alerts_follow_the_line():
             pass
 
     created = t0 - _dt.timedelta(days=1)
-    rows = [  # id, user, ticker, direction, price, created, kind, anchor, slope, lo, hi, he, en
-        (1, 7, "KO", "below", 100.0, created, "trend", D(2026, 11, 20), -1.0, None, None, "תמיכה עולה", "Rising support"),
-        (2, 7, "KO", "above", 92.0, created, "zone", None, None, 90.0, 92.0, "אזור", "Zone"),
-        (3, 7, "KO", "touch", 100.0, created, "trend", D(2026, 11, 20), -1.0, None, None, "קו", "Line"),
-        (4, 7, "KO", "above", 97.0, created, None, None, None, None, None, "התנגדות אופקית", "Horizontal resistance"),
+    rows = [  # id, user, ticker, direction, price, created, kind, anchor, slope, lo, hi, he, en, ma_days
+        (1, 7, "KO", "below", 100.0, created, "trend", D(2026, 11, 20), -1.0, None, None, "תמיכה עולה", "Rising support", None),
+        (2, 7, "KO", "above", 92.0, created, "zone", None, None, 90.0, 92.0, "אזור", "Zone", None),
+        (3, 7, "KO", "touch", 100.0, created, "trend", D(2026, 11, 20), -1.0, None, None, "קו", "Line", None),
+        (4, 7, "KO", "above", 97.0, created, None, None, None, None, None, "התנגדות אופקית", "Horizontal resistance", None),
     ]
     sent = []
     old_send, old_ready = push_alerts._send_all, push_alerts.ready
@@ -535,14 +535,40 @@ def test_line_alerts_follow_the_line():
     he, en = sent[0]
     assert "ירדה מתחת לקו: תמיכה עולה" in he["title"] and "$96.00" in he["body"] and "fell below the line" in en["title"]
 
+    # v60b: a moving average. 4 sessions of closes 100 before today (a 5-day average for the test, via MA_DAYS):
+    # the price is AT its average when P = sum of the 4 earlier closes / 4 = 100
+    closes = [(D(2026, 11, d), 100.0) for d in (20, 23, 24, 25)] + [(D(2026, 11, 27), 97.0)]
+    assert push_alerts.ma_base(closes, D(2026, 11, 27), 5) == 400.0
+    assert push_alerts.ma_base(closes, D(2026, 11, 25), 5) is None                       # not enough closes
+    ma_rows = [(5, 7, "KO", "below", 100.0, created, "ma", None, None, None, None, "ממוצע נע 5", "5-day MA", 5),
+               (6, 7, "KO", "touch", 100.0, created, "ma", None, None, None, None, "ממוצע נע 5", "5-day MA", 5),
+               (7, 7, "KO", "above", 100.0, created, "ma", None, None, None, None, "ממוצע נע 5", "5-day MA", 5)]
+    sent.clear()
+    old_days = push_alerts.MA_DAYS
+    try:
+        push_alerts.MA_DAYS = (5,)
+        push_alerts.ready = lambda: True
+        push_alerts._send_all = lambda cur, uid, payload: (sent.append((payload("he"), payload("en"))) or (1, 0))
+        conn = Conn(ma_rows)
+        bars27 = [(t0, 98.0, 99.0, five), (t0 + five, 96.5, 98.2, five)]                  # under 100 all day: no touch
+        n = push_alerts.check_price_alerts(conn, {"KO": 97.0}, {"KO": bars27}, {"KO": [d for d, _ in closes]}, {"KO": closes})
+    finally:
+        push_alerts._send_all, push_alerts.ready, push_alerts.MA_DAYS = old_send, old_ready, old_days
+    closed = [p[1] for q, p in conn.c.sql if q.startswith("UPDATE price_alerts")]
+    assert n == 1 and closed == [5]
+    assert "$99.40" in sent[0][0]["body"]                     # the average shown = (400 + 97) / 5
+
 
 def test_line_alert_input_is_checked(api):
     """v60: what the site sends for a line alert is checked before it is saved."""
     import pytest as _pt
     A = api.PriceAlertIn
-    assert api._line_alert_fields(A(ticker="KO", direction="touch", price=60)) == (None,) * 7
+    assert api._line_alert_fields(A(ticker="KO", direction="touch", price=60)) == (None,) * 8
     lv = api._line_alert_fields(A(ticker="KO", direction="above", price=60, kind="level", label_he="התנגדות <b>", label_en="Res"))
-    assert lv == (None, None, None, None, None, "התנגדות b", "Res")
+    assert lv == (None, None, None, None, None, "התנגדות b", "Res", None)
+    assert api._line_alert_fields(A(ticker="KO", direction="touch", price=60, kind="ma", ma_days=150))[::7] == ("ma", 150)
+    with _pt.raises(api.HTTPException):
+        api._line_alert_fields(A(ticker="KO", direction="touch", price=60, kind="ma", ma_days=20))
     z = api._line_alert_fields(A(ticker="KO", direction="touch", price=61, kind="zone", zone_lo=60, zone_hi=62))
     assert z[0] == "zone" and z[3:5] == (60, 62)
     today = api.dt.now(api.timezone.utc).date().isoformat()

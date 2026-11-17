@@ -5750,7 +5750,7 @@ def list_alerts(user_id: int = Depends(current_user_id)):
     """The user's price alerts (open ones, and those that fired in the last 14 days) + this account's alert settings."""
     with db_cursor(dict_cursor=True) as (conn, cur):
         cur.execute("""SELECT id, ticker, direction, price, created_at, triggered_at, triggered_price,
-                              line_kind, anchor_date, slope, zone_lo, zone_hi, label_he, label_en FROM price_alerts
+                              line_kind, anchor_date, slope, zone_lo, zone_hi, label_he, label_en, ma_days FROM price_alerts
                        WHERE user_id = %s AND (triggered_at IS NULL OR triggered_at > NOW() - INTERVAL '14 days')
                        ORDER BY triggered_at IS NOT NULL, created_at DESC""", (user_id,))
         alerts = [dict(r) for r in cur.fetchall()]
@@ -5769,7 +5769,8 @@ class PriceAlertIn(BaseModel):
     price: float = Field(gt=0, lt=10_000_000)
     # v60: a line of the stock page's chart (push_alerts.py, "an alert on a line"). kind: level = a horizontal line
     # (a price with the line's name), trend = price on anchor_date + slope per session, zone = zone_lo..zone_hi.
-    kind: Optional[str] = Field(default=None, pattern="^(level|trend|zone)$")
+    kind: Optional[str] = Field(default=None, pattern="^(level|trend|zone|ma)$")
+    ma_days: Optional[int] = Field(default=None, ge=2, le=400)      # v60b: a moving average (50 / 150 / 200)
     anchor_date: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     slope: Optional[float] = Field(default=None, gt=-1_000_000, lt=1_000_000)
     zone_lo: Optional[float] = Field(default=None, gt=0, lt=10_000_000)
@@ -5780,17 +5781,21 @@ class PriceAlertIn(BaseModel):
 
 def _line_alert_fields(body: PriceAlertIn) -> tuple:
     """v60: the extra columns of a line alert, checked: (line_kind, anchor_date, slope, zone_lo, zone_hi, label_he,
-    label_en). A plain price alert = all None."""
+    label_en, ma_days). A plain price alert = all None."""
     if not body.kind:
-        return (None,) * 7
+        return (None,) * 8
     clean = lambda s: (re.sub(r"[\x00-\x1f<>]", "", s).strip()[:80] or None) if s else None   # noqa: E731
     he, en = clean(body.label_he), clean(body.label_en)
     if body.kind == "level":
-        return (None, None, None, None, None, he, en)
+        return (None, None, None, None, None, he, en, None)
+    if body.kind == "ma":
+        if body.ma_days not in push_alerts.MA_DAYS:
+            raise HTTPException(status_code=400, detail="moving averages: 50, 150 or 200 days")
+        return ("ma", None, None, None, None, he, en, body.ma_days)
     if body.kind == "zone":
         if body.zone_lo is None or body.zone_hi is None or body.zone_lo >= body.zone_hi:
             raise HTTPException(status_code=400, detail="a zone needs its bottom and top")
-        return ("zone", None, None, round(body.zone_lo, 4), round(body.zone_hi, 4), he, en)
+        return ("zone", None, None, round(body.zone_lo, 4), round(body.zone_hi, 4), he, en, None)
     try:
         anchor = date.fromisoformat(body.anchor_date or "")
     except ValueError:
@@ -5798,7 +5803,7 @@ def _line_alert_fields(body: PriceAlertIn) -> tuple:
     today = dt.now(timezone.utc).date()
     if body.slope is None or abs(body.slope) > body.price * 0.2 or not (today - timedelta(days=400) <= anchor <= today + timedelta(days=1)):
         raise HTTPException(status_code=400, detail="invalid trend line")
-    return ("trend", anchor, round(body.slope, 6), None, None, he, en)
+    return ("trend", anchor, round(body.slope, 6), None, None, he, en, None)
 
 
 @app.post("/api/alerts")
@@ -5812,8 +5817,8 @@ def add_alert(body: PriceAlertIn, user_id: int = Depends(current_user_id)):
         if cur.fetchone()[0] >= push_alerts.MAX_ALERTS_PER_USER:
             raise HTTPException(status_code=400, detail=f"up to {push_alerts.MAX_ALERTS_PER_USER} open alerts")
         cur.execute("""INSERT INTO price_alerts (user_id, ticker, direction, price, line_kind, anchor_date, slope,
-                                                 zone_lo, zone_hi, label_he, label_en)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                                                 zone_lo, zone_hi, label_he, label_en, ma_days)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
                     (user_id, ticker, body.direction, round(body.price, 4), *line))
         new_id = cur.fetchone()[0]
         conn.commit()

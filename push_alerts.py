@@ -102,6 +102,7 @@ def ensure_tables(cur):
         ALTER TABLE price_alerts ADD COLUMN IF NOT EXISTS zone_hi REAL;
         ALTER TABLE price_alerts ADD COLUMN IF NOT EXISTS label_he TEXT;
         ALTER TABLE price_alerts ADD COLUMN IF NOT EXISTS label_en TEXT;
+        ALTER TABLE price_alerts ADD COLUMN IF NOT EXISTS ma_days INTEGER;
     """)
     # v27: a "touch" alert (the price trades AT the level, from either side) — the table made before v27 only allowed
     # above/below; its CHECK is replaced once
@@ -565,6 +566,10 @@ def range_since(bars, since):
 #           holiday is not a step of the line;
 #   zone  - a support / resistance zone zone_lo..zone_hi: touch = traded inside it, above = over its top, below = under
 #           its bottom.
+#   ma    - v60b (owner): a moving average of ma_days (50 / 150 / 200) daily closes, real prices like the chart. It
+#           moves with the price itself: on a day, its value at a price P = (the ma_days-1 closes before that day + P)
+#           / ma_days.
+MA_DAYS = (50, 150, 200)
 # The line is kept as it was when the alert was set: a line the scanner draws differently tomorrow does not move it.
 _ET_ZONE = None
 
@@ -588,6 +593,13 @@ def line_value(price, slope, anchor_date, day, sessions):
     if day > anchor_date and day not in sessions:
         n += 1
     return price + slope * n
+
+
+def ma_base(closes, day, n):
+    """The sum of the n-1 daily closes before `day` (closes = [(date, close)] sorted) — a moving average on `day` at
+    price P is (base + P) / n. None when there are not enough closes."""
+    prev = [c for d, c in closes if d < day][-(n - 1):]
+    return sum(prev) if len(prev) == n - 1 else None
 
 
 def line_touched(bars, since, level_of):
@@ -615,14 +627,14 @@ def line_touched(bars, since, level_of):
 
 def line_text(lang, kind, label, direction, value, lo=None, hi=None):
     """(title part, level text) of a line alert's message, e.g. 'resistance line $189.20'."""
-    what = label or ({"trend": "trend line", "zone": "zone"}.get(kind, "line") if lang == "en"
-                     else {"trend": "קו מגמה", "zone": "אזור"}.get(kind, "קו"))
+    what = label or ({"trend": "trend line", "zone": "zone", "ma": "moving average"}.get(kind, "line") if lang == "en"
+                     else {"trend": "קו מגמה", "zone": "אזור", "ma": "ממוצע נע"}.get(kind, "קו"))
     if kind == "zone":
         return what, f"${lo:,.2f}–${hi:,.2f}"
     return what, f"${value:,.2f}"
 
 
-def check_price_alerts(conn, prices: dict, bars: dict = None, sessions: dict = None) -> int:
+def check_price_alerts(conn, prices: dict, bars: dict = None, sessions: dict = None, closes: dict = None) -> int:
     """prices = {ticker: last price}; bars = {ticker: [(bar start UTC, low, high, length)]} — 5-minute bars of the
     last few sessions; sessions = {ticker: sorted daily bar dates} (v60: to count a trend line's steps).
     Every open alert whose condition was met fires once and is closed.
@@ -636,16 +648,36 @@ def check_price_alerts(conn, prices: dict, bars: dict = None, sessions: dict = N
         return 0
     cur = conn.cursor()
     cur.execute("""SELECT id, user_id, ticker, direction, price, created_at, line_kind, anchor_date, slope,
-                          zone_lo, zone_hi, label_he, label_en FROM price_alerts
+                          zone_lo, zone_hi, label_he, label_en, ma_days FROM price_alerts
                    WHERE triggered_at IS NULL AND ticker = ANY(%s)""", (list(prices),))
     fired = waiting = 0
     for (aid, user_id, tk, direction, level, created_at, kind, anchor, slope,
-         zlo, zhi, lab_he, lab_en) in cur.fetchall():
+         zlo, zhi, lab_he, lab_en, ma_days) in cur.fetchall():
         p = prices.get(tk)
         if p is None:
             continue
         ses = (sessions or {}).get(tk) or []
-        if kind == "trend":
+        if kind == "ma":
+            cl = (closes or {}).get(tk) or []
+            n = ma_days if ma_days in MA_DAYS else 150
+            today = cl[-1][0] if cl else None
+            base = ma_base(cl, today, n) if today else None
+            if base is None:
+                print(f"[warn] price alerts: line alert {aid} on {tk}: not enough closes for the {n}-day average — skipped")
+                continue
+            # The price P is AT its average when P = (base + P) / n, i.e. P = base / (n-1): on each day the average
+            # crosses the price at one fixed price, so above / below / touch compare with that (the message shows
+            # the average itself, (base + last price) / n — the same number to a cent or two)
+            level = base / (n - 1)
+            ma_now = (base + p) / n
+            bases = {}
+
+            def level_of(start, cl=cl, n=n, bases=bases):
+                d = _et_date(start)
+                if d not in bases:
+                    bases[d] = ma_base(cl, d, n)
+                return None if bases[d] is None else (bases[d] / (n - 1),) * 2
+        elif kind == "trend":
             if anchor is None or slope is None or not ses:
                 continue
             base = level
@@ -662,7 +694,7 @@ def check_price_alerts(conn, prices: dict, bars: dict = None, sessions: dict = N
                 continue
             level_of = lambda start, z=(zlo, zhi): z      # noqa: E731
         if direction == "touch":
-            if kind in ("trend", "zone"):
+            if kind in ("trend", "zone", "ma"):
                 hit = bool(line_touched((bars or {}).get(tk), created_at, level_of))
             else:
                 rng = range_since((bars or {}).get(tk), created_at)
@@ -674,7 +706,9 @@ def check_price_alerts(conn, prices: dict, bars: dict = None, sessions: dict = N
         if not hit:
             continue
 
-        def payload(lang, tk=tk, direction=direction, level=level, p=p, kind=kind, lab_he=lab_he, lab_en=lab_en,
+        shown = ma_now if kind == "ma" else level
+
+        def payload(lang, tk=tk, direction=direction, level=shown, p=p, kind=kind, lab_he=lab_he, lab_en=lab_en,
                     zlo=zlo, zhi=zhi):
             if kind or lab_he or lab_en:      # v60: a line of the chart
                 what, lvl = line_text(lang, kind, lab_en if lang == "en" else lab_he, direction, level, zlo, zhi)

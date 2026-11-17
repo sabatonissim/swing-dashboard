@@ -3775,6 +3775,7 @@ def check_price_alerts_job():
         return
     prices = {}
     sessions = {}      # v60: the daily bar dates — a trend-line alert counts its steps on them (a year back)
+    close_list = {}
     for i in range(0, len(tickers), 100):
         chunk = tickers[i:i + 100]
         try:
@@ -3790,6 +3791,7 @@ def check_price_alerts_job():
             if len(closes):
                 prices[t] = round(float(closes.iloc[-1]), 4)
                 sessions[t] = sorted({ts.date() for ts in closes.index})
+                close_list[t] = [(ts.date(), float(v)) for ts, v in closes.items()]   # v60b: moving-average alerts
     # v27 "touch" alerts: the 5-minute bars of the last sessions — whether the price traded AT the level at any moment
     # since the alert was set, not only where it is at this check (every ~20 min)
     bars = {}
@@ -3812,7 +3814,7 @@ def check_price_alerts_job():
                        for ts, lo, hi in zip(idx, sub["Low"], sub["High"])]
     conn = get_conn()   # fresh connection after the download (Neon auto-suspend)
     try:
-        push_alerts.check_price_alerts(conn, prices, bars, sessions)
+        push_alerts.check_price_alerts(conn, prices, bars, sessions, close_list)
     finally:
         conn.close()
 

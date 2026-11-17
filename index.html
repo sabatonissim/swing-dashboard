@@ -856,7 +856,18 @@ window.addEventListener('load', function(){
   .ts-bell:hover{color:var(--amber);border-color:var(--amber);}
   .ts-bell.on{color:var(--amber);border-color:var(--amber);}
   .ts-bell.on svg path{fill:currentColor;}
-  .al-line{border:1px solid var(--amber);border-radius:8px;padding:8px 10px;margin:6px 0 10px;}
+  /* v60b: the small window of one line's alert, and the bar shown after saving */
+  .line-alert-modal{max-width:340px;}
+  .al-choices{display:flex;flex-direction:column;gap:6px;margin:4px 0 8px;}
+  .al-choice{text-align:inherit;background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:10px 12px;font-size:13.5px;cursor:pointer;font-family:'Heebo',sans-serif;}
+  .al-choice.on{border-color:var(--amber);color:var(--amber);font-weight:700;}
+  .al-toast{position:fixed;left:50%;bottom:24px;transform:translate(-50%,20px);opacity:0;pointer-events:none;z-index:260;
+    display:flex;align-items:center;gap:10px;max-width:calc(100% - 32px);box-sizing:border-box;background:var(--panel);
+    border:1px solid var(--amber);border-radius:12px;padding:10px 12px;box-shadow:0 6px 24px rgba(0,0,0,.35);transition:opacity .2s,transform .2s;font-size:13px;}
+  .al-toast.show{opacity:1;transform:translate(-50%,0);pointer-events:auto;}
+  .al-toast-text{flex:1;min-width:0;}
+  .al-toast .al-btn{flex:none;white-space:nowrap;}
+  @media (max-width:700px){.al-toast{bottom:calc(76px + env(safe-area-inset-bottom));}}   /* above the phone's bottom bar */
   .fund-card-title{font-size:12px;color:var(--text-dim);margin-bottom:8px;}
   .fund-scroll{overflow-x:auto;direction:ltr;}
   .fund-scroll::-webkit-scrollbar{height:5px;}
@@ -1512,6 +1523,10 @@ html[lang="he"] .only-en, html[lang="en"] .only-he{display:none;}
 <div class="risk-calc-overlay" id="info-modal-overlay" onclick="if(event.target===this) closeInfoModal();">
   <div class="risk-calc-modal" id="info-modal" role="dialog" aria-modal="true" aria-label="מידע / Information"></div>
 </div>
+<div class="risk-calc-overlay" id="line-alert-overlay" onclick="if(event.target===this) closeLineAlert();">
+  <div class="risk-calc-modal line-alert-modal" id="line-alert-modal" role="dialog" aria-modal="true" aria-label="התראה על קו / Line alert"></div>
+</div>
+<div id="al-toast" class="al-toast" role="status" aria-live="polite"></div>
 <div class="risk-calc-overlay" id="compare-search-overlay" onclick="if(event.target===this) closeCompareSearch();">
   <div class="risk-calc-modal" id="compare-search-modal" role="dialog" aria-modal="true" aria-label="השוואת מניות / Compare stocks"></div>
 </div>
@@ -6221,6 +6236,12 @@ function buildTechnicalSetupSvg(priceSeries, lines){
   // its bottom and top, a straight trend line = its value on its last point + its step per session (the bars of this
   // chart are the stock's sessions, so the step is per trading day). Moving averages and curves get no bell.
   const labels = ln => ({label_he: ln.label_he || '', label_en: ln.label_en || ''});
+  // v60b (owner): the moving averages too (50 / 150 / 200 days); the server computes the average from the closes
+  const maAlert = (ln, price) => {
+    const m = /(\d+)/.exec(ln.label_en || '');
+    const days = m ? Number(m[1]) : 0;
+    return [50, 150, 200].includes(days) ? {kind:'ma', days, price, ...labels(ln)} : null;
+  };
   let anyTouches = false;
   let zoneSvgs = '';      // support/resistance zones: drawn BEHIND the candles
   const lineSvgs = (lines||[]).map((ln, idx) => {
@@ -6268,13 +6289,15 @@ function buildTechnicalSetupSvg(priceSeries, lines){
       const steps = pts.length === 2 ? dateIndex[last.date] - dateIndex[first.date] : 0;
       entries.push({color:col, kind:'trend', name, value:'$'+fmtP(last.price),
                     note:(t?'from ':'מ-')+_fmtShortDate(first.date), anchorX: last.x, anchorY: last.y, dim,
-                    alert: !isMA && steps > 0 ? {kind:'trend', price: last.price, anchor_date: last.date,
+                    alert: isMA ? maAlert(ln, last.price)
+                         : (steps > 0 && ln.label_en !== 'Flagpole') ? {kind:'trend', price: last.price, anchor_date: last.date,
                                                  slope: (last.price - first.price) / steps, ...labels(ln)} : null});
       return `<polyline points="${pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}" fill="none" stroke="${col}" stroke-opacity="${dim}" stroke-width="2"/>${dots}`;
     }
     if(ln.type === 'ma'){
       // v27: the real 150-day MA (one point per day, from the server's ma150.line) — TradingView blue like every other chart
-      entries.push({color:'var(--ma150)', kind:'trend', name, value:'$'+fmtP(last.price), note:'', anchorX: last.x, anchorY: last.y, dim: 1});
+      entries.push({color:'var(--ma150)', kind:'trend', name, value:'$'+fmtP(last.price), note:'', anchorX: last.x, anchorY: last.y, dim: 1,
+                    alert: maAlert(ln, last.price)});
       return `<polyline points="${pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}" fill="none" stroke="var(--ma150)" stroke-width="1"/>`;
     }
     if(ln.type === 'curve'){
@@ -9701,6 +9724,7 @@ const kbd = (function(){
   // overlay id -> how it closes; later in the list = drawn above the earlier ones
   const WINDOWS = [['overlay', () => closeDrawer()], ['digest-overlay', () => closeDailyDigest()],
                    ['risk-calc-overlay', () => closeRiskCalc()], ['info-modal-overlay', () => closeInfoModal()],
+                   ['line-alert-overlay', () => closeLineAlert()],
                    ['compare-search-overlay', () => closeCompareSearch()]];
   // A grid of hundreds of tiles (the heatmap: 503) is one Tab stop: Tab enters it, the arrow keys move inside it,
   // the next Tab leaves it ("roving" focus: only the current tile has tabindex 0).
@@ -10171,6 +10195,7 @@ function _sameLine(x, a){
   if(a.kind === 'zone') return x.line_kind === 'zone' && near(x.zone_lo, a.lo) && near(x.zone_hi, a.hi);
   // a trend line's last point moves to the newest session every day: the same line = the same name and step
   if(a.kind === 'trend') return x.line_kind === 'trend' && x.label_en === a.label_en && near(x.slope, a.slope);
+  if(a.kind === 'ma') return x.line_kind === 'ma' && Number(x.ma_days) === a.days;
   return !x.line_kind && !!(x.label_he || x.label_en) && near(x.price, a.price);
 }
 function lineAlertIsOpen(tk, a){
@@ -10191,13 +10216,96 @@ function refreshBells(){
     if(a) b.classList.toggle('on', !!(_myAlerts && _myAlerts.some(x => !x.triggered_at && x.ticker === tk && _sameLine(x, a))));
   });
 }
+// v60b (owner): the bell opens a SMALL window about this one line only — what the line is, the three choices, save.
+// The full alerts panel (every alert, the notification switches) opens from the bar shown after saving.
+var _lineDraft = null;           // {ticker, line, dir}
 function openLineAlert(i){
   const a = _tsAlertLines[i];
   const tk = _tsTicker();
   if(!a || !tk) return;
-  _alertDraft = {ticker: tk, line: a};
-  document.getElementById('info-modal-overlay').classList.add('open');
-  renderAlertsPanel();
+  _lineDraft = {ticker: tk, line: a, dir: 'touch'};
+  document.getElementById('line-alert-overlay').classList.add('open');
+  renderLineAlert();
+  if(authToken && _myAlerts === null) loadMyAlerts();
+}
+function closeLineAlert(){
+  const o = document.getElementById('line-alert-overlay');
+  if(o) o.classList.remove('open');
+}
+function _lineChoices(kind){
+  const en = lang === 'en';
+  if(kind === 'zone') return [['touch', en ? 'Trades inside it' : 'נסחרת בתוכו'], ['above', en ? 'Goes above its top' : 'עולה מעל הגבול העליון'], ['below', en ? 'Goes below its bottom' : 'יורדת מתחת לגבול התחתון']];
+  return [['touch', en ? 'Touches it' : 'נוגעת בו'], ['above', en ? 'Goes above it' : 'עולה מעליו'], ['below', en ? 'Goes below it' : 'יורדת מתחתיו']];
+}
+async function renderLineAlert(){
+  const box = document.getElementById('line-alert-modal');
+  const d = _lineDraft;
+  if(!box || !d) return;
+  const en = lang === 'en';
+  const L = d.line;
+  const close = `<button class="risk-calc-close" onclick="closeLineAlert()">${en?'Close':'סגירה'}</button>`;
+  const head = `<h3>${en?'Alert on this line':'התראה על הקו'}</h3>
+    <div class="al-text"><b class="mono">${escH(d.ticker)}</b> · ${en?'line':'קו'} ${Number(L.num)} · ${escH(_lineName(L))}
+      <span dir="ltr" style="unicode-bidi:isolate;" class="mono">${escH(_lineValueText(L))}</span></div>`;
+  if(!authToken){
+    box.innerHTML = head + `<div class="al-text dim">${en
+      ? 'Sign in with Google (the person icon at the top) to set an alert on a line of the chart.'
+      : 'כדי לשים התראה על קו בגרף צריך להתחבר עם Google (סמל האדם למעלה).'}</div>${close}`;
+    return;
+  }
+  const mine = (_myAlerts || []).filter(x => !x.triggered_at && x.ticker === d.ticker && _sameLine(x, L));
+  const existing = mine.length ? `<div class="al-sec">${en?'Already set on this line':'כבר קבעת על הקו הזה'}</div>` + mine.map(x =>
+    `<div class="al-item"><span>${escH(_lineChoices(L.kind).find(c => c[0] === x.direction)?.[1] || x.direction)}</span><span class="al-when"></span>
+      <button class="al-x" onclick="deleteLineAlert(${Number(x.id)})" aria-label="${en?'Delete':'מחיקה'}">✕</button></div>`).join('') : '';
+  const note = L.kind === 'trend'
+    ? (en ? 'A trend line is not a fixed price: the alert follows the line as drawn now, one step per trading day.'
+          : 'קו מגמה הוא לא מחיר קבוע: ההתראה עוקבת אחרי הקו כפי שהוא מצויר עכשיו, צעד אחד בכל יום מסחר.')
+    : L.kind === 'ma'
+    ? (en ? `The ${L.days}-day average is calculated again on every check, from the real closing prices.`
+          : `הממוצע של ${L.days} יום מחושב מחדש בכל בדיקה, ממחירי הסגירה האמיתיים.`)
+    : (en ? 'The line is saved as it is now, even if the chart draws it differently later.'
+          : 'הקו נשמר כמו שהוא עכשיו, גם אם בהמשך הגרף יצייר אותו אחרת.');
+  box.innerHTML = head + existing + `
+    <div class="al-sec">${en?'Tell me when the price':'תודיע לי כשהמחיר'}</div>
+    <div class="al-choices" role="radiogroup">${_lineChoices(L.kind).map(([v, txt]) =>
+      `<button class="al-choice${d.dir === v ? ' on' : ''}" role="radio" aria-checked="${d.dir === v}" onclick="_lineDraft.dir='${v}';renderLineAlert()">${txt}</button>`).join('')}</div>
+    <div class="al-text dim">${note}</div>
+    <div id="line-alert-device" class="al-text"></div>
+    <div id="line-alert-note" class="al-text" style="min-height:0;"></div>
+    <button class="al-btn primary" style="width:100%;padding:10px;" onclick="addLineAlert()">${en?'Save alert':'שמירת ההתראה'}</button>
+    ${close}`;
+  // only what matters for THIS alert from the device: are notifications on here? (nothing asked from the server)
+  const [cfg, sub] = await Promise.all([pushConfig(), currentPushSub()]);
+  const dev = document.getElementById('line-alert-device');
+  if(!dev || sub || !cfg.enabled) return;
+  if(_isIOS() && !_isStandalone()) dev.innerHTML = `<span style="color:var(--amber);">${en?'On iPhone, alerts arrive in the installed app.':'באייפון ההתראות מגיעות לאפליקציה המותקנת.'}</span> <button class="al-btn" onclick="installApp()">${en?'How to install':'איך מתקינים'}</button>`;
+  else if(pushSupported()) dev.innerHTML = `<span style="color:var(--amber);">${en?'Notifications are off on this device.':'ההתראות כבויות במכשיר הזה.'}</span> <button class="al-btn" onclick="enablePushForLine()">${en?'Turn on':'הפעלה'}</button>`;
+}
+async function enablePushForLine(){
+  await enablePush();
+  renderLineAlert();
+}
+async function deleteLineAlert(id){
+  try { await authFetch(`${API_BASE}/api/alerts/${Number(id)}`, {method:'DELETE'}); } catch(e){}
+  if(_myAlerts) _myAlerts = _myAlerts.filter(x => x.id !== id);
+  refreshBells();
+  renderLineAlert();
+}
+// v60b: a small bar at the bottom after saving: what was saved + "All alerts" (opens the full panel)
+var _toastTimer = null;
+function showAlertToast(text){
+  const el = document.getElementById('al-toast');
+  if(!el) return;
+  const en = lang === 'en';
+  el.innerHTML = `<span class="al-toast-text">${escH(text)}</span><button class="al-btn" onclick="hideAlertToast();openAlertsPanel()">${en?'All alerts':'לכל ההתראות'}</button><button class="al-x" onclick="hideAlertToast()" aria-label="${en?'Close':'סגירה'}">✕</button>`;
+  el.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(hideAlertToast, 8000);
+}
+function hideAlertToast(){
+  clearTimeout(_toastTimer);
+  const el = document.getElementById('al-toast');
+  if(el) el.classList.remove('show');
 }
 function _lineName(x){
   const en = lang === 'en';
@@ -10215,6 +10323,7 @@ function _lineValueText(x){
   const en = lang === 'en';
   const kind = x.kind || x.line_kind;
   if(kind === 'zone') return `${_px(x.lo ?? x.zone_lo)}–${_px(x.hi ?? x.zone_hi)}`;
+  if(kind === 'ma') return x.kind ? `${_px(x.price)} ${en ? 'today' : 'היום'}` : (en ? 'moves with the price' : 'זז עם המחיר');
   if(kind === 'trend'){
     const d = String(x.anchor_date || '').slice(0, 10).split('-');
     const when = d.length === 3 ? `${Number(d[2])}.${Number(d[1])}` : '';
@@ -10224,21 +10333,41 @@ function _lineValueText(x){
 }
 async function addLineAlert(){
   const en = lang === 'en';
-  const d = _alertDraft;
+  const d = _lineDraft;
   if(!d || !d.line) return;
   const a = d.line;
-  const direction = document.getElementById('al-line-dir').value;
+  const direction = d.dir || 'touch';
   const body = {ticker: d.ticker, direction, kind: a.kind, label_he: a.label_he, label_en: a.label_en};
   if(a.kind === 'zone'){ body.zone_lo = a.lo; body.zone_hi = a.hi; body.price = (a.lo + a.hi) / 2; }
   else { body.price = a.price; }
   if(a.kind === 'trend'){ body.anchor_date = a.anchor_date; body.slope = a.slope; }
+  if(a.kind === 'ma') body.ma_days = a.days;
+  const note = document.getElementById('line-alert-note');
   try {
     const r = await authFetch(`${API_BASE}/api/alerts`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-    if(!r.ok) throw new Error('add ' + r.status);
-    _alertDraft = null;
-    await renderAlertsPanel();
-    _alertsNote(en ? `Alert saved: ${d.ticker} ${_lineWord(direction)} ${_lineName(a)}` : `ההתראה נשמרה: ${d.ticker} ${_lineWord(direction)} ${_lineName(a)}`);
-  } catch(e){ _alertsNote(en ? 'Could not save the alert.' : 'לא הצלחנו לשמור את ההתראה.', true); }
+    if(!r.ok){
+      let msg = '';
+      try { msg = String((await r.json()).detail || ''); } catch(e){}
+      throw new Error(/open alerts/.test(msg) ? 'full' : 'add ' + r.status);
+    }
+    const j = await r.json();
+    // the bell turns full at once; the list is asked again only when the full panel opens
+    if(_myAlerts) _myAlerts.unshift({id: j.id, ticker: d.ticker, direction, price: body.price, line_kind: a.kind === 'level' ? null : a.kind,
+      anchor_date: body.anchor_date || null, slope: body.slope ?? null, zone_lo: body.zone_lo ?? null, zone_hi: body.zone_hi ?? null,
+      label_he: a.label_he, label_en: a.label_en, ma_days: body.ma_days ?? null, triggered_at: null, created_at: new Date().toISOString()});
+    else { _myAlertsAsked = false; loadMyAlerts(); }
+    refreshBells();
+    closeLineAlert();
+    _lineDraft = null;
+    showAlertToast(en ? `Alert saved: ${d.ticker} ${_lineWord(direction)} ${_lineName(a)}` : `ההתראה נשמרה: ${d.ticker} ${_lineWord(direction)} ${_lineName(a)}`);
+  } catch(e){
+    if(note){
+      note.style.color = 'var(--red)';
+      note.textContent = e.message === 'full'
+        ? (en ? 'You have the maximum number of open alerts. Delete one in "All alerts" first.' : 'הגעת למספר ההתראות הפתוחות המרבי. קודם למחוק אחת ב"כל ההתראות".')
+        : (en ? 'Could not save the alert.' : 'לא הצלחנו לשמור את ההתראה.');
+    }
+  }
 }
 async function deletePriceAlert(id){
   try { await authFetch(`${API_BASE}/api/alerts/${Number(id)}`, {method:'DELETE'}); } catch(e){}
@@ -10289,25 +10418,7 @@ async function renderAlertsPanel(){
       <span class="al-when">${a.triggered_at ? (en?`reached ${fmtD(a.triggered_at)}`:`הופעלה ${fmtD(a.triggered_at)}`) : ''}</span>
       <button class="al-x" onclick="deletePriceAlert(${Number(a.id)})" aria-label="${en?'Delete':'מחיקה'}">✕</button></div>`;
   const d = _alertDraft || {};
-  const L = d.line;
-  const lineForm = L ? `<div class="al-line">
-      <div class="al-sec" style="margin-top:0;">${en?'Alert on a line of the chart':'התראה על קו בגרף'}</div>
-      <div class="al-text"><b class="mono">${escH(d.ticker)}</b> · ${en?'line':'קו'} ${Number(L.num)} · ${escH(_lineName(L))}
-        <span dir="ltr" style="unicode-bidi:isolate;" class="mono">${escH(_lineValueText(L))}</span></div>
-      <div class="al-form">
-        <select id="al-line-dir" class="search-input"><option value="touch" selected>${L.kind==='zone'?(en?'trades inside it':'נסחרת בתוכו'):(en?'touches it':'נוגעת בו')}</option>
-          <option value="above">${L.kind==='zone'?(en?'goes above its top':'עולה מעל הגבול העליון'):(en?'goes above it':'עולה מעליו')}</option>
-          <option value="below">${L.kind==='zone'?(en?'goes below its bottom':'יורדת מתחת לגבול התחתון'):(en?'goes below it':'יורדת מתחתיו')}</option></select>
-        <button class="al-btn primary" onclick="addLineAlert()">${en?'Add':'הוספה'}</button>
-      </div>
-      <div class="al-text dim">${L.kind==='trend'
-        ? (en ? 'A trend line is not a fixed price: the alert follows the line as drawn now, one step per trading day.'
-              : 'קו מגמה הוא לא מחיר קבוע: ההתראה עוקבת אחרי הקו כפי שהוא מצויר עכשיו, צעד אחד בכל יום מסחר.')
-        : (en ? 'The line is saved as it is now, even if the chart draws it differently later.'
-              : 'הקו נשמר כמו שהוא עכשיו, גם אם בהמשך הגרף יצייר אותו אחרת.')}</div>
-    </div>` : '';
   box.innerHTML = `<h3>${en?'Alerts':'התראות'}</h3>
-    ${lineForm}
     <div class="al-sec">${en?'This device':'המכשיר הזה'}</div>
     ${device}
     <label class="al-check"><input type="checkbox" ${data && data.watch_signals ? 'checked' : ''} ${data && data.devices ? '' : 'disabled'} onchange="setWatchSignals(this.checked)">
