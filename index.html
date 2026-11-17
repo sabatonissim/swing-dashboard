@@ -3079,6 +3079,9 @@ function _ddMountChart(force){
     timezone: 'Asia/Jerusalem', theme: tvTheme(), style: '1',
     locale: lang==='en' ? 'en' : 'he_IL',
     toolbar_bg: tvToolbarBg(), hide_top_toolbar: false, hide_legend: false,
+    // v63 (owner's request 17.11): the drawing tools on the left, like on TradingView. Drawings live only inside the
+    // widget — gone after a reload (it does not let us read or save them); saved drawings per user = own chart, later.
+    hide_side_toolbar: false,
     save_image: false, container_id: 'dd-tv-chart',
     studies: ["MASimple@tv-basicstudies"],
     studies_overrides: {
@@ -6084,6 +6087,7 @@ function renderTradingViewChart(ticker, isRetry){
       autosize:true, symbol:tvSymbol(ticker), interval:"D",
       timezone:"Asia/Jerusalem", theme:tvTheme(), style:"1", locale: lang==='en' ? 'en' : 'he_IL',
       toolbar_bg:tvToolbarBg(), hide_top_toolbar:false, hide_legend:false,
+      hide_side_toolbar:false,          // v63: drawing tools (not saved after a reload)
       save_image:false, container_id:"tv-chart",
       studies: ["MASimple@tv-basicstudies"],
       studies_overrides: {
