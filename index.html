@@ -293,7 +293,18 @@ window.addEventListener('load', function(){
   .today-more{margin-left:auto;background:none;border:1px solid var(--line);border-radius:8px;color:var(--amber);font-size:12px;padding:4px 10px;cursor:pointer;font-family:'Heebo',sans-serif;white-space:nowrap;}
   .today-more:hover{border-color:var(--amber);}
   .today-text{font-size:14.5px;line-height:1.6;color:var(--text);max-width:980px;margin-bottom:10px;}
-  .today-text:empty,.today-intro:empty{display:none;}
+  .today-text:empty,.today-intro:empty,.today-event:empty{display:none;}
+  /* v61: the S&P 500 on the earlier releases of today's / tomorrow's big event (home), and in the calendar card */
+  .today-event{font-size:12.5px;line-height:1.55;color:var(--text-dim);margin:-4px 0 10px;cursor:pointer;}
+  .today-event b{color:var(--text);}
+  .econ-hist{margin-top:8px;padding-top:8px;border-top:1px dashed var(--line);font-size:12.5px;line-height:1.55;color:var(--text);}
+  .econ-hist .dim{color:var(--text-dim);font-size:11.5px;}
+  /* v61: why a mover moves / how big the move is for this stock */
+  .mover-why{font-size:11px;line-height:1.45;color:var(--text-dim);padding:0 2px 7px;margin-top:-3px;border-bottom:1px solid var(--line);
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+  .mover-row.has-why{border-bottom:none;}
+  .mover-why .rare{color:var(--amber);font-weight:600;}
+  html[lang="he"] .today-event, html[lang="he"] .mover-why{direction:rtl;text-align:right;}
   .today-intro{font-size:13px;line-height:1.6;color:var(--text-dim);margin-top:10px;padding-top:10px;border-top:1px solid var(--line);}
   .intro-tour{background:none;border:0;padding:0;color:var(--amber);font:inherit;font-weight:700;text-decoration:underline;cursor:pointer;}
   /* v54: what is new since the last visit, and one offer (sign in / install / notifications) from the second visit on */
@@ -1210,6 +1221,7 @@ window.addEventListener('load', function(){
     <button class="today-more" id="today-more" onclick="openDailyDigest()">לסיכום המלא</button>
   </div>
   <div class="today-text" id="today-text"></div>
+  <div class="today-event" id="today-event"></div>
   <div class="hx-regime" id="hx-regime"></div>
   <div class="since-line" id="since-line"></div>
   <div class="home-nudge" id="home-nudge"></div>
@@ -1838,17 +1850,50 @@ function renderMovers(){
 
   const preNote = marketMovers[0].session === 'pre'
     ? `<div class="movers-note">${lang==='en' ? 'Before the open · change vs. yesterday\'s close · companies above $2B' : 'לפני הפתיחה · שינוי מול סגירת אתמול · חברות מעל 2 מיליארד דולר'}</div>` : '';
+  loadMoveReasons();
   el.innerHTML = preNote + marketMovers.map((m)=>{
     const pctClass = m.change_pct>=0 ? 'up' : 'down';
     const pctSign = m.change_pct>=0 ? '+' : '';
+    const why = moverWhyHtml(m);
     return `
-      <div class="mover-row" onclick="showTickerDrawer('${m.ticker}')">
-        <div class="mover-ticker">${m.ticker}</div>
+      <div class="mover-row${why ? ' has-why' : ''}" onclick="showTickerDrawer('${escH(m.ticker)}')">
+        <div class="mover-ticker">${escH(m.ticker)}</div>
         <div class="mover-trigger">${escH(m.name||'')}</div>
         <div class="mover-pct ${pctClass}">${pctSign}${m.change_pct.toFixed(1)}%</div>
-      </div>
+      </div>${why}
     `;
   }).join("");
+}
+
+// ---- v61 (owner, 17.11.2026): is the move big FOR THIS STOCK (its ATR), and what is in its news today ----
+// Server: /api/move-reasons (no database; rebuilt every 30 minutes at most). The headline is shown as "in the news",
+// not as the cause. Asked again at most every 10 minutes.
+var moveReasons = null, _moveReasonsAt = 0, _moveReasonsBusy = false;
+function loadMoveReasons(){
+  if(_moveReasonsBusy || Date.now() - _moveReasonsAt < 10 * 60000) return;
+  _moveReasonsBusy = true;
+  _moveReasonsAt = Date.now();
+  fetchWithTimeout(`${API_BASE}/api/move-reasons`, 45000).then(r => r.ok ? r.json() : null).then(d => {
+    if(d && d.items){ moveReasons = d.items; if(moversPanelMode !== 'watchlist' && chartMode !== 'sectors') renderMovers(); }
+  }).catch(() => { _moveReasonsAt = Date.now() - 8 * 60000; }).finally(() => { _moveReasonsBusy = false; });
+}
+function moverWhyHtml(m){
+  const r = moveReasons && moveReasons[m.ticker];
+  if(!r) return '';
+  const en = lang === 'en';
+  const parts = [];
+  if(r.ratio != null && r.atr_pct){
+    const atr = `ATR ${Number(r.atr_pct).toFixed(1)}%`;
+    if(r.size === 'normal') parts.push(en ? `Within its usual daily range (${atr})` : `בטווח התנודה הרגיל שלה (${atr})`);
+    else if(r.size === 'large') parts.push(en ? `${r.ratio}× its usual daily range (${atr})` : `פי ${r.ratio} מהתנודה הרגילה שלה (${atr})`);
+    else parts.push(`<span class="rare">${en ? `Unusual: ${r.ratio}× its usual daily range` : `תנודה חריגה: פי ${r.ratio} מהרגיל`}</span> (${atr})`);
+  }
+  if(r.news){
+    const title = en ? r.news.title_en : (r.news.title_he || r.news.title_en);
+    parts.push(`${en ? 'In the news' : 'בחדשות'}: ${escH(title)}${r.news.publisher ? ` <span style="opacity:.75">· ${escH(r.news.publisher)}</span>` : ''}`);
+  }
+  // tabindex -1: the row above is already the keyboard stop for this stock
+  return parts.length ? `<div class="mover-why" tabindex="-1" onclick="showTickerDrawer('${escH(m.ticker)}')">${parts.join(' · ')}</div>` : '';
 }
 
 let newsSearchQuery = '';
@@ -2554,6 +2599,23 @@ async function rerenderDeepDiveForLang(){
   renderDdFunds();                              // v25
 }
 
+// v61 (owner's request): the stock's usual daily range — ATR(14) of the completed sessions, in % and in dollars, and
+// today's move measured in it ("1.8× its usual range")
+function atrCard(q){
+  const en = lang === 'en';
+  const title = en ? 'ATR (14 days)' : 'ATR (14 יום)';
+  const a = Number(q && q.atr_pct);
+  if(!(a > 0)) return `<div class="dd-stat-card"><div class="k">${title}</div><div class="v">—</div></div>`;
+  const usd = q.price ? ` · $${(q.price * a / 100).toFixed(2)}` : '';
+  let sub = en ? 'a usual day' : 'תנועה יומית רגילה';
+  if(q.change_pct != null){
+    const ratio = Math.abs(Number(q.change_pct)) / a;
+    sub = ratio < 1.5 ? (en ? 'today: a usual move' : 'היום: תנועה רגילה')
+        : (en ? `today: ${ratio.toFixed(1)}× the usual` : `היום: פי ${ratio.toFixed(1)} מהרגיל`);
+  }
+  return `<div class="dd-stat-card" title="${en ? 'Average True Range: how much the stock usually moves in a day' : 'ממוצע הטווח האמיתי: כמה המניה זזה בדרך כלל ביום'}"><div class="k">${title}</div><div class="v">${a.toFixed(1)}%<span style="font-size:12px;opacity:.7;">${usd}</span></div><div class="s">${sub}</div></div>`;
+}
+
 // v35e (owner's request): when the next report is, and how many trading days until it. A date Yahoo only estimated says so.
 function nextReportCard(r){
   const en = lang === 'en';
@@ -2778,6 +2840,7 @@ function renderDeepDive(quote, sector, signals, news){
       <div class="dd-stat-card"><div class="k">${t?'Market Cap':'שווי שוק'}</div><div class="v" id="dd-mcap-val">${formatMarketCap(quote.market_cap)}</div></div>
       <div class="dd-stat-card" id="dd-pe-card"></div>
       <div class="dd-stat-card"><div class="k">${t?'Avg Vol 20d':'ווליום ממוצע'}</div><div class="v">${formatMarketCap(quote.avg_volume_20d)}</div></div>
+      ${atrCard(quote)}
       ${nextReportCard(quote.next_report)}
     </div>
   `;
@@ -4351,7 +4414,7 @@ function econCardHtml(e, isNext){
   const cd = (isNext && e.status==='upcoming') ? ` · <b style="color:var(--amber)">${econCountdown(e.datetime_utc)}</b>` : '';
   const chips = (e.affects || []).map(a => `<span class="econ-chip">${en ? a.label_en : a.label_he}</span>`).join('');
   const open = econOpen[e.id] !== undefined ? econOpen[e.id] : (econView === 'month');
-  const explain = open ? `<div class="econ-explain"><b>${en?'What is it?':'מה זה?'}</b> ${en ? e.what_en : e.what_he}</div>` : '';
+  const explain = open ? `<div class="econ-explain"><b>${en?'What is it?':'מה זה?'}</b> ${en ? e.what_en : e.what_he}</div>${eventHistoryHtml(e.type)}` : '';
   return `<div class="econ-card ${isNext?'next':''} ${done?'done':''}" onclick="toggleEconCard('${e.id}')">
     <div class="econ-card-top">
       <div>
@@ -4371,6 +4434,72 @@ function econCardHtml(e, isNext){
     ${explain}
   </div>`;
 }
+
+// ---- v61 (owner, 17.11.2026): "what happened the previous times" (server: /api/event-history, no database) ----
+// For CPI, the jobs report, PPI, PCE and the Fed's decision: how much the S&P 500 moved on the day of the earlier
+// releases, next to an ordinary day. A fact about the past, not a forecast. Kept in this browser for the day.
+var eventHistory = null, _evHistLoading = false;
+function loadEventHistory(){
+  if(eventHistory || _evHistLoading) return;
+  const today = econEtDateStr(new Date());
+  try {
+    const c = JSON.parse(localStorage.getItem('swing_evhist') || 'null');
+    if(c && c.day === today && c.data && c.data.kinds){ eventHistory = c.data; return; }
+  } catch(e){}
+  _evHistLoading = true;
+  fetchWithTimeout(`${API_BASE}/api/event-history`, 30000).then(r => r.ok ? r.json() : null).then(d => {
+    if(!d || !d.kinds) return;
+    eventHistory = d;
+    try { localStorage.setItem('swing_evhist', JSON.stringify({day: today, data: d})); } catch(e){}
+    renderEconActive();
+    renderTodayEvent();
+  }).catch(() => {}).finally(() => { _evHistLoading = false; });
+}
+function _evHistKind(type){ return eventHistory && eventHistory.types ? eventHistory.types[type] : null; }
+const _evPct = v => _sgn(v) + '%';     // the existing _sgn (regime section): sign + 1 decimal
+// one sentence: "The last 24 CPI releases: the S&P 500 moved 0.9% on average that day (an ordinary day: 0.6%); up 14, down 10."
+function eventHistorySentence(type, name){
+  const k = _evHistKind(type), s = k && eventHistory.kinds[k];
+  if(!s) return '';
+  const en = lang === 'en';
+  return en
+    ? `The last ${s.n} times (${name}): the S&P 500 moved <b>${s.avg_abs.toFixed(2)}%</b> on average that day (up or down), vs ${s.normal_abs.toFixed(2)}% on an ordinary day; up ${s.up}, down ${s.down}.`
+    : `ב-${s.n} הפעמים הקודמות (${name}): S&P 500 זז ביום הפרסום <b>${s.avg_abs.toFixed(2)}%</b> בממוצע (למעלה או למטה), מול ${s.normal_abs.toFixed(2)}% ביום רגיל; עלה ${s.up} פעמים, ירד ${s.down}.`;
+}
+function eventHistoryHtml(type){
+  if(!eventHistory){ loadEventHistory(); return ''; }
+  const k = _evHistKind(type), s = k && eventHistory.kinds[k];
+  if(!s) return '';
+  const en = lang === 'en';
+  const ddmm = iso => { const p = iso.split('-'); return `${Number(p[2])}.${Number(p[1])}`; };
+  const last = s.last.map(([d, v]) => `<span dir="ltr" style="unicode-bidi:isolate;">${_evPct(v)}</span> (${ddmm(d)})`).join(', ');
+  const name = econShort({type: type});
+  return `<div class="econ-hist"><b>${en ? 'The previous times' : 'מה קרה בפעמים הקודמות'}</b><br>${eventHistorySentence(type, escH(name))}
+    <br><span class="dim">${en ? 'Latest' : 'לאחרונה'}: ${last}. ${en ? `The biggest: <span dir="ltr">${_evPct(s.biggest)}</span>.` : `הגדולה ביותר: <span dir="ltr">${_evPct(s.biggest)}</span>.`}
+    ${en ? 'Close vs the previous close. The past, not a forecast.' : 'סגירה מול הסגירה הקודמת. עבר, לא תחזית.'}</span></div>`;
+}
+// home: today's or tomorrow's big release that has a history, as one line under "The market today"
+async function renderTodayEvent(){
+  const el = document.getElementById('today-event');
+  if(!el) return;
+  if(!eventHistory){ loadEventHistory(); el.innerHTML = ''; return; }
+  let data = lastEconData;
+  if(!data){ const c = econCacheGet('list'); data = c && c.data; }
+  if(!data && !_todayEventAsked){
+    _todayEventAsked = true;
+    try { const r = await fetchWithTimeout(`${API_BASE}/api/econ-calendar`, 15000); if(r.ok){ data = await r.json(); econCacheSet('list', data); } } catch(e){}
+  }
+  const en = lang === 'en';
+  const ev = ((data && data.events) || []).filter(e => e.impact === 'high' && _evHistKind(e.type) && e.status === 'upcoming')
+    .map(e => ({e, diff: econDayDiff(e.date_et)})).filter(x => x.diff === 0 || x.diff === 1)
+    .sort((a, b) => Date.parse(a.e.datetime_utc) - Date.parse(b.e.datetime_utc))[0];
+  if(!ev){ el.innerHTML = ''; return; }
+  const name = escH(econShort(ev.e));
+  const when = ev.diff === 0 ? (en ? 'Today' : 'היום') : (en ? 'Tomorrow' : 'מחר');
+  el.innerHTML = `<b>${when}: ${name}.</b> ${eventHistorySentence(ev.e.type, name)}`;
+  el.onclick = () => { setPage('pulse'); setPulseView('events'); };
+}
+var _todayEventAsked = false;
 
 function toggleEconCard(id){
   const cur = econOpen[id] !== undefined ? econOpen[id] : (econView === 'month');
@@ -8749,6 +8878,7 @@ function renderToday(){
   document.getElementById('today-sub').textContent = notes.join(' · ');
   document.getElementById('today-text').textContent = text;
   document.getElementById('today-more').textContent = en ? 'Full summary' : 'לסיכום המלא';
+  renderTodayEvent();                 // v61
   // v52: what the site is, and the short guide as an offer. The guide used to open by itself on the first visit, on top
   // of the page and together with the statistics banner. Shown on the first 3 visits, until the guide was taken or skipped.
   if(_introFirstVisit === null){

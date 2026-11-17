@@ -559,6 +559,64 @@ def test_line_alerts_follow_the_line():
     assert "$99.40" in sent[0][0]["body"]                     # the average shown = (400 + 97) / 5
 
 
+def test_release_history_dates_are_trading_days(api):
+    """v61: every copied release day is a weekday (a typo would put the S&P 500's move of a wrong day next to the
+    release), the static schedules join the history once their day passes, nothing twice. A market holiday is allowed
+    only where it really happened — the jobs report of Good Friday 3.4.2026 (no session: _event_stats skips it)."""
+    import datetime as _dt
+    import econ_calendar as ec
+    on_holiday = []
+    for kind, days in ec.RELEASE_HISTORY.items():
+        assert days == sorted(days) and len(set(days)) == len(days), kind
+        for s in days:
+            d = _dt.date.fromisoformat(s)
+            assert d.weekday() < 5, (kind, s)
+            if d in api._nyse_holidays(d.year):
+                on_holiday.append((kind, s))
+    assert on_holiday == [("nfp", "2026-04-03")]
+    cpi = ec.past_release_dates("cpi", _dt.date(2026, 12, 31))
+    assert _dt.date(2026, 12, 10) in cpi and len(cpi) == len(set(cpi)) and cpi == sorted(cpi)   # from BLS_STATIC
+    assert _dt.date(2026, 12, 10) not in ec.past_release_dates("cpi", _dt.date(2026, 11, 17))
+    assert _dt.date(2026, 12, 9) in ec.past_release_dates("fomc", _dt.date(2026, 12, 9))         # FOMC_DECISIONS
+    assert set(ec.HISTORY_KIND.values()) == set(ec.RELEASE_HISTORY)
+    for t in ec.HISTORY_KIND:
+        assert t in ec.CATALOG
+
+
+def test_event_history_numbers(api):
+    """v61: the S&P 500 on release days vs an ordinary day: close vs the previous close, the last N releases."""
+    import datetime as _dt
+    days = pd.bdate_range("2026-01-01", periods=80)
+    closes = pd.Series(100.0, index=[d.date() for d in days])
+    # ordinary days: +0.5% / -0.5% alternately; release days (every 8th): +2% / -1%
+    v, rel = 100.0, []
+    for i, d in enumerate(closes.index):
+        if i and i % 8 == 0:
+            v *= 1.02 if (i // 8) % 2 else 0.99
+            rel.append(d)
+        elif i:
+            v *= 1.005 if i % 2 else 0.995
+        closes[d] = v
+    s = api._event_stats(closes, rel)
+    assert s["n"] == 9 and s["up"] == 5 and s["down"] == 4
+    assert abs(s["avg_abs"] - (5 * 2 + 4 * 1) / 9) < 0.02 and abs(s["normal_abs"] - 0.5) < 0.01
+    assert s["last"][0][0] == rel[-1].isoformat() and len(s["last"]) == 3
+    assert api._event_stats(closes, rel[:7]) is None                                   # too few
+    assert api._event_stats(closes, rel + [_dt.date(2030, 1, 1)])["n"] == 9           # a day with no close is skipped
+
+
+def test_move_size_against_atr(api):
+    """v61: a move measured in the stock's own ATR, from the sessions before today (today's bar is still running)."""
+    import datetime as _dt
+    assert [api.move_size_word(r) for r in (None, 0.4, 1.49, 1.5, 2.9, 3.0)] == [None, "normal", "normal", "large", "large", "rare"]
+    idx = pd.bdate_range("2026-09-01", periods=40)
+    h = pd.DataFrame({"High": 102.0, "Low": 98.0, "Close": 100.0}, index=idx)
+    h.loc[idx[-1], ["High", "Low"]] = [130.0, 90.0]                 # today: a huge running bar
+    today = idx[-1].date()
+    assert api._atr_pct_before_today(h, today) == 4.0               # the range of the earlier days only
+    assert api._atr_pct_before_today(h, today + _dt.timedelta(days=1)) > 4.0
+
+
 def test_line_alert_input_is_checked(api):
     """v60: what the site sends for a line alert is checked before it is saved."""
     import pytest as _pt

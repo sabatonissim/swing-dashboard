@@ -2173,10 +2173,10 @@ _NEWS_ALIASES = {"GOOGL": ["Google"], "GOOG": ["Google"], "META": ["Facebook", "
 _NEWS_QUOTE_PAGE_RE = re.compile(r"stock price,? (news|and chart|quote)|quote & history|price and chart|META_TITLE", re.I)
 
 
-def _news_company_name(ticker: str) -> Optional[str]:
+def _news_company_name(ticker: str, hint: Optional[str] = None) -> Optional[str]:
     """The company's name without "Inc."/"Corporation"/"(Class A)": S&P 500 list first (never waits for its download),
-    then names the scanner saved for other stocks."""
-    name = ((_sp500_map_nowait() or {}).get(ticker) or {}).get("name")
+    then a name the caller already has (v61: the movers list's), then names the scanner saved for other stocks."""
+    name = ((_sp500_map_nowait() or {}).get(ticker) or {}).get("name") or hint
     if not name:
         try:
             with db_cursor() as (conn, cur):
@@ -2226,7 +2226,7 @@ def _news_ts(published) -> float:
     return 0.0
 
 
-def _stock_news_raw(ticker: str) -> list:
+def _stock_news_raw(ticker: str, name_hint: Optional[str] = None) -> list:
     """English headlines about one stock (title, link, publisher, published), newest first — only headlines that name
     the company or ticker, promo listicles and repeats removed. [] when every source failed."""
     global _yf_news_blocked_until
@@ -2234,7 +2234,7 @@ def _stock_news_raw(ticker: str) -> list:
     if hit and time.time() - hit[0] < _STOCK_NEWS_TTL:
         return hit[1]
 
-    name = _news_company_name(ticker)
+    name = _news_company_name(ticker, name_hint)
     about = _news_relevance_re(ticker, name)
 
     def clean(items):
@@ -5108,6 +5108,8 @@ def lookup_stock(ticker: str):
         "change_pct": change_pct,
         "market_cap": market_cap,
         "avg_volume_20d": round(float(hist["Volume"].tail(20).mean()), 0) if len(hist) >= 20 else None,
+        # v61 (owner): the stock's normal daily range, ATR(14) of the completed sessions — the stock page's cube
+        "atr_pct": _atr_pct_before_today(hist, dt.now(_EM_NY).date()),
         # v34: with .info blocked this was the highest/lowest CLOSE of the last SIX months, shown as the 52-week range on
         # every stock page (INTC: "low" $59.29, really $32.89). Now the intraday high/low of the full year, like Yahoo's.
         "week52_high": info.get("fiftyTwoWeekHigh") or round(float(hist["High"].max()), 2),
@@ -6093,6 +6095,108 @@ def _fetch_fallback_movers_from_db(limit: int) -> List[dict]:
         return []
 
 
+# ---- v61 (owner, 17.11.2026): "why is the stock moving?" + "is it a lot FOR THIS STOCK?" ----
+# For the movers list as it is now (the list's own copy, no new screener call): each stock's ATR (14 days, completed
+# sessions only) and today's move in ATRs — a 6% move is ordinary for a stock that moves 5% a day and rare for one that
+# moves 1%. For the biggest moves (from MOVE_NEWS_MIN_PCT, at most MOVE_NEWS_MAX stocks) the newest headline of the last
+# MOVE_NEWS_MAX_AGE_H hours that names the company (the stock page's own news source). Shown as "in the news", never as
+# the cause: the headline is a fact, the link between them is not. No database. Rebuilt every 30 minutes at most
+# (3 hours outside the trading day): ~8 Google News searches per rebuild.
+MOVE_NEWS_MIN_PCT = 4.0
+MOVE_NEWS_MAX = 8
+MOVE_NEWS_MAX_AGE_H = 30
+MOVE_REASONS_TTL = 30 * 60
+_move_reasons_cache = {"ts": 0.0, "data": None, "key": None}
+_move_reasons_lock = threading.Lock()
+
+
+def _atr_pct_before_today(hist: pd.DataFrame, today) -> Optional[float]:
+    """ATR % of the sessions before `today` (a running session is not a normal day yet)."""
+    if hist is None or hist.empty:
+        return None
+    h = hist[[d.date() < today for d in hist.index]] if len(hist) else hist
+    return _compute_atr_pct(h.dropna(subset=["High", "Low", "Close"]))
+
+
+def move_size_word(ratio: Optional[float]) -> Optional[str]:
+    """normal (< 1.5 ATR), large (1.5-3), rare (3+)."""
+    if ratio is None:
+        return None
+    return "normal" if ratio < 1.5 else "large" if ratio < 3 else "rare"
+
+
+def _build_move_reasons(movers: list) -> dict:
+    today = dt.now(_EM_NY).date()
+    tickers = [m["ticker"] for m in movers if m.get("ticker") and m.get("change_pct") is not None][:20]
+    out = {t: {"atr_pct": None, "ratio": None, "size": None, "news": None} for t in tickers}
+    if not tickers:
+        return out
+    try:
+        df = yf.download(tickers, period="3mo", interval="1d", group_by="ticker", auto_adjust=False,
+                         progress=False, threads=False)
+        for m in movers:
+            t = m.get("ticker")
+            if t not in out:
+                continue
+            try:
+                h = df[t] if isinstance(df.columns, pd.MultiIndex) else df
+            except KeyError:
+                continue
+            atr = _atr_pct_before_today(h, today)
+            if atr:
+                ratio = round(abs(float(m["change_pct"])) / atr, 1)
+                out[t].update(atr_pct=atr, ratio=ratio, size=move_size_word(ratio))
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] move-reasons: ATR download failed: {type(e).__name__}: {e}")
+
+    big = [m for m in movers if m.get("ticker") in out and abs(float(m.get("change_pct") or 0)) >= MOVE_NEWS_MIN_PCT][:MOVE_NEWS_MAX]
+    cutoff = time.time() - MOVE_NEWS_MAX_AGE_H * 3600
+
+    def headline(m):
+        try:
+            for it in _stock_news_raw(m["ticker"], name_hint=m.get("name")):
+                if _news_ts(it.get("published")) >= cutoff:
+                    return m["ticker"], it
+        except Exception as e:  # noqa: BLE001
+            print(f"[warn] move-reasons: news for {m['ticker']}: {type(e).__name__}: {e}")
+        return m["ticker"], None
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for t, it in ex.map(headline, big):
+            if it:
+                he = _translate_headline_free(it["title"])
+                out[t]["news"] = {"title_en": it["title"], "title_he": he if he and he != it["title"] else None,
+                                  "publisher": it.get("publisher"), "link": it.get("link"), "site": it.get("site"),
+                                  "published": it.get("published")}
+    return out
+
+
+def _move_reasons_ttl() -> int:
+    now = dt.now(_EM_NY)
+    trading = now.weekday() < 5 and 4 <= now.hour < 20        # pre-market to after-hours
+    return MOVE_REASONS_TTL if trading else 3 * 3600
+
+
+@app.get("/api/move-reasons")
+def move_reasons():
+    """v61: ATR context + a recent headline for the stocks of the movers list (see _build_move_reasons)."""
+    movers = _movers_cache.get("data") or []
+    key = tuple((m.get("ticker"), m.get("session")) for m in movers[:20])
+    c = _move_reasons_cache
+    if c["data"] is not None and time.time() - c["ts"] < _move_reasons_ttl() and (c["key"] == key or not movers):
+        return c["data"]
+    if not movers:
+        return {"items": {}, "as_of": None}
+    with _move_reasons_lock:
+        if c["data"] is not None and c["key"] == key and time.time() - c["ts"] < _move_reasons_ttl():
+            return c["data"]
+        if c["data"] is not None and time.time() - c["ts"] < 5 * 60:
+            return c["data"]                       # the list changed a moment ago: at most one rebuild per 5 minutes
+        data = {"items": _build_move_reasons(movers), "as_of": dt.now(timezone.utc).isoformat()}
+        c.update(ts=time.time(), data=data, key=key)
+        return data
+
+
 @app.get("/api/market-movers")
 @_cached_answer(ttl_sec=MOVERS_CACHE_TTL_SEC, max_keys=8)      # v34: also one Yahoo fetch at a time when the copy runs out
 def market_movers(limit: int = Query(default=15, ge=1, le=50)):
@@ -6354,6 +6458,79 @@ def get_econ_calendar(days: int = Query(21, ge=1, le=60), limit: int = Query(14,
     except Exception as e:
         print(f"[error] econ-calendar failed: {e}")
         return {"events": [], "meta": {"error": "calendar temporarily unavailable"}}
+
+
+# ---- v61 (owner, 17.11.2026): "what happened the previous times" — the S&P 500 on the day of each past release ----
+# A fact, not a forecast: for CPI / jobs report / PPI / PCE / Fed decision, how much the S&P 500 moved on the release day
+# (close vs the previous close: the releases come out at 08:30 before the open, the Fed at 14:00 inside the session), next
+# to an ordinary day of the same period. The release days: econ_calendar.RELEASE_HISTORY (official pages) + the static
+# schedules. The index: Yahoo's daily history (works from Render). Built once a day in memory: no database at all.
+EVENT_HISTORY_MAX = 24          # the last 24 releases (about two years of a monthly one)
+EVENT_HISTORY_MIN = 8           # fewer = nothing is shown
+_event_history_cache = {"day": None, "data": None, "ts": 0.0}
+_event_history_lock = threading.Lock()
+
+
+def _event_stats(closes: pd.Series, days: list, max_n: int = EVENT_HISTORY_MAX) -> Optional[dict]:
+    """closes = the index's daily closes (date index, completed sessions only); days = release dates (date objects).
+    -> {n, avg_abs, normal_abs, up, down, avg, last: [[date, pct] x3]} or None when too few releases have a move."""
+    pct = closes.pct_change() * 100
+    by_day = {d.date() if hasattr(d, "date") else d: v for d, v in pct.items()}
+    moves = [(d, by_day[d]) for d in days if d in by_day and pd.notna(by_day[d])][-max_n:]
+    if len(moves) < EVENT_HISTORY_MIN:
+        return None
+    start = moves[0][0]
+    event_days = set(days)
+    normal = [abs(v) for d, v in by_day.items() if d >= start and d not in event_days and pd.notna(v)]
+    if len(normal) < 20:
+        return None
+    vals = [v for _, v in moves]
+    return {"n": len(moves), "since": start.isoformat(),
+            "avg_abs": round(sum(abs(v) for v in vals) / len(vals), 2),
+            "normal_abs": round(sum(normal) / len(normal), 2),
+            "up": sum(1 for v in vals if v > 0), "down": sum(1 for v in vals if v < 0),
+            "avg": round(sum(vals) / len(vals), 2),
+            "biggest": round(max(vals, key=abs), 2),
+            "last": [[d.isoformat(), round(v, 2)] for d, v in reversed(moves[-3:])]}
+
+
+def _build_event_history() -> dict:
+    hist = yf.Ticker("^GSPC").history(period="3y", interval="1d", auto_adjust=False)
+    closes = hist["Close"].dropna()
+    closes.index = [d.date() for d in closes.index]
+    now_et = dt.now(_EM_NY)
+    # today's bar is not a closed day before the close (the same rule as the earnings moves)
+    if len(closes) and closes.index[-1] == now_et.date() and (now_et.hour, now_et.minute) < (16, 5):
+        closes = closes.iloc[:-1]
+    until = closes.index[-1] if len(closes) else now_et.date()
+    out = {}
+    for kind in ("cpi", "nfp", "ppi", "pce", "fomc"):
+        s = _event_stats(closes, econ_calendar.past_release_dates(kind, until))
+        if s:
+            out[kind] = s
+    return {"index": "S&P 500", "as_of": until.isoformat(), "kinds": out, "types": econ_calendar.HISTORY_KIND}
+
+
+@app.get("/api/event-history")
+def event_history():
+    """v61: per release kind, the S&P 500's move on the release day vs an ordinary day (see _event_stats). No database."""
+    today = dt.now(_EM_NY).date().isoformat()
+    c = _event_history_cache
+    fresh = c["data"] is not None and c["day"] == today and (time.time() - c["ts"] < 3 * 3600)
+    if fresh:
+        return c["data"]
+    with _event_history_lock:
+        if c["data"] is not None and c["day"] == today and (time.time() - c["ts"] < 3 * 3600):
+            return c["data"]
+        try:
+            data = _build_event_history()
+            c.update(day=today, data=data, ts=time.time())
+        except Exception as e:  # noqa: BLE001
+            print(f"[warn] event-history: {type(e).__name__}: {e}")
+            if c["data"] is None:
+                raise HTTPException(status_code=503, detail="event history unavailable")
+            c["ts"] = time.time() - 2 * 3600        # try again in an hour
+    return c["data"]
 
 
 @app.get("/api/econ-calendar/debug", dependencies=[Depends(require_admin)])

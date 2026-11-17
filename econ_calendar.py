@@ -219,6 +219,55 @@ FOMC_DECISIONS = [
     ("2027-07-28", True), ("2027-09-15", True), ("2027-10-27", True), ("2027-12-08", True),
 ]
 
+# v61 (owner, 17.11.2026: "what happened the previous times"): the days these releases came out, for the S&P 500's move
+# on each of them (api_server /api/event-history). Copied 17.11.2026 from the official pages: BLS's archived news
+# releases (bls.gov/bls/news-release/cpi.htm, empsit.htm, ppi.htm — the date is in each release's file name), the Fed's
+# meeting calendar (federalreserve.gov/monetarypolicy/fomccalendars.htm, the statement day = the meeting's 2nd day; the
+# notation vote of 22.8.2025 is not a meeting) and BEA's 2026 schedule (Personal Income and Outlays = PCE). The 2025
+# shutdown shows: no October 2025 CPI, the September jobs report on 20.11.2025, PPI twice in January 2026. The jobs report
+# of 3.4.2026 came out on Good Friday, with the market closed: it has no S&P 500 move and is skipped (a test knows it).
+# Later releases come in by themselves from BLS_STATIC / BEA_STATIC / FOMC_DECISIONS once their day has passed.
+# Yearly upkeep (with the *_STATIC tables): nothing to add here, the static tables carry the new year.
+RELEASE_HISTORY = {
+    "cpi": ["2024-01-11", "2024-02-13", "2024-03-12", "2024-04-10", "2024-05-15", "2024-06-12", "2024-07-11",
+            "2024-08-14", "2024-09-11", "2024-10-10", "2024-11-13", "2024-12-11", "2025-01-15", "2025-02-12",
+            "2025-03-12", "2025-04-10", "2025-05-13", "2025-06-11", "2025-07-15", "2025-08-12", "2025-09-11",
+            "2025-10-24", "2025-12-18", "2026-01-13", "2026-02-13", "2026-03-11", "2026-04-10", "2026-05-12",
+            "2026-06-10", "2026-07-14", "2026-08-12", "2026-09-11", "2026-10-14", "2026-11-10"],
+    "nfp": ["2024-01-05", "2024-02-02", "2024-03-08", "2024-04-05", "2024-05-03", "2024-06-07", "2024-07-05",
+            "2024-08-02", "2024-09-06", "2024-10-04", "2024-11-01", "2024-12-06", "2025-01-10", "2025-02-07",
+            "2025-03-07", "2025-04-04", "2025-05-02", "2025-06-06", "2025-07-03", "2025-08-01", "2025-09-05",
+            "2025-11-20", "2025-12-16", "2026-01-09", "2026-02-11", "2026-03-06", "2026-04-03", "2026-05-08",
+            "2026-06-05", "2026-07-02", "2026-08-07", "2026-09-04", "2026-10-02", "2026-11-06"],
+    "ppi": ["2024-01-12", "2024-02-16", "2024-03-14", "2024-04-11", "2024-05-14", "2024-06-13", "2024-07-12",
+            "2024-08-13", "2024-09-12", "2024-10-11", "2024-11-14", "2024-12-12", "2025-01-14", "2025-02-13",
+            "2025-03-13", "2025-04-11", "2025-05-15", "2025-06-12", "2025-07-16", "2025-08-14", "2025-09-10",
+            "2025-11-25", "2026-01-14", "2026-01-30", "2026-02-27", "2026-03-18", "2026-04-14", "2026-05-13",
+            "2026-06-11", "2026-07-15", "2026-08-13", "2026-09-10", "2026-10-15", "2026-11-13"],
+    "fomc": ["2024-01-31", "2024-03-20", "2024-05-01", "2024-06-12", "2024-07-31", "2024-09-18", "2024-11-07",
+             "2024-12-18", "2025-01-29", "2025-03-19", "2025-05-07", "2025-06-18", "2025-07-30", "2025-09-17",
+             "2025-10-29", "2025-12-10", "2026-01-28", "2026-03-18", "2026-04-29", "2026-06-17", "2026-07-29",
+             "2026-09-16", "2026-10-28"],
+    "pce": ["2026-01-22", "2026-02-20", "2026-03-13", "2026-04-09", "2026-04-30", "2026-05-28", "2026-06-25",
+            "2026-07-30", "2026-08-26", "2026-09-30", "2026-10-29"],
+}
+# the calendar's event types -> the release they come out in (core CPI is in the CPI release, unemployment in the jobs report)
+HISTORY_KIND = {"cpi": "cpi", "core_cpi": "cpi", "nfp": "nfp", "unemployment": "nfp", "ppi": "ppi",
+                "pce": "pce", "core_pce": "pce", "fomc": "fomc"}
+
+
+def past_release_dates(kind, until):
+    """The release days of `kind` up to and including `until` (a date), oldest first: the copied history + the days of
+    the static schedules that have passed since."""
+    days = set(RELEASE_HISTORY.get(kind, []))
+    if kind == "fomc":
+        days |= {d for d, _ in FOMC_DECISIONS}
+    elif kind == "pce":
+        days |= {d for d, _ in BEA_STATIC.get("pce", [])}
+    else:
+        days |= {d for d, _ in BLS_STATIC.get(kind, [])}
+    return sorted(d for d in (date.fromisoformat(s) for s in days) if d <= until)
+
 # --------------------------------------------------------------------------
 # small helpers: state, cache, provider health
 # --------------------------------------------------------------------------
