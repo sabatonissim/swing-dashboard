@@ -465,6 +465,95 @@ def test_touch_alert_range():
     assert lo <= 95.5 <= hi and not (lo <= 100 <= hi)
 
 
+def test_line_alerts_follow_the_line():
+    """v60 (owner, 17.11.2026): an alert on a line of the chart. A trend line moves one step per session of the stock
+    (a holiday is not a step), touch = a 5-minute bar met the line of its own day, or the price jumped over it; a
+    zone counts from its bottom to its top; above / below of a zone = over its top / under its bottom."""
+    import datetime as _dt
+    import push_alerts
+    D = _dt.date
+    ses = [D(2026, 11, 20), D(2026, 11, 23), D(2026, 11, 24), D(2026, 11, 25), D(2026, 11, 27)]   # 26.11 = Thanksgiving
+    assert push_alerts.line_value(100.0, -1.0, D(2026, 11, 20), D(2026, 11, 20), ses) == 100.0
+    assert push_alerts.line_value(100.0, -1.0, D(2026, 11, 20), D(2026, 11, 27), ses) == 96.0      # 4 sessions, not 5
+    assert push_alerts.line_value(100.0, -1.0, D(2026, 11, 20), D(2026, 11, 30), ses) == 95.0      # a session just opened
+    assert push_alerts.line_value(100.0, -1.0, D(2026, 11, 1), D(2026, 11, 27), ses) is None       # anchor before the bars
+
+    utc, five = _dt.timezone.utc, _dt.timedelta(minutes=5)
+    t0 = _dt.datetime(2026, 11, 27, 15, 0, tzinfo=utc)                  # 10:00 New York, on 27.11 (line = 96)
+    level_of = lambda st: (push_alerts.line_value(100.0, -1.0, D(2026, 11, 20), push_alerts._et_date(st), ses),) * 2
+    above = [(t0, 97.0, 98.0, five), (t0 + five, 96.5, 97.5, five)]
+    assert push_alerts.line_touched(above, t0 - five, level_of) is False
+    assert push_alerts.line_touched(above + [(t0 + 2 * five, 95.5, 96.4, five)], t0 - five, level_of) is True
+    assert push_alerts.line_touched(above + [(t0 + 2 * five, 94.0, 95.0, five)], t0 - five, level_of) is True   # gap
+    assert push_alerts.line_touched(above, t0 + _dt.timedelta(hours=1), level_of) is None                      # no bars yet
+    zone = lambda st: (90.0, 92.0)
+    assert push_alerts.line_touched([(t0, 92.5, 93.0, five)], t0 - five, zone) is False
+    assert push_alerts.line_touched([(t0, 91.5, 93.0, five)], t0 - five, zone) is True
+
+    class Cur:
+        def __init__(self, rows):
+            self.rows, self.sql = rows, []
+
+        def execute(self, q, params=None):
+            self.sql.append((" ".join(q.split()), params))
+
+        def fetchall(self):
+            return self.rows
+
+        def close(self):
+            pass
+
+    class Conn:
+        def __init__(self, rows):
+            self.c = Cur(rows)
+
+        def cursor(self):
+            return self.c
+
+        def commit(self):
+            pass
+
+    created = t0 - _dt.timedelta(days=1)
+    rows = [  # id, user, ticker, direction, price, created, kind, anchor, slope, lo, hi, he, en
+        (1, 7, "KO", "below", 100.0, created, "trend", D(2026, 11, 20), -1.0, None, None, "תמיכה עולה", "Rising support"),
+        (2, 7, "KO", "above", 92.0, created, "zone", None, None, 90.0, 92.0, "אזור", "Zone"),
+        (3, 7, "KO", "touch", 100.0, created, "trend", D(2026, 11, 20), -1.0, None, None, "קו", "Line"),
+        (4, 7, "KO", "above", 97.0, created, None, None, None, None, None, "התנגדות אופקית", "Horizontal resistance"),
+    ]
+    sent = []
+    old_send, old_ready = push_alerts._send_all, push_alerts.ready
+    try:
+        push_alerts.ready = lambda: True
+        push_alerts._send_all = lambda cur, uid, payload: (sent.append((payload("he"), payload("en"))) or (1, 0))
+        conn = Conn(rows)
+        n = push_alerts.check_price_alerts(conn, {"KO": 95.5}, {"KO": above + [(t0 + 2 * five, 95.5, 96.4, five)]}, {"KO": ses})
+    finally:
+        push_alerts._send_all, push_alerts.ready = old_send, old_ready
+    closed = [p[1] for q, p in conn.c.sql if q.startswith("UPDATE price_alerts")]
+    # 1: the line is 96 today, the price 95.5 = below; 2: 95.5 is over the zone's top; 3: touched; 4: 95.5 < 97 = no
+    assert n == 3 and closed == [1, 2, 3]
+    he, en = sent[0]
+    assert "ירדה מתחת לקו: תמיכה עולה" in he["title"] and "$96.00" in he["body"] and "fell below the line" in en["title"]
+
+
+def test_line_alert_input_is_checked(api):
+    """v60: what the site sends for a line alert is checked before it is saved."""
+    import pytest as _pt
+    A = api.PriceAlertIn
+    assert api._line_alert_fields(A(ticker="KO", direction="touch", price=60)) == (None,) * 7
+    lv = api._line_alert_fields(A(ticker="KO", direction="above", price=60, kind="level", label_he="התנגדות <b>", label_en="Res"))
+    assert lv == (None, None, None, None, None, "התנגדות b", "Res")
+    z = api._line_alert_fields(A(ticker="KO", direction="touch", price=61, kind="zone", zone_lo=60, zone_hi=62))
+    assert z[0] == "zone" and z[3:5] == (60, 62)
+    today = api.dt.now(api.timezone.utc).date().isoformat()
+    tr = api._line_alert_fields(A(ticker="KO", direction="below", price=60, kind="trend", anchor_date=today, slope=-0.25))
+    assert tr[0] == "trend" and tr[2] == -0.25
+    for bad in (dict(kind="zone", zone_lo=62, zone_hi=60), dict(kind="trend", anchor_date="2020-01-01", slope=0.1),
+                dict(kind="trend", anchor_date=today, slope=50), dict(kind="trend", slope=0.1)):
+        with _pt.raises(api.HTTPException):
+            api._line_alert_fields(A(ticker="KO", direction="touch", price=60, **bad))
+
+
 def test_push_not_lost_on_temporary_failure():
     """v46: a notification is logged before it is sent (so two servers never send it twice). If no device got it and
     the failure was temporary, the log row is taken back so the next run sends it; a refusal stays logged."""

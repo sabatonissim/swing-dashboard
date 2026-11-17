@@ -851,6 +851,12 @@ window.addEventListener('load', function(){
   .ts-lg-val{font-family:'JetBrains Mono',monospace;font-weight:600;}
   .ts-lg-note{color:var(--text-dim);font-size:11px;}
   .ts-dot{display:inline-block;width:8px;height:8px;border-radius:50%;border:1.6px solid var(--struct);flex:none;margin:0 4px;}
+  /* v60: alert on a line of the chart — a bell after the line's entry in the legend; filled = an open alert on it */
+  .ts-bell{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--text-dim);cursor:pointer;flex:none;}
+  .ts-bell:hover{color:var(--amber);border-color:var(--amber);}
+  .ts-bell.on{color:var(--amber);border-color:var(--amber);}
+  .ts-bell.on svg path{fill:currentColor;}
+  .al-line{border:1px solid var(--amber);border-radius:8px;padding:8px 10px;margin:6px 0 10px;}
   .fund-card-title{font-size:12px;color:var(--text-dim);margin-bottom:8px;}
   .fund-scroll{overflow-x:auto;direction:ltr;}
   .fund-scroll::-webkit-scrollbar{height:5px;}
@@ -1489,10 +1495,10 @@ html[lang="he"] .only-en, html[lang="en"] .only-he{display:none;}
    small button = add its class here. */
 @media (pointer:coarse){
   .today-more,.rg-more,.since-link,.focus-more,.daily-digest-btn,.sector-btn,.macro-more-btn,.mode-btn,.chart-tab,
-  .movers-toggle-btn,.hx-link,.demo-chip,.rg-chip,.pf-tk,.cal-nav-btn,#lang-toggle,#site-links a{position:relative;}
+  .movers-toggle-btn,.hx-link,.demo-chip,.rg-chip,.pf-tk,.cal-nav-btn,#lang-toggle,#site-links a,.ts-bell{position:relative;}
   .today-more::after,.rg-more::after,.since-link::after,.focus-more::after,.daily-digest-btn::after,.sector-btn::after,
   .macro-more-btn::after,.mode-btn::after,.chart-tab::after,.movers-toggle-btn::after,.hx-link::after,.demo-chip::after,
-  .rg-chip::after,.pf-tk::after,.cal-nav-btn::after,#lang-toggle::after,#site-links a::after{
+  .rg-chip::after,.pf-tk::after,.cal-nav-btn::after,#lang-toggle::after,#site-links a::after,.ts-bell::after{
     content:"";position:absolute;left:-3px;right:-3px;top:50%;height:40px;transform:translateY(-50%);}
   .fund-info::after{content:"";position:absolute;left:50%;top:50%;width:36px;height:36px;transform:translate(-50%,-50%);}
 }</style>
@@ -3172,6 +3178,8 @@ function setStockAddress(ticker){
 }
 // Back / Forward: show the screen the address names. Nothing is written to the address here.
 window.addEventListener('popstate', () => {
+  // v60: the phone's Back closes an open window first (like Esc); a step that only undid a window ends here
+  if(window.__kbdBack && window.__kbdBack()) return;
   const r = _parseRoute(location.pathname);
   _navMode = 'none';
   try {
@@ -6208,7 +6216,11 @@ function buildTechnicalSetupSvg(priceSeries, lines){
   }).join('');
 
   // ---- lines: drawn without text; each one yields a legend entry + a gutter marker ----
-  const entries = [];     // {num, color, kind, name, value, note, anchorX, anchorY, dim}
+  const entries = [];     // {num, color, kind, name, value, note, anchorX, anchorY, dim, alert}
+  // v60: what an alert on the line needs (push_alerts.py, "an alert on a line"): a horizontal line = its price, a zone =
+  // its bottom and top, a straight trend line = its value on its last point + its step per session (the bars of this
+  // chart are the stock's sessions, so the step is per trading day). Moving averages and curves get no bell.
+  const labels = ln => ({label_he: ln.label_he || '', label_en: ln.label_en || ''});
   let anyTouches = false;
   let zoneSvgs = '';      // support/resistance zones: drawn BEHIND the candles
   const lineSvgs = (lines||[]).map((ln, idx) => {
@@ -6220,7 +6232,8 @@ function buildTechnicalSetupSvg(priceSeries, lines){
       const col = 'var(--struct)';   // one colour for all structure (owner); the legend says support / resistance
       const yTop = yOf(ln.hi), yBot = yOf(ln.lo), h = Math.max(3, yBot - yTop), x1 = xOf(i1), x2 = xOf(n-1);
       entries.push({color: col, kind:'zone', name, value:'$'+fmtP(ln.lo)+'–'+fmtP(ln.hi),
-                    note: ln.touches ? (t ? `${ln.touches} touches` : `${ln.touches} נגיעות`) : '', anchorX: x2, anchorY: (yTop + yBot) / 2, dim: 1});
+                    note: ln.touches ? (t ? `${ln.touches} touches` : `${ln.touches} נגיעות`) : '', anchorX: x2, anchorY: (yTop + yBot) / 2, dim: 1,
+                    alert: {kind:'zone', lo: ln.lo, hi: ln.hi, ...labels(ln)}});
       zoneSvgs += `<rect x="${x1.toFixed(1)}" y="${(yTop - (h - (yBot - yTop)) / 2).toFixed(1)}" width="${(x2 - x1).toFixed(1)}" height="${h.toFixed(1)}" fill="${col}" fill-opacity="0.16" stroke="${col}" stroke-opacity="0.55" stroke-width="1" stroke-dasharray="4 3"/>`;
       return '';
     }
@@ -6228,7 +6241,8 @@ function buildTechnicalSetupSvg(priceSeries, lines){
       const i1 = dateIndex[ln.from], i2 = dateIndex[ln.to];
       if(i1===undefined || i2===undefined) return '';
       const y = yOf(ln.price);
-      entries.push({color:'var(--struct)', kind:'horizontal', name, value:'$'+fmtP(ln.price), note:'', anchorX: xOf(i2), anchorY: y, dim});
+      entries.push({color:'var(--struct)', kind:'horizontal', name, value:'$'+fmtP(ln.price), note:'', anchorX: xOf(i2), anchorY: y, dim,
+                    alert: {kind:'level', price: ln.price, ...labels(ln)}});
       // no touch dots: the server puts the line on the wick it comes from (_snap_horizontal_lines) and the price is in the legend
       return `<line x1="${xOf(i1).toFixed(1)}" y1="${y.toFixed(1)}" x2="${xOf(i2).toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--struct)" stroke-opacity="${dim}" stroke-width="2" stroke-dasharray="5 3"/>`;
     }
@@ -6251,8 +6265,11 @@ function buildTechnicalSetupSvg(priceSeries, lines){
         anyTouches = true;
         return `<circle cx="${xOf(i2).toFixed(1)}" cy="${yOf(p).toFixed(1)}" r="2.4" fill="none" stroke="${col}" stroke-opacity="${dim}" stroke-width="1.3"/>`;
       }).join('');
+      const steps = pts.length === 2 ? dateIndex[last.date] - dateIndex[first.date] : 0;
       entries.push({color:col, kind:'trend', name, value:'$'+fmtP(last.price),
-                    note:(t?'from ':'מ-')+_fmtShortDate(first.date), anchorX: last.x, anchorY: last.y, dim});
+                    note:(t?'from ':'מ-')+_fmtShortDate(first.date), anchorX: last.x, anchorY: last.y, dim,
+                    alert: !isMA && steps > 0 ? {kind:'trend', price: last.price, anchor_date: last.date,
+                                                 slope: (last.price - first.price) / steps, ...labels(ln)} : null});
       return `<polyline points="${pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}" fill="none" stroke="${col}" stroke-opacity="${dim}" stroke-width="2"/>${dots}`;
     }
     if(ln.type === 'ma'){
@@ -6303,10 +6320,17 @@ function buildTechnicalSetupSvg(priceSeries, lines){
     ${dateAxis}
   </svg>`;
 
+  _tsAlertLines = [];
+  const bell = e => {
+    if(!e.alert) return '';
+    const i = _tsAlertLines.push({...e.alert, num: e.num}) - 1;
+    const on = lineAlertIsOpen(_tsTicker(), e.alert);
+    return `<button class="ts-bell${on ? ' on' : ''}" onclick="openLineAlert(${i})" title="${t?'Alert on this line':'התראה על הקו הזה'}" aria-label="${t?'Alert on line':'התראה על קו'} ${e.num}">${BELL_SVG}</button>`;
+  };
   const legend = entries.length ? `<div class="ts-legend">${entries.map(e => `
     <span class="ts-legend-item" style="opacity:${e.dim === 1 ? 1 : 0.9}">
       <span class="ts-badge" style="border-color:${e.color};color:${e.color};">${e.num}</span>
-      <span class="ts-lg-name">${e.name}</span>${e.value ? `<b class="ts-lg-val" dir="ltr" style="unicode-bidi:isolate;">${e.value}</b>` : ''}${e.note ? `<span class="ts-lg-note">(${e.note})</span>` : ''}
+      <span class="ts-lg-name">${e.name}</span>${e.value ? `<b class="ts-lg-val" dir="ltr" style="unicode-bidi:isolate;">${e.value}</b>` : ''}${e.note ? `<span class="ts-lg-note">(${e.note})</span>` : ''}${bell(e)}
     </span>`).join('')}${anyTouches ? `<span class="ts-legend-item"><span class="ts-dot"></span><span class="ts-lg-name">${t?'touches of the line':'נגיעות בקו'}</span></span>` : ''}</div>` : '';
   return svg + legend;
 }
@@ -9742,16 +9766,54 @@ const kbd = (function(){
         if(isOpen === wasOpen) return;
         wasOpen = isOpen;
         if(isOpen){
+          histOpen(id);
           const a = document.activeElement;
           if(a && a !== document.body && !o.contains(a)) openers[id] = {el: a, click: a.getAttribute('onclick')};
           // the window's content may be drawn a moment after it opens
           requestAnimationFrame(() => setTimeout(() => { if(o.classList.contains('open') && !o.contains(document.activeElement)) focusInto(o); }, 60));
         } else {
+          histClose(id);
           giveBack(id);
         }
       }).observe(o, {attributes:true, attributeFilter:['class']});
     }
   }
+  // v60 (owner, 17.11.2026): the phone's Back button = Esc. A window that opens adds one step to the history (same
+  // address, state {kbdWin}); Back takes that step off and the popstate handler (near syncAddress) asks back() first,
+  // which closes the window on top. A window closed another way (X, Esc, a click outside) takes its own step off, so
+  // the next Back goes where the visitor expects. A click that closes a window AND opens a screen: the screen's
+  // address is written first (_scheduleSync's timer runs before ours), the window's step then stays under it, and Back
+  // over it only shows the same screen again (harmless).
+  const HIST = /^https?:$/.test(location.protocol);
+  const byBack = {};
+  let selfBackAt = 0;
+  function histOpen(id){
+    if(!HIST) return;
+    try { if(!(history.state && history.state.kbdWin === id)) history.pushState({kbdWin: id}, '', location.href); } catch(e){}
+  }
+  function histClose(id){
+    if(!HIST) return;
+    if(byBack[id]){ delete byBack[id]; return; }
+    setTimeout(() => {
+      try {
+        if(history.state && history.state.kbdWin === id){ selfBackAt = Date.now(); history.back(); }
+      } catch(e){}
+    }, 0);
+  }
+  function back(){
+    if(selfBackAt){
+      const mine = Date.now() - selfBackAt < 1500;
+      selfBackAt = 0;
+      if(mine) return true;                       // our own step back after an X / Esc: nothing else to do
+    }
+    const o = topWindow();
+    if(!o) return false;
+    const w = WINDOWS.find(w => w[0] === o.id);
+    byBack[o.id] = true;
+    try { w[1](); } catch(err){ o.classList.remove('open'); }
+    return false;                                 // the screen itself did not change: the route code below is a no-op
+  }
+  window.__kbdBack = back;
   document.addEventListener('keydown', e => {
     if(e.defaultPrevented) return;
     if(e.key === 'Escape'){
@@ -10095,6 +10157,89 @@ function _alertWord(dir){
   if(dir === 'below') return en ? 'below ' : 'מתחת ל-';
   return en ? 'touches ' : 'נוגעת ב-';
 }
+// ---- v60 (owner, 17.11.2026): an alert on a line of the stock page's chart ----
+// The legend under the technical-setup chart has a bell after each line that can carry one (buildTechnicalSetupSvg
+// fills _tsAlertLines). The alert is saved as the line is now; the server checks it with the price alerts
+// (push_alerts.py: a trend line moves one step per session, a zone counts from its bottom to its top).
+var _tsAlertLines = [];
+var _myAlerts = null;            // this account's alerts (from /api/alerts), for the filled bells; null = not asked yet
+var _myAlertsAsked = false;
+var BELL_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0-6 6v3.6L4.3 16h15.4L18 12.6V9a6 6 0 0 0-6-6zm-2 15a2 2 0 0 0 4 0z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
+function _tsTicker(){ return _ddAddrTicker || (typeof _dd_lastQuote !== 'undefined' && _dd_lastQuote && _dd_lastQuote.ticker) || ''; }
+function _sameLine(x, a){
+  const near = (u, v) => u != null && v != null && Math.abs(Number(u) - Number(v)) <= Math.max(0.01, Math.abs(Number(v)) * 0.0005);
+  if(a.kind === 'zone') return x.line_kind === 'zone' && near(x.zone_lo, a.lo) && near(x.zone_hi, a.hi);
+  // a trend line's last point moves to the newest session every day: the same line = the same name and step
+  if(a.kind === 'trend') return x.line_kind === 'trend' && x.label_en === a.label_en && near(x.slope, a.slope);
+  return !x.line_kind && !!(x.label_he || x.label_en) && near(x.price, a.price);
+}
+function lineAlertIsOpen(tk, a){
+  if(!tk || !a) return false;
+  if(_myAlerts === null){ loadMyAlerts(); return false; }
+  return _myAlerts.some(x => !x.triggered_at && x.ticker === tk && _sameLine(x, a));
+}
+function loadMyAlerts(){
+  if(_myAlertsAsked || !authToken) return;          // one question per page load; the panel refreshes it after a change
+  _myAlertsAsked = true;
+  authFetch(`${API_BASE}/api/alerts`).then(r => r.ok ? r.json() : null).then(d => { if(d){ _myAlerts = d.alerts || []; refreshBells(); } }).catch(() => {});
+}
+function refreshBells(){
+  const tk = _tsTicker();
+  document.querySelectorAll('.ts-bell').forEach(b => {
+    const m = (b.getAttribute('onclick') || '').match(/openLineAlert\((\d+)\)/);
+    const a = m && _tsAlertLines[Number(m[1])];
+    if(a) b.classList.toggle('on', !!(_myAlerts && _myAlerts.some(x => !x.triggered_at && x.ticker === tk && _sameLine(x, a))));
+  });
+}
+function openLineAlert(i){
+  const a = _tsAlertLines[i];
+  const tk = _tsTicker();
+  if(!a || !tk) return;
+  _alertDraft = {ticker: tk, line: a};
+  document.getElementById('info-modal-overlay').classList.add('open');
+  renderAlertsPanel();
+}
+function _lineName(x){
+  const en = lang === 'en';
+  const lab = en ? (x.label_en || x.label_he) : (x.label_he || x.label_en);
+  return lab || (x.kind === 'zone' || x.line_kind === 'zone' ? (en ? 'Zone' : 'אזור') : (en ? 'Trend line' : 'קו מגמה'));
+}
+function _lineWord(dir){
+  const en = lang === 'en';
+  if(dir === 'above') return en ? 'above the line:' : 'מעל הקו:';
+  if(dir === 'below') return en ? 'below the line:' : 'מתחת לקו:';
+  return en ? 'touches the line:' : 'נוגעת בקו:';
+}
+const _px = v => '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+function _lineValueText(x){
+  const en = lang === 'en';
+  const kind = x.kind || x.line_kind;
+  if(kind === 'zone') return `${_px(x.lo ?? x.zone_lo)}–${_px(x.hi ?? x.zone_hi)}`;
+  if(kind === 'trend'){
+    const d = String(x.anchor_date || '').slice(0, 10).split('-');
+    const when = d.length === 3 ? `${Number(d[2])}.${Number(d[1])}` : '';
+    return `${_px(x.price)} ${en ? 'on' : 'ב-'}${when} (${en ? 'the line moves' : 'הקו זז'} ${x.slope >= 0 ? '+' : '−'}${_px(Math.abs(x.slope))} ${en ? 'a day' : 'ליום'})`;
+  }
+  return _px(x.price);
+}
+async function addLineAlert(){
+  const en = lang === 'en';
+  const d = _alertDraft;
+  if(!d || !d.line) return;
+  const a = d.line;
+  const direction = document.getElementById('al-line-dir').value;
+  const body = {ticker: d.ticker, direction, kind: a.kind, label_he: a.label_he, label_en: a.label_en};
+  if(a.kind === 'zone'){ body.zone_lo = a.lo; body.zone_hi = a.hi; body.price = (a.lo + a.hi) / 2; }
+  else { body.price = a.price; }
+  if(a.kind === 'trend'){ body.anchor_date = a.anchor_date; body.slope = a.slope; }
+  try {
+    const r = await authFetch(`${API_BASE}/api/alerts`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    if(!r.ok) throw new Error('add ' + r.status);
+    _alertDraft = null;
+    await renderAlertsPanel();
+    _alertsNote(en ? `Alert saved: ${d.ticker} ${_lineWord(direction)} ${_lineName(a)}` : `ההתראה נשמרה: ${d.ticker} ${_lineWord(direction)} ${_lineName(a)}`);
+  } catch(e){ _alertsNote(en ? 'Could not save the alert.' : 'לא הצלחנו לשמור את ההתראה.', true); }
+}
 async function deletePriceAlert(id){
   try { await authFetch(`${API_BASE}/api/alerts/${Number(id)}`, {method:'DELETE'}); } catch(e){}
   renderAlertsPanel();
@@ -10110,8 +10255,8 @@ async function renderAlertsPanel(){
   const close = `<button class="risk-calc-close" onclick="closeInfoModal()">${en?'Close':'סגירה'}</button>`;
   if(!authToken){
     box.innerHTML = `<h3>${en?'Alerts':'התראות'}</h3><div class="al-text">${en
-      ? 'Sign in with Google (the person icon at the top) to get a notification when a stock on your watchlist gets a scanner signal, or when a price you set is reached.'
-      : 'התחברו עם Google (סמל האדם למעלה) כדי לקבל התראה כשמניה מרשימת המעקב שלכם מופיעה בסריקה, או כשמניה מגיעה למחיר שקבעתם.'}</div>${close}`;
+      ? 'Sign in with Google (the person icon at the top) to get a notification when a stock on your watchlist gets a scanner signal, when a price you set is reached, or when the price reaches a line of the chart.'
+      : 'התחברו עם Google (סמל האדם למעלה) כדי לקבל התראה כשמניה מרשימת המעקב שלכם מופיעה בסריקה, כשמניה מגיעה למחיר שקבעתם, או כשהמחיר מגיע לקו בגרף.'}</div>${close}`;
     return;
   }
   box.innerHTML = `<h3>${en?'Alerts':'התראות'}</h3><div class="al-text">${UI[lang].loading}</div>`;
@@ -10133,13 +10278,36 @@ async function renderAlertsPanel(){
       <button class="al-btn primary" onclick="enablePush()">${en?'Turn on notifications':'הפעלת התראות'}</button>`;
 
   const alerts = (data && data.alerts) || [];
+  if(data){ _myAlerts = alerts; _myAlertsAsked = true; refreshBells(); }
   const fmtD = (iso) => new Date(iso).toLocaleString(en?'en-GB':'he-IL', {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'});
+  const isLine = a => !!(a.line_kind || a.label_he || a.label_en);
+  const what = (a) => isLine(a)
+    ? `${_lineWord(a.direction)} ${escH(_lineName(a))} <span dir="ltr" style="unicode-bidi:isolate;">${escH(_lineValueText(a))}</span>`
+    : `${_alertWord(a.direction)}<span dir="ltr">$${Number(a.price).toLocaleString('en-US',{maximumFractionDigits:2})}</span>`;
   const row = (a) => `<div class="al-item ${a.triggered_at?'done':''}">
-      <span class="mono"><b>${escH(a.ticker)}</b> ${_alertWord(a.direction)}<span dir="ltr">$${Number(a.price).toLocaleString('en-US',{maximumFractionDigits:2})}</span></span>
+      <span class="mono"><b>${escH(a.ticker)}</b> ${what(a)}</span>
       <span class="al-when">${a.triggered_at ? (en?`reached ${fmtD(a.triggered_at)}`:`הופעלה ${fmtD(a.triggered_at)}`) : ''}</span>
       <button class="al-x" onclick="deletePriceAlert(${Number(a.id)})" aria-label="${en?'Delete':'מחיקה'}">✕</button></div>`;
   const d = _alertDraft || {};
+  const L = d.line;
+  const lineForm = L ? `<div class="al-line">
+      <div class="al-sec" style="margin-top:0;">${en?'Alert on a line of the chart':'התראה על קו בגרף'}</div>
+      <div class="al-text"><b class="mono">${escH(d.ticker)}</b> · ${en?'line':'קו'} ${Number(L.num)} · ${escH(_lineName(L))}
+        <span dir="ltr" style="unicode-bidi:isolate;" class="mono">${escH(_lineValueText(L))}</span></div>
+      <div class="al-form">
+        <select id="al-line-dir" class="search-input"><option value="touch" selected>${L.kind==='zone'?(en?'trades inside it':'נסחרת בתוכו'):(en?'touches it':'נוגעת בו')}</option>
+          <option value="above">${L.kind==='zone'?(en?'goes above its top':'עולה מעל הגבול העליון'):(en?'goes above it':'עולה מעליו')}</option>
+          <option value="below">${L.kind==='zone'?(en?'goes below its bottom':'יורדת מתחת לגבול התחתון'):(en?'goes below it':'יורדת מתחתיו')}</option></select>
+        <button class="al-btn primary" onclick="addLineAlert()">${en?'Add':'הוספה'}</button>
+      </div>
+      <div class="al-text dim">${L.kind==='trend'
+        ? (en ? 'A trend line is not a fixed price: the alert follows the line as drawn now, one step per trading day.'
+              : 'קו מגמה הוא לא מחיר קבוע: ההתראה עוקבת אחרי הקו כפי שהוא מצויר עכשיו, צעד אחד בכל יום מסחר.')
+        : (en ? 'The line is saved as it is now, even if the chart draws it differently later.'
+              : 'הקו נשמר כמו שהוא עכשיו, גם אם בהמשך הגרף יצייר אותו אחרת.')}</div>
+    </div>` : '';
   box.innerHTML = `<h3>${en?'Alerts':'התראות'}</h3>
+    ${lineForm}
     <div class="al-sec">${en?'This device':'המכשיר הזה'}</div>
     ${device}
     <label class="al-check"><input type="checkbox" ${data && data.watch_signals ? 'checked' : ''} ${data && data.devices ? '' : 'disabled'} onchange="setWatchSignals(this.checked)">

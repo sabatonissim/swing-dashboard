@@ -5749,7 +5749,8 @@ def push_test(user_id: int = Depends(current_user_id)):
 def list_alerts(user_id: int = Depends(current_user_id)):
     """The user's price alerts (open ones, and those that fired in the last 14 days) + this account's alert settings."""
     with db_cursor(dict_cursor=True) as (conn, cur):
-        cur.execute("""SELECT id, ticker, direction, price, created_at, triggered_at, triggered_price FROM price_alerts
+        cur.execute("""SELECT id, ticker, direction, price, created_at, triggered_at, triggered_price,
+                              line_kind, anchor_date, slope, zone_lo, zone_hi, label_he, label_en FROM price_alerts
                        WHERE user_id = %s AND (triggered_at IS NULL OR triggered_at > NOW() - INTERVAL '14 days')
                        ORDER BY triggered_at IS NOT NULL, created_at DESC""", (user_id,))
         alerts = [dict(r) for r in cur.fetchall()]
@@ -5766,6 +5767,38 @@ class PriceAlertIn(BaseModel):
     ticker: str = Field(max_length=12)
     direction: str = Field(pattern="^(above|below|touch)$")   # v27: touch = trades at the level (the default)
     price: float = Field(gt=0, lt=10_000_000)
+    # v60: a line of the stock page's chart (push_alerts.py, "an alert on a line"). kind: level = a horizontal line
+    # (a price with the line's name), trend = price on anchor_date + slope per session, zone = zone_lo..zone_hi.
+    kind: Optional[str] = Field(default=None, pattern="^(level|trend|zone)$")
+    anchor_date: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    slope: Optional[float] = Field(default=None, gt=-1_000_000, lt=1_000_000)
+    zone_lo: Optional[float] = Field(default=None, gt=0, lt=10_000_000)
+    zone_hi: Optional[float] = Field(default=None, gt=0, lt=10_000_000)
+    label_he: Optional[str] = Field(default=None, max_length=80)
+    label_en: Optional[str] = Field(default=None, max_length=80)
+
+
+def _line_alert_fields(body: PriceAlertIn) -> tuple:
+    """v60: the extra columns of a line alert, checked: (line_kind, anchor_date, slope, zone_lo, zone_hi, label_he,
+    label_en). A plain price alert = all None."""
+    if not body.kind:
+        return (None,) * 7
+    clean = lambda s: (re.sub(r"[\x00-\x1f<>]", "", s).strip()[:80] or None) if s else None   # noqa: E731
+    he, en = clean(body.label_he), clean(body.label_en)
+    if body.kind == "level":
+        return (None, None, None, None, None, he, en)
+    if body.kind == "zone":
+        if body.zone_lo is None or body.zone_hi is None or body.zone_lo >= body.zone_hi:
+            raise HTTPException(status_code=400, detail="a zone needs its bottom and top")
+        return ("zone", None, None, round(body.zone_lo, 4), round(body.zone_hi, 4), he, en)
+    try:
+        anchor = date.fromisoformat(body.anchor_date or "")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="a trend line needs its date")
+    today = dt.now(timezone.utc).date()
+    if body.slope is None or abs(body.slope) > body.price * 0.2 or not (today - timedelta(days=400) <= anchor <= today + timedelta(days=1)):
+        raise HTTPException(status_code=400, detail="invalid trend line")
+    return ("trend", anchor, round(body.slope, 6), None, None, he, en)
 
 
 @app.post("/api/alerts")
@@ -5773,12 +5806,15 @@ def add_alert(body: PriceAlertIn, user_id: int = Depends(current_user_id)):
     ticker = _canon_ticker(body.ticker)
     if not ticker or not re.fullmatch(r"[A-Z0-9][A-Z0-9.\-^=]{0,10}", ticker):
         raise HTTPException(status_code=400, detail="invalid ticker")
+    line = _line_alert_fields(body)
     with db_cursor() as (conn, cur):
         cur.execute("SELECT COUNT(*) FROM price_alerts WHERE user_id = %s AND triggered_at IS NULL", (user_id,))
         if cur.fetchone()[0] >= push_alerts.MAX_ALERTS_PER_USER:
             raise HTTPException(status_code=400, detail=f"up to {push_alerts.MAX_ALERTS_PER_USER} open alerts")
-        cur.execute("INSERT INTO price_alerts (user_id, ticker, direction, price) VALUES (%s, %s, %s, %s) RETURNING id",
-                    (user_id, ticker, body.direction, round(body.price, 4)))
+        cur.execute("""INSERT INTO price_alerts (user_id, ticker, direction, price, line_kind, anchor_date, slope,
+                                                 zone_lo, zone_hi, label_he, label_en)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                    (user_id, ticker, body.direction, round(body.price, 4), *line))
         new_id = cur.fetchone()[0]
         conn.commit()
     return {"id": new_id, "ticker": ticker}

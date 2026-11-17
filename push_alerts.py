@@ -95,6 +95,13 @@ def ensure_tables(cur):
         ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS watch_macro BOOLEAN DEFAULT FALSE;
         ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS watch_insider BOOLEAN DEFAULT TRUE;
         ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS watch_morning BOOLEAN DEFAULT FALSE;
+        ALTER TABLE price_alerts ADD COLUMN IF NOT EXISTS line_kind TEXT;
+        ALTER TABLE price_alerts ADD COLUMN IF NOT EXISTS anchor_date DATE;
+        ALTER TABLE price_alerts ADD COLUMN IF NOT EXISTS slope REAL;
+        ALTER TABLE price_alerts ADD COLUMN IF NOT EXISTS zone_lo REAL;
+        ALTER TABLE price_alerts ADD COLUMN IF NOT EXISTS zone_hi REAL;
+        ALTER TABLE price_alerts ADD COLUMN IF NOT EXISTS label_he TEXT;
+        ALTER TABLE price_alerts ADD COLUMN IF NOT EXISTS label_en TEXT;
     """)
     # v27: a "touch" alert (the price trades AT the level, from either side) — the table made before v27 only allowed
     # above/below; its CHECK is replaced once
@@ -550,32 +557,134 @@ def range_since(bars, since):
     return None if lo is None else (lo, hi)
 
 
-def check_price_alerts(conn, prices: dict, bars: dict = None) -> int:
+# ---- v60 (owner, 17.11.2026): an alert on a line of the stock page's chart ("line 2 = resistance: tell me when the
+# price goes above / below / touches it"). Three kinds (line_kind):
+#   NULL  - a price, as before (a horizontal line of the chart is saved this way, with its name in label_he/label_en);
+#   trend - a sloped line: its value on the anchor session (anchor_date, `price`) + `slope` dollars per trading session.
+#           The sessions are counted on the stock's own daily bars (the chart was drawn on the same bars), so a
+#           holiday is not a step of the line;
+#   zone  - a support / resistance zone zone_lo..zone_hi: touch = traded inside it, above = over its top, below = under
+#           its bottom.
+# The line is kept as it was when the alert was set: a line the scanner draws differently tomorrow does not move it.
+_ET_ZONE = None
+
+
+def _et_date(ts):
+    """The New York calendar day of a UTC moment (the session a 5-minute bar belongs to)."""
+    global _ET_ZONE
+    if _ET_ZONE is None:
+        from zoneinfo import ZoneInfo
+        _ET_ZONE = ZoneInfo("America/New_York")
+    return ts.astimezone(_ET_ZONE).date()
+
+
+def line_value(price, slope, anchor_date, day, sessions):
+    """A trend line's value on `day`: price + slope x (sessions after the anchor up to `day`). sessions = the stock's
+    daily bar dates (sorted). `day` itself counts even when its daily bar is not in the list yet (a session that has
+    just opened). None when the anchor is older than the bars we have (the count would be wrong)."""
+    if not sessions or anchor_date < sessions[0]:
+        return None
+    n = sum(1 for s in sessions if anchor_date < s <= day)
+    if day > anchor_date and day not in sessions:
+        n += 1
+    return price + slope * n
+
+
+def line_touched(bars, since, level_of):
+    """Did the price trade AT the line since `since`? bars = [(start UTC, low, high, length)]; level_of(bar start) =
+    the line's (lo, hi) at that bar (lo == hi for a line). A bar whose range meets it = touched; a jump from one side
+    to the other between two bars (a gap through the line) also counts. None = no bars since `since` yet."""
+    side = None
+    seen = False
+    for start, low, high, length in bars or ():
+        if start + length <= since:
+            continue
+        lv = level_of(start)
+        if lv is None:
+            continue
+        seen = True
+        lo, hi = lv
+        if low <= hi and high >= lo:
+            return True
+        s = 1 if low > hi else -1
+        if side is not None and s != side:
+            return True
+        side = s
+    return False if seen else None
+
+
+def line_text(lang, kind, label, direction, value, lo=None, hi=None):
+    """(title part, level text) of a line alert's message, e.g. 'resistance line $189.20'."""
+    what = label or ({"trend": "trend line", "zone": "zone"}.get(kind, "line") if lang == "en"
+                     else {"trend": "קו מגמה", "zone": "אזור"}.get(kind, "קו"))
+    if kind == "zone":
+        return what, f"${lo:,.2f}–${hi:,.2f}"
+    return what, f"${value:,.2f}"
+
+
+def check_price_alerts(conn, prices: dict, bars: dict = None, sessions: dict = None) -> int:
     """prices = {ticker: last price}; bars = {ticker: [(bar start UTC, low, high, length)]} — 5-minute bars of the
-    last few sessions. Every open alert whose condition was met fires once and is closed.
+    last few sessions; sessions = {ticker: sorted daily bar dates} (v60: to count a trend line's steps).
+    Every open alert whose condition was met fires once and is closed.
     above / below: the last price is at/over (at/under) the level.
     touch (v27, the default — owner: "when the stock touches the support line, at that exact point"): the price
     traded AT the level at some moment since the alert was set — the low..high range of the bars since then contains
-    it. A gap straight through the level also counts (the range spans it). No bars yet = not fired (retried next run)."""
+    it. A gap straight through the level also counts (the range spans it). No bars yet = not fired (retried next run).
+    v60: the same for a line of the chart (a trend line's level is the one of each bar's own session; a zone counts
+    from its bottom to its top)."""
     if not prices:
         return 0
     cur = conn.cursor()
-    cur.execute("""SELECT id, user_id, ticker, direction, price, created_at FROM price_alerts
+    cur.execute("""SELECT id, user_id, ticker, direction, price, created_at, line_kind, anchor_date, slope,
+                          zone_lo, zone_hi, label_he, label_en FROM price_alerts
                    WHERE triggered_at IS NULL AND ticker = ANY(%s)""", (list(prices),))
     fired = waiting = 0
-    for aid, user_id, tk, direction, level, created_at in cur.fetchall():
+    for (aid, user_id, tk, direction, level, created_at, kind, anchor, slope,
+         zlo, zhi, lab_he, lab_en) in cur.fetchall():
         p = prices.get(tk)
         if p is None:
             continue
+        ses = (sessions or {}).get(tk) or []
+        if kind == "trend":
+            if anchor is None or slope is None or not ses:
+                continue
+            base = level
+            level = line_value(base, slope, anchor, ses[-1], ses)     # the line today (the last session's bar)
+            if level is None:
+                print(f"[warn] price alerts: line alert {aid} on {tk} starts {anchor}, before the bars we have — skipped")
+                continue
+
+            def level_of(start, base=base, slope=slope, anchor=anchor, ses=ses):
+                v = line_value(base, slope, anchor, _et_date(start), ses)
+                return None if v is None else (v, v)
+        elif kind == "zone":
+            if zlo is None or zhi is None:
+                continue
+            level_of = lambda start, z=(zlo, zhi): z      # noqa: E731
         if direction == "touch":
-            rng = range_since((bars or {}).get(tk), created_at)
-            hit = bool(rng) and rng[0] <= level <= rng[1]   # no bars since the alert was set = nothing traded yet
+            if kind in ("trend", "zone"):
+                hit = bool(line_touched((bars or {}).get(tk), created_at, level_of))
+            else:
+                rng = range_since((bars or {}).get(tk), created_at)
+                hit = bool(rng) and rng[0] <= level <= rng[1]   # no bars since the alert was set = nothing traded yet
+        elif kind == "zone":
+            hit = (direction == "above" and p >= zhi) or (direction == "below" and p <= zlo)
         else:
             hit = (direction == "above" and p >= level) or (direction == "below" and p <= level)
         if not hit:
             continue
 
-        def payload(lang, tk=tk, direction=direction, level=level, p=p):
+        def payload(lang, tk=tk, direction=direction, level=level, p=p, kind=kind, lab_he=lab_he, lab_en=lab_en,
+                    zlo=zlo, zhi=zhi):
+            if kind or lab_he or lab_en:      # v60: a line of the chart
+                what, lvl = line_text(lang, kind, lab_en if lang == "en" else lab_he, direction, level, zlo, zhi)
+                if lang == "en":
+                    word = {"above": "rose above", "below": "fell below"}.get(direction, "touched")
+                    return {"title": f"{tk} {word} the line: {what}", "body": f"Line {lvl}, last price ${p:,.2f} (your alert on the chart).",
+                            "url": f"/?ticker={tk}", "tag": f"px-{tk}"}
+                word = {"above": "עלתה מעל הקו", "below": "ירדה מתחת לקו"}.get(direction, "נגעה בקו")
+                return {"title": f"{tk} {word}: {what}", "body": f"הקו {lvl}, מחיר אחרון ${p:,.2f} (התראה שקבעת על הגרף).",
+                        "url": f"/?ticker={tk}", "tag": f"px-{tk}"}
             if lang == "en":
                 word = {"above": "rose above", "below": "fell below"}.get(direction, "touched")
                 return {"title": f"{tk} {word} ${level:,.2f}", "body": f"Last price ${p:,.2f} (your price alert).",

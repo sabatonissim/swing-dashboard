@@ -3774,10 +3774,11 @@ def check_price_alerts_job():
         print("[info] price alerts: none open.")
         return
     prices = {}
+    sessions = {}      # v60: the daily bar dates — a trend-line alert counts its steps on them (a year back)
     for i in range(0, len(tickers), 100):
         chunk = tickers[i:i + 100]
         try:
-            df = _yf_frames(chunk, period="5d", interval="1d")
+            df = _yf_frames(chunk, period="1y", interval="1d")
         except Exception as e:
             print(f"[warn] price alerts: download failed: {type(e).__name__}: {e}")
             continue
@@ -3788,6 +3789,7 @@ def check_price_alerts_job():
                 continue
             if len(closes):
                 prices[t] = round(float(closes.iloc[-1]), 4)
+                sessions[t] = sorted({ts.date() for ts in closes.index})
     # v27 "touch" alerts: the 5-minute bars of the last sessions — whether the price traded AT the level at any moment
     # since the alert was set, not only where it is at this check (every ~20 min)
     bars = {}
@@ -3810,7 +3812,7 @@ def check_price_alerts_job():
                        for ts, lo, hi in zip(idx, sub["Low"], sub["High"])]
     conn = get_conn()   # fresh connection after the download (Neon auto-suspend)
     try:
-        push_alerts.check_price_alerts(conn, prices, bars)
+        push_alerts.check_price_alerts(conn, prices, bars, sessions)
     finally:
         conn.close()
 
