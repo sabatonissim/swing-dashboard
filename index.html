@@ -7369,10 +7369,12 @@ function newsHref(link, titleEn, publisher, site){
   let host = '';
   try { host = new URL(u).hostname.toLowerCase(); } catch(e) {}
   if(!/(^|\.)news\.google\.com$/.test(host)) return u;
-  const title = String(titleEn || '').trim();
+  // plain words only: tested on the live site 17.11 — with "site:" and the headline's "$AAPL Stock:" Bing ignored both and
+  // showed apple.com; the same words without punctuation, plus the outlet's site as a word, put the article first.
+  const title = String(titleEn || '').replace(/[$:"“”|—–?!]/g, ' ').replace(/\s+/g, ' ').trim();
   if(!title) return '';
-  const where = /^[a-z0-9.-]+\.[a-z]{2,}$/.test(String(site || '')) ? `site:${site} ` : '';
-  return 'https://www.bing.com/search?q=' + encodeURIComponent(where + title + (where || !publisher ? '' : ' ' + publisher));
+  const where = /^[a-z0-9.-]+\.[a-z]{2,}$/.test(String(site || '')) ? site : String(publisher || '').replace(/[$:"|]/g, ' ').trim();
+  return 'https://www.bing.com/search?q=' + encodeURIComponent(title + (where ? ' ' + where : ''));
 }
 // News categories are stored in the database in Hebrew (the pipeline's tag). The DB value stays the stable key
 // (filters, saved selections, hooks); only the label shown to the person is translated.
