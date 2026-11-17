@@ -617,6 +617,27 @@ def test_move_size_against_atr(api):
     assert api._atr_pct_before_today(h, today + _dt.timedelta(days=1)) > 4.0
 
 
+def test_stock_news_block_is_reported(api):
+    """v62: Google News refusing most of today's stock-news searches = warn in /api/data-health (live.stock_news)."""
+    h = api.stock_news_health
+    assert h({})["status"] == "info"
+    assert h({"ok": 20, "failed": 2})["status"] == "ok"            # a hiccup
+    assert h({"ok": 20, "failed": 5})["status"] == "ok"            # under half
+    assert h({"ok": 2, "failed": 2})["status"] == "ok"             # too few to tell
+    assert h({"ok": 3, "failed": 3})["status"] == "warn"
+    assert h({"ok": 0, "failed": 4})["status"] == "warn"
+    saved = dict(api._stock_news_stats)
+    try:
+        api._stock_news_stats.clear()
+        api._news_stat(True)
+        api._news_stat(False, "HTTPError: 429")
+        s = api._stock_news_stats
+        assert (s["ok"], s["failed"], s["last_error"]) == (1, 1, "HTTPError: 429")
+    finally:
+        api._stock_news_stats.clear()
+        api._stock_news_stats.update(saved)
+
+
 def test_move_headlines_that_explain_nothing_are_left_out(api):
     """v61b: the first live answer (17.11.2026) put predictions, filings and old stories next to today's move."""
     bad = ["Applied Optoelectronics (AAOI) Stock Price Prediction: Bearish structure persists as AAOI loses the 20-day zone",

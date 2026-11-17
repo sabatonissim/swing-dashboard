@@ -305,6 +305,11 @@ window.addEventListener('load', function(){
   .mover-row.has-why{border-bottom:none;}
   .mover-why .rare{color:var(--amber);font-weight:600;}
   html[lang="he"] .today-event, html[lang="he"] .mover-why{direction:rtl;text-align:right;}
+  /* v62: a US market holiday / early close in the coming week (home, under "The market today") */
+  .market-days{font-size:12.5px;line-height:1.55;color:var(--text-dim);margin:-4px 0 10px;}
+  .market-days:empty{display:none;}
+  .market-days b{color:var(--amber);font-weight:600;}
+  html[lang="he"] .market-days{direction:rtl;text-align:right;}
   .today-intro{font-size:13px;line-height:1.6;color:var(--text-dim);margin-top:10px;padding-top:10px;border-top:1px solid var(--line);}
   .intro-tour{background:none;border:0;padding:0;color:var(--amber);font:inherit;font-weight:700;text-decoration:underline;cursor:pointer;}
   /* v54: what is new since the last visit, and one offer (sign in / install / notifications) from the second visit on */
@@ -1222,6 +1227,7 @@ window.addEventListener('load', function(){
   </div>
   <div class="today-text" id="today-text"></div>
   <div class="today-event" id="today-event"></div>
+  <div class="market-days" id="market-days"></div>
   <div class="hx-regime" id="hx-regime"></div>
   <div class="since-line" id="since-line"></div>
   <div class="home-nudge" id="home-nudge"></div>
@@ -1823,8 +1829,13 @@ function renderStocks(){
 // "Today's biggest movers" — genuine whole-US-market data (Yahoo's day
 // gainers/losers screener via the backend), independent of our own scan.
 let marketMovers = [];
+let _moversAskedAt = 0;
 
 async function loadMarketMovers(){
+  // The page asks on load, and again on 'visibilitychange' when the tab turns
+  // visible before the first answer is in — once per 30 s is enough (v62).
+  if(Date.now() - _moversAskedAt < 30000) return;
+  _moversAskedAt = Date.now();
   try {
     const res = await fetch(`${API_BASE}/api/market-movers?limit=12`);
     if(!res.ok) throw new Error();
@@ -3842,8 +3853,11 @@ function renderFearGreed(data){
 
 // ---- Market ticker strip ----
 let lastMarketTicker = null;
+let _tickerAskedAt = 0;
 
 async function loadMarketTicker(){
+  if(Date.now() - _tickerAskedAt < 30000) return;     // v62: see loadMarketMovers
+  _tickerAskedAt = Date.now();
   try {
     const res = await fetch(`${API_BASE}/api/market-ticker`);
     if(!res.ok) throw new Error('bad response');
@@ -4010,8 +4024,8 @@ function renderWatchlistSetups(results){
           <span style="font-weight:700;">${r.ticker}</span>
           <span style="font-size:11px;color:${stageColor};border:1px solid ${stageColor};border-radius:6px;padding:2px 8px;">${stageLabel}</span>
         </div>
-        <div style="font-size:12px;color:var(--text-dim);margin-bottom:4px;">${name} · $${r.key_level} · ${r.distance_pct>0?'+':''}${r.distance_pct}%</div>
-        <div style="font-size:13px;line-height:1.5;">${t ? r.explanation_en : r.explanation_he}</div>
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:4px;">${escH(name)} · $${escH(r.key_level)} · ${r.distance_pct>0?'+':''}${escH(r.distance_pct)}%</div>
+        <div style="font-size:13px;line-height:1.5;">${escH(t ? r.explanation_en : r.explanation_he)}</div>
       </div>
     `;
   };
@@ -4413,9 +4427,9 @@ function econCardHtml(e, isNext){
               : e.status==='pending' ? `<span class="econ-badge pending">${en?'awaiting data':'ממתין לנתון'}</span>`
               : e.estimated ? `<span class="econ-badge est" title="${en?'Date is an estimate':'מועד משוער'}">${en?'est. date':'מועד משוער'}</span>` : '';
   const cd = (isNext && e.status==='upcoming') ? ` · <b style="color:var(--amber)">${econCountdown(e.datetime_utc)}</b>` : '';
-  const chips = (e.affects || []).map(a => `<span class="econ-chip">${en ? a.label_en : a.label_he}</span>`).join('');
+  const chips = (e.affects || []).map(a => `<span class="econ-chip">${escH(en ? a.label_en : a.label_he)}</span>`).join('');
   const open = econOpen[e.id] !== undefined ? econOpen[e.id] : (econView === 'month');
-  const explain = open ? `<div class="econ-explain"><b>${en?'What is it?':'מה זה?'}</b> ${en ? e.what_en : e.what_he}</div>${eventHistoryHtml(e.type)}` : '';
+  const explain = open ? `<div class="econ-explain"><b>${en?'What is it?':'מה זה?'}</b> ${escH(en ? e.what_en : e.what_he)}</div>${eventHistoryHtml(e.type)}` : '';
   return `<div class="econ-card ${isNext?'next':''} ${done?'done':''}" onclick="toggleEconCard('${e.id}')">
     <div class="econ-card-top">
       <div>
@@ -4501,6 +4515,79 @@ async function renderTodayEvent(){
   el.onclick = () => { setPage('pulse'); setPulseView('events'); };
 }
 var _todayEventAsked = false;
+
+// v62: US market holidays and 1:00 pm early closes, worked out in the browser (no server, no database).
+// The holidays are the twin of api_server._nyse_holidays (the same rules; tests/test_pages.js compares the dates).
+// Early closes: the day after Thanksgiving, and July 3 / December 24 when they fall Monday–Thursday.
+const NYSE_DAY_NAMES = {
+  newyear: ["New Year's Day", 'ראש השנה האזרחית'], mlk: ['Martin Luther King Jr. Day', 'יום מרטין לותר קינג'],
+  presidents: ["Presidents' Day", 'יום הנשיאים'], goodfriday: ['Good Friday', 'יום שישי הטוב'],
+  memorial: ['Memorial Day', 'יום הזיכרון האמריקאי'], juneteenth: ['Juneteenth', "ג'ונטינת'"],
+  independence: ['Independence Day', 'יום העצמאות האמריקאי'], labor: ['Labor Day', 'יום העבודה האמריקאי'],
+  thanksgiving: ['Thanksgiving', 'חג ההודיה'], christmas: ['Christmas', 'חג המולד'],
+};
+function nyseSpecialDays(year){
+  const DAY = 864e5, d = (m, day) => new Date(Date.UTC(year, m - 1, day)), iso = x => x.toISOString().slice(0, 10);
+  const nth = (m, wd, n) => d(m, 1 + ((wd - d(m, 1).getUTCDay() + 7) % 7) + 7 * (n - 1));     // wd: Sunday = 0
+  const observed = x => { const w = x.getUTCDay(); return new Date(+x + (w === 6 ? -DAY : w === 0 ? DAY : 0)); };
+  const a = year % 19, b = Math.floor(year / 100), c = year % 100;                           // Easter, for Good Friday
+  const h = (19 * a + b - Math.floor(b / 4) - Math.floor((b - Math.floor((b + 8) / 25) + 1) / 3) + 15) % 30;
+  const k = (32 + 2 * (b % 4) + 2 * Math.floor(c / 4) - h - c % 4) % 7;
+  const m = Math.floor((a + 11 * h + 22 * k) / 451);
+  const easter = d(Math.floor((h + k - 7 * m + 114) / 31), (h + k - 7 * m + 114) % 31 + 1);
+  const lastMay = d(5, 31), thanks = nth(11, 4, 4);
+  const out = {};
+  const hol = (x, key) => { out[iso(x)] = {kind: 'closed', key}; };
+  if(d(1, 1).getUTCDay() !== 6) hol(observed(d(1, 1)), 'newyear');     // on a Saturday it is not moved back into December
+  hol(nth(1, 1, 3), 'mlk'); hol(nth(2, 1, 3), 'presidents'); hol(new Date(+easter - 2 * DAY), 'goodfriday');
+  hol(new Date(+lastMay - ((lastMay.getUTCDay() + 6) % 7) * DAY), 'memorial');
+  hol(observed(d(6, 19)), 'juneteenth'); hol(observed(d(7, 4)), 'independence'); hol(nth(9, 1, 1), 'labor');
+  hol(thanks, 'thanksgiving'); hol(observed(d(12, 25)), 'christmas');
+  const early = (x, key) => { const w = x.getUTCDay(); if(w >= 1 && w <= 5 && !out[iso(x)]) out[iso(x)] = {kind: 'early', key}; };
+  early(new Date(+thanks + DAY), 'thanksgiving');
+  for(const [mm, dd, key] of [[7, 3, 'independence'], [12, 24, 'christmas']]){
+    const x = d(mm, dd), w = x.getUTCDay();
+    if(w >= 1 && w <= 4) early(x, key);
+  }
+  return out;
+}
+function _nyNow(){
+  const p = {};
+  new Intl.DateTimeFormat('en-US', {timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', hour12: false}).formatToParts(new Date()).forEach(x => { p[x.type] = x.value; });
+  return {day: `${p.year}-${p.month}-${p.day}`, hour: Number(p.hour) % 24};
+}
+// h:00 in New York on `iso` as the viewer's local time, "20:00"; '' if the browser cannot tell
+function _nyHourLocal(iso, hour){
+  try {
+    const guess = new Date(`${iso}T${String(hour + 5).padStart(2, '0')}:00:00Z`);   // EST; one hour off in summer, corrected
+    const nyHour = Number(new Intl.DateTimeFormat('en-US', {timeZone: 'America/New_York', hour: 'numeric', hour12: false}).format(guess)) % 24;
+    return new Date(+guess - (nyHour - hour) * 3600e3).toLocaleTimeString(lang === 'en' ? 'en-GB' : 'he-IL', {hour: '2-digit', minute: '2-digit'});
+  } catch(e){ return ''; }
+}
+const MARKET_DAYS_AHEAD = 7;
+function marketDaysNoteHtml(now){
+  now = now || _nyNow();
+  const en = lang === 'en', parts = [];
+  for(let i = 0; i <= MARKET_DAYS_AHEAD && parts.length < 2; i++){
+    const x = new Date(Date.parse(now.day + 'T12:00:00Z') + i * 864e5), iso = x.toISOString().slice(0, 10);
+    const s = nyseSpecialDays(x.getUTCFullYear())[iso];
+    if(!s || (s.kind === 'early' && i === 0 && now.hour >= 13)) continue;     // today's early close is over
+    const name = NYSE_DAY_NAMES[s.key][en ? 0 : 1];
+    const when = i === 0 ? (en ? 'Today' : 'היום') : i === 1 ? (en ? 'Tomorrow' : 'מחר')
+      : x.toLocaleDateString(en ? 'en-GB' : 'he-IL', {timeZone: 'UTC', weekday: 'long', day: 'numeric', month: 'numeric'});
+    const local = _nyHourLocal(iso, 13);
+    parts.push(s.kind === 'closed'
+      ? `<b>${escH(when)}:</b> ${en ? `the US stock market is closed (${escH(name)}).` : `הבורסה בארה״ב סגורה (${escH(name)}).`}`
+      : `<b>${escH(when)}:</b> ${en ? `trading closes early, at 1:00 pm New York time${local ? ` (${local} your time)` : ''}.`
+                                    : `המסחר נסגר מוקדם, ב-13:00 בשעון ניו יורק${local ? ` (${local} לפי השעה אצלך)` : ''}.`}`);
+  }
+  return parts.join(' ');
+}
+function renderMarketDaysNote(){
+  const el = document.getElementById('market-days');
+  if(el) el.innerHTML = marketDaysNoteHtml();
+}
 
 function toggleEconCard(id){
   const cur = econOpen[id] !== undefined ? econOpen[id] : (econView === 'month');
@@ -5744,7 +5831,7 @@ function openDrawer(i){
     <div class="ai-box">
       <div class="label">${lang==='en'?'Match Reason':'סיבת ההתאמה'}</div>
       <div style="font-weight:600;margin-bottom:6px;">${triggerText}</div>
-      ${s.summary||s.ai_summary_he||(lang==='en'?'A technical breakout was detected on above-average volume.':'זוהתה פריצה טכנית עם נפח גבוה מהממוצע.')}
+      ${escH(s.summary||s.ai_summary_he||'') || (lang==='en'?'A technical breakout was detected on above-average volume.':'זוהתה פריצה טכנית עם נפח גבוה מהממוצע.')}
       ${renderPatternStatsBlurb(s.patternType)}
       <div id="signal-context"></div>
     </div>
@@ -6483,7 +6570,7 @@ function buildTechnicalSetupSvg(priceSeries, lines){
   const legend = entries.length ? `<div class="ts-legend">${entries.map(e => `
     <span class="ts-legend-item" style="opacity:${e.dim === 1 ? 1 : 0.9}">
       <span class="ts-badge" style="border-color:${e.color};color:${e.color};">${e.num}</span>
-      <span class="ts-lg-name">${e.name}</span>${e.value ? `<b class="ts-lg-val" dir="ltr" style="unicode-bidi:isolate;">${e.value}</b>` : ''}${e.note ? `<span class="ts-lg-note">(${e.note})</span>` : ''}${bell(e)}
+      <span class="ts-lg-name">${escH(e.name)}</span>${e.value ? `<b class="ts-lg-val" dir="ltr" style="unicode-bidi:isolate;">${escH(e.value)}</b>` : ''}${e.note ? `<span class="ts-lg-note">(${escH(e.note)})</span>` : ''}${bell(e)}
     </span>`).join('')}${anyTouches ? `<span class="ts-legend-item"><span class="ts-dot"></span><span class="ts-lg-name">${t?'touches of the line':'נגיעות בקו'}</span></span>` : ''}</div>` : '';
   return svg + legend;
 }
@@ -8880,6 +8967,7 @@ function renderToday(){
   document.getElementById('today-text').textContent = text;
   document.getElementById('today-more').textContent = en ? 'Full summary' : 'לסיכום המלא';
   renderTodayEvent();                 // v61
+  renderMarketDaysNote();             // v62
   // v52: what the site is, and the short guide as an offer. The guide used to open by itself on the first visit, on top
   // of the page and together with the statistics banner. Shown on the first 3 visits, until the guide was taken or skipped.
   if(_introFirstVisit === null){

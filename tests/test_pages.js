@@ -111,6 +111,26 @@ async function run() {
   const staticLd = JSON.parse(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/.exec(index)[1]);
   ok(staticLd['@graph'].length === 4, 'the JSON-LD in index.html parses');
 
+  // v62: the holiday / early-close line on the home page = NYSE's own list (nyse.com/markets/hours-calendars, read 17.11.2026).
+  // The same closed days are checked in tests/test_core.py against api_server._nyse_holidays.
+  const nyseSrc = /function nyseSpecialDays\(year\)\{[\s\S]*?\n\}\n/.exec(index);
+  ok(!!nyseSrc, 'index.html has nyseSpecialDays');
+  if (nyseSrc) {
+    const nyse = new Function(`${nyseSrc[0]}; return nyseSpecialDays;`)();
+    const NYSE_OFFICIAL = {
+      2026: { closed: ['01-01', '01-19', '02-16', '04-03', '05-25', '06-19', '07-03', '09-07', '11-26', '12-25'], early: ['11-27', '12-24'] },
+      2027: { closed: ['01-01', '01-18', '02-15', '03-26', '05-31', '06-18', '07-05', '09-06', '11-25', '12-24'], early: ['11-26'] },
+      2028: { closed: ['01-17', '02-21', '04-14', '05-29', '06-19', '07-04', '09-04', '11-23', '12-25'], early: ['07-03', '11-24'] },
+    };
+    Object.entries(NYSE_OFFICIAL).forEach(([y, want]) => {
+      const got = nyse(Number(y));
+      ['closed', 'early'].forEach((k) => {
+        const days = Object.keys(got).filter((d) => got[d].kind === k).map((d) => d.slice(5)).sort().join(',');
+        ok(days === want[k].join(','), `NYSE ${k} days ${y}: ${days}`);
+      });
+    });
+  }
+
   // ---- names and text helpers ----
   const names = {
     'The Coca-Cola Company': 'Coca-Cola', 'JPMorgan Chase & Co.': 'JPMorgan Chase', 'Alphabet Inc.': 'Alphabet', 'Meta Platforms, Inc.': 'Meta Platforms',

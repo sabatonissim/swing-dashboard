@@ -2005,6 +2005,8 @@ def get_data_health():
     return {"available": True, "day": rows[0]["day"].isoformat(), "checked_at": rows[0]["checked_at"].isoformat(),
             # v50: today's reads for visitors against the daily limit (this server process, since its last restart)
             "public_db_today_mb": round(_public_db_mb_today(), 2), "public_db_budget_mb": PUBLIC_DB_BUDGET_MB,
+            # v62: what this server saw today (memory, no database) — not part of `status`, which is the morning report's
+            "live": {"stock_news": stock_news_health()},
             "status": rows[0]["status"], "results": rows[0]["results"],
             "recent": [{"day": r["day"].isoformat(), "status": r["status"]} for r in rows]}
 
@@ -2117,6 +2119,41 @@ def stock_news(ticker: str, limit: int = 6, lang: str = Query(default="en", patt
 _STOCK_NEWS_CACHE: dict = {}
 _STOCK_NEWS_TTL = 15 * 60
 _yf_news_blocked_until = 0.0
+
+# v62: how Google News answered the stock-news searches today (this server process, ET day) — /api/data-health shows
+# it as `live.stock_news`, so a block (Google's "We're sorry" / 429) is seen at the start of a work session, not by chance.
+# Memory only, no database; it starts again from zero when Render restarts, like public_db_today_mb.
+STOCK_NEWS_BLOCK_MIN_FAILS = 3          # fewer failures than this = a passing hiccup
+STOCK_NEWS_BLOCK_SHARE = 0.5            # ... and at least this share of today's searches failed
+_stock_news_stats: dict = {}
+_ET_NEWS = ZoneInfo("America/New_York")
+
+
+def _news_stat(ok: bool, error: Optional[str] = None) -> None:
+    day = dt.now(_ET_NEWS).date().isoformat()
+    s = _stock_news_stats
+    if s.get("day") != day:
+        s.clear()
+        s.update({"day": day, "ok": 0, "failed": 0, "last_error": None, "last_error_at": None})
+    if ok:
+        s["ok"] += 1
+    else:
+        s["failed"] += 1
+        s["last_error"] = (error or "")[:120]
+        s["last_error_at"] = dt.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def stock_news_health(stats: Optional[dict] = None) -> dict:
+    """{'status': ok|warn|info, ...today's counts}. warn = Google News refused at least STOCK_NEWS_BLOCK_MIN_FAILS of
+    today's searches and at least half of them: the stock pages then show only Yahoo's few headlines, or none."""
+    s = dict(_stock_news_stats if stats is None else stats)
+    ok, failed = s.get("ok", 0), s.get("failed", 0)
+    if not ok and not failed:
+        return {**s, "status": "info", "detail": "no stock-news search since the server started today"}
+    blocked = failed >= STOCK_NEWS_BLOCK_MIN_FAILS and failed >= STOCK_NEWS_BLOCK_SHARE * (ok + failed)
+    return {**s, "status": "warn" if blocked else "ok",
+            "detail": (f"Google News refused {failed} of {ok + failed} stock-news searches today"
+                       if blocked else f"{ok} of {ok + failed} Google News searches answered")}
 
 
 def _rss_items(url: str, google: bool = False) -> list:
@@ -2249,7 +2286,9 @@ def _stock_news_raw(ticker: str, name_hint: Optional[str] = None) -> list:
     try:
         result = clean(_rss_items(f"https://news.google.com/rss/search?q={quote(google_q)}&hl=en-US&gl=US&ceid=US:en",
                                   google=True))
+        _news_stat(True)
     except Exception as e:
+        _news_stat(False, f"{type(e).__name__}: {e}")
         print(f"[warn] stock-news Google News failed for {ticker}: {type(e).__name__}: {e}")
 
     items = []
