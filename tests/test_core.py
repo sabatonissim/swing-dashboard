@@ -617,6 +617,21 @@ def test_move_size_against_atr(api):
     assert api._atr_pct_before_today(h, today + _dt.timedelta(days=1)) > 4.0
 
 
+def test_move_headlines_that_explain_nothing_are_left_out(api):
+    """v61b: the first live answer (17.11.2026) put predictions, filings and old stories next to today's move."""
+    bad = ["Applied Optoelectronics (AAOI) Stock Price Prediction: Bearish structure persists as AAOI loses the 20-day zone",
+           "Form 4 Forgent Power Solutions: Neel Bhatia (Director) For: 16 November By Investing.com",
+           "Why Is Natera Stock Up Nearly 41% Since May?",
+           "NIO (NIO) schedules Q3 results for December 1, with an earnings call at 7 a.m. Eastern.",
+           "Credo Technology Group Holding Ltd (CRDO) Stock Down 8.2% -- Now Undervalued? GF Score: 77/100",
+           "Caris Life Sciences Presented Research Demonstrating the Value of Whole Transcriptome Sequencing"]
+    good = ["B.Riley cuts Lumentum stock price target on Marvell proxy valuation",
+            "Nasdaq Composite Falls 2.49% as Tempus AI Leads AI Stock Declines",
+            "Nvidia shares jump after earnings beat", "FDA approves Natera test, shares soar"]
+    assert [t for t in bad if api.move_headline_ok(t)] == []
+    assert all(api.move_headline_ok(t) for t in good)
+
+
 def test_line_alert_input_is_checked(api):
     """v60: what the site sends for a line alert is checked before it is saved."""
     import pytest as _pt
