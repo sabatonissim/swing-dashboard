@@ -1,3 +1,8 @@
+# v34: only the site's own files go to Vercel. Without this every file in the repository was served from the site's
+# address: /CLAUDE.md, /docs/HISTORY.md, /api_server.py, /tests/..., where search engines can find them.
+# Everything in the root is left out, and each line below lets one thing back in.
+# A new file the site needs (an image, a page) has to be added here too.
+# NOTE: GitHub's "upload files" button skips files whose name starts with a dot — edit this one in GitHub's editor.
 /*
 !index.html
 !sw.js
@@ -13,4 +18,5 @@
 !badge-96.png
 !logo.png
 !og-image.png
+!chart.umd.min.js
 !api
