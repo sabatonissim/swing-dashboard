@@ -46,29 +46,66 @@
 </script>
 <!--seo-head-end-->
 <link rel="preconnect" href="https://swing-dashboard-3btx.onrender.com" crossorigin>
-<link rel="dns-prefetch" href="https://s3.tradingview.com">
+<link rel="preconnect" href="https://s.tradingview.com">
 <script>
-// TradingView's tv.js now loads in the background (it used to block the whole page). When it arrives, the charts
-// that were skipped because it was not ready yet are drawn (see window.__tvCb in the main script).
-window.__tvQueue = [];
-window.loadTV = function(cb){                     // loads TradingView's tv.js once; runs cb when it is ready
-  if(window.TradingView){ if(cb) cb(); return; }
-  if(cb) window.__tvQueue.push(cb);
-  if(window.__tvInjected) return;
-  window.__tvInjected = true;
-  var s = document.createElement('script');
-  s.async = true; s.src = 'https://s3.tradingview.com/tv.js';
-  s.onload = function(){
-    window.__tvReadyFlag = true;
-    window.__tvQueue.splice(0).forEach(function(f){ try{ f(); }catch(e){ console.error(e); } });
-    if(window.__tvCb) window.__tvCb();
-  };
-  document.head.appendChild(s);
-};
-// not at page start: the page, data and scripts of our own come first; tv.js (the heaviest file) loads once the browser is idle
-window.addEventListener('load', function(){
-  (window.requestIdleCallback || function(f){ setTimeout(f, 1200); })(function(){ window.loadTV(); }, {timeout: 2500});
-});
+// v64 (security review 18.11.2026): TradingView's tv.js is no longer loaded. It ran INSIDE this page — next to the sign-in
+// token — and TradingView changes it often (it changed on 17.11), so a bad copy of it on their side would have run here too.
+// All tv.js did for us was build an <iframe> of s.tradingview.com/widgetembed/ with the options in its address. This small
+// copy builds the same address (taken from tv.js of 17.11.2026, the "advanced-chart" widget's generateUrl), so the chart is
+// the same, and TradingView's code runs only inside its own frame, on its own origin, where it cannot reach this page.
+// The rest of the page still calls new TradingView.widget({...}) and loadTV(cb) as before.
+// A chart that suddenly stays empty = TradingView changed the address: compare with generateUrl in https://s3.tradingview.com/tv.js.
+(function(){
+  var HOST = 'https://s.tradingview.com';
+  var n = 0;
+  function TVWidget(o){
+    o = o || {};
+    var id = 'tradingview_' + (++n).toString(36) + Math.random().toString(36).slice(2, 7);
+    var url = new URL(HOST + '/widgetembed/');
+    url.searchParams.append('hideideas', '1');
+    url.searchParams.append('overrides', JSON.stringify(o.overrides || {}));
+    url.searchParams.append('enabled_features', JSON.stringify(o.enabled_features || []));
+    url.searchParams.append('disabled_features', JSON.stringify(o.disabled_features || []));
+    if(o.locale) url.searchParams.append('locale', o.locale);
+    var a = {symbol: o.symbol || 'NASDAQ:AAPL', frameElementId: id, interval: o.interval || '1'};
+    function put(k, v){ if(v === undefined || v === null || v === '') return; a[k] = typeof v === 'object' ? JSON.stringify(v) : v; }
+    function flag(k, v, dflt){ if(v !== undefined) put(k, v ? '1' : dflt); }      // = tv.js: unset stays unset
+    flag('hide_top_toolbar', o.hide_top_toolbar);
+    flag('hide_legend', o.hide_legend);
+    flag('hide_side_toolbar', o.hide_side_toolbar, '0');
+    flag('allow_symbol_change', o.allow_symbol_change, '0');
+    flag('save_image', o.save_image === undefined ? true : o.save_image, '0');
+    if(Array.isArray(o.studies) && o.studies.length) put('studies', typeof o.studies[0] === 'string' ? o.studies.join('') : o.studies);
+    flag('horztouchdrag', o.horztouchdrag, '0');
+    flag('verttouchdrag', o.verttouchdrag, '0');
+    put('theme', o.theme);
+    put('style', o.style);
+    put('timezone', o.timezone);
+    put('studies_overrides', o.studies_overrides || {});
+    put('utm_source', location.hostname);
+    put('utm_medium', 'widget');
+    put('utm_campaign', 'chart');
+    put('utm_term', a.symbol);
+    var f = document.createElement('iframe');
+    f.id = id;
+    f.title = 'advanced chart TradingView widget';
+    f.lang = 'en';
+    f.style.cssText = 'width: 100%; height: 100%; margin: 0 !important; padding: 0 !important; display: block;';
+    f.setAttribute('frameBorder', '0');
+    f.setAttribute('allowTransparency', 'true');
+    f.setAttribute('scrolling', 'no');
+    f.setAttribute('allowfullscreen', 'true');
+    f.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+    f.src = url.href + '#' + encodeURIComponent(JSON.stringify(a));
+    var box = document.getElementById(o.container_id);
+    if(box){ box.innerHTML = ''; box.appendChild(f); }
+    this.id = id;
+    this.iframe = f;
+  }
+  window.TradingView = {widget: TVWidget};
+  window.__tvReadyFlag = true;
+  window.loadTV = function(cb){ if(cb) cb(); };      // nothing to load any more: every chart can be drawn at once
+})();
 </script>
 <script>
 // The page LAYOUT is always left-to-right (same button/column positions in Hebrew and English — English is the base).
@@ -1149,20 +1186,10 @@ window.addEventListener('load', function(){
   }
 </style>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
-<script>
-(function(){
-  var s = document.createElement('script');
-  s.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.0/chart.umd.min.js';
-  s.onerror = function(){
-    console.warn('[chart.js] cdnjs failed to load, trying jsdelivr fallback');
-    var s2 = document.createElement('script');
-    s2.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.min.js';
-    s2.onerror = function(){ console.error('[chart.js] both CDN sources failed — fundamentals charts will not render'); };
-    document.head.appendChild(s2);
-  };
-  document.head.appendChild(s);
-})();
-</script>
+<!-- v64 (security review 18.11.2026): Chart.js 4.5.0 from our own site, not a CDN (a changed copy there would have run
+     here with the sign-in token in reach). The file = byte for byte the one on cdnjs, jsdelivr and unpkg (sha256 2f27bcf4…).
+     A new version: download it, compare the copies, replace chart.umd.min.js. -->
+<script src="/chart.umd.min.js" defer></script>
 </head>
 <body>
 <a href="#" id="skip-link" class="skip-link" onclick="event.preventDefault(); kbd.skip();">דלג לתוכן</a>
@@ -2075,7 +2102,7 @@ window.__tvCb = function(){
   if(typeof chartMode !== 'undefined' && chartMode === 'indices' && document.getElementById('market-tv-chart')
      && !document.querySelector('#market-tv-chart iframe')) switchChart(currentChartSymbol);
 };
-if(window.__tvReadyFlag) window.__tvCb();
+// v64: no tv.js to wait for (see the TradingView block in <head>) — the charts are drawn by the normal start-up
 function updateBreakingNav(){
   const el = document.getElementById('breaking-news');
   if(!el) return;
@@ -7029,7 +7056,7 @@ function renderFundamentals(data, containerId){
     // This would otherwise crash identically on every single ticker at the
     // very first Chart.js reference below — showing a clear message here
     // instead of letting that happen silently.
-    console.error('[fundamentals] Chart.js library is not loaded — charts cannot render. Check network/ad-blocker for cdnjs.cloudflare.com.');
+    console.error('[fundamentals] Chart.js library is not loaded — charts cannot render. Check that /chart.umd.min.js is served (.vercelignore).');
     el.insertAdjacentHTML('beforeend', `<div class="fund-empty">${t?'Chart library failed to load — try disabling any ad-blocker/script-blocker for this site and refresh.':'ספריית הגרפים לא נטענה — נסה לכבות חוסם פרסומות/סקריפטים לאתר הזה ולרענן.'}</div>`);
     return;
   }

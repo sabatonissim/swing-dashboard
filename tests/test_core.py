@@ -2337,6 +2337,95 @@ def test_public_requests_stop_at_the_daily_database_budget(api, monkeypatch):
         db_meter.reset_source(token)
 
 
+# ---- v64 (security review 18.11.2026): one signed-in account cannot use up the database or bring the server down ----
+def test_signed_in_requests_have_their_own_limits(api, monkeypatch):
+    import db_meter
+    from fastapi import HTTPException
+    for src in ("server /api/watchlist", "server /api/trades", "server /api/alerts", "server /api/push", "server /api/auth"):
+        assert api._budget_allows(src, 999, 20, 29.9, 30) and not api._budget_allows(src, 0, 20, 30.0, 30)
+    for src in ("server scheduler", "server alerts"):
+        assert api._budget_allows(src, 999, 20, 999, 30)
+    assert api._budget_allows("server /api/stocks", 1, 20, 999, 30)      # the visitors' budget is its own
+
+    saved = dict(db_meter._today)
+    db_meter._today.update(day=None, bytes={})
+    try:
+        db_meter.add("server /api/stocks", nbytes=1_000_000)
+        db_meter.add("server /api/trades", nbytes=2_000_000)
+        db_meter.add("server /api/watchlist", nbytes=500_000)
+        db_meter.add("server scheduler", nbytes=9_000_000)
+        assert api._personal_db_mb_today() == pytest.approx(2.5)
+        assert api._public_db_mb_today() == pytest.approx(1.0)
+        opened = []
+        monkeypatch.setattr(api.psycopg2, "connect", lambda *a, **k: opened.append(1) or "conn")
+        monkeypatch.setattr(api, "PERSONAL_DB_BUDGET_MB", 2.0)
+        token = db_meter.set_source("server /api/watchlist")
+        try:
+            with pytest.raises(api.DatabaseBudgetReached):
+                api.get_conn()
+        finally:
+            db_meter.reset_source(token)
+        token = db_meter.set_source("server scheduler")
+        try:
+            assert api.get_conn() == "conn"
+        finally:
+            db_meter.reset_source(token)
+    finally:
+        db_meter._today.clear()
+        db_meter._today.update(saved)
+
+    # requests per account: a minute and a day
+    monkeypatch.setattr(api, "_rl_hits", {})
+    monkeypatch.setattr(api, "_user_day", {"day": None, "n": {}})
+    monkeypatch.setattr(api, "USER_REQ_PER_MIN", 3)
+    for _ in range(3):
+        api._check_user_rate(5)
+    with pytest.raises(HTTPException) as e:
+        api._check_user_rate(5)
+    assert e.value.status_code == 429
+    api._check_user_rate(6)                                          # another account is not affected
+    monkeypatch.setattr(api, "USER_REQ_PER_MIN", 1000)
+    monkeypatch.setattr(api, "USER_REQ_PER_DAY", 6)
+    with pytest.raises(HTTPException) as e:
+        for _ in range(10):
+            api._check_user_rate(6)
+    assert "daily" in e.value.detail
+
+
+def test_watchlist_answer_is_built_once_per_person(api, monkeypatch):
+    monkeypatch.setattr(api, "_user_answers", {})
+    monkeypatch.setattr(api, "_user_locks", {})
+    builds = []
+    build = lambda: builds.append(1) or ["row"]                      # noqa: E731
+    assert api._per_user_answer("watchlist", 1, build) == ["row"]
+    assert api._per_user_answer("watchlist", 1, build) == ["row"] and len(builds) == 1     # kept, not built again
+    api._per_user_answer("watchlist", 2, build)
+    assert len(builds) == 2                                          # each person their own
+    api._forget_user_answers(1)                                      # a stock added or removed
+    api._per_user_answer("watchlist", 1, build)
+    assert len(builds) == 3
+    assert api._user_locks[("watchlist", 1)][1] == 0                 # nobody left waiting
+    from fastapi import HTTPException
+    api._user_locks[("watchlist", 9)] = [api.threading.Lock(), api._USER_MAX_WAITING]
+    with pytest.raises(HTTPException) as e:
+        api._per_user_answer("watchlist", 9, build)
+    assert e.value.status_code == 429
+
+
+def test_rate_limiter_does_not_forget_everybody(api, monkeypatch):
+    """v64: past _RL_MAX_KEYS only quiet counters go; an address still sending keeps its count."""
+    now = api.time.time()
+    hits = {("default", f"ip{i}"): api.deque([now - 300]) for i in range(30)}
+    hits[("default", "busy")] = api.deque([now] * 5)
+    monkeypatch.setattr(api, "_rl_hits", hits)
+    monkeypatch.setattr(api, "_RL_MAX_KEYS", 10)
+    monkeypatch.setattr(api, "_rl_swept", {"at": 0.0})
+    assert api._rate_limited("default", "busy", 6, 60) is False      # the 6th request: allowed
+    assert ("default", "busy") in api._rl_hits and len(api._rl_hits[("default", "busy")]) == 6
+    assert len(api._rl_hits) == 1
+    assert api._rate_limited("default", "busy", 6, 60) is True       # the 7th: still counted, refused
+
+
 def test_db_meter_counts_the_day_by_source():
     import db_meter
     saved = dict(db_meter._today)

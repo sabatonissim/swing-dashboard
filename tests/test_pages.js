@@ -331,6 +331,39 @@ async function run() {
   r = await get({ kind: 'nothing', lang: 'en' });
   ok(r.statusCode === 404, 'an unknown kind');
 
+  // v64 (security review 18.11.2026): code from another site runs with the sign-in token in reach. Only Google's sign-in
+  // script may (Google requires loading it from them). A library = a file of ours (chart.umd.min.js), TradingView = its own
+  // frame (the TradingView block in <head>). A new outside script makes this fail on purpose: put the file in the site.
+  const SCRIPT_HOSTS_OK = ['accounts.google.com'];
+  const html = read('index.html');
+  const outside = [];
+  for (const m of html.matchAll(/<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi)) {
+    if (/^(https?:)?\/\//i.test(m[1])) outside.push(m[1]);
+  }
+  for (const m of html.matchAll(/\.src\s*=\s*['"`](https?:\/\/[^'"`]+)['"`]/gi)) outside.push(m[1]);   // a script added from code
+  for (const u of outside) {
+    const host = new URL(u, SITE).hostname;
+    ok(SCRIPT_HOSTS_OK.includes(host), `a script from another site in index.html: ${u}`);
+  }
+  ok(!/s3\.tradingview\.com\/tv\.js/.test(html.replace(/\/\/[^\n]*/g, '')), 'tv.js is not loaded into the page');
+  const csp = JSON.parse(read('vercel.json')).headers.flatMap((h) => h.headers).find((h) => h.key === 'Content-Security-Policy').value;
+  const scriptSrc = (/script-src ([^;]+)/.exec(csp) || [, ''])[1].trim().split(/\s+/);
+  ok(scriptSrc.every((s) => ["'self'", "'unsafe-inline'"].includes(s) || SCRIPT_HOSTS_OK.some((h) => s === `https://${h}`)),
+    `CSP script-src allows only our files and Google sign-in: ${scriptSrc.join(' ')}`);
+  ok(!/unsafe-eval/.test(csp) && /object-src 'none'/.test(csp) && /frame-ancestors 'none'/.test(csp), 'CSP keeps its locks');
+  const shipped = read('.vercelignore').split(/\r?\n/).filter((l) => l.startsWith('!')).map((l) => l.slice(1).trim());
+  for (const m of html.matchAll(/<script\b[^>]*\bsrc\s*=\s*["']\/([^"'/]+)["']/gi)) {
+    let there = true;
+    try { read(m[1]); } catch (e) { there = false; }
+    ok(shipped.includes(m[1]) && there, `our script /${m[1]} is in the repository and in .vercelignore`);
+  }
+  // a notification opens a page of this site only (sw.js)
+  const sw = read('sw.js');
+  const swRe = /\/(\^[^\n]+?)\/\.test\(d\.url\)/.exec(sw);
+  const inside = swRe ? new RegExp(swRe[1]) : null;
+  ok(inside && inside.test('/stock/KO') && !inside.test('//other.site') && !inside.test('/\\other.site') && !inside.test('https://x'),
+    'sw.js keeps notification links inside the site');
+
   console.log(`pages: ${passed} passed, ${failed} failed`);
   if (typeof process !== 'undefined') process.exitCode = failed ? 1 : 0;
   return failed;

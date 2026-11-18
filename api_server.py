@@ -163,12 +163,30 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+_RL_LONGEST_WINDOW = 60
+_rl_swept = {"at": 0.0}
+
+
+def _rl_trim(now: float) -> None:
+    """v64 (security review 18.11.2026): past _RL_MAX_KEYS every counter used to be wiped, so whoever sent requests from
+    20,000 addresses (cheap with IPv6) reset the limit of everybody, themselves included. Now only counters with no request
+    in the last minute go; if that is not enough, the quarter that was quiet the longest. Called with _rl_lock held."""
+    if len(_rl_hits) <= _RL_MAX_KEYS or now - _rl_swept["at"] < 5:
+        return
+    _rl_swept["at"] = now
+    for k in [k for k, dq in _rl_hits.items() if not dq or dq[-1] < now - _RL_LONGEST_WINDOW]:
+        del _rl_hits[k]
+    if len(_rl_hits) > _RL_MAX_KEYS:
+        quiet = sorted(_rl_hits, key=lambda k: _rl_hits[k][-1])
+        for k in quiet[:len(quiet) // 4]:
+            del _rl_hits[k]
+
+
 def _rate_limited(bucket: str, ip: str, limit: int, window: int) -> bool:
     now = time.time()
     key = (bucket, ip)
     with _rl_lock:
-        if len(_rl_hits) > _RL_MAX_KEYS:
-            _rl_hits.clear()
+        _rl_trim(now)
         dq = _rl_hits.get(key)
         if dq is None:
             dq = _rl_hits[key] = deque()
@@ -339,8 +357,15 @@ def _canon_ticker(raw: str) -> str:
 # A normal day of the server is ~3 MB (usage.db, 12.11.2026). Worst case: 20 MB x 30 days = 0.6 GB of the 5 GB.
 # More visitors one day -> raise PUBLIC_DB_BUDGET_MB in Render; /api/data-health shows today's count.
 PUBLIC_DB_BUDGET_MB = float(os.environ.get("PUBLIC_DB_BUDGET_MB", "20") or 20)
-_BUDGET_EXEMPT = ("server scheduler", "server alerts", "server /api/auth", "server /api/watchlist", "server /api/trades",
-                  "server /api/alerts", "server /api/push")
+# v64 (security review 18.11.2026): signed-in people's own data had no limit at all, and anybody can sign in with a free
+# Google account — one account in a loop (240 requests a minute, each a connection, ~5-10 KB) would have used up
+# November's last 0.5 GB in a few hours. Now: their own limit, together for all signed-in people, far above real use
+# (a signed-in person all day ~1 MB). Worst case 30 MB x 30 days = 0.9 GB. The scheduler and the alert loop: never stopped.
+PERSONAL_DB_BUDGET_MB = float(os.environ.get("PERSONAL_DB_BUDGET_MB", "30") or 30)
+_ALWAYS_ALLOWED = ("server scheduler", "server alerts")
+_PERSONAL_SOURCES = ("server /api/auth", "server /api/watchlist", "server /api/trades", "server /api/alerts",
+                     "server /api/push")
+_BUDGET_EXEMPT = _ALWAYS_ALLOWED + _PERSONAL_SOURCES      # not counted in the visitors' budget
 _budget_logged = {"at": 0.0}
 
 
@@ -352,17 +377,31 @@ def _public_db_mb_today() -> float:
     return db_meter.bytes_today(skip=_BUDGET_EXEMPT) / 1e6
 
 
-def _budget_allows(source: str, used_mb: float, budget_mb: float) -> bool:
-    return source.startswith(_BUDGET_EXEMPT) or used_mb < budget_mb
+def _personal_db_mb_today() -> float:
+    return (db_meter.bytes_today(skip=_ALWAYS_ALLOWED) - db_meter.bytes_today(skip=_BUDGET_EXEMPT)) / 1e6
+
+
+def _budget_allows(source: str, used_mb: float, budget_mb: float,
+                   personal_mb: float = 0.0, personal_budget_mb: float = float("inf")) -> bool:
+    if source.startswith(_ALWAYS_ALLOWED):
+        return True
+    if source.startswith(_PERSONAL_SOURCES):
+        return personal_mb < personal_budget_mb
+    return used_mb < budget_mb
 
 
 def get_conn():
-    if not _budget_allows(db_meter.current_source(), _public_db_mb_today(), PUBLIC_DB_BUDGET_MB):
+    source = db_meter.current_source()
+    personal = source.startswith(_PERSONAL_SOURCES)
+    if not _budget_allows(source, 0.0 if personal else _public_db_mb_today(), PUBLIC_DB_BUDGET_MB,
+                          _personal_db_mb_today() if personal else 0.0, PERSONAL_DB_BUDGET_MB):
         if time.time() - _budget_logged["at"] > 600:
             _budget_logged["at"] = time.time()
-            print(f"[SECURITY WARNING] visitors' database reads passed {PUBLIC_DB_BUDGET_MB:.0f} MB today — public requests "
-                  f"get the answers in memory or 503 until midnight UTC (last: {db_meter.current_source()})")
-        raise DatabaseBudgetReached("daily database budget for public requests reached")
+            which = (f"signed-in people's database reads passed {PERSONAL_DB_BUDGET_MB:.0f} MB" if personal else
+                     f"visitors' database reads passed {PUBLIC_DB_BUDGET_MB:.0f} MB")
+            print(f"[SECURITY WARNING] {which} today — those requests get the answers in memory or 503 until midnight UTC "
+                  f"(last: {source})")
+        raise DatabaseBudgetReached("daily database budget reached")
     # v35c: without a time limit a database that does not answer holds the request (and a server thread) for minutes
     conn = psycopg2.connect(DB_URL, connect_timeout=15)
     return conn
@@ -652,7 +691,30 @@ def current_user_id(authorization: Optional[str] = Header(default=None)) -> int:
         raise HTTPException(status_code=401, detail="user not found")
     if version != current:
         raise HTTPException(status_code=401, detail="signed out on this device")
+    _check_user_rate(user_id)
     return user_id
+
+
+# v64 (security review 18.11.2026): the limits per address do not stop one account used from many addresses, and every
+# request of a signed-in person reaches the database (and some, Yahoo — see _per_user_answer). The site itself sends a few
+# a minute (a page load ~6, a refresh every 5 minutes); these are far above that.
+USER_REQ_PER_MIN = 60
+USER_REQ_PER_DAY = 3000
+_user_day = {"day": None, "n": {}}
+
+
+def _check_user_rate(user_id: int) -> None:
+    if _rate_limited("user", f"u{user_id}", USER_REQ_PER_MIN, 60):
+        raise HTTPException(status_code=429, detail="too many requests — slow down", headers={"Retry-After": "60"})
+    today = dt.now(timezone.utc).date()
+    with _rl_lock:
+        if _user_day["day"] != today:
+            _user_day["day"], _user_day["n"] = today, {}
+        n = _user_day["n"][user_id] = _user_day["n"].get(user_id, 0) + 1
+    if n > USER_REQ_PER_DAY:
+        if n == USER_REQ_PER_DAY + 1:
+            print(f"[SECURITY WARNING] account {user_id} passed {USER_REQ_PER_DAY} requests today — refused until midnight UTC")
+        raise HTTPException(status_code=429, detail="daily limit reached — try again tomorrow")
 
 
 class GoogleLogin(BaseModel):
@@ -2005,6 +2067,7 @@ def get_data_health():
     return {"available": True, "day": rows[0]["day"].isoformat(), "checked_at": rows[0]["checked_at"].isoformat(),
             # v50: today's reads for visitors against the daily limit (this server process, since its last restart)
             "public_db_today_mb": round(_public_db_mb_today(), 2), "public_db_budget_mb": PUBLIC_DB_BUDGET_MB,
+            "personal_db_today_mb": round(_personal_db_mb_today(), 2), "personal_db_budget_mb": PERSONAL_DB_BUDGET_MB,
             # v62: what this server saw today (memory, no database) — not part of `status`, which is the morning report's
             "live": {"stock_news": stock_news_health()},
             "status": rows[0]["status"], "results": rows[0]["results"],
@@ -4960,6 +5023,10 @@ def _fetch_one_watchlist_setup(ticker: str) -> Optional[dict]:
 
 @app.get("/api/watchlist-setups")
 def get_watchlist_setups(user_id: int = Depends(current_user_id)):
+    return _per_user_answer("watchlist-setups", user_id, lambda: _build_watchlist_setups(user_id))   # v64
+
+
+def _build_watchlist_setups(user_id: int):
     with db_cursor(dict_cursor=True) as (conn, cur):
         cur.execute("SELECT ticker FROM watchlist WHERE user_id = %s ORDER BY added_at DESC", (user_id,))
         tickers = [r["ticker"] for r in cur.fetchall()]
@@ -5372,8 +5439,62 @@ def _watchlist_row(t: str) -> dict:
     return row
 
 
+# v64 (security review 18.11.2026): one watchlist answer = up to 200 Yahoo downloads, 4-6 at a time, and nothing stopped
+# one account from asking again and again, or many times at once: hundreds of threads on a 512 MB server (it fell over on
+# 26.10) and a reason for Yahoo to block Render. Now each person's answer is built once at a time (a second request
+# waits for it and gets the same answer), kept PER_USER_TTL_SEC, and at most _WATCH_BUILDS builds run on the server at once.
+# Adding or removing a stock forgets the kept answer (_forget_user_answers), so the list on the screen is never behind.
+PER_USER_TTL_SEC = 60
+_WATCH_BUILDS = threading.BoundedSemaphore(2)
+_USER_MAX_WAITING = 3                   # requests of one person for one answer at the same time (the site sends 1-2)
+_user_answers: dict = {}                # (name, user id) -> (expires, answer)
+_user_locks: dict = {}
+_user_guard = threading.Lock()
+
+
+def _per_user_answer(name: str, user_id: int, build):
+    key = (name, user_id)
+    hit = _user_answers.get(key)
+    if hit and time.time() < hit[0]:
+        return hit[1]
+    with _user_guard:
+        lock, waiting = _user_locks.setdefault(key, [threading.Lock(), 0])
+        if waiting >= _USER_MAX_WAITING:          # each waiting request holds one of the server's threads
+            raise HTTPException(status_code=429, detail="already loading — try again in a moment")
+        _user_locks[key][1] += 1
+    try:
+        if not lock.acquire(timeout=60):
+            raise HTTPException(status_code=503, detail="still loading — try again in a moment")
+        try:
+            hit = _user_answers.get(key)
+            if hit and time.time() < hit[0]:
+                return hit[1]
+            with _WATCH_BUILDS:
+                value = build()
+            with _user_guard:
+                if len(_user_answers) > 2000:
+                    _user_answers.clear()
+                _user_answers[key] = (time.time() + PER_USER_TTL_SEC, value)
+            return value
+        finally:
+            lock.release()
+    finally:
+        with _user_guard:
+            _user_locks[key][1] -= 1
+
+
+def _forget_user_answers(user_id: int) -> None:
+    with _user_guard:
+        for key in [k for k in _user_answers if k[1] == user_id]:
+            _user_answers.pop(key, None)
+
+
 @app.get("/api/watchlist")
 def get_watchlist(user_id: int = Depends(current_user_id)):
+    return _per_user_answer("watchlist", user_id, lambda: _build_watchlist(user_id))
+
+
+def _build_watchlist(user_id: int):
     with db_cursor(dict_cursor=True) as (conn, cur):
         cur.execute("SELECT ticker FROM watchlist WHERE user_id = %s ORDER BY added_at DESC", (user_id,))
         tickers = [r["ticker"] for r in cur.fetchall()]
@@ -5402,6 +5523,7 @@ def add_to_watchlist(body: WatchlistTicker, user_id: int = Depends(current_user_
             (user_id, ticker),
         )
         conn.commit()
+    _forget_user_answers(user_id)
     return {"ticker": ticker, "added": True}
 
 
@@ -5411,6 +5533,7 @@ def remove_from_watchlist(ticker: str, user_id: int = Depends(current_user_id)):
     with db_cursor() as (conn, cur):
         cur.execute("DELETE FROM watchlist WHERE ticker = %s AND user_id = %s", (ticker, user_id))
         conn.commit()
+    _forget_user_answers(user_id)
     return {"ticker": ticker, "removed": True}
 
 

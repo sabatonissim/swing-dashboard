@@ -63,7 +63,8 @@ self.addEventListener('push', (e) => {
     // solid white square. badge-96.png = the white S on a transparent background.
     badge: '/badge-96.png',
     tag: d.tag ? String(d.tag).slice(0, 64) : undefined,
-    data: { url: typeof d.url === 'string' && d.url.startsWith('/') ? d.url : '/' },   // only links inside the site
+    // only links inside the site ("//other.site" and "/\other.site" lead outside — v64, security review 18.11.2026)
+    data: { url: typeof d.url === 'string' && /^\/(?![\/\\])/.test(d.url) ? d.url : '/' },
   }));
 });
 
