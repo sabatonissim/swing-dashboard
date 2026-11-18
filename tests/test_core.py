@@ -70,6 +70,7 @@ TWIN_CONSTANTS = [
     ("TRENDLINE_TOUCH_TOL", "_TL_TOUCH_TOL"), ("TRENDLINE_MIN_SPAN_BARS", "_TL_MIN_SPAN_BARS"),
     ("TRENDLINE_MIN_TOUCHES", "_TL_MIN_TOUCHES"), ("TRENDLINE_WICK_BARS", "_TL_WICK_BARS"),
     ("FLIP_TEST_BARS", "_FLIP_TEST_BARS"), ("FLIP_MAX_PIERCE", "_FLIP_MAX_PIERCE"),
+    ("BOUNCE_MIN_CLOSE_POS", "_BOUNCE_MIN_CLOSE_POS"),                                    # v65
     ("CUP_SEARCH_BARS", "_CUP_SEARCH_BARS"), ("CUP_MIN_BARS", "_CUP_MIN_BARS"), ("CUP_MAX_BARS", "_CUP_MAX_BARS"),
     ("CUP_MIN_DEPTH", "_CUP_MIN_DEPTH"), ("CUP_MAX_DEPTH", "_CUP_MAX_DEPTH"), ("CUP_RIM_TOL", "_CUP_RIM_TOL"),
     ("CUP_FRESH_BARS", "_CUP_FRESH_BARS"), ("CUP_MAX_EXTENSION", "_CUP_MAX_EXTENSION"),
@@ -2424,6 +2425,48 @@ def test_rate_limiter_does_not_forget_everybody(api, monkeypatch):
     assert ("default", "busy") in api._rl_hits and len(api._rl_hits[("default", "busy")]) == 6
     assert len(api._rl_hits) == 1
     assert api._rate_limited("default", "busy", 6, 60) is True       # the 7th: still counted, refused
+
+
+# ---- v65 (18.11.2026): splits Yahoo has not applied yet, and bounces that closed at the day's low ----
+def test_split_not_applied_by_yahoo_yet_is_corrected():
+    """EMBJ split 4:1 on 17.11.2026; Yahoo still sent 78.73 for 13.11 next to 18.90 for 17.11 (the site: "-75.99%")."""
+    from price_splits import fix_unadjusted_splits, split_not_applied
+    idx = pd.to_datetime(["2026-11-12", "2026-11-13", "2026-11-16", "2026-11-17"])
+    raw = pd.DataFrame({"Open": [79.0, 79.5, None, 19.6], "High": [80.0, 80.0, None, 19.9], "Low": [78.0, 78.5, None, 18.5],
+                        "Close": [79.48, 78.73, None, 18.90], "Volume": [1000, 1200, 0, 5000],
+                        "Stock Splits": [0.0, 0.0, 4.0, 0.0]}, index=idx)
+    fixed = fix_unadjusted_splits(raw)
+    assert fixed["Close"].iloc[1] == pytest.approx(78.73 / 4) and fixed["Volume"].iloc[1] == 4800
+    closes = fixed["Close"].dropna()
+    assert -6 < (closes.iloc[-1] / closes.iloc[-2] - 1) * 100 < -3                     # about -4%, not -76%
+    assert raw["Close"].iloc[1] == 78.73                                                # the input is not changed
+    # Yahoo already adjusted the older rows: nothing changes
+    done = raw.copy()
+    for c in ("Open", "High", "Low", "Close"):
+        done.loc[done.index[:3], c] = done[c].iloc[:3] / 4
+    assert fix_unadjusted_splits(done)["Close"].iloc[1] == pytest.approx(78.73 / 4)
+    # a reverse split (1 for 10 = 0.1): $2 -> $20
+    assert split_not_applied(2.0, 20.5, 0.1) and not split_not_applied(20.0, 20.5, 0.1)
+    no_split = raw.drop(columns=["Stock Splits"])
+    assert fix_unadjusted_splits(no_split) is no_split
+
+
+def test_a_bounce_closes_off_the_days_low(scanner, api):
+    """v65: 17.11.2026, a falling market, 118 bounce scans — most closed near the day's low. The close has to be at
+    least 40% up the day's range; ZS 13.11 (0.497, the owner's example) still counts."""
+    assert scanner.BOUNCE_MIN_CLOSE_POS == api._BOUNCE_MIN_CLOSE_POS == 0.4
+    zs = _hist("ZS")
+    assert scanner.closed_off_the_low(zs) and scanner.detect_horizontal_level_bounce(zs)
+    low_close = zs.copy()
+    low_close.iloc[-1, low_close.columns.get_loc("Close")] = float(zs["Low"].iloc[-1]) + 0.385 * (
+        float(zs["High"].iloc[-1]) - float(zs["Low"].iloc[-1]))
+    assert float(low_close["Close"].iloc[-1]) > 191.25                                  # still above the level
+    assert not scanner.closed_off_the_low(low_close) and not api._closed_off_the_low(low_close)
+    assert scanner.detect_horizontal_level_bounce(low_close) is None
+    assert api._scanner_rule_level_bounce(low_close) is None
+    for f in (scanner.detect_ma150_support_bounce, scanner.detect_ascending_trendline_support,
+              api._scanner_rule_ma150_bounce, api._scanner_rule_asc_trendline):
+        assert f(low_close) is None
 
 
 def test_db_meter_counts_the_day_by_source():

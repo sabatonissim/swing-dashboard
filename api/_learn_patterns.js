@@ -343,6 +343,7 @@ module.exports = [
 <ul>
 <li>The average is rising over the last 20 trading days.</li>
 <li>Today's low is within 3% of the average, and the close is above it.</li>
+<li>The close is in the upper 60% of the day's range (at least 40% of the way from the day's low to its high). A stock that touched the level and closed near its low has not shown buyers yet.</li>
 <li>At least 70% of the previous 10 closes were above the average, so this is a pullback in a stock that has been above the line, not a stock crossing it for the first time.</li>
 <li>The stock's <a href="/learn/atr">ATR</a> is at least 2.5%. This setup has its own quality rule: in the site's own history, quieter stocks did noticeably worse.</li>
 </ul>
@@ -366,6 +367,7 @@ module.exports = [
 <ul>
 <li>הממוצע עולה ב-20 ימי המסחר האחרונים.</li>
 <li>השפל של היום במרחק של עד 3% מהממוצע, ומחיר הסגירה מעליו.</li>
+<li>הסגירה נמצאת ב-60% העליונים של הטווח של היום (לפחות 40% מהדרך מהשפל של היום לשיא שלו). מניה שנגעה ברמה ונסגרה קרוב לשפל עוד לא הראתה קונים.</li>
 <li>לפחות 70% מ-10 הסגירות הקודמות היו מעל הממוצע, כלומר זה תיקון במניה שהייתה מעל הקו, ולא מניה שחוצה אותו בפעם הראשונה.</li>
 <li>ה-<a href="/he/learn/atr">ATR</a> של המניה הוא 2.5% לפחות. למבנה הזה יש כלל איכות משלו: בהיסטוריה של האתר, מניות שקטות יותר הציגו תוצאות נמוכות באופן ניכר.</li>
 </ul>
@@ -489,6 +491,7 @@ module.exports = [
 <li>The line has at least 3 touches, counted within 1% of the line, and its two anchor points are at least 15 trading days apart.</li>
 <li>No low in the period crosses below the line by more than 0.5%. This is strict on purpose: a line that was already broken is not support.</li>
 <li>Today's close is between 0% and 3% above the line, and the low of one of the last 3 sessions came within 1.5% of it.</li>
+<li>The close is in the upper 60% of the day's range (at least 40% of the way from the day's low to its high). A stock that touched the level and closed near its low has not shown buyers yet.</li>
 </ul>
 <p>A volume condition is not used, since the line itself has been tested. ${QUALITY_EN}</p>
 <h2>A note on the math</h2>
@@ -509,6 +512,7 @@ module.exports = [
 <li>לקו יש לפחות 3 נגיעות, שנספרות במרחק של עד 1% ממנו, ולפחות 15 ימי מסחר בין שתי נקודות העיגון שלו.</li>
 <li>אף שפל בתקופה לא חוצה את הקו ביותר מ-0.5%. זה מחמיר בכוונה: קו שכבר נשבר אינו תמיכה.</li>
 <li>מחיר הסגירה היום גבוה ב-0% עד 3% מהקו, והשפל של אחד מ-3 ימי המסחר האחרונים התקרב אליו עד 1.5%.</li>
+<li>הסגירה נמצאת ב-60% העליונים של הטווח של היום (לפחות 40% מהדרך מהשפל של היום לשיא שלו). מניה שנגעה ברמה ונסגרה קרוב לשפל עוד לא הראתה קונים.</li>
 </ul>
 <p>לא משתמשים בתנאי של נפח מסחר, כי הקו עצמו כבר נבחן. ${QUALITY_HE}</p>
 <h2>הערה על החשבון</h2>
@@ -532,6 +536,7 @@ module.exports = [
 <ul>
 <li>It looks at the last 150 trading days for swing lows within 2% of each other, with at least 2 touches. Together they define the level.</li>
 <li>Today's low is within 1.5% of the level, and today's close is above it.</li>
+<li>The close is in the upper 60% of the day's range (at least 40% of the way from the day's low to its high). A stock that touched the level and closed near its low has not shown buyers yet.</li>
 <li>At least 60% of the previous 10 closes were above the level. The stock is pulling back to support from above, and it has not been living below it. A stock under the level that spikes up to it is a different situation.</li>
 <li>Old resistance tested as support is listed too: at least 2 swing highs within 2% of each other in the last 250 trading days, all more than 10 days old, that the stock has since closed above. The level is the first of those highs. Today's low is between 3% under it and 1.5% over it, today's close is above it, and the closes have not crossed the level more times than it was touched.</li>
 </ul>
@@ -552,6 +557,7 @@ module.exports = [
 <ul>
 <li>הוא מסתכל על 150 ימי המסחר האחרונים ומחפש שפלים מקומיים במרחק של עד 2% זה מזה, עם לפחות 2 נגיעות. יחד הם מגדירים את הרמה.</li>
 <li>השפל של היום במרחק של עד 1.5% מהרמה, ומחיר הסגירה מעליה.</li>
+<li>הסגירה נמצאת ב-60% העליונים של הטווח של היום (לפחות 40% מהדרך מהשפל של היום לשיא שלו). מניה שנגעה ברמה ונסגרה קרוב לשפל עוד לא הראתה קונים.</li>
 <li>לפחות 60% מ-10 הסגירות הקודמות היו מעל הרמה. המניה מתקנת אל התמיכה מלמעלה, ולא חיה מתחתיה. מניה מתחת לרמה שקופצת אליה היא מצב אחר.</li>
 <li>גם התנגדות ישנה שנבחנת כתמיכה מוצגת: לפחות 2 שיאים מקומיים במרחק של עד 2% זה מזה ב-250 ימי המסחר האחרונים, כולם לפני יותר מ-10 ימים, שהמניה נסגרה מאז מעליהם. הרמה היא הראשון מבין השיאים האלה. השפל של היום נמצא בין 3% מתחתיה ל-1.5% מעליה, הסגירה של היום מעליה, והסגירות לא חצו את הרמה יותר פעמים משנגעו בה.</li>
 </ul>

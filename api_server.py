@@ -74,6 +74,7 @@ import push_alerts    # v19: push notifications (watchlist signals, price alerts
 import fundamentals as fundlib   # v21: SEC fundamentals build + stored copies (also the nightly warm-up job)
 import scheduler      # starts the GitHub Actions workflows at exact ET times (see scheduler.py): providers -> processing -> uniform events (see econ_calendar.py)
 import db_meter       # v38: counts what each endpoint reads from the database (data_health.py reports it)
+from price_splits import fix_unadjusted_splits   # v65: splits Yahoo has not applied yet (also the scanner)
 db_meter.install("server", flush_every=db_meter.SERVER_FLUSH_EVERY, prune=True)
 
 DB_URL = os.environ.get("SWING_DB_PATH") or os.environ.get("DATABASE_URL")
@@ -4189,7 +4190,23 @@ def _trendline_line_dict(fit: dict, window: pd.DataFrame, label_he: str, label_e
     }
 
 
+_BOUNCE_MIN_CLOSE_POS = 0.4     # v65 twin of BOUNCE_MIN_CLOSE_POS: a bounce closes off the day's low (17.11: 118 bounces)
+
+
+def _closed_off_the_low(hist: pd.DataFrame) -> bool:
+    """Twin of the scanner's closed_off_the_low: today's close at least _BOUNCE_MIN_CLOSE_POS up the day's range."""
+    try:
+        high, low, close = (float(hist[c].iloc[-1]) for c in ("High", "Low", "Close"))
+    except Exception:  # noqa: BLE001
+        return True
+    if not high > low:
+        return True
+    return (close - low) / (high - low) >= _BOUNCE_MIN_CLOSE_POS
+
+
 def _scanner_rule_asc_trendline(hist: pd.DataFrame) -> Optional[dict]:
+    if not _closed_off_the_low(hist):                        # v65
+        return None
     window = hist.tail(_TL_SEARCH_DAYS)
     fit = _fit_trendline(
         window, "support",
@@ -4330,8 +4347,8 @@ def _ma150_reclaim_result(hist: pd.DataFrame, sma150: pd.Series, days_since_cros
 
 def _scanner_rule_ma150_bounce(hist: pd.DataFrame) -> Optional[dict]:
     """Twin of detect_ma150_support_bounce: today's LOW within 3% of a rising
-    150 MA, close back above it, and >=70% of the prior 10 closes above it."""
-    if len(hist) < 170:
+    150 MA, close back above it, and >=70% of the prior 10 closes above it. v65: closed off the day's low."""
+    if len(hist) < 170 or not _closed_off_the_low(hist):
         return None
     closes = hist["Close"]
     sma150 = closes.rolling(150).mean()
@@ -4381,7 +4398,9 @@ _FLIP_MAX_PIERCE = 0.03
 def _scanner_rule_flipped_level(hist: pd.DataFrame) -> Optional[dict]:
     """Twin of flipped_level_bounce (v55b): old resistance — 2+ swing highs within 2%, all older than 10 bars, priced at
     the first of them — tested from above today: low between 3% under and 1.5% over it, close above it, 6 of the 10
-    closes before today above it, and not crossed by the closes more times than it was touched."""
+    closes before today above it, and not crossed by the closes more times than it was touched. v65: closed off the low."""
+    if not _closed_off_the_low(hist):
+        return None
     window = hist.tail(_TL_SEARCH_DAYS)
     n = len(window)
     if n < 60:
@@ -4444,7 +4463,9 @@ def _scanner_rule_flipped_level(hist: pd.DataFrame) -> Optional[dict]:
 def _scanner_rule_level_bounce(hist: pd.DataFrame) -> Optional[dict]:
     """Twin of detect_horizontal_level_bounce: a level touched 2+ times
     (swing lows within 2%), today's LOW within 1.5% of it, close back above,
-    and >= 60% of the 10 closes before today above it (a pullback from above)."""
+    and >= 60% of the 10 closes before today above it (a pullback from above). v65: closed off the day's low."""
+    if not _closed_off_the_low(hist):
+        return None
     window = hist.tail(150)
     if len(window) < 30:
         return None
@@ -4856,7 +4877,7 @@ def get_technical_setup(ticker: str):
     # 2y, same as the scanner's own fetch, so both run the detectors on
     # identical history (1y used to be one more source of disagreement).
     try:
-        hist = yf.Ticker(ticker).history(period="2y", interval="1d", auto_adjust=False)   # actual prices, like TradingView (v18)
+        hist = fix_unadjusted_splits(yf.Ticker(ticker).history(period="2y", interval="1d", auto_adjust=False))   # actual prices, like TradingView (v18); v65 splits
     except Exception:
         raise HTTPException(status_code=502, detail="שגיאה בשליפת נתוני המניה")
     if hist.empty or len(hist) < 65:
@@ -4997,7 +5018,7 @@ def get_technical_setup(ticker: str):
 
 def _fetch_one_watchlist_setup(ticker: str) -> Optional[dict]:
     try:
-        hist = yf.Ticker(ticker).history(period="2y", interval="1d", auto_adjust=False)   # actual prices, like TradingView (v18)
+        hist = fix_unadjusted_splits(yf.Ticker(ticker).history(period="2y", interval="1d", auto_adjust=False))   # actual prices, like TradingView (v18); v65 splits
     except Exception as e:
         print(f"[warn] watchlist-setups: history fetch failed for {ticker}: {e}")
         return None
@@ -5157,7 +5178,7 @@ def lookup_stock(ticker: str):
     for attempt in range(2):
         try:
             # actual prices, like TradingView (v18). v34: a full year — this also gives the 52-week range below
-            hist = tk.history(period="1y", interval="1d", auto_adjust=False)
+            hist = fix_unadjusted_splits(tk.history(period="1y", interval="1d", auto_adjust=False))   # v65
             if hist is not None and not hist.empty:
                 break
         except Exception as e:
@@ -5241,7 +5262,7 @@ _PRICE_COMPARE_DAYS = {"1M": 31, "3M": 92, "6M": 183, "1Y": 366}
 
 def _fetch_close_series(ticker: str) -> Optional[pd.Series]:
     try:
-        hist = yf.Ticker(ticker).history(period="2y", interval="1d", auto_adjust=False)   # actual prices, like TradingView (v18)
+        hist = fix_unadjusted_splits(yf.Ticker(ticker).history(period="2y", interval="1d", auto_adjust=False))   # actual prices, like TradingView (v18); v65 splits
     except Exception as e:
         print(f"[warn] price-compare: history failed for {ticker}: {e}")
         return None
@@ -5418,7 +5439,7 @@ def _watchlist_row(t: str) -> dict:
     row = {"ticker": t, "name": t, "price": None, "change_pct": None, "atr_pct": None}
     try:
         tk = yf.Ticker(t)
-        hist = tk.history(period="1mo", interval="1d", auto_adjust=False)   # actual prices, like the rest of the site
+        hist = fix_unadjusted_splits(tk.history(period="1mo", interval="1d", auto_adjust=False))   # actual prices; v65 splits
         closes = hist["Close"].dropna()
         if len(closes) >= 2:
             price = float(closes.iloc[-1])

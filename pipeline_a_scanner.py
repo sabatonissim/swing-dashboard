@@ -64,6 +64,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 import yfinance as yf
+from price_splits import fix_unadjusted_splits     # v65: splits Yahoo has not applied yet (also api_server.py)
 
 DB_URL = os.environ.get("SWING_DB_PATH") or os.environ.get("DATABASE_URL")
 
@@ -284,9 +285,10 @@ def _yf_frames(tickers: List[str], **kwargs) -> Dict[str, pd.DataFrame]:
             else:
                 continue
             if "Close" in h.columns and h["Close"].notna().any():
-                out[t] = h
+                out[t] = fix_unadjusted_splits(h)     # v65: a split Yahoo has not applied yet (EMBJ 17.11: "-76%")
         return out
 
+    kwargs.setdefault("actions", True)                # v65: the "Stock Splits" column fix_unadjusted_splits needs
     out = frames(yf.download(tickers, group_by="ticker", auto_adjust=False, progress=False, threads=True, **kwargs), tickers)
     lost = [t for t in tickers if t not in out]
     if lost and len(lost) <= YF_RETRY_MAX:
@@ -610,12 +612,34 @@ def fit_trendline(window: pd.DataFrame, kind: str, accept=None, free_bars: int =
     return best
 
 
+# v65 (approved by the owner 18.11.2026): a BOUNCE needs buyers on the day itself. On 17.11.2026 the market fell (429 of
+# 503 down) and 118 bounce scans came out (a normal day: 5-30): every stock that fell onto a support and closed a cent
+# above it counted, even one that closed near the day's low. Now the close has to be at least this far up the day's
+# range (0 = at the low, 1 = at the high). Measured on the scans of 6-17.11.2026 (final daily bars from Yahoo): 17.11
+# 118 -> 37, 16.11 31 -> 12, the quiet days (6, 9, 10, 11.11) 26 of 27 kept. 0.4 and not 0.5: ZS on 13.11 (the owner's
+# own example of an old resistance tested as support) closed at 0.497. Twin: api_server._BOUNCE_MIN_CLOSE_POS.
+BOUNCE_MIN_CLOSE_POS = 0.4
+
+
+def closed_off_the_low(hist: pd.DataFrame) -> bool:
+    """Today's close at least BOUNCE_MIN_CLOSE_POS up the day's range (twin: api_server._closed_off_the_low)."""
+    try:
+        high, low, close = (float(hist[c].iloc[-1]) for c in ("High", "Low", "Close"))
+    except Exception:  # noqa: BLE001
+        return True
+    if not high > low:
+        return True
+    return (close - low) / (high - low) >= BOUNCE_MIN_CLOSE_POS
+
+
 def detect_ascending_trendline_support(hist: pd.DataFrame) -> Optional[dict]:
     """Price bouncing off a RISING support line that really runs under the
     swing lows (see fit_trendline). Flagged when today's close is 0-3%
     above the line AND a candle in the last 3 sessions touched it — a
     real bounce, not just proximity. A continuation signal inside an
-    existing uptrend."""
+    existing uptrend. v65: and today closed off its low (closed_off_the_low)."""
+    if not closed_off_the_low(hist):
+        return None
     window = hist.tail(TRENDLINE_SEARCH_DAYS).reset_index(drop=True)
     # "Bounce" = holding 0-3% above the line AND a candle in the last 3 sessions
     # actually came down to it (within 1.5%) — not just sitting near a line
@@ -657,7 +681,7 @@ def detect_ma150_support_bounce(hist: pd.DataFrame) -> Optional[dict]:
     BOUNCE_TOLERANCE_PCT = 0.03   # today's low must come within 3% of the MA to count as "testing" it
     MIN_PRIOR_ABOVE_PCT = 0.7     # at least 70% of the 10 closes before today were above the MA
 
-    if len(hist) < 170:
+    if len(hist) < 170 or not closed_off_the_low(hist):      # v65
         return None
     closes = hist["Close"]
     sma150 = closes.rolling(150).mean()
@@ -717,6 +741,8 @@ def detect_horizontal_level_bounce(hist: pd.DataFrame, lookback: int = 150) -> O
     # level on 8-9 of the 10 previous closes — price coming up through it from below, not support holding.
     MIN_PRIOR_ABOVE_PCT = 0.6    # at least 6 of the 10 closes before today were above the level
 
+    if not closed_off_the_low(hist):                         # v65 (covers flipped_level_bounce too)
+        return None
     window = hist.tail(lookback).reset_index(drop=True)
     if len(window) < 30:
         return None
@@ -789,6 +815,8 @@ def flipped_level_bounce(hist: pd.DataFrame) -> Optional[dict]:
     between 3% under and 1.5% over the level, today's close is above it, at least 6 of the 10 closes before today were
     above it (it was broken, and this is a pullback from above), and the closes did not cross it more times than it
     was touched (a level sliced again and again is not a level). Twin: api_server._scanner_rule_flipped_level."""
+    if not closed_off_the_low(hist):                         # v65
+        return None
     window = hist.tail(TRENDLINE_SEARCH_DAYS).reset_index(drop=True)
     n = len(window)
     if n < 60:
@@ -1577,7 +1605,7 @@ def _fetch_ticker_data(ticker: str):
     # enough room for SMA200 and for the RS Rating's 12-month lookback below.
     # v18: actual (not dividend-adjusted) prices, like TradingView — levels and trendlines must sit on the wicks the
     # trader sees (KO: adjusted lows were 0.58% lower before the last dividend, which moved the support zone and the line)
-    hist = tk.history(period="2y", interval="1d", auto_adjust=False)
+    hist = fix_unadjusted_splits(tk.history(period="2y", interval="1d", auto_adjust=False))   # v65 (price_splits.py)
     info = tk.info
     return hist, info
 
