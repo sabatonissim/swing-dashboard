@@ -646,8 +646,14 @@ def test_move_headlines_that_explain_nothing_are_left_out(api):
            "Why Is Natera Stock Up Nearly 41% Since May?",
            "NIO (NIO) schedules Q3 results for December 1, with an earnings call at 7 a.m. Eastern.",
            "Credo Technology Group Holding Ltd (CRDO) Stock Down 8.2% -- Now Undervalued? GF Score: 77/100",
-           "Caris Life Sciences Presented Research Demonstrating the Value of Whole Transcriptome Sequencing"]
+           "Caris Life Sciences Presented Research Demonstrating the Value of Whole Transcriptome Sequencing",
+           # v66 (19.11.2026, next to SLS -23%)
+           "Is SELLAS Life Sciences Group (SLS) Fully Valued As REGAL Trial Success Lifts Expectations?",
+           "Palantir (PLTR) Valuation Check After Shares Slide 9% In A Week",
+           "Assessing Oracle (ORCL) Valuation After Its Cloud Contract Win"]
     good = ["B.Riley cuts Lumentum stock price target on Marvell proxy valuation",
+            "Palo Alto Networks Acquires Applied Compute for US$4.5bn",
+            "Merck to buy biotech in deal valued at $10 billion",
             "Nasdaq Composite Falls 2.49% as Tempus AI Leads AI Stock Declines",
             "Nvidia shares jump after earnings beat", "FDA approves Natera test, shares soar"]
     assert [t for t in bad if api.move_headline_ok(t)] == []

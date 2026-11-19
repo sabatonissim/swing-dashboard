@@ -6299,7 +6299,10 @@ MOVE_NEWS_WORDS_RE = re.compile(
     r"price target|deal|acqui\w+|merger|buyout|takeover|FDA|approval|trial|contract|offering|lawsuit|probe|"
     r"investigation|recall|bankrupt\w*|layoffs?|CEO|tariffs?)\b", re.I)
 MOVE_NEWS_JUNK_RE = re.compile(
-    r"price prediction|stock prediction|forecast \d{4}|\bform 4\b|\b13[dfg]\b|gf score|undervalued\?|overvalued\?|"
+    # v66 (19.11.2026, live: SLS -23% next to "Is SELLAS ... Fully Valued As REGAL Trial Success Lifts Expectations?"):
+    # valuation pieces never explain a move. "valued at $4.5bn" (a deal) is kept.
+    r"price prediction|stock prediction|forecast \d{4}|\bform 4\b|\b13[dfg]\b|gf score|\b(under|over)valued\b|"
+    r"\b(fully|fairly) valued\b|\bvaluation (check|after|following|update)\b|\bassessing\b.*\bvaluation\b|"
     r"\bsince (january|february|march|april|may|june|july|august|september|october|november|december|\d{4})\b|"
     r"\bschedules?\b|to report|will report|to announce|conference call|webcast|presented|to present|annual meeting|"
     r"dividend|technical analysis|should you buy|is it time|stocks? to (buy|watch)", re.I)
