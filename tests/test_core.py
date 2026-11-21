@@ -1377,7 +1377,8 @@ def test_digest_answer_must_carry_the_move_and_only_given_numbers():
     import json as _json
     items = [dict(id=1, title="Wall Street falls as AI stocks tumble 7%", tag="שוק", url="https://x.example/1", title_he="", body="")]
     answer = lambda overview, summary="AI stocks fell 7%.": _json.dumps(
-        {"overview": overview, "topics": [{"title": "AI selloff", "summary": summary, "impact": "", "items": [1]}]})
+        {"overview": overview, "why": "AI stocks tumbled 7%.", "why_items": [1],
+         "topics": [{"title": "AI selloff", "summary": summary, "impact": "", "items": [1]}]})
     good = d.clean_answer(answer("The S&P 500 fell 4.4% and the Nasdaq 5.52%, led by AI stocks."), items, _CRASH_MARKET)
     assert good["topics"][0]["sources"][0]["url"] == "https://x.example/1"
     with pytest.raises(ValueError, match="extreme"):
@@ -1403,7 +1404,8 @@ def test_digest_rejects_what_the_first_real_answer_did():
     good = "The S&P 500 fell 4.4%, led by AI stocks."
 
     def answer(overview=good, summary="AI stocks fell 7% and Wall Street followed.", impact="", nums=(1,)):
-        return _json.dumps({"overview": overview, "topics": [{"title": "AI selloff", "summary": summary, "impact": impact, "items": list(nums)}]})
+        return _json.dumps({"overview": overview, "why": d.NO_REASON,
+                            "topics": [{"title": "AI selloff", "summary": summary, "impact": impact, "items": list(nums)}]})
     # a source about something else is not shown
     out = d.clean_answer(answer(nums=(1, 2)), items, _CRASH_MARKET)
     assert [s["url"] for s in out["topics"][0]["sources"]] == ["https://x.example/1"]
@@ -1420,9 +1422,9 @@ def test_digest_rejects_what_the_first_real_answer_did():
     long = good + " " + "AI stocks fell 7% and Wall Street followed them down all day long. " * 8
     with pytest.raises(ValueError, match="characters"):
         d.clean_answer(answer(overview=long), items, _CRASH_MARKET)
-    assert len(d.clean_answer(answer(overview=long), items, _CRASH_MARKET, strict=False)["overview_en"]) <= d.MAX_OVERVIEW
+    assert len(d.clean_answer(answer(overview=long), items, _CRASH_MARKET, strict=False)["overview_en"]) <= d.MAX_OVERVIEW + len(d.NO_REASON) + 1
     dated = d.clean_answer(answer(overview="The S&P 500 fell 4.4% on 2026-11-05."), items, _CRASH_MARKET)
-    assert dated["overview_en"] == "The S&P 500 fell 4.4%."
+    assert dated["overview_en"] == "The S&P 500 fell 4.4%. " + d.NO_REASON
     # the third answer: a topic that only lists the numbers, and the main story last
     lists = _json.dumps({"overview": good, "topics": [{"title": "Wall Street moves", "summary": "On Wall Street oil rose 2.72% and gold 0.99%.", "impact": "", "items": [1]}]})
     with pytest.raises(ValueError, match="lists market numbers"):
@@ -1432,7 +1434,7 @@ def test_digest_rejects_what_the_first_real_answer_did():
     two = [dict(items[0]), dict(id=3, title="Oil climbs on Iran worries as tankers wait", tag="אנרגיה", url="https://x.example/3", title_he="", body="")]
     topic = lambda title, summary, n: {"title": title, "summary": summary, "impact": "", "items": [n]}
     oil_first = [topic("Oil climbs", "Oil climbs on Iran worries.", 2), topic("AI selloff", "AI stocks fell 7% on Wall Street.", 1)]
-    assert [t["title_en"] for t in d.clean_answer(_json.dumps({"overview": good, "topics": oil_first}), two, _CRASH_MARKET)["topics"]] == ["AI selloff", "Oil climbs"]
+    assert [t["title_en"] for t in d.clean_answer(_json.dumps({"overview": good, "why": d.NO_REASON, "topics": oil_first}), two, _CRASH_MARKET)["topics"]] == ["AI selloff", "Oil climbs"]
     with pytest.raises(ValueError, match="item \\[1\\]"):
         d.clean_answer(_json.dumps({"overview": good, "topics": oil_first[:1]}), two, _CRASH_MARKET)
     assert d.clean_answer(_json.dumps({"overview": good, "topics": oil_first[:1]}), two, dict(_CRASH_MARKET, move="normal"))
@@ -1642,7 +1644,9 @@ def test_digest_market_text_and_size():
     assert "S&P 500: -4.36%" in text and "73 / 430" in text and "NVDA -9.10%" in text and "EXTREME" in text and "4.50% (change -0.05" in text
     closed = dict(_CRASH_MARKET, same_day=False, move="closed", status="weekend")
     weekend = d._market_text(closed, __import__("datetime").date(2026, 11, 7))
-    assert "weekend" in weekend and "4.36" not in weekend and "NVDA" not in weekend and "73 / 430" not in weekend
+    # v67: the last session's index numbers are back, labelled with their day; still no movers and no breadth
+    assert "weekend" in weekend and "NVDA" not in weekend and "73 / 430" not in weekend
+    assert "LAST SESSION: Thursday 2026-11-05 (NOT today)" in weekend and "S&P 500 -4.36%" in weekend and "Today is Saturday" in weekend
     assert "not available" in d._market_text(None, __import__("datetime").date(2026, 11, 7))
     size = lambda sp, nq: d.move_size([{"symbol": "^GSPC", "change_pct": sp}, {"symbol": "^IXIC", "change_pct": nq}], True)
     assert size(-4.36, -5.52) == "extreme" and size(-0.5, 2.6) == "extreme" and size(1.2, 1.0) == "notable" and size(0.2, 0.3) == "normal"
@@ -1683,7 +1687,8 @@ def test_digest_on_a_day_without_a_session():
     assert m["same_day"] is False and m["status"] == "weekend" and m["session_day"] == "2026-11-06" and m["day"] == "2026-11-07"
     assert next(i for i in m["indices"] if i["symbol"] == "^GSPC")["change_pct"] == 0.31
     assert m["today"] == [{"symbol": "BTC-USD", "name_en": "Bitcoin", "name_he": "ביטקוין", "change_pct": 1.0, "close": 76504.4}]
-    assert "+1.00% on this day" in d._market_text(m, sat) and "0.31" not in d._market_text(m, sat)
+    assert "+1.00% on this day" in d._market_text(m, sat) and "on Friday" in d._market_text(m, sat)
+    assert m["last_move"] == "normal" and "do not retell it" in d._market_text(m, sat)
     # the answer
     items = [dict(id=1, title="China extends tariff suspension on US goods to January", tag="מכסים", url="https://x.example/1", title_he="", body=""),
              dict(id=2, title="Nvidia shares fall 5% in premarket after board probe", tag="שוק", url="https://x.example/2", title_he="", body="")]
@@ -1731,13 +1736,97 @@ def test_digest_gives_each_move_to_its_own_company():
         d.clean_answer(answer("Nvidia led large-cap gains with an 11.04% rise. Its board launched a probe."), items, market)
     with pytest.raises(ValueError, match="AMD"):
         d.clean_answer(answer("Nvidia rose 11.0%. Its board launched a probe."), items, market)
-    assert d.clean_answer(answer("AMD rose 11.04%. Nvidia's board launched a probe into its CEO."), items, market)
+    assert d.clean_answer(_json.dumps({"overview": "Stocks moved little. AMD rose 11.04%.", "topics": [
+        {"title": "Nvidia board probe", "summary": "Nvidia's board launched a probe into its CEO.", "impact": "", "items": [1]}]}), items, market)
+    with pytest.raises(ValueError, match="none of its items"):     # v67: AMD is not this topic's story
+        d.clean_answer(answer("AMD rose 11.04%. Nvidia's board launched a probe into its CEO."), items, market)
     saved = d.clean_answer(answer("Nvidia led gains with an 11.04% rise. Its board launched a probe."), items, market, strict=False)
     assert saved["topics"][0]["summary_en"] == "Its board launched a probe."
     # the same number in an item belongs to that item's story, and is not checked
     with_number = items + [dict(id=3, title="Nvidia shares up 11.04% in a month", tag="שוק", url="https://x.example/3", title_he="", body="")]
     assert d.misattributed_move("Nvidia is up 11.04% in a month.", market, with_number) is None
     assert "NTRA" in d.misattributed_move("Natera fell 14.59%.", market, items)
+
+
+_FRIDAY_20_11 = {"day": "2026-11-20", "session_day": "2026-11-20", "same_day": True, "intraday": False, "status": "traded", "move": "extreme",
+                 "indices": [{"symbol": "^GSPC", "name_en": "S&P 500", "close": 6910.39, "change_pct": -3.7, "change_points": -265.44},
+                             {"symbol": "^IXIC", "name_en": "Nasdaq", "close": 22617.73, "change_pct": -5.28, "change_points": -1261.47},
+                             {"symbol": "^SOX", "name_en": "Chip stocks (SOX)", "close": 8408.59, "change_pct": -10.73, "change_points": -1011.13}],
+                 "breadth": {"advancers": 124, "decliners": 376},
+                 "movers": {"down": [{"ticker": "NVDA", "change_pct": -14.01}], "up": [{"ticker": "HDB", "change_pct": 4.5}]},
+                 "week": [{"symbol": "^GSPC", "name_en": "S&P 500", "change_pct": -6.12}]}
+
+
+def test_digest_says_why_a_big_day_moved():
+    """v67: Friday 20.11.2026, S&P 500 -3.7%, Nasdaq -5.28%: the reason was spread over the topics and never said as the reason,
+    "HDB up 4.5%" (an Indian bank) was an example of consumer staples, and Saturday opened with the inflation data of the week."""
+    import datetime as _dt
+    import json as _json
+    import ai_digest as d
+    import data_health as dh
+    items = [dict(id=1, title="Wall St ends sharply lower on AI selloff, S&P 500, Dow in correction", tag="שוק", url="https://x.example/1", title_he="", body=""),
+             dict(id=2, title="Fed's Cook says rate hikes needed to lower high inflation", tag="ריבית", url="https://x.example/2", title_he="", body=""),
+             dict(id=3, title="AI tech rout prompts US investors to rush into value stocks", tag="AI", url="https://x.example/3", title_he="", body="")]
+    overview = "The S&P 500 fell 3.7% and the Nasdaq 5.3%, and 376 of its stocks fell."
+    topics = [{"title": "AI selloff deepens", "summary": "Wall Street ended sharply lower on the AI selloff.", "impact": "", "items": [1]},
+              {"title": "Value stocks", "summary": "Value stocks gained as the AI selloff hit tech. HDB rose 4.5%.", "impact": "", "items": [3]}]
+    answer = lambda **k: _json.dumps(dict({"overview": overview, "topics": topics[:1]}, **k))
+    # a big day with no reason is sent back
+    with pytest.raises(ValueError, match="'why' is empty"):
+        d.clean_answer(answer(), items, _FRIDAY_20_11)
+    why = "Stocks fell on an AI selloff, and Fed governor Cook said rate hikes are needed to lower high inflation."
+    out = d.clean_answer(answer(why=why, why_items=[1, 2]), items, _FRIDAY_20_11)
+    assert out["why_en"] == why and out["overview_en"] == f"{overview} Why: {why}"
+    # the reason must come from the items it names
+    with pytest.raises(ValueError, match="no items"):
+        d.clean_answer(answer(why=why), items, _FRIDAY_20_11)
+    with pytest.raises(ValueError, match="on its own"):
+        d.clean_answer(answer(why="Investors fled risk as profit-taking hit chips.", why_items=[1]), items, _FRIDAY_20_11)
+    assert d.clean_answer(answer(why=d.NO_REASON), items, _FRIDAY_20_11)["overview_en"].endswith(d.NO_REASON)
+    # a mover's ticker as an example of a group
+    with pytest.raises(ValueError, match="HDB"):
+        d.clean_answer(_json.dumps({"overview": overview, "why": why, "why_items": [1, 2], "topics": topics}), items, _FRIDAY_20_11)
+    saved = d.clean_answer(_json.dumps({"overview": overview, "why": why, "why_items": [1, 2], "topics": topics}), items, _FRIDAY_20_11, strict=False)
+    assert saved["topics"][1]["summary_en"] == "Value stocks gained as the AI selloff hit tech."
+    # the week's own number may be told
+    assert "S&P 500 -6.12%" in d._market_text(_FRIDAY_20_11, _dt.date(2026, 11, 20))
+    assert d.week_change([(_dt.date(2026, 11, 13), 100.0), (_dt.date(2026, 11, 16), 99.0), (_dt.date(2026, 11, 20), 94.0)], _dt.date(2026, 11, 20)) == -6.0
+    assert d.week_change([(_dt.date(2026, 11, 13), 100.0), (_dt.date(2026, 11, 16), 99.0)], _dt.date(2026, 11, 16)) is None   # Monday
+    # Saturday after it
+    sat = dict(_FRIDAY_20_11, day="2026-11-21", same_day=False, status="weekend", move="closed", last_move="extreme")
+    text = d._market_text(sat, _dt.date(2026, 11, 21))
+    assert "LAST SESSION: Friday" in text and "EXTREME" in text and "never 'last week'" in text and "NVDA" not in text
+    weekend = lambda ov, w="": _json.dumps({"overview": ov, "why": w, "why_items": [1, 2] if w else [],
+                                             "topics": [{"title": "Inflation data ahead", "summary": "Rate hikes are needed to lower high inflation, Cook said.", "impact": "", "items": [2]}]})
+    with pytest.raises(ValueError, match="extreme"):
+        d.clean_answer(weekend("Inflation data is in focus this week.", why), items, sat)
+    lead = d.clean_answer(weekend("Inflation data is in focus this week."), items, sat, strict=False)["overview_en"]
+    assert lead.startswith("On Friday, the S&P 500 fell 3.7% and the Nasdaq fell 5.3%.")
+    with pytest.raises(ValueError, match="this past week"):
+        d.clean_answer(weekend("On Friday the S&P 500 fell 3.7%, ending last week in a correction.", why.replace("Stocks fell", "Stocks fell on Friday")), items, sat)
+    good = d.clean_answer(weekend("On Friday the S&P 500 fell 3.7%, and 6.1% in the week.", why.replace("Stocks fell", "Stocks fell on Friday")), items, sat)
+    assert "Why:" in good["overview_en"]
+    with pytest.raises(ValueError, match="without its day"):        # a reason that tells the move as Saturday's
+        d.clean_answer(weekend("On Friday the S&P 500 fell 3.7%.", "The S&P 500 fell on an AI selloff."), items, sat)
+    # the health check
+    assert any("no reason" in p for p in dh.digest_problems({"overview_en": overview, "market": _FRIDAY_20_11}))
+    assert dh.digest_problems({"overview_en": out["overview_en"], "why_en": why, "market": _FRIDAY_20_11}) == []
+    assert dh.digest_problems({"overview_en": "On Friday, the S&P 500 fell 3.70%. Why: x", "why_en": "x", "market": sat}) == []
+    assert dh.digest_problems({"overview_en": "The S&P 500 fell 3.70%.", "why_en": "x", "market": sat})
+    # the Hebrew keeps the reason as a reason
+    en = {"overview": out["overview_en"], "topics": [{"title": "AI selloff deepens", "summary": "Wall Street ended sharply lower.", "impact": ""}]}
+    he_topic = [{"title": "גל המכירות בבינה מלאכותית מעמיק", "summary": "וול סטריט ננעלה בירידות חדות.", "impact": ""}]
+    with pytest.raises(ValueError, match="הסיבה"):
+        d.clean_hebrew(_json.dumps({"overview": "מדד S&P 500 ירד 3.7% והנאסד״ק 5.3%, ו-376 מניותיו ירדו. למה: גל מכירות.", "topics": he_topic}), en)
+    with pytest.raises(ValueError, match="טריטוריה"):
+        d.clean_hebrew(_json.dumps({"overview": "מדד S&P 500 ירד 3.7% והנאסד״ק 5.3%, ו-376 מניות ירדו, בטריטוריית תיקון. הסיבה: גל מכירות.", "topics": he_topic}), en)
+    assert d.clean_hebrew(_json.dumps({"overview": "מדד S&P 500 ירד 3.7% והנאסד״ק 5.3%, ו-376 מניות ירדו. הסיבה: גל מכירות.", "topics": he_topic}), en)
+    # the MarketBeat lists on the home page of 21.11.2026
+    from news_links import is_unwanted_headline
+    for t in ("Best Luxury Goods Stocks To Research - November 21st", "Promising Fintech Stocks Worth Watching - November 21st",
+              "Value Stocks To Consider - November 21st"):
+        assert is_unwanted_headline(t), t
+    assert not is_unwanted_headline("Wall St ends sharply lower on AI selloff, S&P 500, Dow in correction")
 
 
 def test_revenue_in_another_currency_or_zero_is_not_shown(scanner, api):
@@ -1939,7 +2028,7 @@ def test_digest_dates_and_old_stories_v40e():
 def test_digest_health_rule():
     import data_health as dh
     assert dh.digest_problems({"overview_en": "Technology dominated.", "market": _CRASH_MARKET})
-    assert dh.digest_problems({"overview_en": "The S&P 500 fell 4.4%.", "market": _CRASH_MARKET}) == []
+    assert dh.digest_problems({"overview_en": "The S&P 500 fell 4.4%.", "why_en": "x", "market": _CRASH_MARKET}) == []
     assert dh.digest_problems({"overview_en": "Technology dominated.", "market": dict(_CRASH_MARKET, move="normal")}) == []
     assert dh.digest_problems({"overview_en": "An older day."}) == []
 

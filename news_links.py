@@ -95,7 +95,10 @@ PROMO_RE = re.compile(r"\b(stocks? to (buy|watch|own|bet on)|to bet on|should yo
                       r"screaming buys?)\b"       # "Tech Sell-Off: Two AI Stocks That Are Screaming Buys Right Now" (11.11.2026)
                       r"|^\s*(?:top\s+)?\d+\s+[\w\s&'-]{0,40}\bstocks?\b"
                       # v51 (live feed 15.11.2026): "Bank of America names 5 bullish stocks amid market fears"
-                      r"|\b(?:names?|named|picks?|lists?|reveals?|highlights?)\s+\d+\s+(?:[\w&'-]+\s+){0,3}stocks?\b", re.I)
+                      r"|\b(?:names?|named|picks?|lists?|reveals?|highlights?)\s+\d+\s+(?:[\w&'-]+\s+){0,3}stocks?\b"
+                      # v67 (home page 21.11.2026, MarketBeat): "Best Luxury Goods Stocks To Research - November 21st",
+                      # "Promising Fintech Stocks Worth Watching - November 21st", "Value Stocks To Consider - November 21st"
+                      r"|\bstocks?\s+(?:worth\s+watching|to\s+(?:research|consider|keep\s+an\s+eye\s+on|add|follow))\b", re.I)
 # v51 (live feed 15.11.2026): articles about one imaginary reader's money, written to be clicked. They sat on the home page
 # between the Fed and Nvidia: "A 64-year-old farmer plans to lease land ... and start Social Security", "... Here's what it
 # means for a 72-year-old widow with $150,000 of Disney", "Investors: if a market correction arrives, this move will make

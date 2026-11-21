@@ -132,17 +132,26 @@ def digest_problems(payload: dict) -> List[str]:
     = the summary missed the main story (5.11.2026: S&P 500 -4.36%, and the overview spoke of "technology and earnings")."""
     market = payload.get("market") or {}
     overview = payload.get("overview_en") or ""
-    if market and market.get("same_day") is False:
-        # v38b: 7-9.11.2026, a weekend and a Monday morning told with Friday's +0.31% / +1.09% / -0.46%
-        told = [f"{i['name_en']} {i['change_pct']}%" for i in market.get("indices") or []
-                if i.get("symbol") in ("^GSPC", "^IXIC", "^DJI") and f"{abs(i['change_pct']):.2f}%" in overview]
-        return [f"no session that day, and the overview tells the last one: {', '.join(told)}"] if told else []
-    if market.get("move") != "extreme":
-        return []
-    if re.search(r"S&P|Nasdaq|Dow\b|Wall Street", payload.get("overview_en") or ""):
-        return []
     sp = next((i["change_pct"] for i in market.get("indices") or [] if i.get("symbol") == "^GSPC"), None)
-    return [f"S&P 500 {sp}% and the overview names no index"]
+    if market and market.get("same_day") is False:
+        # v38b: 7-9.11.2026, a weekend and a Monday morning told with Friday's +0.31% / +1.09% / -0.46%.
+        # v67: a sentence that names its day or the week ("On Friday the S&P 500 fell 3.70%") is the last session told right.
+        undated = " ".join(s for s in re.split(r"(?<=[.!?])\s+", overview)
+                           if not re.search(r"\b(monday|tuesday|wednesday|thursday|friday|week)\b", s, re.I))
+        told = [f"{i['name_en']} {i['change_pct']}%" for i in market.get("indices") or []
+                if i.get("symbol") in ("^GSPC", "^IXIC", "^DJI") and f"{abs(i['change_pct']):.2f}%" in undated]
+        if told:
+            return [f"no session that day, and the overview tells the last one: {', '.join(told)}"]
+        if market.get("last_move") in ("extreme", "notable") and not payload.get("why_en"):
+            return [f"the last session was {market['last_move']} (S&P 500 {sp}%) and the summary gives no reason (why)"]
+        return []
+    out = []
+    if market.get("move") == "extreme" and not re.search(r"S&P|Nasdaq|Dow\b|Wall Street", overview):
+        out.append(f"S&P 500 {sp}% and the overview names no index")
+    # v67: 20.11.2026, S&P 500 -3.7%: the reason was in the topics, not stated as the reason
+    if market.get("move") in ("extreme", "notable") and not payload.get("why_en"):
+        out.append(f"{market['move']} day (S&P 500 {sp}%) and the summary gives no reason (why)")
+    return out
 
 
 def profile_problems(r: dict) -> List[str]:

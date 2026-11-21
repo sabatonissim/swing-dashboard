@@ -211,6 +211,23 @@ def no_session_reason(day, now):
     return "holiday"
 
 
+WEEK_SYMBOLS = ("^GSPC", "^IXIC", "^DJI", "^SOX")
+WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def week_change(bars, session_day):
+    """v67: % change of the trading week up to `session_day` (last close before its Monday -> `session_day`'s close).
+    None on a Monday (= the day's own move) or without a close before the week."""
+    if session_day.weekday() == 0:
+        return None
+    monday = session_day - timedelta(days=session_day.weekday())
+    before = [b for b in bars if b[0] < monday]
+    upto = [b for b in bars if b[0] <= session_day]
+    if not before or not upto or not before[-1][1] or upto[-1][0] < monday:
+        return None
+    return round((upto[-1][1] / before[-1][1] - 1) * 100, 2)
+
+
 def _bar_of(bars, day):
     """(change %, close) of `day`'s own bar, or None."""
     for k in range(1, len(bars)):
@@ -234,7 +251,7 @@ def market_facts(conn, day, now=None):
         return None
     session_day = anchor[-1][0]
     same_day = session_day == day
-    indices, today = [], []
+    indices, today, week = [], [], []
     for symbol, name_en, name_he in MARKET_SYMBOLS:
         try:
             full = anchor if symbol == "^GSPC" else _history(symbol)
@@ -249,11 +266,19 @@ def market_facts(conn, day, now=None):
         own = None if same_day or symbol != "BTC-USD" else _bar_of(full, day)
         if own:
             today.append({"symbol": symbol, "name_en": name_en, "name_he": name_he, "change_pct": own[0], "close": own[1]})
+        if symbol in WEEK_SYMBOLS:
+            wk = week_change(bars, session_day)
+            if wk is not None:
+                week.append({"symbol": symbol, "name_en": name_en, "name_he": name_he, "change_pct": wk})
     et = now.astimezone(_ET)
     intraday = same_day and et.date() == day and MARKET_OPEN <= et.time() < dtime(16, 0)
     market = {"day": day.isoformat(), "session_day": session_day.isoformat(), "same_day": same_day, "indices": indices, "intraday": intraday,
               "status": ("open" if intraday else "traded") if same_day else no_session_reason(day, now),
               "move": move_size(indices, same_day)}
+    if not same_day:                      # v67: how big the last session was, so a weekend after a crash opens with it
+        market["last_move"] = move_size(indices, True)
+    if week:
+        market["week"] = week
     if today:
         market["today"] = today
     market.update(_market_from_db(conn, session_day))
@@ -271,14 +296,43 @@ _NO_SESSION_TEXT = {
 }
 
 
+def _weekday(iso):
+    return WEEKDAYS[date.fromisoformat(str(iso)[:10]).weekday()]
+
+
+def _week_line(market):
+    week = market.get("week") or []
+    return ", ".join(f"{w['name_en']} {_signed(w['change_pct'])}%" for w in week)
+
+
+def last_session_large(market):
+    """v67: no session today, and the last one was large (21.11.2026: Saturday after Friday's -3.7%)."""
+    return bool(market) and not market.get("same_day") and market.get("last_move") in ("extreme", "notable")
+
+
 def _no_session_text(market, day):
-    """v38b: no session that day -> no index numbers for the model at all. With the last session's numbers it wrote them as the
-    day's on Saturday, Sunday and Monday morning (7-9.11.2026); that session has its own summary."""
-    lines = [f"MARKET: {_NO_SESSION_TEXT.get(market.get('status'), _NO_SESSION_TEXT['holiday'])} "
-             f"The last session was {market['session_day']} and has its own summary. So on {day.isoformat()} there are NO index "
-             "moves, no VIX, no biggest movers and no count of stocks that rose or fell. Do not write that the market, an index or a "
-             "stock rose, fell, closed or ended, except what an item says about futures, pre-market trading or the past week.",
-             "Write about the news of this day: what happened and what may matter for US stocks when trading resumes."]
+    """v38b: no session that day. Saturday 7.11.2026 told Friday's numbers as the day's, so they were taken away.
+    v67: Saturday 21.11.2026, after Friday's -3.7% (S&P) / -5.3% (Nasdaq), opened with "the inflation data in focus this week"
+    and put the crash third. The last session's index numbers are given again, labelled with their day, and session_told()
+    still rejects any sentence that tells them without that day."""
+    wd = _weekday(market["session_day"])
+    lines = [f"MARKET: {_NO_SESSION_TEXT.get(market.get('status'), _NO_SESSION_TEXT['holiday'])} Today is "
+             f"{_weekday(day)} {day.isoformat()}. So TODAY there are NO index moves, no VIX, no biggest movers and no count of "
+             "stocks that rose or fell. Do not write that the market, an index or a stock rose, fell, closed or ended today."]
+    main = [i for i in market.get("indices") or [] if i["symbol"] in WEEK_SYMBOLS]
+    if main:
+        lines.append(f"LAST SESSION: {wd} {market['session_day']} (NOT today). Tell these only as {wd}'s, always naming the day "
+                     f"(\"on {wd}\"): " + ", ".join(f"{i['name_en']} {_signed(i['change_pct'])}%" for i in main))
+    if market.get("week"):
+        lines.append(f"THE TRADING WEEK that ended on {wd}: {_week_line(market)}. "
+                     + ("Call it 'this past week' or 'the week', never 'last week'." if market.get("status") == "weekend" else ""))
+    if last_session_large(market):
+        lines.append(f"SIZE OF THE LAST SESSION: {'EXTREME' if market['last_move'] == 'extreme' else 'LARGE'}. The overview opens "
+                     f"with it: what the US market did on {wd} (and in the week), naming the day and the index with its number. "
+                     "'why' gives its reason from the items. Then the most important news for when trading resumes.")
+    else:
+        lines.append("The last session was ordinary: do not retell it. Write about the news of this day: what happened and what "
+                     "may matter for US stocks when trading resumes. 'why' stays empty.")
     for a in market.get("today") or []:
         lines.append(f"{a['name_en']}, which trades every day: {_signed(a['change_pct'])}% on this day so far")
     return "\n".join(lines)
@@ -302,13 +356,16 @@ def _market_text(market, day):
     b = market.get("breadth")
     if b:
         lines.append(f"S&P 500 stocks that rose / fell: {b['advancers']} / {b['decliners']}")
+    if market.get("week"):
+        lines.append(f"This week, Monday to {_weekday(market['session_day'])}: {_week_line(market)}")
     mv = market.get("movers") or {}
     for side, label in (("down", "Biggest falls"), ("up", "Biggest rises")):
         if mv.get(side):
             lines.append(f"{label} among large companies: " + ", ".join(f"{m['ticker']} {_signed(m['change_pct'])}%" for m in mv[side]))
-    lines.append({"extreme": "SIZE OF THE DAY: EXTREME. This is the main story of the day. The overview must open with it, name the index and give its number.",
-                  "notable": "SIZE OF THE DAY: a clearly large move. The overview must mention it.",
-                  "normal": "SIZE OF THE DAY: ordinary.", "closed": "SIZE OF THE DAY: no session today."}[market["move"]])
+    lines.append({"extreme": "SIZE OF THE DAY: EXTREME. This is the main story of the day. The overview must open with it, name the index "
+                             "and give its number, and 'why' must give its reason.",
+                  "notable": "SIZE OF THE DAY: a clearly large move. The overview must mention it, and 'why' must give its reason.",
+                  "normal": "SIZE OF THE DAY: ordinary. 'why' may stay empty.", "closed": "SIZE OF THE DAY: no session today."}[market["move"]])
     return "\n".join(lines)
 
 
@@ -393,9 +450,9 @@ SYSTEM = """You are the markets editor of a website for people who follow the US
 
 ORDER OF IMPORTANCE:
 1. What the US market did: the indices, how big the move was, which stocks and sectors led it. If the MARKET NUMBERS say the day was extreme, this is the first thing in the overview and the first topic, with the numbers.
-2. Why it happened, as far as the items say. If several items give the same reason, say it. If no item explains it, say the reason is not clear.
+2. Why it happened, as far as the items say: this goes in "why" (below). A reader must never be left with a large move and no reason.
 3. What else can move US stocks: the Fed and rates, US data (inflation, jobs), oil and war, trade and tariffs, US politics, the largest companies.
-On a day the MARKET part says the US market did not trade (weekend, holiday, before the open), there is no point 1: the overview opens with the most important news of the day, and no topic tells index or stock moves of any session, unless an item tells futures, pre-market trading or the past week.
+On a day the MARKET part says the US market did not trade (weekend, holiday, before the open): if the LAST SESSION was large, the overview opens with it, naming its day ("On Friday the S&P 500 fell 3.7%"), "why" gives its reason, and the first topic is that story. Otherwise there is no point 1: the overview opens with the most important news of the day. Never tell a move as if it happened today.
 4. Other countries only if the item ties them to US stocks, oil, the dollar or world markets. The domestic news of a smaller country (its local inflation or local interest rate) is not a topic and is not in the overview. Results of one smaller company are not a topic unless they moved the market.
 
 STRICT RULES:
@@ -404,24 +461,29 @@ STRICT RULES:
 - One story per topic: do not attach an unrelated story (a central bank's decision does not belong in a topic about Asian stocks). "(N outlets)" = how many outlets ran that story; many outlets usually means it matters, and the items come most important first.
 - Never explain a number yourself. A reason comes only from an item. Do not write "suggests", "possibly", "reflecting", "investors sought" or "investors fled" of your own.
 - Keep who did what exactly as the item says. "The Magnificent 7 lost $1 trillion" is not "Nvidia lost $1 trillion".
-- The overview tells the story: the main move, 2 or 3 of the most important numbers, and the reason. The site shows all the numbers next to it, so do not list them, and do not write index levels or dates.
-- The lists of biggest falls and rises give tickers and numbers only. They do not say what a company does or why it moved: do not call them "AI names" or anything else unless an item says so, and do not read a pattern into them.
+- The overview tells what happened: the main move and 2 or 3 of the most important numbers (how many stocks fell, which group led). The reason does NOT go in the overview: it goes in "why", which the site shows right after it. The site shows all the numbers next to it, so do not list them, and do not write index levels or dates.
+- "why" is ONE plain sentence that answers "why did the market move like this?" with the reason the items give, saying who did or said what. Example: "Chip stocks fell after Anthropic's first days of trading disappointed AI investors, and a Fed governor said rates may have to rise to bring inflation down." If the items give two reasons, give both. If no item explains the move, write exactly: "The news does not give a clear reason for the move." Never your own guess, and never "despite" or "as" to tie two stories that no item ties. "why_items" = the numbers of the items it comes from. Empty "why" (and why_items) on an ordinary day.
+- The lists of biggest falls and rises give tickers and numbers only. They do not say what a company does or why it moved: do not call them "AI names" or anything else unless an item says so, and do not read a pattern into them. A ticker from those lists may be in a topic only if one of that topic's items names that company; never use them as examples of a group ("defensive stocks rose, with HDB up 4.5%": HDB is an Indian bank).
 - A topic is a news story told by the items. Never a topic that only repeats the market numbers ("gold rose, the VIX rose"). "items" = only items that are about that story.
 - Say "430 of the S&P 500 stocks fell", not "trading was broad".
 - "impact" says why this matters for US stocks, specific to this story, in words such as "may", "could" or "tends to". It is context, NOT a forecast: never predict a price level or a direction. Empty if you have nothing specific to say. Never a sentence that would fit any story.
 - No investment advice: never say or imply that anyone should buy, sell or hold anything.
 - The first topic is the story behind the day's main move, built on item [1] when the day was large.
-- Plain everyday words (write "sell-off", never "rout"), one idea per sentence, numbers whenever you have them. No market jargon ("beat", "guidance", "print", "risk-on", "hawkish", "bid"): say what happened ("results were better than forecast"). No filler such as "markets digested", "investors weighed", "mixed picture", "dominated the day". Company names exactly as in the items.
+- Plain everyday words (write "sell-off", never "rout"), one idea per sentence, numbers whenever you have them. No market jargon ("beat", "guidance", "print", "risk-on", "hawkish", "bid"): say what happened ("results were better than forecast"). No filler such as "markets digested", "investors weighed", "mixed picture", "dominated the day". No "territory" ("in correction territory": write "more than 10% below its high"), and stocks are "stocks" or "shares", never "names". On a weekend the week that just ended is "this past week", never "last week". Company names exactly as in the items.
 
 Reply with ONLY a valid JSON object (no markdown, no commentary). Use straight double quotes, no trailing commas, and never put a double quote character inside a text value.
 Exact shape:
-{"overview": "2 or 3 short sentences, max 380 characters: what the market did and why",
+{"overview": "2 or 3 short sentences, max 380 characters: what the market did",
+ "why": "one sentence, max 240 characters: the reason for the move, from the items; or empty",
+ "why_items": [numbers of the items "why" comes from],
  "topics": [{"title": "max 60 characters", "summary": "1 or 2 sentences: what happened, with numbers, max 300 characters", "impact": "one sentence, max 180 characters, or empty", "items": [numbers of the supporting items]}]}
 3 to 5 topics, the most important first. Every topic lists the items it comes from."""
 
 SYSTEM_HE = """Translate this market summary from English into natural, simple Israeli Hebrew, as a financial newspaper would write it.
 Keep the meaning exactly: who did what must not change, and add nothing. Never leave an ordinary English word in the Hebrew.
 Glossary: stocks = מניות; session = יום מסחר (never "מפגש"); sell-off or rout = גל מכירות (never "מסלול"); safe haven = נכס מפלט; crypto = קריפטו; 10-year Treasury yield = תשואת אג"ח ממשלתי ל-10 שנים; index = מדד; chip stocks = מניות השבבים; interest rate = ריבית; rate hike = העלאת ריבית; yield = תשואה; Treasury bond = אג"ח ממשלתי; inflation = אינפלציה; results / earnings = דוחות או רווחים; forecast / outlook = תחזית; oil = נפט; tariffs = מכסים; sanctions = סנקציות; midterm elections = בחירות אמצע הקדנציה; the news is dominated by = הכותרות עוסקות בעיקר ב (never "מודגמות"); has not opened yet = עוד לא נפתח; the Fed = הפד; Wall Street = וול סטריט; AI = בינה מלאכותית.
+More (v67, words that came out as a word-for-word translation on 20-21.11.2026): correction territory / in correction = בתיקון (ירידה של יותר מ-10% מהשיא), never "טריטוריה"; names (meaning stocks) = מניות, never "שמות"; turned negative for the year / wiped out its gains for the year = מחק את כל העליות מתחילת השנה; will be watched closely = יעמדו במוקד, never "יעקבו"; this past week = השבוע שהסתיים, never "השבוע שעבר"; the sell-off accelerated = הירידות התגברו; IPO debut = ההנפקה / היום הראשון למסחר; a sentence that starts with "Why:" starts with "הסיבה:".
+Write the way an Israeli financial reporter would: short, clear sentences, the verb early, not English word order.
 Names of companies, indices and people stay in English letters (Nvidia, S&P 500, Nasdaq, VIX). A company is feminine in Hebrew. Keep every number exactly as written.
 Write Hebrew abbreviations with the mark ״ (ארה״ב, נאסד״ק), never with a plain double quote.
 Keep the same fields and the same number of topics; an empty field stays empty. Answer with the JSON only, in the same shape as the input."""
@@ -688,7 +750,7 @@ _SHOOK = re.compile(r"\b(?:rattl|spook|roil|jolt|rock|shook|shak)\w*\s+(?:the\s+
 _SESSION_NAMES = r"S&P(?: 500)?|Nasdaq|Dow(?: Jones)?|Wall Street|(?:the )?(?:US )?(?:stock )?market|US stocks|chip stocks|VIX"
 _SESSION_MOVE = re.compile(rf"\b(?:{_SESSION_NAMES})\b(?:\s+[\w()]+){{0,2}}\s+(?:{_FELL}|{_ROSE}|closed|ended|finished|led|surged)\b"
                            r"|\b(?:led|leading) (?:the )?(?:gains|losses|declines)\b|\bamong (?:the )?(?:large|big)(?:st)?[- ]?(?:cap|companies)\b", re.I)
-_OTHER_TIME = re.compile(r"\b(?:futures|pre-?market|premarket|after-?hours|week(?:ly)?|friday|thursday|last|previous|earlier|"
+_OTHER_TIME = re.compile(r"\b(?:futures|pre-?market|premarket|after-?hours|week(?:ly)?|monday|tuesday|wednesday|friday|thursday|last|previous|earlier|"
                          r"since|year|month|ahead of)\b", re.I)
 
 
@@ -720,6 +782,68 @@ def misattributed_move(text, market, items):
                 if shown & _numbers(s) and not re.search(rf"\b{re.escape(m['ticker'])}\b", s):
                     return f"{abs(m['change_pct']):.2f}% is the move of {m['ticker']}, and the sentence does not name {m['ticker']}"
     return None
+
+
+def unsourced_mover(text, market, source_text):
+    """v67: a ticker from the movers lists in a topic whose items do not name it. 20.11.2026: "Consumer staples and healthcare
+    names rose, with HDB up 4.5%" (HDB = HDFC Bank, an Indian bank) in a topic about value stocks."""
+    mv = (market or {}).get("movers") or {}
+    for m in (mv.get("up") or []) + (mv.get("down") or []):
+        t = re.escape(m["ticker"])
+        if re.search(rf"\b{t}\b", text or "") and not re.search(rf"\b{t}\b", source_text or ""):
+            return m["ticker"]
+    return None
+
+
+NO_REASON = "The news does not give a clear reason for the move."
+_LAST_WEEK = re.compile(r"\blast week\b", re.I)
+
+
+def big_day(market):
+    """A move that needs its reason in 'why': a large session today, or (no session today) a large last one."""
+    if not market:
+        return False
+    return market.get("move") in ("extreme", "notable") if market.get("same_day") else last_session_large(market)
+
+
+def _weekend_lead(market):
+    """On a day with no session after a large one: 'On Friday, the S&P 500 fell 3.7% and the Nasdaq fell 5.3%.'"""
+    by = {i["symbol"]: i for i in market.get("indices") or []}
+    bits = [f"the {by[s]['name_en']} {'rose' if by[s]['change_pct'] > 0 else 'fell'} {abs(by[s]['change_pct']):.1f}%"
+            for s in ("^GSPC", "^IXIC") if s in by]
+    return f"On {_weekday(market['session_day'])}, " + " and ".join(bits) + "." if bits else ""
+
+
+def _clean_why(raw, items, market, allowed, strict):
+    """The 'why' sentence, checked like a topic. '' when there is none (or, after the attempts, when it cannot be kept)."""
+    why = re.sub(r"^\s*(?:why|the reason)\s*:\s*", "", _no_dates(raw.get("why", "")), flags=re.I).strip()
+    if not why or why.rstrip(".").lower() == NO_REASON.rstrip(".").lower():
+        if strict and big_day(market) and not why:
+            raise ValueError("the move was large and 'why' is empty. Give the reason the items give for it in one sentence, "
+                             f"with why_items, or write exactly: \"{NO_REASON}\"")
+        return NO_REASON if why else ""
+    nums = _ints(raw.get("why_items"), 1, len(items))
+    cited = " ".join(f"{items[n - 1]['title']} {items[n - 1].get('body') or ''}" for n in nums)
+    problem = None
+    if not nums:
+        problem = "'why' lists no items. Put the numbers of the items it comes from in why_items"
+    elif len(why) > 260:
+        problem = f"'why' is {len(why)} characters, at most 240. One sentence"
+    elif _own_guess(why, cited):
+        problem = f"'why' explains things on its own ('{_own_guess(why, cited)}'). Give only the reason the items give"
+    elif invented_numbers(why, allowed):
+        problem = f"'why' has numbers that are in neither the market numbers nor the items: {invented_numbers(why, allowed)[:4]}"
+    elif misattributed_move(why, market, items):
+        problem = f"in 'why', {misattributed_move(why, market, items)}"
+    elif session_told(why, market):
+        problem = f"'why' says '{session_told(why, market)}' without its day. Name the day (\"on {_weekday(market['session_day'])}\")"
+    elif contradicts_market(why, market):
+        problem = f"'why' says {contradicts_market(why, market)}"
+    if problem:
+        if strict:
+            raise ValueError(problem)
+        return ""
+    return why
 
 
 def _sentences_without_session(text, market):
@@ -785,13 +909,14 @@ def clean_answer(text, items, market, strict=True):
     for t in (raw.get("topics") or [])[:MAX_TOPICS]:
         title, summary, impact = _no_dates(t.get("title", "")), _no_dates(t.get("summary", "")), _no_dates(t.get("impact", ""))
         about = _topic_words(f"{title} {summary}")
-        sources, seen, rank = [], set(), len(items) + 1
+        sources, seen, rank, src_text = [], set(), len(items) + 1, ""
         for n in _ints(t.get("items"), 1, len(items)):
             it = items[n - 1]
             k = it["url"] or it["title"]
             if k and k not in seen and _topic_words(it["title"]) & about:
                 seen.add(k)
                 rank = min(rank, n)
+                src_text += f" {it['title']} {it.get('body') or ''}"
                 sources.append({"title_en": it["title"], "title_he": it["title_he"], "url": it["url"], "category": it["tag"]})
         if sum(bool(re.search(w, summary, re.I)) for w in _ASSET_WORDS) >= 2:
             if strict:
@@ -831,6 +956,15 @@ def clean_answer(text, items, market, strict=True):
             keep = lambda x: " ".join(s for s in re.split(r"(?<=[.!?])\s+", x) if not misattributed_move(s, market, items)).strip()
             summary, impact = keep(summary), keep(impact)
             if not summary or misattributed_move(title, market, items):
+                continue
+        alone = unsourced_mover(f"{title}. {summary} {impact}", market, src_text)
+        if alone:
+            if strict:
+                raise ValueError(f"the topic '{title}' names {alone} from the list of biggest moves, and none of its items is about "
+                                 f"{alone}. Leave {alone} out of it")
+            keep = lambda x: " ".join(s for s in re.split(r"(?<=[.!?])\s+", x) if not unsourced_mover(s, market, src_text)).strip()
+            summary, impact = keep(summary), keep(impact)
+            if not summary or unsourced_mover(title, market, src_text):
                 continue
         extra = invented_numbers(f"{title} {summary} {impact}", allowed)
         if extra:
@@ -885,10 +1019,30 @@ def clean_answer(text, items, market, strict=True):
             raise ValueError("the MARKET NUMBERS say the day was extreme, and the overview does not say so. Open the overview "
                              "with the index and its number")
         overview = f"{_forced_lead(market)} {overview}"
-    blob = " ".join([overview] + [f"{t['title_en']} {t['summary_en']} {t['impact_en']}" for t in topics])
+    # v67: Saturday 21.11.2026 opened with "inflation data in focus this week"; Friday had been -3.7% / -5.3%
+    if last_session_large(market) and market.get("last_move") == "extreme" and not re.search(r"S&P|Nasdaq|Dow\b|Wall Street|US stocks", overview):
+        if strict:
+            raise ValueError(f"the last session ({_weekday(market['session_day'])}) was extreme, and the overview does not say so. "
+                             f"Open it with what the market did on {_weekday(market['session_day'])}, naming the day and the index with its number")
+        overview = f"{_weekend_lead(market)} {overview}".strip()
+    if market and market.get("status") == "weekend":
+        said = _LAST_WEEK.search(" ".join([overview] + [f"{t['title_en']} {t['summary_en']} {t['impact_en']}" for t in topics]))
+        if said and strict:
+            raise ValueError("it is the weekend: the week that just ended is 'this past week', not 'last week'")
+        overview = _LAST_WEEK.sub("this past week", overview)
+        for t in topics:
+            for k in ("title_en", "summary_en", "impact_en"):
+                t[k] = _LAST_WEEK.sub("this past week", t[k])
+    why = _clean_why(raw, items, market, allowed, strict)
+    blob = " ".join([overview, why] + [f"{t['title_en']} {t['summary_en']} {t['impact_en']}" for t in topics])
     if _ADVICE.search(blob):
         raise ValueError("the answer reads like investment advice. Describe what happened, with no advice")
-    return {"overview_en": overview, "topics": topics}
+    out = {"overview_en": overview, "topics": topics}
+    if why:
+        # v67: the reason, in its own sentence right after the move, in the text the site already shows everywhere
+        out["why_en"] = why
+        out["overview_en"] = f"{overview} {why}" if why == NO_REASON else f"{overview} Why: {why[0].upper()}{why[1:]}"
+    return out
 
 
 def _ask(system, user, clean, max_tokens, deadline, fallback=None):
@@ -968,6 +1122,10 @@ def clean_hebrew(text, en):
         gone = lost_name(en_text, he)
         if gone:
             raise ValueError(f"the field '{field}' lost the name {gone}. Write {gone} in English letters, exactly as in the English")
+        if "Why:" in (en_text or "") and "הסיבה:" not in he:
+            raise ValueError(f"the field '{field}' has 'Why:' in the English: start that sentence in Hebrew with 'הסיבה:'")
+        if re.search(r"טריטורי|השבוע שעבר", he) and not re.search(r"territor|last week", en_text or "", re.I):
+            raise ValueError(f"the field '{field}' says 'טריטוריה' or 'השבוע שעבר'. Use the glossary: בתיקון / השבוע שהסתיים")
     out["overview"] = fix_he(_GLUED_HE.sub(r"\1 ", out["overview"]))
     for t in out["topics"]:
         for k in t:
@@ -992,7 +1150,7 @@ def _add_hebrew(payload, translate_fn, cache_from, deadline):
         for t, h in zip(payload["topics"], he["topics"]):
             t["title_he"], t["summary_he"], t["impact_he"] = h["title"], h["summary"], h["impact"]
         return payload
-    payload["overview_he"] = _he(payload["overview_en"], translate_fn, known)
+    payload["overview_he"] = re.sub(r"(?:למה|מדוע|מַדוּעַ)\s*:", "הסיבה:", _he(payload["overview_en"], translate_fn, known))
     for t in payload["topics"]:
         t["title_he"] = _he(t["title_en"], translate_fn, known)
         t["summary_he"] = _he(t["summary_en"], translate_fn, known)
