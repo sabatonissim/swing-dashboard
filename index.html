@@ -1624,7 +1624,7 @@ function stockRowHtml(s,i){
     <div class="stock-row" onclick="openDrawer(${i})">
       <div class="ticker">${s.ticker}${isNewScan(s) ? `<span class="new-dot" title="${lang==='en'?'New since your last visit':'חדש מאז הביקור האחרון שלך'}"></span>` : ''}</div>
       <div class="trend ${s.trend}">${s.trend==="up"?"▲":"▼"}</div>
-      <div class="trigger">${lang==='en'?(s.trigger_en||s.trigger||''):(s.trigger||s.trigger_he||'')}${earningsSoonBadgeHtml(s)}${belowMa150BadgeHtml(s)}${insiderBadgeHtml(s)}</div>
+      <div class="trigger">${lang==='en'?(s.trigger_en||s.trigger||''):(s.trigger||s.trigger_he||'')}${earningsSoonBadgeHtml(s)}${afterReportBadgeHtml(s)}${belowMa150BadgeHtml(s)}${insiderBadgeHtml(s)}</div>
       ${repeatBadgeHtml(s.repeatCount)}
       ${winRateBadgeHtml(s.patternType)}
       <div class="score-badge ${scoreClass(s.score)}">${s.score}</div>
@@ -1640,6 +1640,17 @@ function belowMa150BadgeHtml(s){
   if(!(p > 0) || !(m > 0) || p >= m) return '';
   const en = lang==='en';
   return `<span class="earn-soon-badge below-ma-badge" title="${en ? 'The price is below its 150-day average — a sign of weakness, even if the pattern holds' : 'המחיר מתחת לממוצע 150 — סימן לחולשה, גם אם התבנית מחזיקה'}">${en ? 'Below 150-day MA' : 'מתחת לממוצע 150'}</span>`;
+}
+
+// v69: the scan came right after an earnings report (scanner days_since_report, counted in trading days on the scan day,
+// 0 = the day the market reacted) — part of the move and the volume may be the reaction, not the pattern. Said relative to
+// the scan, so it stays true on a later day.
+function afterReportBadgeHtml(s){
+  const d = s.daysSinceReport;
+  if(d == null || d < 0) return '';
+  const en = lang==='en';
+  const label = d === 0 ? (en ? 'On report reaction day' : 'ביום התגובה לדוח') : (en ? `${d}d after a report` : `${d} ימי מסחר אחרי דוח`);
+  return `<span class="earn-soon-badge" title="${en ? 'Found right after a quarterly report — part of the move and the volume may be the reaction to the report' : 'נמצאה מיד אחרי דוח רבעוני — חלק מהתנועה ומהנפח עשוי להיות התגובה לדוח'}">${label}</span>`;
 }
 
 // v20e: a report within the next 7 days is a known swing risk (gap on the report) — shown on the row itself, not only
@@ -4369,6 +4380,13 @@ async function loadEconCalendar(){
 function econEtDateStr(d){  // 'YYYY-MM-DD' of a Date in New York
   return new Intl.DateTimeFormat('en-CA', {timeZone:'America/New_York', year:'numeric', month:'2-digit', day:'2-digit'}).format(d);
 }
+
+// v68: a report with no time. Before its day the company has not announced it; after it, the SEC filing did not settle it
+// (pipeline_a_scanner.confirm_earnings_times), which is rare now.
+function earnUnknownTime(day, en){
+  const past = day && day < econEtDateStr(new Date());
+  return past ? (en ? 'Time not verified' : 'השעה לא אומתה') : (en ? 'Time not announced yet' : 'השעה טרם פורסמה');
+}
 function econDayDiff(dateEt){  // days between today (ET) and an ET date string
   const a = Date.parse(econEtDateStr(new Date()) + 'T00:00:00Z');
   const b = Date.parse(dateEt + 'T00:00:00Z');
@@ -4860,7 +4878,7 @@ function renderEarningsCalendar(items){
   for(const it of byDay.get(_earnDay)) (groups[it.session in sessionOrder ? it.session : 'unknown'] ||= []).push(it);
   // v27: up to ~40 companies a day now (Nasdaq's calendar) — the largest EARN_SESSION_SHOWN per session, the rest on a click
   const list = Object.keys(groups).sort((a, b) => sessionOrder[a] - sessionOrder[b]).map(s => {
-    const sLabel = s === 'bmo' ? t.session_bmo : s === 'amc' ? t.session_amc : (en ? 'Time not confirmed' : 'שעה לא ידועה');
+    const sLabel = s === 'bmo' ? t.session_bmo : s === 'amc' ? t.session_amc : earnUnknownTime(_earnDay, en);
     const rows = groups[s].slice().sort((a, b) => (b.market_cap || 0) - (a.market_cap || 0));
     const key = `${_earnDay}|${s}`;
     const showAll = _earnShowAll.has(key) || rows.length <= EARN_SESSION_SHOWN + 2;
@@ -5148,7 +5166,7 @@ function _earnDetailHtml(it, todayStr){
   const loadingTxt = `<div class="earn-note">${UI[lang].loading}</div>`;
   const dt = new Date(it.report_date + 'T12:00:00');
   const when = new Intl.DateTimeFormat(en ? 'en-US' : 'he-IL', { weekday:'long', day:'numeric', month:'long' }).format(dt);
-  const sess = it.session === 'bmo' ? UI[lang].session_bmo : it.session === 'amc' ? UI[lang].session_amc : (en ? 'time not confirmed' : 'שעה לא ידועה');
+  const sess = it.session === 'bmo' ? UI[lang].session_bmo : it.session === 'amc' ? UI[lang].session_amc : earnUnknownTime(it.report_date, en).toLowerCase();
   const out = [];
 
   // 1. this report
@@ -8092,6 +8110,7 @@ function mapDbRowToStock(r){
     rsRating: r.rs_rating,
     patternType: r.pattern_type,
     daysToEarnings: r.days_to_earnings,
+    daysSinceReport: r.days_since_report,     // v69
     repeatCount: r.repeat_count_14d || 1,
     marketCap: r.market_cap,                  // v23 filters (0 = Yahoo gave none)
     volPct: r.breakout_volume_pct,            // % above the 20-day average volume on the signal day (0 if below)

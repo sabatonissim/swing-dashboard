@@ -57,7 +57,7 @@ import psycopg2
 import psycopg2.extras
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, asdict
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date, time as dtime
 from typing import List, Optional, Dict
 from zoneinfo import ZoneInfo
 
@@ -339,6 +339,46 @@ def upcoming_report_days() -> Dict[str, int]:
         return {}
 
 
+# v69 (owner, 22.11.2026: "a lot of the volume the scanner flags is an earnings report — you can't build a pattern on
+# that"). Measured on the scans of 3-6.11 (HISTORY §27.3עה): results 0-2 days after a report were no worse in general,
+# but a momentum surge after a report — 16 of them — went on to -9% on average after 5 days and only 1 went up (without a
+# report: -5.2%, 17%). The surge is a 5-day change, so when the report's reaction day is inside those 5 days, the surge IS
+# the report: not shown. Every other result is kept and the site tags it "report N days ago".
+POST_REPORT_TAG_DAYS = 5          # the site tags a result whose stock reacted to a report within this many trading days
+POST_REPORT_SURGE_DAYS = 4        # reaction day among the last 5 bars (0-4 days ago) = the 5-day surge is the report
+
+
+def recent_reports() -> Dict[str, tuple]:
+    """{ticker: (report_date, session)} — each stock's latest report of the last 12 days, from the stored calendar."""
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""SELECT DISTINCT ON (ticker) ticker, report_date, session FROM earnings_calendar
+                       WHERE report_date BETWEEN CURRENT_DATE - 12 AND CURRENT_DATE
+                       ORDER BY ticker, report_date DESC""")
+        out = {t: (d, s) for t, d, s in cur.fetchall()}
+        cur.close()
+        conn.close()
+        return out
+    except Exception as e:
+        print(f"[warn] recent reports: {type(e).__name__}: {e}")
+        return {}
+
+
+def days_since_report(hist: pd.DataFrame, report_date, session) -> Optional[int]:
+    """Trading days since the market's first reaction to the report: the report day itself for a morning (or unknown)
+    release, the next bar for an evening one. 0 = the last bar is the reaction. None = not yet reacted, or longer ago
+    than POST_REPORT_TAG_DAYS."""
+    if report_date is None or hist is None or not len(hist):
+        return None
+    days = [ts.date() for ts in hist.index[-(POST_REPORT_TAG_DAYS + 3):]]
+    after = [d for d in days if (d > report_date if session == "amc" else d >= report_date)]
+    if not after:
+        return None
+    n = len(after) - 1
+    return n if n <= POST_REPORT_TAG_DAYS else None
+
+
 
 @dataclass
 class ScanResult:
@@ -367,6 +407,7 @@ class ScanResult:
     pattern_type: Optional[str] = None
     days_to_earnings: Optional[int] = None
     sector: Optional[str] = None          # v19: Yahoo's sector ("Technology"...) for the site's sector filter
+    days_since_report: Optional[int] = None   # v69: trading days since the market reacted to an earnings report (0 = today)
 
 
 # ------------------------------------------------------------------
@@ -1476,6 +1517,7 @@ def init_db():
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS forward_return_10d REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS forward_return_20d REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS days_to_earnings INTEGER;")
+    cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS days_since_report INTEGER;")   # v69
     # Demo-portfolio simulation (stop / target / time exit) — see simulate_trade()
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sim_stop REAL;")
     cur.execute("ALTER TABLE scanned_stocks ADD COLUMN IF NOT EXISTS sim_target REAL;")
@@ -1527,6 +1569,11 @@ def init_db():
     cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS implied_move_expiry DATE;")
     cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS implied_move_at TIMESTAMPTZ;")
     cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS company_name TEXT;")   # v27: Nasdaq's name
+    # v68: 'sec' = the time (and day) confirmed by the SEC filing of the press release (confirm_earnings_times)
+    cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS session_source TEXT;")
+    cur.execute("""CREATE TABLE IF NOT EXISTS earnings_time_fix (
+                       ticker TEXT NOT NULL, listed_date DATE NOT NULL, real_date DATE, session TEXT,
+                       accepted_at TIMESTAMPTZ, checked_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (ticker, listed_date))""")
     cur.execute("ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS eps_from_release BOOLEAN DEFAULT FALSE;")   # v33
     # Values stored before provenance existed can't be verified, so drop them
     # once; the next scan refetches them with the validated logic. Idempotent:
@@ -1570,8 +1617,8 @@ def upsert_scan_result(conn, result):
             social_volume_spike_pct, ai_summary_he, ai_summary_en,
             market_cap, avg_volume_20d, breakout_volume_pct, exchange,
             change_pct, sma50, sma150, sma200, trend_stage, atr_value, atr_pct,
-            rs_rating, pattern_type, days_to_earnings, sector, timestamp, score_rules
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            rs_rating, pattern_type, days_to_earnings, sector, timestamp, score_rules, days_since_report
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             result.ticker, result.trigger_text_he, result.trigger_text_en,
@@ -1582,7 +1629,7 @@ def upsert_scan_result(conn, result):
             _native(result.change_pct), _native(result.sma50), _native(result.sma150), _native(result.sma200),
             result.trend_stage, _native(result.atr_value), _native(result.atr_pct), _native(result.rs_rating),
             result.pattern_type, _native(result.days_to_earnings), result.sector, datetime.now(timezone.utc).isoformat(),
-            SCORE_RULES_VERSION,
+            SCORE_RULES_VERSION, _native(result.days_since_report),
         ),
     )
     conn.commit()
@@ -1781,6 +1828,8 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             print(f"[warn] extra universe failed — scanning the core list only: {type(e).__name__}: {e}")
             extra_info = {}
     extras_downloaded = False
+    reports = recent_reports()          # v69: one query for the whole scan
+    post_report_surges: List[str] = []
     results: List[ScanResult] = []
     consecutive_timeouts = 0
     all_changes: List[tuple] = []  # (ticker, change_pct, close, market_cap) for EVERY ticker fetched —
@@ -1892,6 +1941,14 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         trend = compute_trend_structure(hist)
         atr = compute_atr(hist)
         days_to_earnings = extra_report_days.get(ticker) if is_extra else compute_days_to_earnings(info)
+        # v69: a report the market already reacted to — the stored calendar, else Yahoo's date when it is still the past one
+        rep = reports.get(ticker)
+        if rep is None and days_to_earnings is not None and -12 <= days_to_earnings < 0:
+            rep = (datetime.now(timezone.utc).date() + timedelta(days=days_to_earnings), None)
+        since_report = days_since_report(hist, rep[0], rep[1]) if rep else None
+        if momentum and since_report is not None and since_report <= POST_REPORT_SURGE_DAYS:
+            momentum = None
+            post_report_surges.append(ticker)
 
         # v25: leadership data for EVERY liquid stock (not only pattern matches) -> stock_leaders, the site's
         # "leading stocks" table. Same hist/info already fetched — no extra Yahoo calls.
@@ -2075,6 +2132,11 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
         if earnings_soon:
             ai_summary_en += f" ⚠️ Earnings report in {days_to_earnings} day(s) — expect elevated volatility risk."
             ai_summary_he += f" ⚠️ דוחות כספיים בעוד {days_to_earnings} ימים — צפויה תנודתיות מוגברת."
+        if since_report is not None:
+            ago_en = "today" if since_report == 0 else f"{since_report} trading day(s) ago"
+            ago_he = "היום" if since_report == 0 else f"לפני {since_report} ימי מסחר"
+            ai_summary_en += f" The stock reacted to its earnings report {ago_en} — part of the move and the volume may be that reaction."
+            ai_summary_he += f" המניה הגיבה לדוח הרבעוני {ago_he} — חלק מהתנועה ומהנפח עשוי להיות התגובה לדוח."
 
         result = ScanResult(
             ticker=ticker,
@@ -2101,6 +2163,7 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
             pattern_type=pattern_type,
             days_to_earnings=days_to_earnings,
             sector=(info.get("sector") or None),
+            days_since_report=since_report,
         )
         results.append(result)
 
@@ -2130,6 +2193,8 @@ def scan_universe(universe: List[str] = None, target_language: str = "he") -> Li
     # RS >= 70 in a Stage 2 uptrend with ATR >= 3%, or RS >= 90 — went up in 50% of cases 20 trading days later,
     # average +2.1%; the rest 36%, average -2.4% (the S&P 500 over the same days: ~+0.05% per 10 days). Volume made
     # no difference, so it is not part of it.
+    if post_report_surges:
+        print(f"[info] momentum surge set aside — the 5-day move is an earnings reaction: {', '.join(post_report_surges)}")
     before = len(results)
     results = [r for r in results if passes_quality_gate(r)]
     mega = [r.ticker for r in results if not passes_quality_gate(r, mega=False)]
@@ -2719,6 +2784,150 @@ def _sec_release_text(cik, accession):
     return None
 
 
+# ------------------------------------------------------------------ v68: the report's real time and day
+# Nasdaq gives "pre-market" / "after-hours" only BEFORE the report: once the day passed it answers "time-not-supplied" for
+# every row (18.11.2026: 53 of 55), and each run wrote that over the time it had. Some days are also wrong: WSM, UGI and JOYY
+# were listed on 18.11 and filed on 19.11. The SEC keeps the minute each earnings filing was accepted (8-K Item 2.02, or a
+# foreign company's 6-K), so after the report its time is a fact. A filing the next morning is either the evening's release
+# filed late (UGI: "November 18, 2026 ... today reported", filed 19.11 07:45 ET) or a morning report Nasdaq dated a day
+# early (JOYY: "November 19, 2026"), so then the release's own date decides.
+EARNINGS_TIME_BUDGET_SEC = 120         # SEC calls per quick run
+EARNINGS_TIME_GIVE_UP_DAYS = 6         # = the calendar's past window: every past day on the site gets its times
+_ET = ZoneInfo("America/New_York")
+_DATELINE = re.compile(r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2}),?\s+(20\d\d)\b")
+_MONTH_NO = {m: i for i, m in enumerate(("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), 1)}
+
+
+def release_dateline(text):
+    """The date a press release gives itself ("VALLEY FORGE, PA, November 18, 2026 - ..."), from its first lines."""
+    m = _DATELINE.search((text or "")[:1500])
+    if not m:
+        return None
+    try:
+        return date(int(m.group(3)), _MONTH_NO[m.group(1)], int(m.group(2)))
+    except ValueError:
+        return None
+
+
+def earnings_filings(sub):
+    """[(accepted, New York time), form, accession)] of the filings that can carry results: 8-K with Item 2.02, and 6-K."""
+    recent = (sub.get("filings") or {}).get("recent") or {}
+    forms, items = recent.get("form", []), recent.get("items", [])
+    accepted, accs = recent.get("acceptanceDateTime", []), recent.get("accessionNumber", [])
+    out = []
+    for i, form in enumerate(forms):
+        if i >= len(accepted) or i >= len(accs):
+            break
+        if not (form == "6-K" or (form == "8-K" and "2.02" in (items[i] if i < len(items) else ""))):
+            continue
+        try:
+            at = datetime.fromisoformat(accepted[i].replace("Z", "+00:00")).astimezone(_ET)
+        except (ValueError, AttributeError):
+            continue
+        out.append((at, form, accs[i]))
+    return out
+
+
+def _session_at(at):
+    if at.time() < dtime(9, 30):
+        return "bmo"
+    return "amc" if at.time() >= dtime(16, 0) else None      # during trading: may be a morning release filed late
+
+
+def confirm_report_time(filings, listed, dateline_of):
+    """(real report day, 'bmo' | 'amc', accession) from the earnings filings around the listed day, or None when they do not
+    settle it. 6-K: a foreign company files many, so only when it is the only one within a day."""
+    near = [f for f in filings if -1 <= (f[0].date() - listed).days <= 1]
+    six = [f for f in near if f[1] == "6-K"]
+    pool = [f for f in near if f[1] == "8-K"] or (six if len(six) == 1 else [])
+    for at, _form, acc in sorted(pool, key=lambda f: (abs((f[0].date() - listed).days), f[0].date() < listed, f[0])):
+        day, sess = at.date(), _session_at(at)
+        if day == listed and sess:
+            return listed, sess, acc
+        if day == listed + timedelta(days=1) and sess == "bmo":
+            told = dateline_of(acc)
+            if told == listed:
+                return listed, "amc", acc
+            if told == day:
+                return day, "bmo", acc
+        if day == listed - timedelta(days=1) and sess == "amc":
+            return day, "amc", acc
+    return None
+
+
+def _apply_time_fix(cur, ticker, listed, real, session):
+    """Writes a confirmed time; a confirmed other day moves the row (or, if that day already has one, replaces it)."""
+    if real == listed:
+        cur.execute("UPDATE earnings_calendar SET session = %s, session_source = 'sec' WHERE ticker = %s AND report_date = %s",
+                    (session, ticker, listed))
+        return
+    cur.execute("""UPDATE earnings_calendar SET report_date = %s, session = %s, session_source = 'sec'
+                   WHERE ticker = %s AND report_date = %s
+                     AND NOT EXISTS (SELECT 1 FROM earnings_calendar WHERE ticker = %s AND report_date = %s)""",
+                (real, session, ticker, listed, ticker, real))
+    if cur.rowcount == 0:
+        cur.execute("UPDATE earnings_calendar SET session = %s, session_source = 'sec' WHERE ticker = %s AND report_date = %s",
+                    (session, ticker, real))
+        cur.execute("DELETE FROM earnings_calendar WHERE ticker = %s AND report_date = %s", (ticker, listed))
+
+
+def confirm_earnings_times():
+    """v68, in the quick run: every report of the last days whose time is not confirmed yet is looked up in the SEC once its
+    day came (today's again every run until its filing is there; older ones every 6 hours, for EARNINGS_TIME_GIVE_UP_DAYS).
+    Load (quick run every 30 minutes, 06:00-20:00 ET): one join of ~150 small rows + a few writes = ~15 KB a run, at a time
+    the database is awake for the quick run anyway; SEC: 1 request a report (+2 for a release read for its date)."""
+    today = datetime.now(_ET).date()
+    now = datetime.now(timezone.utc)
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""SELECT c.ticker, c.report_date, f.checked_at, c.session FROM earnings_calendar c
+                   LEFT JOIN earnings_time_fix f ON f.ticker = c.ticker AND f.listed_date = c.report_date
+                   WHERE c.report_date BETWEEN %s AND %s AND COALESCE(c.session_source, '') <> 'sec'
+                     AND (f.real_date IS NULL)
+                   ORDER BY c.report_date DESC, c.market_cap DESC NULLS LAST""",
+                (today - timedelta(days=EARNINGS_TIME_GIVE_UP_DAYS), today))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    evening = datetime.now(_ET).time() >= dtime(16, 0)
+    due = [(t, d) for t, d, checked, sess in rows
+           if not (d == today and sess == "amc" and not evening)          # its filing cannot be there before the close
+           and (checked is None or (now - checked).total_seconds() > (0 if d == today else 6 * 3600))]
+    results, t0 = [], time.time()
+    for ticker, listed in due:
+        if time.time() - t0 > EARNINGS_TIME_BUDGET_SEC:
+            print(f"[info] earnings times: time budget reached, {len(due) - len(results)} left for the next run")
+            break
+        found = None
+        try:
+            cik = _sec_cik_for(ticker)
+            if cik:
+                sub = _sec_get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json")
+                found = confirm_report_time(earnings_filings(sub), listed,
+                                            lambda acc, c=cik: release_dateline(_sec_release_text(c, acc)))
+        except Exception as e:  # noqa: BLE001
+            print(f"[warn] earnings time {ticker} {listed}: {type(e).__name__}: {e}")
+        results.append((ticker, listed, found))
+    if not results:
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    confirmed = []
+    for ticker, listed, found in results:
+        real, session, _acc = found or (None, None, None)
+        cur.execute("""INSERT INTO earnings_time_fix (ticker, listed_date, real_date, session, checked_at) VALUES (%s, %s, %s, %s, NOW())
+                       ON CONFLICT (ticker, listed_date) DO UPDATE SET real_date = EXCLUDED.real_date, session = EXCLUDED.session,
+                           checked_at = NOW()""", (ticker, listed, real, session))
+        if found:
+            _apply_time_fix(cur, ticker, listed, real, session)
+            confirmed.append(f"{ticker} {session}" + (f" on {real}" if real != listed else ""))
+    cur.execute("DELETE FROM earnings_time_fix WHERE listed_date < %s", (today - timedelta(days=30),))
+    conn.commit()
+    cur.close()
+    conn.close()
+    print(f"[info] earnings times: {len(results)} looked up in the SEC, {len(confirmed)} confirmed: {', '.join(confirmed) or 'none'}")
+
+
 # v18: with the pre-report consensus stored, the figure must sit close to it. The old 0.5x–2x band around the last statement
 # revenue let Verizon's $23.5B service line (estimate $34.9B) and Blackstone's $7.3B accrued balance (estimate $3.4B) through.
 REV_ESTIMATE_BAND = (0.8, 1.25)
@@ -3118,6 +3327,11 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
         # v27: rows that need no Yahoo call this run — both results in, or (before the report) both estimates in
         complete = {(row[0], row[1]) for row in chk_rows if row[2] and row[4]}
         estimated = {(row[0], row[1]) for row in chk_rows if row[3] and row[5]}
+        # v68: the days and times the SEC filings confirmed (confirm_earnings_times); Nasdaq still lists the old day
+        cur_chk.execute("""SELECT ticker, listed_date, real_date, session FROM earnings_time_fix
+                           WHERE real_date IS NOT NULL AND listed_date BETWEEN %s AND %s""",
+                        (window_start.isoformat(), window_end.isoformat()))
+        time_fixes = {(r[0], r[1]): (r[2], r[3]) for r in cur_chk.fetchall()}
         cur_chk.close()
         conn_chk.close()
     except Exception as e:
@@ -3125,6 +3339,18 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
         already_reported = set()
         stored_rev_est = {}
         complete, estimated = set(), set()
+        time_fixes = {}
+
+    def _fixed(r):
+        fix = time_fixes.get((r[0], r[2].date()))
+        if not fix:
+            return r
+        real, sess = fix
+        hh, mm = (8, 0) if sess == "bmo" else (16, 30)
+        return (r[0], r[1], datetime(real.year, real.month, real.day, hh, mm, tzinfo=_ET).astimezone(timezone.utc))
+    sec_keys = {(k[0], v[0]) for k, v in time_fixes.items()}
+    top = list({(r[0], r[2].date()): r for r in map(_fixed, top)}.values())
+    in_window = [_fixed(r) for r in in_window]
 
     protected = [r for r in in_window if r[0] in already_reported and r[0] not in top_tickers]
     if protected:
@@ -3184,10 +3410,16 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
             """
             INSERT INTO earnings_calendar
                 (ticker, report_date, session, market_cap, eps_estimate, eps_actual, surprise_pct, eps_source_date,
-                 revenue_estimate, revenue_actual, revenue_period_end, updated_at, company_name)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 revenue_estimate, revenue_actual, revenue_period_end, updated_at, company_name, session_source)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (ticker, report_date) DO UPDATE SET
-                session = EXCLUDED.session,
+                -- v68: a time the SEC confirmed stays; "unknown" never replaces a known time (Nasdaq drops it after the day)
+                session = CASE WHEN earnings_calendar.session_source = 'sec' AND EXCLUDED.session_source IS DISTINCT FROM 'sec'
+                                    THEN earnings_calendar.session
+                               WHEN EXCLUDED.session = 'unknown' AND earnings_calendar.session IN ('bmo', 'amc')
+                                    THEN earnings_calendar.session
+                               ELSE EXCLUDED.session END,
+                session_source = CASE WHEN earnings_calendar.session_source = 'sec' THEN 'sec' ELSE EXCLUDED.session_source END,
                 market_cap = EXCLUDED.market_cap,
                 company_name = COALESCE(EXCLUDED.company_name, earnings_calendar.company_name),
                 eps_estimate = COALESCE(EXCLUDED.eps_estimate, earnings_calendar.eps_estimate),
@@ -3206,8 +3438,14 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
             (ticker, dt_utc.date().isoformat(), _earnings_session(dt_utc), _native(mcap),
              eps_est, eps_actual, eps_surprise, eps_src.isoformat() if eps_src else None,
              rev_est, rev_actual, rev_period_end.isoformat() if rev_period_end else None,
-             datetime.now(timezone.utc).isoformat(), names.get(ticker)),
+             datetime.now(timezone.utc).isoformat(), names.get(ticker),
+             "sec" if (ticker, dt_utc.date()) in sec_keys else "listed"),
         )
+    # v68: a row the SEC moved to its real day is not written back on the day Nasdaq still lists
+    for (t, listed), (real, _s) in time_fixes.items():
+        if real != listed:
+            cur.execute("DELETE FROM earnings_calendar WHERE ticker = %s AND report_date = %s AND COALESCE(session_source, '') <> 'sec'",
+                        (t, listed))
     # Revenue surprise is always derived from what is NOW stored (pre-report
     # estimate + validated actual), so it can never mix two different quarters.
     cur.execute(
@@ -4012,8 +4250,8 @@ def notify_new_signals(results):
 def main():
     import sys
     if "--quick" in sys.argv:
-        for job in (refresh_movers_only, refresh_earnings_results, refresh_implied_moves, check_price_alerts_job,
-                    earnings_alerts_job):
+        for job in (refresh_movers_only, refresh_earnings_results, confirm_earnings_times, refresh_implied_moves,
+                    check_price_alerts_job, earnings_alerts_job):
             try:
                 job()
             except Exception:

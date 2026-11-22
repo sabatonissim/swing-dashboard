@@ -1854,10 +1854,83 @@ def test_v67b_weekend_order_and_headline_translations():
     assert prep_en("J.P. Morgan prices in stunning shift on Fed rate-hike call") == "J.P. Morgan now expect stunning shift on Fed interest rate hike forecast"
     assert prep_en("Oil prices in Asia rose") == "Oil prices in Asia rose"                       # not the verb
     # the Hebrew that came back, also for rows already saved (api_server._tidy_news_row)
-    assert fix_he("שמן מפרסם ירידה שבועית שלישית מכיוון שהאספקה ​​בשפע") == "הנפט מפרסם ירידה שבועית שלישית מכיוון שהאספקה בשפע"
+    assert fix_he("שמן מפרסם ירידה שבועית שלישית מכיוון שהאספקה ​​בשפע") == "הנפט רושם ירידה שבועית שלישית מכיוון שהאספקה בשפע"
     assert fix_he("שמן זית התייקר") == "שמן זית התייקר"
     assert fix_he("לאחר הופעת הבכורה של אנתרופי, אבל") == "לאחר הופעת הבכורה של אנתרופיק, אבל"
     assert fix_he("הוצאה אנתרופית") == "הוצאה של אנתרופיק" and fix_he(fix_he("הוצאה אנתרופית")) == "הוצאה של אנתרופיק"
+
+
+def test_v68_earnings_time_from_the_sec_filing(scanner):
+    """v68: 16-19.11.2026 had 17-19 of ~22 reports a day with no time: Nasdaq answers "time-not-supplied" once the day passed,
+    and each run wrote it over the time it had. The SEC filings of 18.11 (acceptance times as the SEC gives them)."""
+    import datetime as _dt
+    from translation_fixes import fix_he
+    d18, d19 = _dt.date(2026, 11, 18), _dt.date(2026, 11, 19)
+    sub = lambda *rows: {"filings": {"recent": {"form": [r[0] for r in rows], "items": [r[1] for r in rows],
+                                                 "acceptanceDateTime": [r[2] for r in rows], "accessionNumber": [r[3] for r in rows]}}}
+    no_read = lambda acc: (_ for _ in ()).throw(AssertionError("the release should not be read"))
+    f = lambda *rows: scanner.earnings_filings(sub(*rows))
+    # same day: the filing's minute decides
+    assert scanner.confirm_report_time(f(("8-K", "2.02,9.01", "2026-11-18T14:19:28.000Z", "tjx")), d18, no_read) == (d18, "bmo", "tjx")
+    assert scanner.confirm_report_time(f(("8-K", "2.02,9.01", "2026-11-18T21:00:15.000Z", "wwd")), d18, no_read) == (d18, "amc", "wwd")
+    assert scanner.confirm_report_time(f(("6-K", "", "2026-11-18T12:10:44.000Z", "zim")), d18, no_read) == (d18, "bmo", "zim")
+    # the next morning: the release's own date decides
+    ugi = f(("8-K", "7.01,9.01", "2026-11-19T12:48:00.000Z", "ugi-701"), ("8-K", "2.02,7.01,9.01", "2026-11-19T12:45:46.000Z", "ugi"),
+            ("8-K", "1.01,2.03,9.01", "2026-11-17T21:30:46.000Z", "ugi-debt"))
+    assert len(ugi) == 1
+    assert scanner.confirm_report_time(ugi, d18, lambda acc: d18) == (d18, "amc", "ugi")
+    joyy = f(("6-K", "", "2026-11-19T11:01:26.000Z", "joyy"))
+    assert scanner.confirm_report_time(joyy, d18, lambda acc: d19) == (d19, "bmo", "joyy")
+    assert scanner.confirm_report_time(joyy, d18, lambda acc: None) is None                 # cannot tell: left as it is
+    # during trading, two 6-Ks, nothing near: not settled
+    assert scanner.confirm_report_time(f(("8-K", "2.02", "2026-11-18T15:30:00.000Z", "x")), d18, no_read) is None
+    assert scanner.confirm_report_time(f(("6-K", "", "2026-11-18T12:00:00.000Z", "a"), ("6-K", "", "2026-11-18T22:00:00.000Z", "b")), d18, no_read) is None
+    assert scanner.confirm_report_time(f(("8-K", "2.02", "2026-11-10T21:00:00.000Z", "old")), d18, no_read) is None
+    # the evening before the listed day
+    assert scanner.confirm_report_time(f(("8-K", "2.02", "2026-11-17T21:20:51.000Z", "nv")), d18, no_read) == (_dt.date(2026, 11, 17), "amc", "nv")
+    # the release's date line
+    assert scanner.release_dateline("November 18, 2026 VALLEY FORGE, PA - UGI Corporation (NYSE: UGI) today reported") == d18
+    assert scanner.release_dateline("BEIJING, Nov. 19, 2026 (GLOBE NEWSWIRE) -- JOYY Inc") == d19
+    assert scanner.release_dateline("no date here") is None and scanner.release_dateline(None) is None
+    # the Hebrew of 22.11 (key events)
+    assert fix_he("הנפט מפרסם ירידה שבועית שלישית") == "הנפט רושם ירידה שבועית שלישית"
+    assert fix_he("תצוגה מיידית: נאסד\"ק צוללת ב-5%") == "נאסד\"ק צוללת ב-5%"
+
+
+def test_v69_days_since_the_report_reaction(scanner):
+    """v69: a momentum surge whose 5 days hold the report's reaction is the report. Mon 16.11 - Fri 20.11.2026 bars."""
+    import datetime as _dt
+    import pandas as pd
+    idx = pd.DatetimeIndex(pd.date_range("2026-11-09", "2026-11-20", freq="B"), tz="America/New_York")
+    hist = pd.DataFrame({"Close": range(len(idx))}, index=idx)
+    d = lambda day: _dt.date(2026, 11, day)
+    assert scanner.days_since_report(hist, d(20), "bmo") == 0          # morning release: the day itself
+    assert scanner.days_since_report(hist, d(20), "amc") is None       # evening release: reacts on Monday
+    assert scanner.days_since_report(hist, d(19), "amc") == 0          # Thursday evening -> Friday
+    assert scanner.days_since_report(hist, d(16), "bmo") == 4          # still inside a 5-day surge
+    assert scanner.days_since_report(hist, d(16), None) == 4           # unknown time: counted from the report day
+    assert scanner.days_since_report(hist, d(13), "amc") == 4          # Friday evening -> Monday
+    assert scanner.days_since_report(hist, d(13), "bmo") == 5          # tagged, no longer inside the surge
+    assert scanner.days_since_report(hist, d(12), "bmo") is None       # too long ago
+    assert scanner.days_since_report(hist, d(10), "bmo") is None
+    assert scanner.days_since_report(hist, None, "bmo") is None
+    assert scanner.POST_REPORT_SURGE_DAYS == 4 and scanner.POST_REPORT_TAG_DAYS == 5
+
+
+def test_v68_health_counts_reports_without_a_time():
+    import datetime as _dt
+    import data_health as dh
+
+    class Cur:
+        def __init__(self, rows): self.rows = rows
+        def execute(self, *a): pass
+        def fetchall(self): return self.rows
+    row = lambda t, s: {"ticker": t, "eps_actual": 1.0, "revenue_actual": 1.0, "rel": False, "covered": True, "session": s}
+    now = _dt.datetime(2026, 11, 24, 12, 0, tzinfo=_dt.timezone.utc)
+    lines = {l["check"]: l for l in dh.check_earnings(Cur([row("A", "bmo"), row("B", "amc"), row("C", "unknown"), row("D", None)]), now)}
+    assert lines["earnings.time"]["status"] == "warn" and "C, D" in lines["earnings.time"]["detail"]
+    lines = {l["check"]: l for l in dh.check_earnings(Cur([row("A", "bmo")] * 9 + [row("C", "unknown")]), now)}
+    assert lines["earnings.time"]["status"] == "info"
 
 
 def test_revenue_in_another_currency_or_zero_is_not_shown(scanner, api):

@@ -317,7 +317,7 @@ def check_earnings(cur, now: datetime) -> List[dict]:
     while day.weekday() >= 5:
         day -= timedelta(days=1)
     # v38c: revenue_estimate in [0, 10 x market cap] = a real estimate (api_server._usable_revenue): 0 = none, above = another currency
-    cur.execute("""SELECT ticker, eps_actual, revenue_actual, COALESCE(eps_from_release, FALSE) AS rel,
+    cur.execute("""SELECT ticker, eps_actual, revenue_actual, COALESCE(eps_from_release, FALSE) AS rel, session,
                           (eps_estimate IS NOT NULL OR (revenue_estimate > 0 AND (market_cap IS NULL OR revenue_estimate <= 10 * market_cap)))
                           AS covered
                    FROM earnings_calendar WHERE report_date = %s""", (day,))
@@ -332,10 +332,20 @@ def check_earnings(cur, now: datetime) -> List[dict]:
     no_eps = sum(1 for r in rows if r["eps_actual"] is None)
     rel = sum(1 for r in rows if r["rel"])
     status = "ok" if not blank else ("info" if len(blank) <= MAX_BLANK_REPORTS else "warn")
+    # v68: 16-19.11.2026 showed 17-19 of ~22 reports a day with no time (Nasdaq drops it after the day, and each run wrote
+    # "unknown" over it). After the report the SEC filing gives it (pipeline_a_scanner.confirm_earnings_times).
+    no_time = [r["ticker"] for r in rows if r.get("session") not in ("bmo", "amc")]
+    share = len(no_time) / len(rows)
     return [_line("earnings.results", status, f"{day}: {len(rows)} reports, no EPS: {no_eps}, EPS still from the release: {rel}, "
                                               f"nothing at all: {', '.join(blank[:20]) or 'none'}"
                                               + (f"; no estimate and no results (not counted): {', '.join(uncovered[:20])}" if uncovered else ""),
-                  len(blank))]
+                  len(blank)),
+            _line("earnings.time", "warn" if share > EARNINGS_NO_TIME_SHARE else ("info" if no_time else "ok"),
+                  f"{day}: {len(no_time)} of {len(rows)} reports without a before-open / after-close time: {', '.join(no_time[:20]) or 'none'}",
+                  len(no_time))]
+
+
+EARNINGS_NO_TIME_SHARE = 0.25     # v68: more than this share of a day's reports with no time = the SEC confirmation is not working
 
 
 GUIDANCE_MISSING_SHARE = 0.3       # v40: more than this share of a day's reports without an answer = the job is not working

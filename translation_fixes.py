@@ -152,6 +152,9 @@ HE_FIXES = [
     ("אנתרופית", "של אנתרופיק"),                 # "Anthropic spending" -> "הוצאה אנתרופית"
     ("ניפוח המזון", "אינפלציית המזון"),
     ("חוזים עתידיים אנוסים", "חוזים עתידיים על קריפטו"),
+    # v68 (key events 22.11.2026): "Oil Posts Third Weekly Drop" -> "הנפט מפרסם ירידה"
+    ("מפרסם ירידה", "רושם ירידה"), ("מפרסמת ירידה", "רושמת ירידה"), ("מפרסמים ירידה", "רושמים ירידה"),
+    ("מפרסם הפסד", "רושם הפסד"), ("מפרסמת הפסד", "רושמת הפסד"), ("מפרסם עלייה", "רושם עלייה"), ("מפרסמת עלייה", "רושמת עלייה"),
 ]
 
 # v38c: company names that are ordinary English words, which Google translates ("Ball" -> "כדור", "Visa slips" -> "תלושי ויזה",
@@ -241,5 +244,7 @@ def fix_he(text: str) -> str:
     text = re.sub(r"^(\s*)שמן (?!(?:זית|דקלים|קנולה|בישול|סויה)\b)", r"\1הנפט ", text)
     text = text.replace("מחירי השמן", "מחירי הנפט")
     text = re.sub(r"אנתרופי(?=[\s,.:;!?״\"']|$)", "אנתרופיק", text)
+    # v68: Reuters' labels, in rows saved before EN_REWRITES dropped them ("תצוגה מיידית: נאסד"ק צוללת")
+    text = re.sub(r"^\s*(?:תצוגה מיידית|תיבת עובדות|מסביר)\s*:\s*", "", text)
     text = _NAME_BACK.sub(r"\1", text)          # v38c: "Ball Inc" -> "Ball" (keep_company_names added the suffix)
     return re.sub(r'(?<=\S) בע["״]מ(?=[\s,.;:]|$)', "", text)    # "בלוק בע"מ": the same suffix, translated
