@@ -1812,7 +1812,7 @@ def _tidy_news_row(r) -> dict:
     r = dict(r)
     for k in ("summary_he", "body_he"):
         if r.get(k):
-            r[k] = html.unescape(r[k])
+            r[k] = fix_he(r[k])          # v67: also the fixes added after the row was saved ("שמן מפרסם" -> "הנפט מפרסם")
     raw = (r.get("source_name") or "").strip()
     if raw:
         r["source_name"] = clean_publisher(raw)

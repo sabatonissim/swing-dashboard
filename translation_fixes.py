@@ -81,6 +81,22 @@ EN_REWRITES = [
     (r"\bslips\b", "falls slightly"),
     (r"\bslipped\b", "fell slightly"),
     (r"\bslip(?=\s+(?:as|after|on|in|amid|while)\b)", "fall slightly"),
+    # v67 (key events 21.11.2026; each checked against clients5 from home, before -> after):
+    # "Oil Posts Third Weekly Drop" -> "שמן מפרסם ירידה" -> "מחירי הנפט רושמים ירידה שבועית שלישית"
+    (r"\b(oil|crude|gold|silver|copper)\s+posts?\s+(?:a\s+)?record\b", r"\1 prices reach a record"),   # "Gold posts record high"
+    (r"\b(oil|crude|gold|silver|copper)\s+posts?\b", r"\1 prices record"),
+    (r"\b(oil|crude|gold|silver|copper)\s+posted\b", r"\1 prices recorded"),
+    # "Oil prices edge higher" -> "עולים בעליות"
+    (r"\bedg(?:e|es|ed|ing)\s+(?:higher|up)\b", "rise slightly"),
+    (r"\bedg(?:e|es|ed|ing)\s+(?:lower|down)\b", "fall slightly"),
+    # "Canada Auto Plant The 'Front Line'" -> "קנדה נטעה" -> "מפעל הרכב בקנדה"
+    (r"\b(auto|car|chip|steel|aluminum|battery|assembly|manufacturing|meatpacking|semiconductor)\s+plant(s?)\b", r"\1 factory\2"),
+    # Reuters labels: "Instant view: Nasdaq plunges" -> "תצוגה מיידית: ..."
+    (r"^\s*(?:instant view|view|factbox|explainer|analysis|breakingviews)\s*[:\-–—]\s*", ""),
+    # "J.P. Morgan prices in stunning shift on Fed rate-hike call" -> "J.P. מורגן מחירים בשינוי מדהים בבקשת"
+    (r"\b(morgan|goldman(?: sachs)?|citi(?:group)?|barclays|ubs|bofa|traders|markets|investors|wall street)\s+price(?:s|d)?\s+in\b",
+     r"\1 now expect"),
+    (r"\b(interest rate (?:hike|cut)s?|rate (?:hike|cut)s?)\s+call\b", r"\1 forecast"),
 ]
 
 HE_FIXES = [
@@ -218,7 +234,12 @@ def fix_he(text: str) -> str:
     """Translator output with known bad renderings corrected."""
     # v28: MyMemory answers with HTML codes — the site showed "בארה&quot;ב" and "אנרג&#39;י" literally
     text = _NIQQUD.sub("", html.unescape(text or ""))
+    text = text.replace("​", "").replace("﻿", "")      # v67: "האספקה ​​בשפע" came with two zero-width spaces
     for bad, good in HE_FIXES:
         text = text.replace(bad, good)
+    # v67: "Oil" opening a headline is read as cooking oil ("שמן מפרסם ירידה"); "Anthropic" as "אנתרופי"
+    text = re.sub(r"^(\s*)שמן (?!(?:זית|דקלים|קנולה|בישול|סויה)\b)", r"\1הנפט ", text)
+    text = text.replace("מחירי השמן", "מחירי הנפט")
+    text = re.sub(r"אנתרופי(?=[\s,.:;!?״\"']|$)", "אנתרופיק", text)
     text = _NAME_BACK.sub(r"\1", text)          # v38c: "Ball Inc" -> "Ball" (keep_company_names added the suffix)
     return re.sub(r'(?<=\S) בע["״]מ(?=[\s,.;:]|$)', "", text)    # "בלוק בע"מ": the same suffix, translated

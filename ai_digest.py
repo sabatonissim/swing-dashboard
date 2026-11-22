@@ -490,7 +490,8 @@ Keep the same fields and the same number of topics; an empty field stays empty. 
 
 _ADVICE = re.compile(r"\b(you should|we recommend|recommend(?:ed|s)? (?:to )?(?:buy|sell)|should (?:buy|sell|hold)|time to (?:buy|sell)|buy now|sell now)\b", re.I)
 # v37b, seen in the first real answer (5.11.2026): "suggested investors were not fleeing to bonds, possibly reflecting inflation concerns"
-_OWN_GUESS = re.compile(r"\b(suggest(?:s|ed|ing)?|possibly|perhaps|reflect(?:s|ed|ing)?|risk-off|risk-on|investors? (?:sought|fled|fleeing|rushed|were|are)|"
+_OWN_GUESS = re.compile(r"\b(suggest(?:s|ed|ing)?|possibly|perhaps|reflect(?:s|ed|ing)?|risk-off|risk-on|(?:investors?|traders?) (?:sought|fled|fleeing|rushed|were|are)|"
+                        r"sought (?:safety|shelter|refuge)|"     # v67: 20.11.2026 "yields fell ... as traders sought safety"
                         r"profit[- ]taking|rotation|breadth was|reacted|relief|safe[- ]haven|across (?:all )?sectors)\b", re.I)
 # v37c: more than one of these in a topic = a list of the market numbers the site shows anyway, not a story
 _ASSET_WORDS = (r"\boil\b|\bwti\b|\bcrude\b", r"\byields?\b|\btreasur", r"\bgold\b", r"\bvix\b", r"\bbitcoin\b|\bcrypto")
@@ -977,6 +978,13 @@ def clean_answer(text, items, market, strict=True):
         raise ValueError("the answer has no usable overview or topics: every topic needs the numbers of its items")
     # v37c: the items come most important first, so the order of the topics follows them. 5.11.2026 opened with oil and bonds.
     topics.sort(key=lambda t: t["_rank"])
+    # v67: Saturday 21.11.2026 put "inflation data in focus next week" above the week's crash. After a large last session the
+    # first topic that tells the market (the indices or a sell-off) goes first.
+    if last_session_large(market):
+        tells = [t for t in topics if _MARKET_RE.search(f"{t['title_en']} {t['summary_en']}")]
+        if tells:
+            topics.remove(tells[0])
+            topics.insert(0, tells[0])
     if strict and market and market.get("move") in ("extreme", "notable") and topics[0]["_rank"] != 1:
         raise ValueError("the day's move was large and no topic tells item [1], the most covered story. Make it the first topic")
     for t in topics:

@@ -4169,7 +4169,9 @@ function digestMarketHtml(ai){
 // v37: the numbers of the session the summary was written from, saved with it (ai_digest.py -> market), so an earlier day shows its own
 function digestStoredMarketHtml(ai){
   const m = ai && ai.market;
-  const list = (m && Array.isArray(m.indices) ? m.indices : []).filter(i => typeof i.change_pct === 'number');
+  // v67: Bitcoin trades every day: on a weekend its own day is in `today`, so its Friday chip (a second, different number) is left out
+  const ownDay = new Set((m && Array.isArray(m.today) ? m.today : []).map(i => i.symbol));
+  const list = (m && Array.isArray(m.indices) ? m.indices : []).filter(i => typeof i.change_pct === 'number' && !ownDay.has(i.symbol));
   if(!list.length) return '';
   const t = lang==='en';
   const chips = list.map(i => {
@@ -4183,7 +4185,12 @@ function digestStoredMarketHtml(ai){
     const up = i.change_pct >= 0;
     return `<div class="dg-chip"><span>${escH(t ? i.name_en : i.name_he)} ${t ? 'today' : 'היום'}</span><b class="${up?'pct-up':'pct-down'}" dir="ltr">${up?'+':''}${i.change_pct.toFixed(2)}%</b></div>`;
   }).join('');
-  return `${today ? `<div class="dg-market">${today}</div>` : ''}${other}<div class="dg-market">${chips}</div>${digestSessionHtml(ai)}`;
+  // v67: the trading week (ai_digest.py -> market.week), on a weekend: Friday alone hid a -8.6% week
+  const week = (!m.same_day && Array.isArray(m.week) ? m.week : []).filter(i => typeof i.change_pct === 'number').map(i => {
+    const up = i.change_pct >= 0;
+    return `<div class="dg-chip"><span>${escH(t ? i.name_en : i.name_he)} ${t ? 'this week' : 'בשבוע'}</span><b class="${up?'pct-up':'pct-down'}" dir="ltr">${up?'+':''}${i.change_pct.toFixed(2)}%</b></div>`;
+  }).join('');
+  return `${today ? `<div class="dg-market">${today}</div>` : ''}${other}<div class="dg-market">${chips}</div>${week ? `<div class="dg-market">${week}</div>` : ''}${digestSessionHtml(ai)}`;
 }
 
 // v38b: why there are no numbers of the day itself, and which day the numbers below are of

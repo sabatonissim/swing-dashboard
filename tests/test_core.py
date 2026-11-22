@@ -1829,6 +1829,37 @@ def test_digest_says_why_a_big_day_moved():
     assert not is_unwanted_headline("Wall St ends sharply lower on AI selloff, S&P 500, Dow in correction")
 
 
+def test_v67b_weekend_order_and_headline_translations():
+    """v67b: Saturday 21.11.2026 kept "inflation data in focus" above the week's crash; the key events had "שמן מפרסם ירידה",
+    "קנדה נטעה", "תצוגה מיידית:", "אנתרופי", "J.P. מורגן מחירים" (each rewrite checked against Google from home)."""
+    import json as _json
+    import ai_digest as d
+    from translation_fixes import prep_en, fix_he
+    items = [dict(id=1, title="Inflation, growth and consumer sentiment in focus this week", tag="אינפלציה", url="https://x.example/1", title_he="", body=""),
+             dict(id=2, title="Tech stocks end week at low as Nasdaq sell-off deepens", tag="שוק", url="https://x.example/2", title_he="", body="")]
+    sat = dict(_FRIDAY_20_11, day="2026-11-21", same_day=False, status="weekend", move="closed", last_move="extreme")
+    answer = _json.dumps({"overview": "On Friday the S&P 500 fell 3.7%.", "why": "Tech stocks fell on Friday as the Nasdaq sell-off deepened.",
+                          "why_items": [2], "topics": [
+                              {"title": "Inflation data in focus", "summary": "Inflation, growth and consumer sentiment are in focus this week.", "impact": "", "items": [1]},
+                              {"title": "Tech sell-off deepens", "summary": "Tech stocks ended the week at a low as the Nasdaq sell-off deepened.", "impact": "", "items": [2]}]})
+    assert [t["title_en"] for t in d.clean_answer(answer, items, sat)["topics"]] == ["Tech sell-off deepens", "Inflation data in focus"]
+    assert [t["title_en"] for t in d.clean_answer(answer, items, dict(sat, last_move="normal"))["topics"]][0] == "Inflation data in focus"
+    assert d._own_guess("Yields fell as traders sought safety.") == "traders sought"
+    # the English sent to the translator
+    assert prep_en("Oil Posts Third Weekly Drop as Ample Supply Outweighs War Risk").startswith("Oil prices record Third")
+    assert prep_en("Gold posts record high") == "Gold prices reach a record high"
+    assert prep_en("Oil prices edge higher as Houthi attacks raise supply concerns").startswith("Oil prices rise slightly")
+    assert "Auto factory" in prep_en("Canada Auto Plant The 'Front Line' In Trump's Trade War")
+    assert prep_en("Instant view: Nasdaq plunges 5%") == "Nasdaq plunges 5%"
+    assert prep_en("J.P. Morgan prices in stunning shift on Fed rate-hike call") == "J.P. Morgan now expect stunning shift on Fed interest rate hike forecast"
+    assert prep_en("Oil prices in Asia rose") == "Oil prices in Asia rose"                       # not the verb
+    # the Hebrew that came back, also for rows already saved (api_server._tidy_news_row)
+    assert fix_he("שמן מפרסם ירידה שבועית שלישית מכיוון שהאספקה ​​בשפע") == "הנפט מפרסם ירידה שבועית שלישית מכיוון שהאספקה בשפע"
+    assert fix_he("שמן זית התייקר") == "שמן זית התייקר"
+    assert fix_he("לאחר הופעת הבכורה של אנתרופי, אבל") == "לאחר הופעת הבכורה של אנתרופיק, אבל"
+    assert fix_he("הוצאה אנתרופית") == "הוצאה של אנתרופיק" and fix_he(fix_he("הוצאה אנתרופית")) == "הוצאה של אנתרופיק"
+
+
 def test_revenue_in_another_currency_or_zero_is_not_shown(scanner, api):
     """v38c: 6.11.2026, Honda's revenue estimate in yen shown as "$5,816B", and 0 for companies no analyst covers."""
     honda_cap = 46425510000.0
