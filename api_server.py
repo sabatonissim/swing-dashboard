@@ -29,7 +29,6 @@ CORS: only the origins in ALLOWED_ORIGINS (see below).
 """
 
 import functools
-import atexit
 import json
 import math
 import os
@@ -41,7 +40,7 @@ import html
 import threading
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import date, datetime as dt, timedelta, timezone
 from typing import List, Optional
 from zoneinfo import ZoneInfo
@@ -105,7 +104,15 @@ class SafeJSONResponse(JSONResponse):
 
 
 _DOCS_ON = os.environ.get("ENABLE_DOCS", "0") == "1"
-app = FastAPI(title="Swing Desk API", default_response_class=SafeJSONResponse,
+@asynccontextmanager
+async def _lifespan(_app):
+    """v72b: what runs when the server goes down (every upload to GitHub restarts it). Not atexit: uvicorn ends by raising the
+    stop signal again, and the process is gone before atexit."""
+    yield
+    _write_waiting_visits()
+
+
+app = FastAPI(title="Swing Desk API", default_response_class=SafeJSONResponse, lifespan=_lifespan,
               docs_url="/docs" if _DOCS_ON else None, redoc_url=None,
               openapi_url="/openapi.json" if _DOCS_ON else None)
 
@@ -8208,7 +8215,6 @@ async def track_visit(request: Request):
     return Response(status_code=204)
 
 
-@atexit.register
 def _write_waiting_visits():
     """Every upload to GitHub restarts the server: what still waits in memory is written first."""
     if visits.LOG.changed or visits.LOG.forget or visits.LOG.counts:

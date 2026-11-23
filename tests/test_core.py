@@ -2846,6 +2846,26 @@ def test_visit_row_is_readable_in_neon():
     assert all(_vre.search(rf"\b{c} (TEXT|INTEGER|TIMESTAMPTZ)", made) for c in visits.COLUMNS)
     assert cur.sql[-1][0].count("%s") == len(cur.sql[-1][1]) == len(visits.COLUMNS)
 
+def test_what_waits_is_written_when_the_server_goes_down(api, monkeypatch):
+    log, conn = visits.Log(), _VisitConn()
+    monkeypatch.setattr(api.visits, "LOG", log)
+    monkeypatch.setattr(api, "get_conn", lambda: conn)
+    log.add(visits.parse(_visit_msg()), "IL", "1")
+    cm = api._lifespan(api.app)
+    with pytest.raises(StopIteration):
+        cm.__aenter__().send(None)
+    assert not conn.done                             # nothing at the start
+    with pytest.raises(StopIteration):
+        cm.__aexit__(None, None, None).send(None)
+    assert conn.done and conn.closed and not log.changed
+    assert api.app.router.lifespan_context is not None
+    made = [q for q, _ in conn.cur.sql if "CREATE OR REPLACE VIEW" in q]
+    assert len(made) == 2 and all(q.count("(") == q.count(")") and q.count(chr(39)) % 2 == 0 for q in made)
+    for word in ("באנר ההסכמה", "אישרו", "סירבו", "כניסה לאתר"):                # the same words the totals are written with
+        assert chr(39) + word + chr(39) in made[0]
+        assert word in set(visits.COUNT_HE.values()) | set(visits.BANNER_HE.values())
+
+
 def test_anonymous_totals_know_nothing_about_a_person():
     now = _vdt.datetime(2026, 11, 23, 22, 30, tzinfo=_vdt.timezone.utc)          # after midnight in Israel
     log = visits.Log()

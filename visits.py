@@ -130,6 +130,7 @@ class Log:
         self.ip_hour, self.ip_new = None, Counter()
         self.flushed_at = 0.0
         self.counts = Counter()        # v72: (day, action, detail) -> times, not written yet
+        self.views_done = False
         self.count_hour, self.count_ip = None, Counter()
         self.written, self.last_write = 0, None      # since the server started
         self.failed = 0                # writes that failed in a row (/api/data-health -> live.visits)
@@ -225,6 +226,13 @@ class Log:
             if counts:                 # on its own: a problem with the totals never holds up the visits
                 save_counts(cur, counts)
                 conn.commit()
+            if not self.views_done:    # once per start of the server; a problem here never holds up the writing
+                self.views_done = True
+                try:
+                    ensure_views(cur)
+                    conn.commit()
+                except Exception as e:  # noqa: BLE001
+                    print(f"[visits] views: {type(e).__name__}: {e}")
         finally:
             conn.close()
         self.failed = 0
@@ -398,6 +406,25 @@ def ensure_tables(cur) -> None:
     cur.execute("CREATE INDEX IF NOT EXISTS visits_started_idx ON visits (started_at)")
     cur.execute("""CREATE TABLE IF NOT EXISTS daily_counts (day DATE NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL,
                    times INTEGER NOT NULL, PRIMARY KEY (day, action, detail))""")
+
+
+def ensure_views(cur) -> None:
+    """Two ready answers the owner opens in Neon like a table (they hold no data of their own)."""
+    cur.execute("""CREATE OR REPLACE VIEW people_per_day AS
+        SELECT day, v.people, v.new_people, v.visits, c.said_yes, c.said_no, c.all_openings
+        FROM (SELECT left(time_il, 10) AS day, count(DISTINCT visitor_id) AS people,
+                     count(DISTINCT visitor_id) FILTER (WHERE visit_no = 1) AS new_people, count(*) AS visits
+              FROM visits GROUP BY 1) v
+        FULL JOIN (SELECT to_char(d.day, 'YYYY-MM-DD') AS day,
+                          sum(times) FILTER (WHERE action = 'באנר ההסכמה' AND detail = 'אישרו') AS said_yes,
+                          sum(times) FILTER (WHERE action = 'באנר ההסכמה' AND detail = 'סירבו') AS said_no,
+                          sum(times) FILTER (WHERE action = 'כניסה לאתר') AS all_openings
+                   FROM daily_counts d GROUP BY 1) c USING (day)
+        ORDER BY day DESC""")
+    cur.execute("""CREATE OR REPLACE VIEW people_per_stock AS
+        SELECT s.stock, count(DISTINCT v.visitor_id) AS people, count(*) AS visits, max(left(v.time_il, 10)) AS last_day
+        FROM visits v CROSS JOIN LATERAL unnest(string_to_array(v.stocks, ', ')) AS s(stock)
+        WHERE s.stock <> '' GROUP BY s.stock ORDER BY people DESC, visits DESC""")
 
 
 def save(cur, r: dict) -> None:
