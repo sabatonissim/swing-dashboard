@@ -7756,8 +7756,11 @@ function hookText(m){ return lang==='he' ? (m.hook_he||'') : (HOOK_EN[m.tag]||''
 // ==== v14: privacy consent, legal pages, personal-data tools ====
 // v70: the log now keeps the order and time of a visit's steps, so a "yes" given to the old text is asked again; a "no" stands.
 function consentState(){
-  try { return localStorage.getItem('swing_consent2') || (localStorage.getItem('swing_consent') === 'no' ? 'no' : null); }
-  catch(e){ return null; }
+  // v71: answered once = never asked again, whatever changes in the text. The cookie (api/geo.js) is the copy that Safari keeps.
+  let kept = null;
+  try { kept = (/(?:^|;\s*)swing_consent=(yes|no)/.exec(document.cookie) || [])[1] || null; } catch(e){}
+  try { return localStorage.getItem('swing_consent2') || kept || (localStorage.getItem('swing_consent') === 'no' ? 'no' : null); }
+  catch(e){ return kept; }
 }
 function setConsent(v){
   let pid = null;
@@ -7766,6 +7769,7 @@ function setConsent(v){
     localStorage.removeItem('swing_consent');
     if(v !== 'yes') pid = localStorage.getItem('swing_sid');
   } catch(e){}
+  fetch(`/api/geo?choice=${v === 'yes' ? 'yes' : 'no'}`, {keepalive: true, cache: 'no-store'}).catch(() => {});
   const b = document.getElementById('consent-banner');
   if(b) b.remove();
   if(v === 'yes') visitLog.start(); else visitLog.stop(pid);
@@ -8016,6 +8020,12 @@ window.addEventListener('load', () => {
 });
 // ==== end visitor log ====
 window.addEventListener('load', () => renderConsentBanner());
+window.addEventListener('load', () => {        // v71: an answer given before the cookie existed gets one now
+  const v = consentState();
+  if(v && !window.__noCount && navigator.cookieEnabled && !/swing_consent=/.test(document.cookie)){
+    fetch(`/api/geo?choice=${v}`, {cache: 'no-store'}).catch(() => {});
+  }
+});
 
 // ---- Accounts: Sign in with Google ----
 // The Client ID is public by design (not a secret). The server verifies the
