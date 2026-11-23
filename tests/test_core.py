@@ -2846,12 +2846,43 @@ def test_visit_row_is_readable_in_neon():
     assert all(_vre.search(rf"\b{c} (TEXT|INTEGER|TIMESTAMPTZ)", made) for c in visits.COLUMNS)
     assert cur.sql[-1][0].count("%s") == len(cur.sql[-1][1]) == len(visits.COLUMNS)
 
+def test_anonymous_totals_know_nothing_about_a_person():
+    now = _vdt.datetime(2026, 11, 23, 22, 30, tzinfo=_vdt.timezone.utc)          # after midnight in Israel
+    log = visits.Log()
+    msg = lambda c: visits.parse(_vjson.dumps({"c": c}).encode())
+    m = msg([["visit", "phone"], ["from", "google.com"], ["screen", "stock/NVDA"], ["search_none", "my name"], ["news_search", "x"],
+             ["tap", "switchChart QQQ"], ["banner", "no"], ["hack", "x"], "junk", ["scroll", "100"], ["link", "=cmd.com"]])
+    assert log.add(m, "IL", "1.1.1.1", now) and log.add(msg([["screen", "stock/NVDA"], ["screen", "home"]]), "IL", "1.1.1.1", now)
+    day = _vdt.date(2026, 11, 24)
+    want = {("כניסה לאתר", "טלפון"): 1, ("הגיעו מ", "google.com"): 1, ("מסך", "ניתוח NVDA"): 2, ("מסך", "דף הבית"): 1,
+            ("חיפש ולא מצא", ""): 1, ("חיפש בחדשות", ""): 1, ("לחץ על", "גרף מדד QQQ"): 1, ("באנר ההסכמה", "סירבו"): 1,
+            ("גלל", "עד הסוף"): 1, ("יצא לקישור", "cmd.com"): 1, ("מדינה", "ישראל"): 1}
+    assert dict(log.counts) == {(day, *k): n for k, n in want.items()}
+    assert not log.waiting and not log.changed                       # nothing of a visit is kept
+    bad = _VisitConn(fail=True)
+    with pytest.raises(RuntimeError):
+        log.flush(lambda: bad)
+    assert sum(log.counts.values()) == 12                            # a failed write loses nothing...
+    good = _VisitConn()
+    log.flush(lambda: good)
+    assert not log.counts                                            # ...and a good one is not counted twice
+    q, a = next(x for x in good.cur.sql if "INSERT INTO daily_counts" in x[0])
+    assert q.count("%s") == len(a) == 4 and sum(a[3]) == 12 and len(set(zip(*a[:3]))) == len(a[0])
+    for i in range(50):
+        log.add(msg([["tap", f"made_up_{i}_{j}"] for j in range(100)]), "US", f"10.0.0.{i}", now)
+    assert len(log.counts) <= visits.MAX_COUNT_KEYS
+    one = visits.Log()
+    assert sum(one.add(msg([["screen", "home"]] * 100), "", "9.9.9.9", now) for _ in range(20)) == 6      # 600 an hour
+    assert msg([]) is None and msg([["screen", {"a": 1}]]) == {"counts": [("screen", "")]}
+
+
 def test_every_step_the_site_sends_is_known():
     src = (ROOT / "index.html").read_text(encoding="utf-8")
     sent = set(_vre.findall(r"\btrack\('([a-z_]+)'", src)) | set(_vre.findall(r"\badd\('([a-z_]+)'", src)) & visits.EVENTS
     assert {"view_stock", "dd_tab", "digest", "signin"} <= sent
     assert sent <= visits.EVENTS, sent - visits.EVENTS
     assert visits.EVENTS - {"screen"} == set(visits.EVENTS_HE)
+    assert set(_vre.findall(r"\bcount\('([a-z]+)'", src)) <= visits.EVENTS | set(visits.COUNT_HE)
     parts = _vre.search(r"const parts = \{(.*?)\};", src, _vre.S).group(1)
     assert set(_vre.findall(r"(\w+): '", parts)) == set(visits.SECTIONS_HE)
 

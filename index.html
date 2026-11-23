@@ -7772,6 +7772,7 @@ function setConsent(v){
   fetch(`/api/geo?choice=${v === 'yes' ? 'yes' : 'no'}`, {keepalive: true, cache: 'no-store'}).catch(() => {});
   const b = document.getElementById('consent-banner');
   if(b) b.remove();
+  visitLog.count('banner', v);
   if(v === 'yes') visitLog.start(); else visitLog.stop(pid);
 }
 // the choice can be changed any time (the link at the bottom of the page)
@@ -7787,10 +7788,11 @@ function renderConsentBanner(force){
   d.setAttribute('role','dialog');
   d.setAttribute('aria-label', en ? 'Privacy and cookies' : 'פרטיות ועוגיות');
   d.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:200;background:var(--panel);border-top:1px solid var(--line);padding:12px 16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;font-size:12.5px;color:var(--text);box-shadow:0 -6px 24px var(--shadow);';
-  d.innerHTML = `<span style="max-width:720px;">${en?"We would like to collect information about how the site is used, in order to improve it.":"נשמח לאסוף מידע על השימוש באתר כדי לשפר אותו."} <a href="#" onclick="openLegal('privacy');return false;" style="color:var(--teal);">${en?'Privacy policy':'מדיניות פרטיות'}</a></span>
+  d.innerHTML = `<span style="max-width:720px;">${en?"We would like to collect information about your visits to the site, in order to improve it.":"נשמח לאסוף מידע על הביקורים שלך באתר כדי לשפר אותו."} <a href="#" onclick="openLegal('privacy');return false;" style="color:var(--teal);">${en?'Privacy policy':'מדיניות פרטיות'}</a></span>
     <button onclick="setConsent('yes')" style="background:var(--amber);color:var(--on-amber);border:none;border-radius:8px;padding:7px 16px;font-weight:700;cursor:pointer;">${en?'Allow':'אישור'}</button>
     <button onclick="setConsent('no')" style="background:transparent;color:var(--text-dim);border:1px solid var(--line);border-radius:8px;padding:7px 16px;cursor:pointer;">${en?'Decline':'סירוב'}</button>`;
   document.body.appendChild(d);
+  if(!force) visitLog.count('banner', 'shown');
 }
 // v35: the policies are real pages now (/privacy, /terms, text in api/_content.js), in a new tab so the app stays as it was
 function openLegal(kind){ window.open(`${lang==='he' ? '/he' : ''}/${kind}`, '_blank', 'noopener'); }
@@ -7881,7 +7883,40 @@ var visitLog = (function(){
     try { if(navigator.sendBeacon && navigator.sendBeacon(`${API_BASE}/api/track`, msg)) return; } catch(e){}
     try { fetch(`${API_BASE}/api/track`, {method: 'POST', mode: 'no-cors', keepalive: true, body: msg}).catch(() => {}); } catch(e){}
   }
+  // v72: the anonymous totals, of everybody (also of people who declined): which step, and nothing about who. No id, no order,
+  // nothing kept in the browser, nothing a person typed; the server adds each step to its own line (visits.py, daily_counts).
+  let anonOn = false, anonScreen = null, anonLast = '', anonSent = 0, anonBox = [];
+  function count(kind, label){
+    if(window.__noCount || anonSent >= 300) return;
+    label = String(label == null ? '' : label).replace(/\s+/g, ' ').trim();
+    if(kind === 'news_search' || kind === 'search_none' || kind === 'digest') label = '';
+    if(kind === 'view_macro') label = label.split(': ')[0];
+    if(kind === 'link') label = label.split(' ')[0];
+    label = label.replace(/\|?\d{4}-\d\d-\d\d/g, '').trim().slice(0, 60);
+    if(anonLast === kind + label) return;
+    anonLast = kind + label;
+    anonSent++;
+    anonBox.push(label ? [kind, label] : [kind]);
+    if(anonBox.length >= 100) sendCounts();
+  }
+  function sendCounts(){
+    if(!anonBox.length || window.__noCount) return;
+    const msg = JSON.stringify({c: anonBox});
+    anonBox = [];
+    try { if(navigator.sendBeacon && navigator.sendBeacon(`${API_BASE}/api/track`, msg)) return; } catch(e){}
+    try { fetch(`${API_BASE}/api/track`, {method: 'POST', mode: 'no-cors', keepalive: true, body: msg}).catch(() => {}); } catch(e){}
+  }
+  function countStart(){
+    if(anonOn || window.__noCount) return;
+    anonOn = true;
+    count('visit', device());
+    count('from', source());
+    screenNow();
+    watchSections();
+  }
+  const live = () => started || anonOn;
   function add(kind, label){
+    if(anonOn && kind !== 'screen') count(kind, label);
     if(!started || !allowed()) return;
     const now = Date.now();
     if(now - st.last > GAP_MS){ touchVisit(); st = fresh(); add.screen = null; if(kind !== 'screen') screenNow(); }
@@ -7897,8 +7932,9 @@ var visitLog = (function(){
     save();
   }
   function screenNow(){
-    if(!started) return;
     const label = _routePath().replace(/^\//, '') || 'home';
+    if(anonOn && anonScreen !== label){ anonScreen = label; deep = 0; chartUsed = false; count('screen', label); }
+    if(!started) return;
     if(add.screen === label) return;
     add.screen = label;
     deep = 0; chartUsed = false;
@@ -7934,7 +7970,7 @@ var visitLog = (function(){
       clearTimeout(timers[name]);
       const enough = x.isIntersecting && (x.intersectionRatio >= 0.35 || x.intersectionRect.height >= 200);
       if(enough && !seen[name]) timers[name] = setTimeout(() => {
-        if(document.hidden || !started || currentPage !== 'home') return;
+        if(document.hidden || !live() || currentPage !== 'home') return;
         seen[name] = true;
         io.unobserve(x.target);
         add('section', name);
@@ -7945,9 +7981,9 @@ var visitLog = (function(){
   ['pointerdown', 'keydown', 'scroll', 'pointermove', 'touchstart'].forEach(e =>
     window.addEventListener(e, () => { const now = Date.now(); if(now - lastInput > 1000){ tick(); lastInput = now; } }, {passive: true, capture: true}));
   setInterval(() => { tick(); if(st && st.w - (st.sent || 0) >= 30){ st.sent = st.w; dirty = true; } }, 10000);
-  setInterval(() => { if(!document.hidden) send(); }, 60000);
-  document.addEventListener('visibilitychange', () => { tick(); if(document.hidden){ if(st && started) dirty = true; send(); } });
-  window.addEventListener('pagehide', () => { if(st && started) dirty = true; send(); });
+  setInterval(() => { if(!document.hidden){ send(); sendCounts(); } }, 60000);
+  document.addEventListener('visibilitychange', () => { tick(); if(document.hidden){ if(st && started) dirty = true; send(); sendCounts(); } });
+  window.addEventListener('pagehide', () => { if(st && started) dirty = true; send(); sendCounts(); });
   // what went wrong in front of the visitor (our own code only; at most 5 a visit)
   let errors = 0;
   function fail(text){ if(!/ResizeObserver|^Script error/.test(text) && errors++ < 5) add('error', text); }
@@ -7996,7 +8032,7 @@ var visitLog = (function(){
   // how far down the screen: half of it, and (almost) its end
   window.addEventListener('scroll', () => {
     const h = document.documentElement.scrollHeight, seen = window.scrollY + window.innerHeight;
-    if(!started || h < window.innerHeight * 1.5) return;
+    if(!live() || h < window.innerHeight * 1.5) return;
     const at = seen / h >= 0.95 ? 100 : (seen / h >= 0.5 ? 50 : 0);
     if(at > deep && window.scrollY > 100){ deep = at; add('scroll', String(at)); }
   }, {passive: true});
@@ -8007,11 +8043,11 @@ var visitLog = (function(){
   }, 0));
   // how long until the site's data was on the screen, from the moment the page was opened (a sleeping server = many seconds)
   function ready(){ if(!readyMs){ readyMs = performance.now(); dirty = true; } }
-  return {add, start, stop, screen: screenNow, fail, ready, _state: () => st, _send: send, _called: called};
+  return {add, start, stop, screen: screenNow, fail, ready, count, countStart, _box: () => anonBox, _state: () => st, _send: send, _called: called};
 })();
 function track(eventType, entityId){ if(typeof visitLog !== 'undefined') visitLog.add(eventType, entityId); }
 // the route has been read and the language is known by now; a step that came before that is the first screen anyway
-window.addEventListener('load', () => setTimeout(visitLog.start, 1500));
+window.addEventListener('load', () => setTimeout(() => { visitLog.countStart(); visitLog.start(); }, 1500));
 window.addEventListener('load', () => {
   if(!window.__nocountSaid) return;
   const on = window.__nocountSaid === '1';

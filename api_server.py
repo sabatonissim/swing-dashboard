@@ -8211,7 +8211,7 @@ async def track_visit(request: Request):
 @atexit.register
 def _write_waiting_visits():
     """Every upload to GitHub restarts the server: what still waits in memory is written first."""
-    if visits.LOG.changed or visits.LOG.forget:
+    if visits.LOG.changed or visits.LOG.forget or visits.LOG.counts:
         try:
             db_meter.set_source("server alerts")
             visits.LOG.flush(get_conn)

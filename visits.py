@@ -2,7 +2,11 @@
 
 Owner, 23.11.2026: "I want to know about everyone who enters the site what they did and looked at"; "can't it be a table in Neon?".
 
-How it works:
+Two tables. `visits` = one row per visit, only of people who allowed it. `daily_counts` (v72) = anonymous totals of everybody, also of
+people who declined: "23.11, opened the analysis of NVDA, 5 times". No id, no order, no link between two steps, nothing stored in the
+visitor's browser, nothing a person typed. Keep it so: the privacy page says it.
+
+How it works (visits):
   - the browser (index.html, "visitor log") keeps the steps of the visit and sends the WHOLE visit so far, again and again
     (POST /api/track). Only people who allowed it in the banner; a random id, no name, no email, no IP address.
   - here it waits in memory, the newest copy of each visit. The database gets ONE ROW PER VISIT in the table `visits`, in plain
@@ -31,6 +35,12 @@ MAX_NEW_PER_DAY = 2_000        # new visits accepted in one day (UTC): nobody ca
 MAX_NEW_PER_IP_HOUR = 30       # (the address is only in memory, for this count; it is never stored)
 FLUSH_MINUTES = range(1, 9)    # the news job starts at hh:00 and wakes the database; it sleeps ~5 minutes after the last query
 HALF_MINUTES = range(31, 39)   # ...and at hh:30 on working days, 06:00-20:00 New York (scheduler.py: news, quick, insider)
+# v72: the anonymous totals
+COUNT_KEEP_DAYS = 180
+MAX_COUNT_ITEMS = 150          # steps in one message
+MAX_COUNT_KEYS = 1_500         # different lines waiting in memory: nobody can fill the table with made-up labels
+MAX_COUNT_PER_IP_HOUR = 600    # (the address is only in memory, for this count)
+COUNT_TYPED = {"news_search", "search_none"}        # what a person typed is never kept in the totals
 IL, ET = ZoneInfo("Asia/Jerusalem"), ZoneInfo("America/New_York")
 
 # the steps the site sends (index.html, track()); anything else is dropped
@@ -82,6 +92,13 @@ def parse(body: bytes, now: datetime = None) -> dict | None:
     forget = d.get("forget")
     if isinstance(forget, str) and _UUID_RE.match(forget):
         return {"forget": forget}
+    if isinstance(d.get("c"), list):
+        items = []
+        for e in d["c"][:MAX_COUNT_ITEMS]:
+            if isinstance(e, list) and 1 <= len(e) <= 2 and isinstance(e[0], str) and (e[0] in EVENTS or e[0] in COUNT_HE):
+                label = _text(e[1], 60) if len(e) == 2 and e[0] not in COUNT_TYPED else ""
+                items.append((e[0], label))
+        return {"counts": items} if items else None
     if not all(isinstance(d.get(k), str) and _UUID_RE.match(d[k]) for k in ("v", "p")):
         return None
     if not isinstance(d.get("ev"), list):
@@ -112,13 +129,34 @@ class Log:
         self.day, self.new_today = None, 0
         self.ip_hour, self.ip_new = None, Counter()
         self.flushed_at = 0.0
+        self.counts = Counter()        # v72: (day, action, detail) -> times, not written yet
+        self.count_hour, self.count_ip = None, Counter()
         self.written, self.last_write = 0, None      # since the server started
         self.failed = 0                # writes that failed in a row (/api/data-health -> live.visits)
+
+    def add_counts(self, items: list, country: str, ip: str, now: datetime) -> bool:
+        """The anonymous totals: every step is added to its own line, and the message is forgotten."""
+        day = now.astimezone(IL).date()
+        with self.lock:
+            if self.count_hour != (now.date(), now.hour):
+                self.count_hour, self.count_ip = (now.date(), now.hour), Counter()
+            if self.count_ip[ip] + len(items) > MAX_COUNT_PER_IP_HOUR:
+                return False
+            self.count_ip[ip] += len(items)
+            if any(k == "visit" for k, _ in items) and re.match(r"^[A-Z]{2}$", country or ""):
+                items = items + [("country", country)]
+            for kind, label in items:
+                key = (day, *count_words(kind, label))
+                if key in self.counts or len(self.counts) < MAX_COUNT_KEYS:
+                    self.counts[key] += 1
+        return True
 
     def add(self, visit: dict | None, country: str = "", ip: str = "", now: datetime = None, ua: str = "") -> bool:
         if not visit:
             return False
         now = now or datetime.now(timezone.utc)
+        if "counts" in visit:
+            return self.add_counts(visit["counts"], country, ip, now)
         with self.lock:
             if "forget" in visit:
                 pid = visit["forget"]
@@ -156,11 +194,11 @@ class Log:
         now = now or datetime.now(timezone.utc)
         et = now.astimezone(ET)
         awake = now.minute in FLUSH_MINUTES or (now.minute in HALF_MINUTES and et.weekday() < 5 and 6 <= et.hour < 20)
-        return bool(self.changed or self.forget) and awake and time.time() - self.flushed_at > 1200
+        return bool(self.changed or self.forget or self.counts) and awake and time.time() - self.flushed_at > 1200
 
     def state(self) -> dict:
         """For /api/data-health: numbers only."""
-        return {"status": "warn" if self.failed >= 2 else "ok", "failed_writes": self.failed, "waiting": len(self.changed),
+        return {"status": "warn" if self.failed >= 2 else "ok", "failed_writes": self.failed, "waiting": len(self.changed), "waiting_counts": sum(self.counts.values()),
                 "written": self.written, "last_write": self.last_write}
 
     def flush(self, connect) -> int:
@@ -168,9 +206,10 @@ class Log:
         with self.lock:
             ids, forget = set(self.changed), set(self.forget)
             rows = [dict(self.waiting[i]) for i in ids if i in self.waiting]
+            counts = dict(self.counts)
         self.flushed_at = time.time()
         self.failed += 1               # back to 0 below, once it is written
-        if not rows and not forget:
+        if not rows and not forget and not counts:
             self.failed = 0
             return 0
         conn = connect()
@@ -183,10 +222,16 @@ class Log:
                 save(cur, r)
             prune(cur)
             conn.commit()
+            if counts:                 # on its own: a problem with the totals never holds up the visits
+                save_counts(cur, counts)
+                conn.commit()
         finally:
             conn.close()
         self.failed = 0
         self.written += len(rows)
+        with self.lock:
+            self.counts.subtract(counts)
+            self.counts = Counter({k: n for k, n in self.counts.items() if n > 0})
         self.last_write = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self.lock:
             for r in rows:
@@ -238,6 +283,9 @@ TAPS_HE = {"clearNewsSearch": "ניקוי חיפוש חדשות", "clearSelected
            "setBacktestPeriodView": "תקופה בסטטיסטיקה", "setWatchSignals": "התראות סריקה", "setWatchInsider": "התראות בעלי עניין",
            "setWatchMacro": "התראות מאקרו", "setWatchMorning": "תדריך בוקר", "homeGo": "קיצור בדף הבית", "nudgeGo": "הצעה בדף הבית: כן",
            "nudgeOff": "הצעה בדף הבית: לא עכשיו", "endTour": "סגירת הסיור", "openRiskCalc": "מחשבון סיכון"}
+# v72: steps that are only in the totals
+COUNT_HE = {"visit": "כניסה לאתר", "from": "הגיעו מ", "banner": "באנר ההסכמה", "country": "מדינה"}
+BANNER_HE = {"shown": "הוצג", "yes": "אישרו", "no": "סירבו"}
 DEV_HE = {"phone": "טלפון", "tablet": "טאבלט", "desktop": "מחשב"}
 COUNTRY_HE = {"IL": "ישראל", "US": "ארה״ב", "GB": "בריטניה", "DE": "גרמניה", "FR": "צרפת", "CA": "קנדה", "IN": "הודו",
               "NL": "הולנד", "ES": "ספרד", "IT": "איטליה", "AU": "אוסטרליה", "BR": "ברזיל"}
@@ -262,6 +310,24 @@ def event_he(kind: str, label: str) -> str:
         name, _, rest = label.partition(" ")
         label = (TAPS_HE.get(name, name) + " " + rest).strip()
     return (EVENTS_HE.get(kind, kind) + " " + label).strip()
+
+
+def count_words(kind: str, label: str) -> tuple:
+    """(action, detail) in Hebrew: one line of the totals."""
+    if kind == "screen":
+        return "מסך", screen_he(label)
+    action = COUNT_HE.get(kind) or EVENTS_HE.get(kind, kind)
+    if kind == "visit":
+        return action, DEV_HE.get(label, "")
+    if kind == "from":
+        return action, source_he({"src": label})
+    if kind == "banner":
+        return action, BANNER_HE.get(label, "")
+    if kind == "country":
+        return action, COUNTRY_HE.get(label, label)
+    said = event_he(kind, label)
+    detail = said[len(action):] if said.startswith(action) else said
+    return action, detail.strip().lstrip("=+-@ ")[:80]
 
 
 def place_he(r: dict) -> str:
@@ -330,6 +396,8 @@ def ensure_tables(cur) -> None:
                    not_found TEXT, errors TEXT, signed_in TEXT, lang TEXT, landing TEXT, started_at TIMESTAMPTZ NOT NULL, seconds INTEGER, n_events INTEGER, visitor_id TEXT NOT NULL,
                    visit_id TEXT PRIMARY KEY)""")
     cur.execute("CREATE INDEX IF NOT EXISTS visits_started_idx ON visits (started_at)")
+    cur.execute("""CREATE TABLE IF NOT EXISTS daily_counts (day DATE NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL,
+                   times INTEGER NOT NULL, PRIMARY KEY (day, action, detail))""")
 
 
 def save(cur, r: dict) -> None:
@@ -339,7 +407,16 @@ def save(cur, r: dict) -> None:
                     WHERE visits.visitor_id = EXCLUDED.visitor_id AND visits.n_events <= EXCLUDED.n_events""", row(r))
 
 
+def save_counts(cur, counts: dict) -> None:
+    keys = sorted(counts)
+    cur.execute("""INSERT INTO daily_counts (day, action, detail, times)
+                   SELECT * FROM unnest(%s::date[], %s::text[], %s::text[], %s::int[])
+                   ON CONFLICT (day, action, detail) DO UPDATE SET times = daily_counts.times + EXCLUDED.times""",
+                ([k[0].isoformat() for k in keys], [k[1] for k in keys], [k[2] for k in keys], [counts[k] for k in keys]))
+
+
 def prune(cur) -> None:
+    cur.execute("DELETE FROM daily_counts WHERE day < CURRENT_DATE - %s", (COUNT_KEEP_DAYS,))
     cur.execute("DELETE FROM visits WHERE started_at < NOW() - make_interval(days => %s)", (KEEP_DAYS,))
     cur.execute("DELETE FROM visits WHERE visit_id IN (SELECT visit_id FROM visits ORDER BY started_at DESC OFFSET %s)", (MAX_ROWS,))
     cur.execute("DELETE FROM analytics_events WHERE timestamp < NOW() - INTERVAL '180 days'")     # the old log, as promised
