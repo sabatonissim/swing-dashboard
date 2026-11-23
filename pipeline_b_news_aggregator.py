@@ -223,6 +223,9 @@ def _has_geo_context(title: str) -> bool:
 
 
 TITLE_WEIGHT = 3
+# v73: companies whose name holds an economic word. "CPI Aero Q3 Earnings Rise" was filed under CPI, with the inflation
+# report's explanation under it (23.11.2026). The name is taken out before the words are looked for.
+_NAME_NOT_DATA_RE = re.compile(r"\bCPI\s+(?:Aero(?:structures)?|Card\s+Group|Card)\b|\bPPI\s+Holdings?\b", re.I)
 _IPO_ACTION_RE = re.compile(r"\b(files?|filed|filing|prices?|priced|pricing|debuts?|raises?|raised|plans?|planned|launch\w*|"
                             r"list(s|ed|ing)?|go(es|ing)? public|ipo (market|window|pipeline)|upsiz\w+|postpon\w+|withdr\w+)\b", re.I)
 _MARKET_SUBJECT_RE = re.compile(r"\b(stocks|equities|wall street|futures|dow)\b", re.I)
@@ -241,6 +244,7 @@ def classify_headline(title: str, summary: str) -> Optional[dict]:
        "earnings"/"revenue"/"guidance" three times is an earnings story,
        not a rates story — the old approach would have tagged it wrong.
     """
+    title, summary = _NAME_NOT_DATA_RE.sub(" ", title), _NAME_NOT_DATA_RE.sub(" ", summary or "")
     combined = f"{title} {summary}"
     if _is_excluded(combined):
         return None

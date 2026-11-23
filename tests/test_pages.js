@@ -364,6 +364,42 @@ async function run() {
   ok(inside && inside.test('/stock/KO') && !inside.test('//other.site') && !inside.test('/\\other.site') && !inside.test('https://x'),
     'sw.js keeps notification links inside the site');
 
+  // v73: api/ratings.js (the analysts' rating history for the job in GitHub): only a list of tickers, 20 at most
+  const ratings = require('../api/ratings.js');
+  const siteFetch = global.fetch;
+  let asked = [];
+  const now = Math.floor(Date.now() / 1000);
+  const hist = (days) => ({ epochGradeDate: now - days * 86400, firm: 'F' + days, toGrade: 'Buy', fromGrade: 'Hold', action: 'up', secret: 'x' });
+  global.fetch = async (url) => {
+    asked.push(url);
+    if (/fc\.yahoo/.test(url)) return { ok: false, status: 404, headers: { getSetCookie: () => ['A3=abc; Path=/'] } };
+    if (/getcrumb/.test(url)) return { ok: true, status: 200, headers: {}, text: async () => 'crumb123' };
+    if (/NOPE/.test(url)) return { ok: false, status: 404, headers: {}, json: async () => ({}) };
+    return { ok: true, status: 200, headers: {}, json: async () => ({ quoteSummary: { result: [{ upgradeDowngradeHistory: { history: [hist(90), hist(1), hist(3)] } }] } }) };
+  };
+  const ask = async (url) => {
+    const res = { statusCode: 0, headers: {}, body: '', setHeader(k, v) { this.headers[k.toLowerCase()] = v; }, end(b) { this.body = b || ''; } };
+    await ratings({ url }, res);
+    return res;
+  };
+  for (const bad of ['/api/ratings', '/api/ratings?t=', '/api/ratings?t=A&x=1', '/api/ratings?x=1&t=A', '/api/ratings?t=../x', '/api/ratings?t=' + Array.from({ length: 21 }, (_, i) => 'T' + i).join(',')]) {
+    const r = await ask(bad);
+    ok(r.statusCode === 400, `ratings refuses ${bad.slice(0, 40)}`);
+  }
+  ok(asked.length === 0, 'ratings: a refused request asks Yahoo nothing');
+  const good = await ask('/api/ratings?t=NVDA,BRK-B');
+  const body = JSON.parse(good.body);
+  ok(good.statusCode === 200 && body.results.NVDA.length === 2 && body.results.NVDA[0].firm === 'F1' && /s-maxage/.test(good.headers['cache-control']), 'ratings: changes of the last days, newest first');
+  ok(!/secret/.test(good.body) && !/crumb123/.test(good.body), 'ratings: only the listed fields');
+  const part = await ask('/api/ratings?t=NVDA,NOPE');
+  ok(part.statusCode === 200 && JSON.parse(part.body).failed.NOPE && part.headers['cache-control'] === 'no-store', 'ratings: a company that failed is listed, and the answer is not kept');
+  ok(asked.filter((u) => /getcrumb/.test(u)).length === 1, 'ratings: one session for several requests');
+  let last = 0;
+  for (let i = 0; i < 70 && last !== 429; i += 1) last = (await ask('/api/ratings?t=' + Array.from({ length: 20 }, (_, k) => 'T' + k).join(','))).statusCode;
+  ok(last === 429, 'ratings: a flood is stopped');
+  ratings._reset();
+  global.fetch = siteFetch;
+
   console.log(`pages: ${passed} passed, ${failed} failed`);
   if (typeof process !== 'undefined') process.exitCode = failed ? 1 : 0;
   return failed;

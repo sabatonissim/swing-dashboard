@@ -336,15 +336,22 @@ def check_earnings(cur, now: datetime) -> List[dict]:
     # "unknown" over it). After the report the SEC filing gives it (pipeline_a_scanner.confirm_earnings_times).
     no_time = [r["ticker"] for r in rows if r.get("session") not in ("bmo", "amc")]
     share = len(no_time) / len(rows)
+    # v73: a company twice in two weeks = its report moved and the old day's row stayed
+    cur.execute("""SELECT ticker FROM earnings_calendar WHERE report_date BETWEEN %s AND %s
+                   GROUP BY ticker HAVING COUNT(*) > 1 ORDER BY ticker""", (day - timedelta(days=5), day + timedelta(days=7)))
+    twice = [r["ticker"] for r in cur.fetchall()]
     return [_line("earnings.results", status, f"{day}: {len(rows)} reports, no EPS: {no_eps}, EPS still from the release: {rel}, "
                                               f"nothing at all: {', '.join(blank[:20]) or 'none'}"
                                               + (f"; no estimate and no results (not counted): {', '.join(uncovered[:20])}" if uncovered else ""),
                   len(blank)),
+            _line("earnings.twice", "warn" if len(twice) > EARNINGS_TWICE_MAX else ("info" if twice else "ok"),
+                  f"{len(twice)} companies on two days of the earnings calendar: {', '.join(twice[:20]) or 'none'}", len(twice)),
             _line("earnings.time", "warn" if share > EARNINGS_NO_TIME_SHARE else ("info" if no_time else "ok"),
                   f"{day}: {len(no_time)} of {len(rows)} reports without a before-open / after-close time: {', '.join(no_time[:20]) or 'none'}",
                   len(no_time))]
 
 
+EARNINGS_TWICE_MAX = 2            # v73: a move between two scans is normal for hours; more = moved rows are not dropped
 EARNINGS_NO_TIME_SHARE = 0.25     # v68: more than this share of a day's reports with no time = the SEC confirmation is not working
 
 

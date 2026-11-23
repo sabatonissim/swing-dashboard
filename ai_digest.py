@@ -482,7 +482,7 @@ Exact shape:
 SYSTEM_HE = """Translate this market summary from English into natural, simple Israeli Hebrew, as a financial newspaper would write it.
 Keep the meaning exactly: who did what must not change, and add nothing. Never leave an ordinary English word in the Hebrew.
 Glossary: stocks = מניות; session = יום מסחר (never "מפגש"); sell-off or rout = גל מכירות (never "מסלול"); safe haven = נכס מפלט; crypto = קריפטו; 10-year Treasury yield = תשואת אג"ח ממשלתי ל-10 שנים; index = מדד; chip stocks = מניות השבבים; interest rate = ריבית; rate hike = העלאת ריבית; yield = תשואה; Treasury bond = אג"ח ממשלתי; inflation = אינפלציה; results / earnings = דוחות או רווחים; forecast / outlook = תחזית; oil = נפט; tariffs = מכסים; sanctions = סנקציות; midterm elections = בחירות אמצע הקדנציה; the news is dominated by = הכותרות עוסקות בעיקר ב (never "מודגמות"); has not opened yet = עוד לא נפתח; the Fed = הפד; Wall Street = וול סטריט; AI = בינה מלאכותית.
-More (v67, words that came out as a word-for-word translation on 20-21.11.2026): correction territory / in correction = בתיקון (ירידה של יותר מ-10% מהשיא), never "טריטוריה"; names (meaning stocks) = מניות, never "שמות"; turned negative for the year / wiped out its gains for the year = מחק את כל העליות מתחילת השנה; will be watched closely = יעמדו במוקד, never "יעקבו"; this past week = השבוע שהסתיים, never "השבוע שעבר"; the sell-off accelerated = הירידות התגברו; IPO debut = ההנפקה / היום הראשון למסחר; a sentence that starts with "Why:" starts with "הסיבה:".
+More (v67, words that came out as a word-for-word translation on 20-21.11.2026): correction territory / in correction = בתיקון (ירידה של יותר מ-10% מהשיא), never "טריטוריה"; names (meaning stocks) = מניות, never "שמות"; turned negative for the year / wiped out its gains for the year = מחק את כל העליות מתחילת השנה; will be watched closely = יעמדו במוקד, never "יעקבו"; this past week = השבוע שהסתיים, never "השבוע שעבר"; the sell-off accelerated = הירידות התגברו; a rebound / bounce / recovery after a fall = התאוששות (never "תיקון", which in Hebrew means a fall); a weekly rout = ירידה שבועית חדה; military strikes = תקיפות (never "שביתות"); safe-haven flows = מעבר לנכסי מפלט; IPO debut = ההנפקה / היום הראשון למסחר; a sentence that starts with "Why:" starts with "הסיבה:".
 Write the way an Israeli financial reporter would: short, clear sentences, the verb early, not English word order.
 Names of companies, indices and people stay in English letters (Nvidia, S&P 500, Nasdaq, VIX). A company is feminine in Hebrew. Keep every number exactly as written.
 Write Hebrew abbreviations with the mark ״ (ארה״ב, נאסד״ק), never with a plain double quote.
@@ -1053,6 +1053,37 @@ def clean_answer(text, items, market, strict=True):
     return out
 
 
+def add_earlier_why(payload, market, why):
+    """v73: the reason of the last session, as the digest of an earlier day told it. Sunday 22.11.2026 opened with Friday's -3.7%
+    and gave no reason, because that day's headlines no longer told it; Friday's and Saturday's digests had it."""
+    if not why or not big_day(market) or market.get("same_day") or payload.get("why_en", NO_REASON) != NO_REASON:
+        return payload
+    overview = payload["overview_en"]
+    if overview.endswith(NO_REASON):
+        overview = overview[:-len(NO_REASON)].rstrip()
+    if _weekday(market["session_day"]) not in overview:      # the reason must follow the move it explains
+        overview = f"{overview} {_weekend_lead(market)}".strip()
+    payload["why_en"] = why
+    payload["overview_en"] = f"{overview} Why: {why[0].upper()}{why[1:]}"
+    return payload
+
+
+def _earlier_why(conn, day, market):
+    """The newest reason told for the same session by a digest of an earlier day (two short texts a row, at most a few rows)."""
+    cur = conn.cursor()
+    try:
+        cur.execute("""SELECT payload::json->>'why_en', payload::json->'market'->>'session_day' FROM ai_daily_digests
+                       WHERE day >= %s AND day < %s ORDER BY day DESC""", (market["session_day"], day))
+        rows = cur.fetchall()
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        print(f"[ai_digest] no earlier reason ({type(e).__name__}: {e})")
+        rows = []
+    finally:
+        cur.close()
+    return next((w for w, s in rows if w and w != NO_REASON and s == market["session_day"]), None)
+
+
 def _ask(system, user, clean, max_tokens, deadline, fallback=None):
     """A rejected answer goes back to the model with the reason (only one free model works at a time: v30c)."""
     msgs = [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -1134,6 +1165,12 @@ def clean_hebrew(text, en):
             raise ValueError(f"the field '{field}' has 'Why:' in the English: start that sentence in Hebrew with 'הסיבה:'")
         if re.search(r"טריטורי|השבוע שעבר", he) and not re.search(r"territor|last week", en_text or "", re.I):
             raise ValueError(f"the field '{field}' says 'טריטוריה' or 'השבוע שעבר'. Use the glossary: בתיקון / השבוע שהסתיים")
+        # v73, the home page of 23.11.2026: the S&P 500's 4.7% jump, "an extreme rebound", became "תיקון חד", a sharp fall
+        if re.search(r"\b(rebound|bounce|recover)", en_text or "", re.I) and re.search(r"(?<![א-ת])ב?תיקון(?![א-ת])", he) \
+                and not re.search(r"correction", en_text or "", re.I):
+            raise ValueError(f"the field '{field}' says 'תיקון' for a rebound. Write 'התאוששות'")
+        if re.search(r"\b(rout|sell-?off)", en_text or "", re.I) and re.search(r"(?<![א-ת])[הבלמ]?מסלול(?![א-ת])", he):
+            raise ValueError(f"the field '{field}' says 'מסלול' for a rout. Write 'גל מכירות' or 'ירידה חדה'")
     out["overview"] = fix_he(_GLUED_HE.sub(r"\1 ", out["overview"]))
     for t in out["topics"]:
         for k in t:
@@ -1249,6 +1286,9 @@ def _update_day(get_conn, day, translate_fn, force=False, final=False):
     with _digest_models():
         payload, model = _ask(SYSTEM, _prompt(sel, day, market), lambda t: clean_answer(t, sel, market), 3000, deadline,
                               fallback=lambda t: clean_answer(t, sel, market, strict=False))
+        if big_day(market) and not market.get("same_day") and payload.get("why_en", NO_REASON) == NO_REASON:
+            with _connected(get_conn) as conn:
+                payload = add_earlier_why(payload, market, _earlier_why(conn, day, market))
         payload = _add_hebrew(payload, translate_fn, row["payload"] if row else None, deadline + 120)
     payload["market"] = market
 

@@ -26,6 +26,7 @@ import threading
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 import requests
@@ -43,18 +44,20 @@ MAX_ATTEMPTS = 3
 # kind "daily": fires once at `at` (ET). kind "interval": every `every_min` minutes, aligned to the
 # clock, optionally only inside `window` = (start_minute_of_day, end_minute_of_day) ET (inclusive).
 # `grace_min`: how late a missed slot may still be fired (catch-up after the server woke up late).
+# `market_days_only`: not on a day the stock market is closed (v73). Thanksgiving would have been the first holiday since the
+# statistics start: two full scans of Wednesday's bars, saved as Thursday's scans. Those days get the weekend's hourly news.
 JOBS = [
-    dict(name="scan_open",  workflow="stock-scanner.yml",   kind="daily",    at=(9, 45),  weekdays_only=True,  grace_min=300),
-    dict(name="scan_close", workflow="stock-scanner.yml",   kind="daily",    at=(16, 10), weekdays_only=True,  grace_min=300),
+    dict(name="scan_open",  workflow="stock-scanner.yml",   kind="daily",    at=(9, 45),  market_days_only=True, grace_min=300),
+    dict(name="scan_close", workflow="stock-scanner.yml",   kind="daily",    at=(16, 10), market_days_only=True, grace_min=300),
     # v33: 30 minutes, on the same minutes as news and insider (was 20): each separate wake-up of the database costs its
     # run + 5 idle minutes, and the free Neon plan has 100 CU-hours a month (28 were gone by 3.11)
-    dict(name="quick",      workflow="earnings-refresh.yml", kind="interval", every_min=30, window=(6 * 60, 20 * 60), weekdays_only=True,  grace_min=25),
+    dict(name="quick",      workflow="earnings-refresh.yml", kind="interval", every_min=30, window=(6 * 60, 20 * 60), market_days_only=True, grace_min=25),
     # v33: today's earnings results within minutes — only while companies are actually reporting; a missed slot is not caught up
-    dict(name="earn_am",    workflow="earnings-fast.yml",   kind="interval", every_min=5, window=(6 * 60 + 45, 9 * 60), weekdays_only=True, grace_min=3),
-    dict(name="earn_pm",    workflow="earnings-fast.yml",   kind="interval", every_min=5, window=(16 * 60 + 5, 18 * 60), weekdays_only=True, grace_min=3),
+    dict(name="earn_am",    workflow="earnings-fast.yml",   kind="interval", every_min=5, window=(6 * 60 + 45, 9 * 60), market_days_only=True, grace_min=3),
+    dict(name="earn_pm",    workflow="earnings-fast.yml",   kind="interval", every_min=5, window=(16 * 60 + 5, 18 * 60), market_days_only=True, grace_min=3),
     # v34: every 30 minutes around the market's day, hourly at night and on weekends — each run keeps the database awake for
     # ~10 minutes, and at 0.25 CU the night and weekend runs alone were ~20 of the 100 free compute-hours a month
-    dict(name="news",       workflow="news-aggregator.yml", kind="interval", every_min=30, window=(6 * 60, 22 * 60),  weekdays_only=True,  grace_min=25),
+    dict(name="news",       workflow="news-aggregator.yml", kind="interval", every_min=30, window=(6 * 60, 22 * 60),  market_days_only=True, grace_min=25),
     dict(name="news_quiet", workflow="news-aggregator.yml", kind="interval", every_min=60, window=None,               weekdays_only=False, grace_min=50,
          not_in_weekday_window=(6 * 60, 22 * 60)),
     # economic-calendar numbers (BLS API/FRED -> Postgres): every 30 min 08:00-10:30 ET (08:30 CPI/PPI/jobs, 10:00 JOLTS), plus once in the evening.
@@ -65,12 +68,12 @@ JOBS = [
     # saved the analyst estimates and before the next morning
     dict(name="fundamentals", workflow="fundamentals-refresh.yml", kind="daily", at=(5, 0), weekdays_only=False, grace_min=300),
     # v22: market breadth (S&P 500 above 50/200-day, new highs/lows) hourly while the market is open + after the close
-    dict(name="breadth",     workflow="market-breadth.yml",  kind="interval", every_min=60, window=(10 * 60, 16 * 60), weekdays_only=True, grace_min=40),
-    dict(name="breadth_eod", workflow="market-breadth.yml",  kind="daily",    at=(16, 25), weekdays_only=True,  grace_min=300),
+    dict(name="breadth",     workflow="market-breadth.yml",  kind="interval", every_min=60, window=(10 * 60, 16 * 60), market_days_only=True, grace_min=40),
+    dict(name="breadth_eod", workflow="market-breadth.yml",  kind="daily",    at=(16, 25), market_days_only=True, grace_min=300),
     # v22: insider trades (SEC Form 4) every 30 min on weekdays; each run also sweeps part of the companies (backfill)
-    dict(name="insider",     workflow="insider-refresh.yml", kind="interval", every_min=30, window=(6 * 60, 22 * 60), weekdays_only=True, grace_min=25),
+    dict(name="insider",     workflow="insider-refresh.yml", kind="interval", every_min=30, window=(6 * 60, 22 * 60), market_days_only=True, grace_min=25),
     # v25: AI summary per stock, after the evening scan (16:10) has saved the day's signals and leaders
-    dict(name="ai_notes",    workflow="ai-stock-notes.yml",  kind="daily",    at=(17, 30), weekdays_only=True,  grace_min=240),
+    dict(name="ai_notes",    workflow="ai-stock-notes.yml",  kind="daily",    at=(17, 30), market_days_only=True, grace_min=240),
     # v25: big-fund 13F holdings — a quick check every morning; funds are re-read only after a new quarterly filing
     dict(name="funds",       workflow="fund-holdings.yml",   kind="daily",    at=(6, 15),  weekdays_only=True,  grace_min=300),
     # v30: company profiles from the annual report (company_profiles.py) — ~70 companies a run until all are written,
@@ -81,8 +84,8 @@ JOBS = [
     # during the day; both on minutes when the news job keeps the database awake anyway
     # v57 (owner, 16.11.2026): ready half an hour before the open — 09:00 ET (the run takes ~4 min, the summary's stored
     # answer is renewed at :07, so on the site by ~09:07); the database is awake then anyway (news, quick, econ, insider)
-    dict(name="ratings_am",  workflow="analyst-ratings.yml", kind="daily",    at=(9, 0),   weekdays_only=True,  grace_min=120),
-    dict(name="ratings_pm",  workflow="analyst-ratings.yml", kind="daily",    at=(17, 40), weekdays_only=True,  grace_min=180),
+    dict(name="ratings_am",  workflow="analyst-ratings.yml", kind="daily",    at=(9, 0),   market_days_only=True, grace_min=120),
+    dict(name="ratings_pm",  workflow="analyst-ratings.yml", kind="daily",    at=(17, 40), market_days_only=True, grace_min=180),
     # v32: read-only data check (data_health.py) — after the evening jobs and the first quick refresh of the morning
     dict(name="data_health", workflow="data-health.yml",     kind="daily",    at=(7, 30),  weekdays_only=True,  grace_min=300),
     # v35c: encrypted copy of the personal data, under 1 MB, right after other morning jobs so it wakes nothing up
@@ -101,9 +104,28 @@ def enabled():
 
 
 # ------------------------------------------------------------------ slot arithmetic
+@lru_cache(maxsize=8)
+def _holidays(year):
+    """The stock market's holidays (ai_digest.nyse_holidays, twin of the server's). Unreadable = none: the jobs run as before."""
+    try:
+        from ai_digest import nyse_holidays
+        return frozenset(nyse_holidays(year))
+    except Exception as e:  # noqa: BLE001
+        print(f"[scheduler] no holiday list ({type(e).__name__}: {e}); holidays are treated as working days")
+        return frozenset()
+
+
+def market_closed(t_et):
+    """A weekend or a stock-market holiday, New York time."""
+    return t_et.weekday() >= 5 or t_et.date() in _holidays(t_et.year)
+
+
 def _is_slot(job, t_et):
     """Is this exact ET minute one of the job's scheduled slots?"""
-    if job["weekdays_only"] and t_et.weekday() >= 5:
+    if job.get("market_days_only"):
+        if market_closed(t_et):
+            return False
+    elif job["weekdays_only"] and t_et.weekday() >= 5:
         return False
     if job["kind"] == "daily":
         return (t_et.hour, t_et.minute) == job["at"]
@@ -111,7 +133,7 @@ def _is_slot(job, t_et):
     if mins % job["every_min"] != 0:
         return False
     off = job.get("not_in_weekday_window")
-    if off and t_et.weekday() < 5 and off[0] <= mins <= off[1]:
+    if off and not market_closed(t_et) and off[0] <= mins <= off[1]:
         return False
     w = job.get("window")
     return True if not w else (w[0] <= mins <= w[1])

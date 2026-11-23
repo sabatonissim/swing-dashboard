@@ -144,7 +144,35 @@ def _variants():
             ("q1 cache_bust", q1 + "/v10/finance/quoteSummary/{t}", dict(base, _cb=bust)),
             ("q1 plain", q1 + "/v10/finance/quoteSummary/{t}", {"modules": "upgradeDowngradeHistory"}),
             ("q2 GB", q2 + "/v10/finance/quoteSummary/{t}", dict(base, lang="en-GB", region="GB", _cb=bust)),
-            ("q1 v11", q1 + "/v11/finance/quoteSummary/{t}", dict(base, _cb=bust))]
+            (VERCEL, None, None)]
+
+
+# v73: every way of asking from GitHub gave the old answer (16-23.11.2026), from home all were fresh. api/ratings.js on Vercel asks
+# from another network; it is used only when its newest change is newer than what GitHub gets, like any other way above.
+VERCEL = "vercel"
+SITE_URL = (os.environ.get("SITE_URL") or "https://swing-desk-tau.vercel.app").rstrip("/")
+VERCEL_BATCH = 20                    # = MAX_TICKERS in api/ratings.js
+_vercel_rows = {}                    # ticker -> Yahoo's rows, filled a batch at a time
+
+
+def _vercel_load(tickers):
+    """A batch of companies from api/ratings.js into _vercel_rows. A company it could not read is left out."""
+    import requests
+    r = requests.get(f"{SITE_URL}/api/ratings?t={','.join(tickers)}", timeout=60, headers={"User-Agent": "swing-desk-jobs"})
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code} {r.text[:80]}")
+    body = r.json()
+    _vercel_rows.update(body.get("results") or {})
+    if body.get("failed"):
+        print(f"[warn] vercel: {len(body['failed'])} not read: {', '.join(f'{t} {e}' for t, e in list(body['failed'].items())[:5])}")
+
+
+def _vercel_history(ticker, upcoming=()):
+    if ticker not in _vercel_rows:
+        _vercel_load([ticker] + [t for t in upcoming if t != ticker and t not in _vercel_rows][:VERCEL_BATCH - 1])
+    if ticker not in _vercel_rows:
+        raise RuntimeError("not in the answer")
+    return history_from_json({"quoteSummary": {"result": [{"upgradeDowngradeHistory": {"history": _vercel_rows[ticker]}}]}})
 
 
 def history_from_json(result):
@@ -163,9 +191,11 @@ def history_from_json(result):
     return df
 
 
-def _history(ticker, variant):
+def _history(ticker, variant, upcoming=()):
     import yfinance as yf
     name, url, params = variant
+    if name == VERCEL:
+        return _vercel_history(ticker, upcoming)
     if url is None:
         return yf.Ticker(ticker).upgrades_downgrades
     from yfinance.data import YfData
@@ -179,7 +209,7 @@ def pick_variant(probe=PROBE_TICKERS):
         newest = None
         for t in probe:
             try:
-                ts = latest_grade(_history(t, v))
+                ts = latest_grade(_history(t, v, probe))
             except Exception as e:  # noqa: BLE001
                 print(f"[probe] {v[0]:14} {t}: {type(e).__name__}: {str(e)[:120]}")
                 continue
@@ -205,7 +235,7 @@ def fetch(tickers, now=None, variant=None):
             break
         asked += 1
         try:
-            df = _history(ticker, variant)
+            df = _history(ticker, variant, [t for t, _ in tickers[n:n + VERCEL_BATCH]])
             if df is None or getattr(df, "empty", True):
                 empty += 1                   # every large company has a history; none = Yahoo refused (no exception)
             last = latest_grade(df)
@@ -214,7 +244,7 @@ def fetch(tickers, now=None, variant=None):
             rows += rows_from_history(ticker, df, cap, since)
         except Exception as e:  # noqa: BLE001
             failed.append(f"{ticker} ({type(e).__name__})")
-        time.sleep(PAUSE_SEC)
+        time.sleep(0.05 if variant[0] == VERCEL else PAUSE_SEC)
     if failed:
         print(f"[warn] {len(failed)} companies failed: {', '.join(failed[:30])}")
     print(f"[info] {empty} of {asked} companies came back with no rating history; newest change read: {newest}")

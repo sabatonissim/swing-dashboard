@@ -3260,6 +3260,39 @@ def fetch_nasdaq_earnings(start, end) -> List[tuple]:
     return out
 
 
+# v73: a company reports once in the two weeks of this table. When a report's day moved, the old day's row stayed (24.11.2026:
+# BHP, PDD, BZ, GFF, DY, GDS, BSP, VIPS and KT each twice, three of them with the same results under both days), and every
+# run left it "time unknown". The row to go is the one no source lists any more; a row the SEC confirmed never goes.
+_MOVED_COLUMNS = ("eps_estimate", "eps_source_date", "revenue_estimate", "implied_move_pct", "implied_move_expiry", "implied_move_at")
+
+
+def moved_reports(rows, listed_keys, stored_keys):
+    """[(ticker, old day, new day)]: stored rows to drop. rows = (ticker, report_date, session_source) now in the table,
+    listed_keys = every (ticker, day) the sources gave this run, stored_keys = those just written."""
+    new_day, twice = {}, set()
+    for t, d in stored_keys:
+        if t in new_day and new_day[t] != d:
+            twice.add(t)                      # the sources themselves give two days: not settled here
+        new_day[t] = d
+    return [(t, d, new_day[t]) for t, d, source in rows
+            if t in new_day and t not in twice and d != new_day[t] and (t, d) not in listed_keys and source != "sec"]
+
+
+def _drop_moved_reports(cur, listed_keys, stored_keys, window_start, window_end):
+    cur.execute("SELECT ticker, report_date, session_source FROM earnings_calendar WHERE report_date BETWEEN %s AND %s",
+                (window_start.isoformat(), window_end.isoformat()))
+    moved = moved_reports(cur.fetchall(), listed_keys, stored_keys)
+    for t, old, new in moved:
+        # what was known before the report goes along (fixed column names, not input)
+        cur.execute("UPDATE earnings_calendar n SET " + ", ".join(f"{c} = COALESCE(n.{c}, o.{c})" for c in _MOVED_COLUMNS)
+                    + " FROM earnings_calendar o WHERE n.ticker = %s AND n.report_date = %s AND o.ticker = %s AND o.report_date = %s",
+                    (t, new, t, old))
+        cur.execute("DELETE FROM earnings_calendar WHERE ticker = %s AND report_date = %s AND COALESCE(session_source, '') <> 'sec'",
+                    (t, old))
+    if moved:
+        print("[info] earnings calendar: moved to another day: " + ", ".join(f"{t} {old} -> {new}" for t, old, new in moved))
+
+
 def update_earnings_calendar(earnings_candidates: List[tuple]):
     """earnings_candidates: (ticker, market_cap, earnings_timestamp) from the scan; v27: plus Nasdaq's calendar."""
     earnings_candidates = earnings_candidates or []
@@ -3446,6 +3479,8 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
         if real != listed:
             cur.execute("DELETE FROM earnings_calendar WHERE ticker = %s AND report_date = %s AND COALESCE(session_source, '') <> 'sec'",
                         (t, listed))
+    _drop_moved_reports(cur, {(r[0], r[2].date()) for r in in_window}, {(r[0], r[2].date()) for r in enriched},
+                        window_start, window_end)
     # Revenue surprise is always derived from what is NOW stored (pre-report
     # estimate + validated actual), so it can never mix two different quarters.
     cur.execute(
@@ -4247,6 +4282,13 @@ def notify_new_signals(results):
         conn.close()
 
 
+def market_holiday_today(now=None):
+    """v73: is today (New York) one of the stock market's holidays?"""
+    from ai_digest import nyse_holidays
+    day = (now or datetime.now(timezone.utc)).astimezone(_ET).date()
+    return day in nyse_holidays(day.year)
+
+
 def main():
     import sys
     if "--quick" in sys.argv:
@@ -4266,6 +4308,12 @@ def main():
         return
     if "--movers-only" in sys.argv:
         refresh_movers_only()
+        return
+
+    if market_holiday_today():
+        # v73: also a run started by hand. There is no new bar on a holiday: the scan would save the last session's results again,
+        # dated today, and the statistics would count them twice, one day off.
+        print("[info] the stock market is closed today (holiday): no scan.")
         return
 
     init_db()

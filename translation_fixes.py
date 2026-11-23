@@ -30,6 +30,14 @@ EN_REWRITES = [
     # v19 (live feed 27.10.2026): each one came out wrong in Hebrew
     (r"\bstrik(?:e|es|ing)\s+(an?\s+)?deal\b", "signs a deal"),             # "Ripple strikes deal" -> "שביתות Ripple"
     (r"\bstruck\s+(an?\s+)?deal\b", "signed a deal"),
+    # v73 (23.11.2026): "Trump warns of new strikes" in a story on Yemen's Houthis -> "שביתות" (labor strikes). Only where the
+    # headline names a war; a strike of workers stays a strike.
+    (r"^(?=.*\b(?:iran\w*|israel\w*|houthis?|yemen|gaza|hezbollah|lebanon|syria\w*|russia\w*|ukrain\w*|kremlin|missiles?|drones?|airstrikes?|"
+     r"military|pentagon)\b)(?!.*\b(?:workers?|unions?|strikers?|walkouts?|labor|labour|pay)\b)(.*?)\b((?:(?:new|more|fresh|further|us|"
+     r"american|russian|israeli|iranian|drone|missile|air|retaliatory|military)\s+)+)strikes\b", r"\1\2attacks"),
+    # "Gold bounces after 9% weekly rout" -> "מסלול שבועי"
+    (r"\b(weekly|monthly|daily)\s+rout\b", r"\1 plunge"),
+    (r"\b(stock|stocks|market|tech|ai|chip|bond|crypto)\s+rout\b", r"\1 sell-off"),
     (r"\bbeat[- ]and[- ]raise\b", "better-than-expected results and raised outlook"),  # -> "פעימות והעלאת"
     (r"\bearnings beat\b", "better-than-expected earnings"),                 # -> "הרווחים מקציפים"
     (r"\bmidterms\b", "midterm elections"),                                 # -> "בחינות האמצע"
@@ -155,6 +163,8 @@ HE_FIXES = [
     ("אנתרופית", "של אנתרופיק"),                 # "Anthropic spending" -> "הוצאה אנתרופית"
     ("ניפוח המזון", "אינפלציית המזון"),
     ("חוזים עתידיים אנוסים", "חוזים עתידיים על קריפטו"),
+    # v73 (23.11.2026): "Trump warns of new strikes", "weekly rout"
+    ("מזהיר מפני שביתות חדשות", "מזהיר מפני תקיפות חדשות"), ("מסלול שבועי של", "ירידה שבועית של"),
     # v68 (key events 22.11.2026): "Oil Posts Third Weekly Drop" -> "הנפט מפרסם ירידה"
     ("מפרסם ירידה", "רושם ירידה"), ("מפרסמת ירידה", "רושמת ירידה"), ("מפרסמים ירידה", "רושמים ירידה"),
     ("מפרסם הפסד", "רושם הפסד"), ("מפרסמת הפסד", "רושמת הפסד"), ("מפרסם עלייה", "רושם עלייה"), ("מפרסמת עלייה", "רושמת עלייה"),

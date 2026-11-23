@@ -3280,3 +3280,164 @@ def test_stock_news_google_items_carry_the_outlet_site(api, monkeypatch):
     monkeypatch.setattr(api.requests, "get", lambda *a, **k: _Resp())
     it = api._rss_items("https://news.google.com/rss/search?q=x", google=True)[0]
     assert it["title"] == "Zeta rises" and it["site"] == "fool.com"
+
+
+# ------------------------------------------------------------------ v73: holidays, moved reports, the weekend's reason
+def test_v73_no_market_jobs_on_a_holiday(scanner):
+    import datetime as _dt
+    import scheduler as s
+    day = _dt.datetime(2026, 11, 26, 0, 0, tzinfo=s.ET)                 # Thanksgiving, a Thursday
+    fired = {}
+    for i in range(24 * 60):
+        now = day + _dt.timedelta(minutes=i)
+        for j in s.JOBS:
+            fired[j["name"]] = fired.get(j["name"], 0) + s._is_slot(j, now)
+    for name in ("scan_open", "scan_close", "quick", "earn_am", "earn_pm", "breadth", "breadth_eod", "insider", "ai_notes",
+                 "ratings_am", "ratings_pm", "news"):
+        assert fired[name] == 0, name
+    assert fired["news_quiet"] == 24 and fired["data_health"] == 1 and fired["backup"] == 1 and fired["econ"] == 6
+    friday = {j["name"]: sum(s._is_slot(j, day + _dt.timedelta(days=1, minutes=i)) for i in range(24 * 60)) for j in s.JOBS}
+    assert friday["scan_open"] == friday["scan_close"] == 1 and friday["news"] == 33 and friday["news_quiet"] == 7
+    assert s.next_slot(next(j for j in s.JOBS if j["name"] == "scan_open"), day.astimezone(s.UTC)).astimezone(s.ET).date() == _dt.date(2026, 11, 27)
+    # every job that needs the market says so, one way or the other
+    assert all(j.get("market_days_only") or "weekdays_only" in j for j in s.JOBS)
+    # a scan started by hand that day does nothing either (New York's date, not UTC's)
+    utc = _dt.timezone.utc
+    assert scanner.market_holiday_today(_dt.datetime(2026, 11, 26, 14, 45, tzinfo=utc))
+    assert scanner.market_holiday_today(_dt.datetime(2026, 11, 27, 1, 0, tzinfo=utc))          # Thursday 20:00 in New York
+    assert not scanner.market_holiday_today(_dt.datetime(2026, 11, 27, 14, 45, tzinfo=utc))
+
+
+def test_v73_scan_stops_on_a_holiday(scanner, monkeypatch):
+    monkeypatch.setattr(scanner, "market_holiday_today", lambda now=None: True)
+    monkeypatch.setattr(sys, "argv", ["pipeline_a_scanner.py"])
+    monkeypatch.setattr(scanner, "init_db", lambda: pytest.fail("the scan started"))
+    assert scanner.main() is None
+
+
+def test_v73_moved_reports(scanner):
+    import datetime as _dt
+    d = lambda n: _dt.date(2026, 11, n)
+    rows = [("BHP", d(17), "listed"), ("BHP", d(24), "listed"), ("GFF", d(17), "sec"), ("GFF", d(18), "listed"),
+            ("DY", d(18), None), ("DY", d(24), "listed"), ("NVDA", d(17), "sec"), ("OLD", d(17), "listed"),
+            ("SEC", d(17), "sec"), ("SEC", d(24), "listed"), ("TWO", d(18), "listed"), ("TWO", d(20), "listed")]
+    listed = {("BHP", d(24)), ("GFF", d(17)), ("DY", d(24)), ("SEC", d(24)), ("TWO", d(18)), ("TWO", d(20)), ("NVDA", d(17))}
+    got = scanner.moved_reports(rows, listed, listed)
+    assert sorted(got) == [("BHP", d(17), d(24)), ("DY", d(18), d(24)), ("GFF", d(18), d(17))]
+    # nothing is dropped for a company this run did not store (a source that did not answer), or listed on both days
+    assert scanner.moved_reports(rows, listed, set()) == []
+    sql = []
+
+    class Cur:
+        def execute(self, q, p=None): sql.append((" ".join(q.split()), p))
+        def fetchall(self): return rows
+    scanner._drop_moved_reports(Cur(), listed, {("BHP", d(24))}, d(17), d(30))
+    assert sql[1][0].startswith("UPDATE earnings_calendar n SET eps_estimate = COALESCE(n.eps_estimate, o.eps_estimate)")
+    assert sql[1][1] == ("BHP", d(24), "BHP", d(17)) and sql[2][0].startswith("DELETE") and sql[2][1] == ("BHP", d(17)) and len(sql) == 3
+
+
+def test_v73_health_counts_companies_listed_twice():
+    import datetime as _dt
+    import data_health as dh
+
+    class Cur:
+        def __init__(self, twice): self.twice, self.n = twice, 0
+        def execute(self, *a): self.n += 1
+        def fetchall(self):
+            if self.n == 1:
+                return [{"ticker": "A", "eps_actual": 1.0, "revenue_actual": 1.0, "rel": False, "covered": True, "session": "bmo"}]
+            return [{"ticker": t} for t in self.twice]
+    now = _dt.datetime(2026, 11, 24, 12, 30, tzinfo=_dt.timezone.utc)
+    get = lambda twice: {l["check"]: l for l in dh.check_earnings(Cur(twice), now)}["earnings.twice"]
+    assert get([])["status"] == "ok" and get(["BHP"])["status"] == "info"
+    line = get(["BHP", "PDD", "BZ"])
+    assert line["status"] == "warn" and "BHP, PDD, BZ" in line["detail"]
+
+
+def test_v73_weekend_takes_the_reason_from_an_earlier_digest():
+    """Sunday 22.11.2026: Friday's -3.7%, no reason in Sunday's headlines, while Friday's digest had one."""
+    import copy
+    import ai_digest as d
+    market = {"day": "2026-11-22", "session_day": "2026-11-20", "same_day": False, "status": "weekend", "move": "closed", "last_move": "extreme",
+              "indices": [{"symbol": "^GSPC", "name_en": "S&P 500", "name_he": "S&P 500", "change_pct": -3.7, "close": 1, "change_points": 1},
+                          {"symbol": "^IXIC", "name_en": "Nasdaq", "name_he": "x", "change_pct": -5.28, "close": 1, "change_points": 1}]}
+    why = "Nvidia's forecast disappointed investors."
+    base = {"overview_en": "On Friday the S&P 500 fell 3.7%.", "topics": []}
+    out = d.add_earlier_why(copy.deepcopy(base), market, why)
+    assert out["overview_en"] == "On Friday the S&P 500 fell 3.7%. Why: " + why and out["why_en"] == why
+    # the model wrote that there is no reason: replaced, not added to
+    none = {"overview_en": "On Friday the S&P 500 fell 3.7%. " + d.NO_REASON, "why_en": d.NO_REASON, "topics": []}
+    assert d.add_earlier_why(none, market, why)["overview_en"] == out["overview_en"]
+    # an overview that does not name the day gets the move first
+    far = d.add_earlier_why({"overview_en": "Inflation data is due.", "topics": []}, market, why)["overview_en"]
+    assert far.startswith("Inflation data is due. On Friday, the S&P 500 fell 3.7%") and far.endswith("Why: " + why)
+    # its own reason stays; nothing on a day with its own session, after an ordinary session, or with no earlier reason
+    own = {"overview_en": "On Friday ... Why: X.", "why_en": "X.", "topics": []}
+    assert d.add_earlier_why(dict(own), market, why) == own
+    for m in (dict(market, same_day=True, move="extreme"), dict(market, last_move="normal")):
+        assert d.add_earlier_why(dict(base), m, why) == base
+    assert d.add_earlier_why(dict(base), market, None) == base
+
+    class Conn:
+        def cursor(self): return self
+        def execute(self, q, p): self.p = p
+        def fetchall(self): return [(d.NO_REASON, "2026-11-20"), ("another session's", "2026-11-19"), (why, "2026-11-20")]
+        def close(self): pass
+        def rollback(self): pass
+    import datetime as _dt
+    c = Conn()
+    assert d._earlier_why(c, _dt.date(2026, 11, 22), market) == why and c.p == ("2026-11-20", _dt.date(2026, 11, 22))
+
+
+def test_v73_hebrew_words_of_23_11(api):
+    import json as _json
+    import ai_digest as d
+    import pipeline_b_news_aggregator as pb
+    import translation_fixes as tf
+    en = {"overview": "The S&P 500 surged 4.7% in an extreme rebound.", "topics": []}
+    he = lambda t: _json.dumps({"overview": t, "topics": []}, ensure_ascii=False)
+    with pytest.raises(ValueError, match="rebound"):
+        d.clean_hebrew(he("מדד S&P 500 זינק 4.7% בתיקון חד."), en)
+    assert d.clean_hebrew(he("מדד S&P 500 זינק 4.7% בהתאוששות חדה."), en)
+    with pytest.raises(ValueError, match="rout"):
+        d.clean_hebrew(he("הזהב עלה לאחר מסלול שבועי של 9%."), {"overview": "Gold rose after a 9% weekly rout.", "topics": []})
+    # strikes of a war and of workers
+    p = tf.prep_en
+    assert "new attacks" in p("Yemen's Houthis claim attacks on Saudi oil refinery as Trump warns of new strikes next year")
+    assert "Israel strikes Iran" in p("Israel strikes Iran") and "new strikes" in p("Boeing workers plan new strikes")
+    assert "new strikes" in p("Drone maker's workers plan new strikes") and "attacks" not in p("US and Iran: Trump strikes deal")
+    assert "weekly plunge" in p("Gold bounces nearly 2% after 9% weekly rout")
+    assert "תקיפות חדשות" in tf.fix_he("טראמפ מזהיר מפני שביתות חדשות בשנה הבאה") and tf.fix_he(tf.fix_he("מסלול שבועי של 9%")) == "ירידה שבועית של 9%"
+    # a company whose name holds "CPI" is not the inflation report
+    assert api._key_event_of("CPI Aero Q3 Earnings Rise Y/Y on Robust Defense Demand") is None
+    got = pb.classify_headline("CPI Aero Q3 Earnings Rise Y/Y on Robust Defense Demand", "")
+    assert got and got["tag"] == "דוחות"
+    assert pb.classify_headline("US CPI rises 0.3% in October", "")["tag"] == "CPI"
+
+
+def test_v73_ratings_through_vercel(monkeypatch):
+    import datetime as _dt
+    import analyst_ratings as ar
+    calls = []
+
+    class R:
+        status_code, text = 200, ""
+        def __init__(self, tickers): self.tickers = tickers
+        def json(self):
+            row = {"epochGradeDate": 1795454940, "firm": "TD Cowen", "toGrade": "Buy", "fromGrade": "Hold", "action": "up",
+                   "priceTargetAction": "Raises", "currentPriceTarget": 250.0, "priorPriceTarget": 200.0}
+            return {"results": {t: [row] for t in self.tickers if t != "BAD"}, "failed": {"BAD": "HTTP 404"} if "BAD" in self.tickers else {}}
+
+    def get(url, **k):
+        calls.append(url.split("?t=")[1].split(","))
+        return R(calls[-1])
+    import requests
+    monkeypatch.setattr(requests, "get", get)
+    monkeypatch.setattr(ar, "_vercel_rows", {})
+    monkeypatch.setattr(ar.time, "sleep", lambda s: None)
+    tickers = [(f"T{i}", 1e11) for i in range(45)] + [("BAD", 1e10)]
+    rows, stats = ar.fetch(tickers, now=_dt.datetime(2026, 11, 24, 14, 0, tzinfo=_dt.timezone.utc), variant=(ar.VERCEL, None, None))
+    assert len(rows) == 45 and stats["failed"] == 1 and stats["asked"] == 46
+    assert [len(c) for c in calls[:3]] == [20, 20, 6] and max(len(c) for c in calls) <= ar.VERCEL_BATCH
+    assert rows[0]["to_grade"] == "Buy" and rows[0]["pt_now"] == 250.0 and stats["newest"].year == 2026
+    assert ar._variants()[-1][0] == ar.VERCEL and "yfinance" == ar._variants()[0][0]

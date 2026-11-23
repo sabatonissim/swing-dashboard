@@ -1653,7 +1653,7 @@ _KEY_NON_US = re.compile(r"\b(uk|u\.k\.|britain|british|euro ?zone|europe|europe
 _KEY_US_MARKET = r"\b(u\.s\.|us|america|american|fed|treasur\w*|wall street|stocks?|markets?|s&p|nasdaq|dow)\b"
 _KEY_JUNK = re.compile(r"^\s*\d+\s|^\s*(watch|commentary|opinion|column)\b|\b(stocks? to (buy|watch|own)|should you|is it time|smart buy|buy now|"
                        r"dividend stocks?|what to expect|things to watch|how to|here'?s|according to analysts|"
-                       r"this strategist|strategist says|cpi card group|"             # v37: a company, not the inflation report
+                       r"this strategist|strategist says|cpi card group|cpi aero\w*|"  # v37, v73: companies, not the inflation report
                        # v41: a personal-finance story copied by 7 sites was the key "market" event (10.11.2026)
                        r"social security|retirement|retirees?|401\(?k\)?|roth ira|nest egg|"
                        # v43: "Nasdaq AI chip stocks have crashed 50%+! Is this a golden buying opportunity?" (10.11.2026)
@@ -6099,6 +6099,8 @@ def _morning_brief_check():
     now_et = dt.now(ZoneInfo("America/New_York"))
     mins = now_et.hour * 60 + now_et.minute
     if now_et.weekday() >= 5 or not (MORNING_BRIEF_WINDOW_ET[0] <= mins <= MORNING_BRIEF_WINDOW_ET[1]):
+        return
+    if now_et.date() in _nyse_holidays(now_et.year):      # v73: no brief on a day with no trading, as on a weekend
         return
     if _morning_brief_done == now_et.date():
         return
