@@ -144,6 +144,26 @@
 })();
 </script>
 <script>
+// v70: counting visitors. /?nocount=1 (the owner's own devices) = this browser is never counted; /?nocount=0 = counted again.
+// Nor are bots, a local copy of the site, or a browser that asks not to be counted.
+(function(){
+  var off = false;
+  try {
+    var m = /[?&]nocount=([01])/.exec(location.search);
+    if (m) {
+      if (m[1] === '1') localStorage.setItem('swing_nocount', '1'); else localStorage.removeItem('swing_nocount');
+      window.__nocountSaid = m[1];
+      var rest = location.search.replace(/([?&])nocount=[01]&?/, '$1').replace(/[?&]$/, '');
+      history.replaceState(null, '', location.pathname + rest + location.hash);
+    }
+    off = localStorage.getItem('swing_nocount') === '1';
+  } catch(e){}
+  if (navigator.globalPrivacyControl === true || navigator.doNotTrack === '1') off = true;
+  if (/^(localhost|127\.|\[::1\])/.test(location.hostname) || !/^https?:$/.test(location.protocol)) off = true;
+  window.__noCount = off || !!window.__isBot;
+})();
+</script>
+<script>
 // Theme: saved choice is 'dark' | 'light'. Default (and anything else) = dark.
 (function(){
   var KEY = 'swing_theme';
@@ -1501,7 +1521,7 @@
       <nav aria-label="Popular stocks"><h2>Popular stocks</h2><a href="/stock/AAPL">AAPL</a> <a href="/stock/MSFT">MSFT</a> <a href="/stock/NVDA">NVDA</a> <a href="/stock/AMZN">AMZN</a> <a href="/stock/GOOGL">GOOGL</a> <a href="/stock/META">META</a> <a href="/stock/TSLA">TSLA</a> <a href="/stock/AVGO">AVGO</a> <a href="/stock/BRK-B">BRK-B</a> <a href="/stock/JPM">JPM</a> <a href="/stock/V">V</a> <a href="/stock/MA">MA</a> <a href="/stock/UNH">UNH</a> <a href="/stock/XOM">XOM</a> <a href="/stock/LLY">LLY</a> <a href="/stock/COST">COST</a> <a href="/stock/WMT">WMT</a> <a href="/stock/HD">HD</a> <a href="/stock/KO">KO</a> <a href="/stock/PEP">PEP</a> <a href="/stock/NFLX">NFLX</a> <a href="/stock/AMD">AMD</a> <a href="/stock/INTC">INTC</a> <a href="/stock/CRM">CRM</a> <a href="/stock/ORCL">ORCL</a> <a href="/stock/ADBE">ADBE</a> <a href="/stock/BAC">BAC</a> <a href="/stock/DIS">DIS</a> <a href="/stock/NKE">NKE</a> <a href="/stock/BA">BA</a> <a href="/stocks"><b>All stocks</b></a></nav>
       <nav aria-label="Learn"><h2>Learn</h2><a href="/learn/what-is-swing-trading">What is swing trading</a> <a href="/learn/cup-and-handle">Cup and handle</a> <a href="/learn/double-bottom">Double bottom</a> <a href="/learn/bull-flag">Bull flag</a> <a href="/learn/52-week-high-breakout">52-week high breakout</a> <a href="/learn/150-day-moving-average">150-day moving average</a> <a href="/learn/rs-rating">Relative strength (RS)</a> <a href="/learn/stage-analysis">Stage analysis</a> <a href="/learn/position-sizing">Position sizing</a> <a href="/learn"><b>All guides</b></a></nav>
     </div>
-    <div class="sl-legal"><a href="/about">About</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms of Use</a> · <a href="/about#data" onclick="openInfoModal();return false;">Data sources</a></div>
+    <div class="sl-legal"><a href="/about">About</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms of Use</a> · <a href="/about#data" onclick="openInfoModal();return false;">Data sources</a> · <a href="#" onclick="openConsent();return false;">Usage statistics</a></div>
   </div>
   <div class="only-he" dir="rtl">
     <p>Swing Desk הוא דשבורד למסחר סווינג במניות אמריקאיות: סורק של תבניות טכניות שרץ במהלך יום המסחר, חדשות שוק עם סיכום יומי, לוחות של אירועים כלכליים ודוחות, ועמוד לכל מניה. מידע בלבד, לא ייעוץ השקעות.</p>
@@ -1509,7 +1529,7 @@
       <nav aria-label="מניות פופולריות"><h2>מניות פופולריות</h2><a href="/he/stock/AAPL">AAPL</a> <a href="/he/stock/MSFT">MSFT</a> <a href="/he/stock/NVDA">NVDA</a> <a href="/he/stock/AMZN">AMZN</a> <a href="/he/stock/GOOGL">GOOGL</a> <a href="/he/stock/META">META</a> <a href="/he/stock/TSLA">TSLA</a> <a href="/he/stock/AVGO">AVGO</a> <a href="/he/stock/BRK-B">BRK-B</a> <a href="/he/stock/JPM">JPM</a> <a href="/he/stock/V">V</a> <a href="/he/stock/MA">MA</a> <a href="/he/stock/UNH">UNH</a> <a href="/he/stock/XOM">XOM</a> <a href="/he/stock/LLY">LLY</a> <a href="/he/stock/COST">COST</a> <a href="/he/stock/WMT">WMT</a> <a href="/he/stock/HD">HD</a> <a href="/he/stock/KO">KO</a> <a href="/he/stock/PEP">PEP</a> <a href="/he/stock/NFLX">NFLX</a> <a href="/he/stock/AMD">AMD</a> <a href="/he/stock/INTC">INTC</a> <a href="/he/stock/CRM">CRM</a> <a href="/he/stock/ORCL">ORCL</a> <a href="/he/stock/ADBE">ADBE</a> <a href="/he/stock/BAC">BAC</a> <a href="/he/stock/DIS">DIS</a> <a href="/he/stock/NKE">NKE</a> <a href="/he/stock/BA">BA</a> <a href="/he/stocks"><b>כל המניות</b></a></nav>
       <nav aria-label="לימוד"><h2>לימוד</h2><a href="/he/learn/what-is-swing-trading">מה זה מסחר סווינג</a> <a href="/he/learn/cup-and-handle">כוס וידית</a> <a href="/he/learn/double-bottom">תחתית כפולה</a> <a href="/he/learn/bull-flag">דגל שורי</a> <a href="/he/learn/52-week-high-breakout">פריצת שיא 52 שבועות</a> <a href="/he/learn/150-day-moving-average">ממוצע נע 150 יום</a> <a href="/he/learn/rs-rating">עוצמה יחסית (RS)</a> <a href="/he/learn/stage-analysis">ניתוח שלבים</a> <a href="/he/learn/position-sizing">גודל פוזיציה</a> <a href="/he/learn"><b>כל המדריכים</b></a></nav>
     </div>
-    <div class="sl-legal"><a href="/he/about">אודות</a> · <a href="/he/privacy">פרטיות</a> · <a href="/he/terms">תנאי שימוש</a> · <a href="/he/about#data" onclick="openInfoModal();return false;">מקורות מידע</a></div>
+    <div class="sl-legal"><a href="/he/about">אודות</a> · <a href="/he/privacy">פרטיות</a> · <a href="/he/terms">תנאי שימוש</a> · <a href="/he/about#data" onclick="openInfoModal();return false;">מקורות מידע</a> · <a href="#" onclick="openConsent();return false;">סטטיסטיקת שימוש</a></div>
   </div>
 </footer>
 <style>
@@ -1978,6 +1998,7 @@ async function runNewsSearch(query){
     const rows = await res.json();
     if(myToken !== newsSearchToken) return; // a newer search has since started, ignore this stale response
     newsSearchResults = rows.map(mapDbRowToMacro);
+    track('news_search', query + ' (' + rows.length + ')');
     renderMacro();
   } catch(e){
     console.error('[news search] failed', e);
@@ -3290,7 +3311,7 @@ function _scheduleSync(){
   if(mode === 'push' && typeof tourStep !== 'undefined' && tourStep >= 0) mode = 'replace';   // the guide walks through the screens: no steps for Back
   _syncMode = mode;
   if(_syncTimer) return;
-  _syncTimer = setTimeout(() => { _syncTimer = null; syncAddress(_syncMode); }, 0);
+  _syncTimer = setTimeout(() => { _syncTimer = null; syncAddress(_syncMode); if(typeof visitLog !== 'undefined') visitLog.screen(); }, 0);
 }
 // after a language switch the address follows the language (only on the app's own addresses, not /index.html)
 function syncLangAddress(){
@@ -3369,6 +3390,7 @@ function setBtView(v){
 // was reloaded. A failed loader now clears its view's flag, so the next visit to the view tries again, and the
 // error message carries this link.
 function retryHtml(call){
+  visitLog.fail('not loaded: ' + String(call).replace(/\(.*/, ''));
   return ` <span style="text-decoration:underline;cursor:pointer" onclick="${call}">${lang==='en'?'Try again':'נסה שוב'}</span>`;
 }
 function _dm(s){ const m = /^(\d{4})-(\d\d)-(\d\d)/.exec(s||''); return m ? `${+m[3]}.${+m[2]}` : (s||''); }   // 2026-11-03 -> 3.11, like the rest of the site
@@ -4082,6 +4104,7 @@ function renderWatchlistSetups(results){
 }
 
 async function openDailyDigest(day){
+  track('digest', day || '');
   const t = lang==='en';
   const modal = document.getElementById("digest-modal");
   modal.innerHTML = `
@@ -5838,7 +5861,7 @@ async function toggleWatchlist(ticker){
   const isActive = watchlistTickers.has(ticker);
   if(!authToken){                                  // v54: the browser's own list
     if(!(isActive ? localWatchRemove(ticker) : localWatchAdd(ticker))) return;
-    if(isActive){ watchlistTickers.delete(ticker); latestWatchlistData = latestWatchlistData.filter(r => r.ticker !== ticker); }
+    if(isActive){ watchlistTickers.delete(ticker); latestWatchlistData = latestWatchlistData.filter(r => r.ticker !== ticker); track('watchlist_remove', ticker); }
     else { watchlistTickers.add(ticker); latestWatchlistData.unshift({ticker, price: null, change_pct: null, pending: true}); track('watchlist_add', ticker); }
     syncWatchButtons(ticker);
     if(moversPanelMode === 'watchlist') renderWatchlistPanel();
@@ -5852,6 +5875,7 @@ async function toggleWatchlist(ticker){
       if(!res.ok) throw new Error('delete failed');
       watchlistTickers.delete(ticker);
       latestWatchlistData = latestWatchlistData.filter(r=>r.ticker!==ticker);
+      track('watchlist_remove', ticker);
     } else {
       const res = await authFetch(`${API_BASE}/api/watchlist`, {
         method: 'POST',
@@ -5958,7 +5982,7 @@ function openMacroDrawerItem(m, onTop){
     ${newsHref(m.link, m.summary_en, m.source)?`<button class="deep-btn" id="macro-open-btn" data-url="${escH(newsHref(m.link, m.summary_en, m.source))}" onclick="window.open(this.dataset.url,'_blank','noopener,noreferrer')">${lang==='en'?'To original article →':'לכתבה המקורית ←'}</button>`:''}
   `;
   document.getElementById("overlay").classList.add("open");
-  track('view_macro', m.tag);
+  track('view_macro', tagLabel(m.tag) + ': ' + getNewsText(m));
   loadArticlePreview(m);
 }
 
@@ -7206,6 +7230,7 @@ async function showTickerDrawer(ticker){
       document.getElementById("loading-box").textContent = temp
         ? (lang==='en'?"Data source hiccup — showing chart only. Try again in a few seconds.":"תקלה זמנית במקור הנתונים — מציג גרף בלבד. נסה שוב בעוד כמה שניות.")
         : (lang==='en'?"No further info found, showing chart only.":"לא נמצא מידע נוסף, מציג גרף בלבד.");
+      track(temp ? 'error' : 'search_none', (temp ? 'lookup ' + res.status + ' ' : '') + ticker);
       return;
     }
     const d = await res.json();
@@ -7729,10 +7754,26 @@ function tagLabel(tag){ return (lang==='en' && TAG_EN[tag]) ? TAG_EN[tag] : (tag
 function hookText(m){ return lang==='he' ? (m.hook_he||'') : (HOOK_EN[m.tag]||''); }
 
 // ==== v14: privacy consent, legal pages, personal-data tools ====
-function consentState(){ try{ return localStorage.getItem('swing_consent'); }catch(e){ return null; } }
-function setConsent(v){ try{ localStorage.setItem('swing_consent', v); if(v!=='yes') localStorage.removeItem('swing_sid'); }catch(e){} const b=document.getElementById('consent-banner'); if(b) b.remove(); if(v==='yes') track('page_view', null); }
-function renderConsentBanner(){
-  if(consentState() || window.__isBot) return;
+// v70: the log now keeps the order and time of a visit's steps, so a "yes" given to the old text is asked again; a "no" stands.
+function consentState(){
+  try { return localStorage.getItem('swing_consent2') || (localStorage.getItem('swing_consent') === 'no' ? 'no' : null); }
+  catch(e){ return null; }
+}
+function setConsent(v){
+  let pid = null;
+  try {
+    localStorage.setItem('swing_consent2', v);
+    localStorage.removeItem('swing_consent');
+    if(v !== 'yes') pid = localStorage.getItem('swing_sid');
+  } catch(e){}
+  const b = document.getElementById('consent-banner');
+  if(b) b.remove();
+  if(v === 'yes') visitLog.start(); else visitLog.stop(pid);
+}
+// the choice can be changed any time (the link at the bottom of the page)
+function openConsent(){ renderConsentBanner(true); }
+function renderConsentBanner(force){
+  if(!force && (consentState() || window.__noCount)) return;
   const en = lang==='en';
   const old = document.getElementById('consent-banner');
   if(old) old.remove();                     // re-rendered on a language switch
@@ -7742,7 +7783,7 @@ function renderConsentBanner(){
   d.setAttribute('role','dialog');
   d.setAttribute('aria-label', en ? 'Privacy and cookies' : 'פרטיות ועוגיות');
   d.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:200;background:var(--panel);border-top:1px solid var(--line);padding:12px 16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;font-size:12.5px;color:var(--text);box-shadow:0 -6px 24px var(--shadow);';
-  d.innerHTML = `<span style="max-width:720px;">${en?'We would like to collect anonymous usage statistics (which pages and tickers are viewed) to improve the site.':'נשמח לאסוף סטטיסטיקות שימוש אנונימיות (אילו עמודים וטיקרים נצפים) כדי לשפר את האתר.'} <a href="#" onclick="openLegal('privacy');return false;" style="color:var(--teal);">${en?'Privacy policy':'מדיניות פרטיות'}</a></span>
+  d.innerHTML = `<span style="max-width:720px;">${en?"To improve the site we would like to record what you do on it (screens, stocks, clicks, searches) and for how long: without your name, email or IP address, under a random identifier, deleted after 90 days.":"כדי לשפר את האתר נשמח לרשום מה עשית בו (מסכים, מניות, לחיצות, חיפושים) וכמה זמן: בלי שם, מייל או כתובת IP, תחת מזהה אקראי, ונמחק אחרי 90 יום."} <a href="#" onclick="openLegal('privacy');return false;" style="color:var(--teal);">${en?'Privacy policy':'מדיניות פרטיות'}</a></span>
     <button onclick="setConsent('yes')" style="background:var(--amber);color:var(--on-amber);border:none;border-radius:8px;padding:7px 16px;font-weight:700;cursor:pointer;">${en?'Allow':'אישור'}</button>
     <button onclick="setConsent('no')" style="background:transparent;color:var(--text-dim);border:1px solid var(--line);border-radius:8px;padding:7px 16px;cursor:pointer;">${en?'Decline':'סירוב'}</button>`;
   document.body.appendChild(d);
@@ -7784,19 +7825,197 @@ async function signOutOtherDevices(){
 }
 // ==== end v14 helpers ====
 
-function getSessionId(){
-  let sid = localStorage.getItem('swing_sid');
-  if(!sid){ sid=crypto.randomUUID(); localStorage.setItem('swing_sid',sid); }
-  return sid;
-}
-function track(eventType, entityId){
-  if(consentState()!=='yes') return;   // analytics only after the person allowed it
-  fetch(`${API_BASE}/api/track`,{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({event_type:eventType,entity_id:entityId,session_id:getSessionId()})
-  }).catch(()=>{});
-}
-track('page_view',null);
-window.addEventListener('load', renderConsentBanner);
+// ==== v70: visitor log ====
+// The steps of this visit, kept in this tab and sent whole (the visit so far) when the page is hidden and once a minute while
+// something changed: POST /api/track -> visits.py. Only with the person's permission. No name, email or IP address.
+// Time counts only while the tab is on the screen and the person did something in the last minute.
+// A new step = track(kind, label) + the kind in EVENTS and EVENTS_HE in visits.py (a test compares).
+var visitLog = (function(){
+  const KEY = 'swing_visit_log', GAP_MS = 30 * 60000, MAX_STEPS = 200, MAX_TEXT = 11000;     // (the server refuses a message over 40,000 bytes)
+  let readyMs = 0, deep = 0, chartUsed = false;
+  let st = null, dirty = false, lastInput = Date.now(), lastTick = Date.now(), started = false;
+  const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
+    : '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, c => (+c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> +c / 4).toString(16)));
+  function allowed(){ return consentState() === 'yes' && !window.__noCount; }
+  function person(){
+    let id = localStorage.getItem('swing_sid');
+    if(!/^[0-9a-f]{8}-[0-9a-f-]{27}$/.test(id || '')){ id = uuid(); localStorage.setItem('swing_sid', id); }
+    return id;
+  }
+  function source(){
+    const q = new URLSearchParams(location.search), utm = q.get('utm_source');
+    if(utm) return 'utm:' + [utm, q.get('utm_campaign')].filter(Boolean).join(' / ').slice(0, 50);
+    let u = null;
+    try { u = document.referrer ? new URL(document.referrer) : null; } catch(e){}
+    if(u && u.host === location.host){ const m = /\/learn\/([a-z0-9-]+)/.exec(u.pathname); return m ? 'site:' + m[1] : ''; }
+    if(u) return u.hostname.replace(/^www\./, '');
+    return q.get('source') === 'push' ? 'push' : '';
+  }
+  function device(){
+    const w = Math.min(screen.width, screen.height), touch = window.matchMedia('(pointer:coarse)').matches;
+    return !touch ? 'desktop' : (w < 600 ? 'phone' : 'tablet');
+  }
+  function save(){ try { sessionStorage.setItem(KEY, JSON.stringify(st)); } catch(e){} }
+  function fresh(){
+    let tz = '';
+    try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch(e){}
+    return {v: uuid(), p: person(), began: Date.now(), last: Date.now(), w: 0, n: (visitState().n || 1), src: source(),
+            land: location.pathname.slice(0, 60), dev: device(), tz, ev: []};
+  }
+  function tick(){
+    const now = Date.now();
+    if(st && !document.hidden && now - lastInput < 60000) st.w += Math.min(now - lastTick, 15000) / 1000;
+    lastTick = now;
+  }
+  function send(){
+    if(!st || !dirty || !allowed() || !st.ev.length) return;
+    tick();
+    const msg = JSON.stringify({v: st.v, p: st.p, n: st.n, ago: Math.round((Date.now() - st.began) / 1000), w: Math.round(st.w),
+      src: st.src, land: st.land, dev: st.dev, lang, reg: authToken ? 1 : 0, pwa: _isStandalone() ? 1 : 0, tz: st.tz, ld: readyMs ? Math.max(1, Math.round(readyMs / 1000)) : 0, ev: st.ev});
+    dirty = false;
+    save();
+    try { if(navigator.sendBeacon && navigator.sendBeacon(`${API_BASE}/api/track`, msg)) return; } catch(e){}
+    try { fetch(`${API_BASE}/api/track`, {method: 'POST', mode: 'no-cors', keepalive: true, body: msg}).catch(() => {}); } catch(e){}
+  }
+  function add(kind, label){
+    if(!started || !allowed()) return;
+    const now = Date.now();
+    if(now - st.last > GAP_MS){ touchVisit(); st = fresh(); add.screen = null; if(kind !== 'screen') screenNow(); }
+    tick();
+    label = String(label == null ? '' : label).replace(/\s+/g, ' ').trim().slice(0, 80);
+    const prev = st.ev[st.ev.length - 1];
+    st.last = now;
+    if(prev && prev[1] === kind && (prev[2] || '') === label) return;
+    if(st.ev.length >= MAX_STEPS || (st.chars || 0) > MAX_TEXT) return;
+    st.chars = (st.chars || 0) + label.length;
+    st.ev.push(label ? [Math.round(st.w), kind, label] : [Math.round(st.w), kind]);
+    dirty = true;
+    save();
+  }
+  function screenNow(){
+    if(!started) return;
+    const label = _routePath().replace(/^\//, '') || 'home';
+    if(add.screen === label) return;
+    add.screen = label;
+    deep = 0; chartUsed = false;
+    add('screen', label);
+  }
+  function start(){
+    if(started || !allowed()) return;
+    try {
+      const s = JSON.parse(sessionStorage.getItem(KEY) || 'null');
+      if(s && s.v && Array.isArray(s.ev) && Date.now() - s.last < GAP_MS) st = s;      // a reload of the same tab goes on
+    } catch(e){}
+    if(!st){ try { st = fresh(); } catch(e){ return; } }
+    started = true;
+    lastTick = lastInput = Date.now();
+    screenNow();
+    watchSections();
+  }
+  function stop(pid){
+    started = false; st = null; dirty = false; add.screen = null;
+    try { sessionStorage.removeItem(KEY); localStorage.removeItem('swing_sid'); } catch(e){}
+    if(pid && !window.__noCount){ try { navigator.sendBeacon(`${API_BASE}/api/track`, JSON.stringify({forget: pid})); } catch(e){} }
+  }
+  // the parts of the home page that were really on the screen (2 seconds or more), once each per visit
+  let watching = false;
+  function watchSections(){
+    if(watching || !('IntersectionObserver' in window)) return;
+    watching = true;
+    const parts = {today: '#today-box', scans: '#stocks', news: '#macro', key: '.breaking-bar', movers: '.movers-col',
+                   chart: '.chart-col', breadth: '#hx-breadth', insider: '#hx-insider', footer: '#site-links'};
+    const timers = {}, seen = {};
+    const io = new IntersectionObserver(list => list.forEach(x => {
+      const name = x.target.__part;
+      clearTimeout(timers[name]);
+      const enough = x.isIntersecting && (x.intersectionRatio >= 0.35 || x.intersectionRect.height >= 200);
+      if(enough && !seen[name]) timers[name] = setTimeout(() => {
+        if(document.hidden || !started || currentPage !== 'home') return;
+        seen[name] = true;
+        io.unobserve(x.target);
+        add('section', name);
+      }, 2000);
+    }), {threshold: [0, 0.1, 0.35, 0.6]});
+    for(const k in parts){ const el = document.querySelector(parts[k]); if(el){ el.__part = k; io.observe(el); } }
+  }
+  ['pointerdown', 'keydown', 'scroll', 'pointermove', 'touchstart'].forEach(e =>
+    window.addEventListener(e, () => { const now = Date.now(); if(now - lastInput > 1000){ tick(); lastInput = now; } }, {passive: true, capture: true}));
+  setInterval(() => { tick(); if(st && st.w - (st.sent || 0) >= 30){ st.sent = st.w; dirty = true; } }, 10000);
+  setInterval(() => { if(!document.hidden) send(); }, 60000);
+  document.addEventListener('visibilitychange', () => { tick(); if(document.hidden){ if(st && started) dirty = true; send(); } });
+  window.addEventListener('pagehide', () => { if(st && started) dirty = true; send(); });
+  // what went wrong in front of the visitor (our own code only; at most 5 a visit)
+  let errors = 0;
+  function fail(text){ if(!/ResizeObserver|^Script error/.test(text) && errors++ < 5) add('error', text); }
+  window.addEventListener('error', e => { if(e.message && (!e.filename || e.filename.indexOf(location.origin) === 0)) fail(String(e.message).slice(0, 60)); });
+  window.addEventListener('unhandledrejection', e => fail(String((e.reason && e.reason.message) || e.reason || 'promise').slice(0, 60)));
+  // every button, link and choice, without a line of code for each of them: the name of the function it calls (visits.py says it
+  // in Hebrew). Never what a person typed, and no details of trades and alerts. SKIP = has a step of its own above, or is a screen.
+  const SKIP = new Set(('openDrawer openMacroDrawer openMacroDrawerItem setDdTab openDailyDigest setPage setPulseView setBtView toggleWatchlist ' +
+    'promptAddToWatchlist showTickerDrawer handleSearch handleSearchMobile selectCompareTicker saveTrade addPriceAlert addLineAlert ' +
+    'shareStock startTour tourGo toggleLang setConsent openConsent openTickerAnalysis openEarnAnalysis loadDeepDive tfCalc').split(' '));
+  const NO_DETAIL = /trade|alert/i, PLUMBING = /^(if|stopPropagation|preventDefault|getElementById|Number|String|open|reg|skip|escH|stringify|renderLineAlert)$|^close/;
+  function called(code){
+    for(const m of String(code || '').matchAll(/([A-Za-z_$][\w$]*)\(([^()]*)\)?/g)){
+      if(PLUMBING.test(m[1])) continue;
+      const arg = NO_DETAIL.test(m[1]) ? '' : m[2].split(',').map(x => x.trim()).filter(x => x && !/^(this|event|null)\b/.test(x))
+        .map(x => x.replace(/^['"]|['"]$/g, '')).join(' ').slice(0, 40);
+      return [m[1], arg];
+    }
+    return null;
+  }
+  function linkName(url, text){
+    let u = null;
+    try { u = new URL(url, location.href); } catch(e){ return ''; }
+    if(!/^https?:$/.test(u.protocol)) return '';
+    return u.host === location.host ? u.pathname : u.hostname.replace(/^www\./, '') + (text ? ' ' + text.trim() : '');
+  }
+  document.addEventListener('click', e => { try {
+    const el = e.target && e.target.closest && e.target.closest('[onclick],a[href],button');
+    if(!el || el.closest('#consent-banner')) return;
+    const url = el.dataset.url || (el.tagName === 'A' && !el.hasAttribute('onclick') ? el.getAttribute('href') : '');
+    if(url && url !== '#'){ const name = linkName(url, el.dataset.url ? '' : el.textContent); if(name) add('link', name); return; }
+    const c = called(el.getAttribute('onclick'));
+    if(c){ if(!SKIP.has(c[0])) add('tap', (c[0] + ' ' + c[1]).trim()); }
+    else if(!el.hasAttribute('onclick') && el.id) add('tap', el.id);
+  } catch(err){} }, true);
+  document.addEventListener('change', e => { try {
+    const el = e.target;
+    if(!el || !el.matches || !el.matches('select,input[type="checkbox"],input[type="radio"]')) return;
+    const c = called(el.getAttribute('onchange'));          // (the fields of the trade form have no handler, or tfCalc)
+    if(!c) return;
+    if(SKIP.has(c[0]) || /^tf-/.test(el.id || '') || /tfCalc/.test(el.getAttribute('onchange') || '')) return;
+    const said = el.tagName === 'SELECT' ? (el.selectedOptions[0] || {}).textContent : (el.checked ? 'on' : 'off');
+    const key = c[1].split(' ')[0];
+    add('pick', c[0] + (/^[a-z0-9_]{2,20}$/i.test(key) ? ' ' + key : '') + ' = ' + said);
+  } catch(err){} }, true);
+  // how far down the screen: half of it, and (almost) its end
+  window.addEventListener('scroll', () => {
+    const h = document.documentElement.scrollHeight, seen = window.scrollY + window.innerHeight;
+    if(!started || h < window.innerHeight * 1.5) return;
+    const at = seen / h >= 0.95 ? 100 : (seen / h >= 0.5 ? 50 : 0);
+    if(at > deep && window.scrollY > 100){ deep = at; add('scroll', String(at)); }
+  }, {passive: true});
+  // a chart of TradingView is a page of theirs: all we can know is that the person clicked inside it
+  window.addEventListener('blur', () => setTimeout(() => {
+    const el = document.activeElement;
+    if(el && el.tagName === 'IFRAME' && /tradingview/.test(el.src || '') && !chartUsed){ chartUsed = true; add('chart'); }
+  }, 0));
+  // how long until the site's data was on the screen, from the moment the page was opened (a sleeping server = many seconds)
+  function ready(){ if(!readyMs){ readyMs = performance.now(); dirty = true; } }
+  return {add, start, stop, screen: screenNow, fail, ready, _state: () => st, _send: send, _called: called};
+})();
+function track(eventType, entityId){ if(typeof visitLog !== 'undefined') visitLog.add(eventType, entityId); }
+// the route has been read and the language is known by now; a step that came before that is the first screen anyway
+window.addEventListener('load', () => setTimeout(visitLog.start, 1500));
+window.addEventListener('load', () => {
+  if(!window.__nocountSaid) return;
+  const on = window.__nocountSaid === '1';
+  alert(lang === 'en' ? (on ? 'This browser will not be counted.' : 'This browser is counted again.')
+    : (on ? 'הדפדפן הזה לא ייספר.' : 'הדפדפן הזה נספר שוב.'));
+});
+// ==== end visitor log ====
+window.addEventListener('load', () => renderConsentBanner());
 
 // ---- Accounts: Sign in with Google ----
 // The Client ID is public by design (not a secret). The server verifies the
@@ -7963,6 +8182,7 @@ async function onGoogleCredential(resp){
     localStorage.setItem('swing_token', authToken);
     localStorage.setItem('swing_user', JSON.stringify(authUser));
     renderAuthBox();
+    track('signin');
     if(currentPage === 'portfolio') ensurePortfolioLoaded();     // v24
     await mergeLocalWatchlist();                                 // v54: what was followed before signing in
     await refreshWatchlistData();
@@ -8243,6 +8463,7 @@ var tourStep = -1, _tourReturnPage = 'home';
 
 function startTour(){
   if(tourStep >= 0) return;
+  track('tour');
   _tourReturnPage = typeof currentPage !== 'undefined' ? currentPage : 'home';
   tourStep = 0;
   document.addEventListener('keydown', _tourKey);
@@ -9617,7 +9838,7 @@ let _apiLoadedAt = 0;
 async function loadFromApi(){
   if(_apiBusy) return;
   _apiBusy = true;
-  try { await _loadFromApi(); if(apiConnected) _apiLoadedAt = Date.now(); } finally { _apiBusy = false; }
+  try { await _loadFromApi(); if(apiConnected){ _apiLoadedAt = Date.now(); if(typeof visitLog !== 'undefined') visitLog.ready(); } } finally { _apiBusy = false; }
 }
 
 async function _loadFromApi(){
@@ -9835,7 +10056,7 @@ function applyLang(){
   renderV22();
   loadV22Data();          // self-throttled: a real request at most every 10 minutes
   const cb = document.getElementById('consent-banner');
-  if(cb && cb.dataset.lang !== lang) renderConsentBanner();   // the banner stayed in Hebrew after switching to English
+  if(cb && cb.dataset.lang !== lang) renderConsentBanner(true);   // the banner stayed in Hebrew after switching to English
   rerenderDeepDiveForLang();
   if(backtestLastData && document.getElementById('backtest-content')) renderBacktestContent(backtestLastData);
   renderMarketTicker();
@@ -9889,6 +10110,7 @@ function applyLang(){
 function toggleLang(){
   lang = lang === 'he' ? 'en' : 'he';
   localStorage.setItem('swing_lang', lang);
+  track('lang', lang);
   applyLang();
 }
 
@@ -10336,7 +10558,7 @@ function renderInstallBtn(){
   if(typeof renderNudge === 'function') renderNudge();      // v54: the browser just said the app can be installed
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); _installEvt = e; renderInstallBtn(); });
-window.addEventListener('appinstalled', () => { _installEvt = null; renderInstallBtn(); });
+window.addEventListener('appinstalled', () => { _installEvt = null; renderInstallBtn(); track('install'); });
 async function installApp(){
   if(_installEvt){
     _installEvt.prompt();
@@ -10447,6 +10669,7 @@ async function addPriceAlert(){
     if(!r.ok) throw new Error('add ' + r.status);
     _alertDraft = null;
     await renderAlertsPanel();
+    track('alert_saved', tk);
     _alertsNote(en ? `Alert saved: ${tk} ${_alertWord(direction)}$${price}` : `ההתראה נשמרה: ${tk} ${_alertWord(direction)}$${price}`);
   } catch(e){ _alertsNote(en ? 'Could not save the alert.' : 'לא הצלחנו לשמור את ההתראה.', true); }
 }
@@ -10634,6 +10857,7 @@ async function addLineAlert(){
     else { _myAlertsAsked = false; loadMyAlerts(); }
     refreshBells();
     closeLineAlert();
+    track('alert_saved', d.ticker);
     _lineDraft = null;
     showAlertToast(en ? `Alert saved: ${d.ticker} ${_lineWord(direction)} ${_lineName(a)}` : `ההתראה נשמרה: ${d.ticker} ${_lineWord(direction)} ${_lineName(a)}`);
   } catch(e){
@@ -10726,6 +10950,7 @@ async function renderAlertsPanel(){
 
 // ---- v19: share a stock's analysis (phone: the system share sheet; computer: copy the link) ----
 async function shareStock(ticker){
+  track('share', ticker);
   const en = lang==='en';
   const url = location.origin + _langPath(`/stock/${encodeURIComponent(ticker)}`, lang);     // v25: the stock's permanent address
   const text = en ? `${ticker} — technical analysis on Swing Desk` : `${ticker} — ניתוח טכני ב-Swing Desk`;

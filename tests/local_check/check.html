@@ -110,10 +110,12 @@ async def run():
     print('bad ticker:', r['status'], r['body'], 'cors=', r['headers'].get('access-control-allow-origin'))
     r = await call('GET', '/api/focus', {'Origin': SITE})
     print('database down:', r['status'], r['body'], 'cors=', r['headers'].get('access-control-allow-origin'), 'retry=', r['headers'].get('retry-after'))
-    r = await call('POST', '/api/track', {'Content-Type': 'application/json', 'Origin': SITE}, json.dumps({'event_type': 'dd_tab', 'entity_id': 'tech', 'session_id': 'abc-1'}).encode())
-    print('track ok:', r['status'], r['body'], 'buffered=', len(api._track_buffer))
-    r = await call('POST', '/api/track', {'Content-Type': 'application/json'}, json.dumps({'event_type': 'hack'}).encode())
-    print('track bad:', r['status'])
+    ids = {'v': '11111111-1111-4111-8111-111111111111', 'p': '22222222-2222-4222-8222-222222222222'}
+    msg = json.dumps({**ids, 'n': 1, 'ago': 5, 'w': 5, 'ev': [[0, 'screen', 'home']]}).encode()
+    UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0) Chrome/140', 'Cf-Ipcountry': 'IL'}
+    for name, h in (('other site', {**UA, 'Origin': 'https://evil.example'}), ('bot', {'Origin': SITE, 'User-Agent': 'Googlebot'}), ('ok', {**UA, 'Origin': SITE})):
+        r = await call('POST', '/api/track', {'Content-Type': 'text/plain;charset=UTF-8', **h}, msg)
+        print('track', name, r['status'], 'waiting =', len(api.visits.LOG.waiting))
     r = await call('POST', '/api/track', {'Content-Type': 'application/json', 'Content-Length': '100000'}, b'{}')
     print('big body:', r['status'], r['body'])
     r = await call('PUT', '/api/trades/1', {'Content-Type': 'application/json'}, b'{}')

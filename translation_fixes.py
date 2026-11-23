@@ -92,7 +92,9 @@ EN_REWRITES = [
     # "Canada Auto Plant The 'Front Line'" -> "קנדה נטעה" -> "מפעל הרכב בקנדה"
     (r"\b(auto|car|chip|steel|aluminum|battery|assembly|manufacturing|meatpacking|semiconductor)\s+plant(s?)\b", r"\1 factory\2"),
     # Reuters labels: "Instant view: Nasdaq plunges" -> "תצוגה מיידית: ..."
-    (r"^\s*(?:instant view|view|factbox|explainer|analysis|breakingviews)\s*[:\-–—]\s*", ""),
+    (r"^\s*(?:instant view|view|factbox|explainer|analysis|breakingviews|commentary)\s*[:\-–—]\s*", ""),
+    # v70: "off 10% from their records" -> "הנחה של 10% מהרשומות שלהם" (23.11.2026)
+    (r"\b(?:off|down)\s+(\d+(?:\.\d+)?%)\s+from\s+(their|its)\s+records?\b(?!\s+highs?)", r"down \1 from \2 record highs"),
     # "J.P. Morgan prices in stunning shift on Fed rate-hike call" -> "J.P. מורגן מחירים בשינוי מדהים בבקשת"
     (r"\b(morgan|goldman(?: sachs)?|citi(?:group)?|barclays|ubs|bofa|traders|markets|investors|wall street)\s+price(?:s|d)?\s+in\b",
      r"\1 now expect"),
@@ -100,6 +102,7 @@ EN_REWRITES = [
 ]
 
 HE_FIXES = [
+    ("מהרשומות שלהם", "מהשיאים שלהם"),          # v70
     # v51 (live feed 15.11.2026)
     ("דקות הפד", "פרוטוקול הפד"),
     ("דקות ה-FOMC", "פרוטוקול ה-FOMC"),

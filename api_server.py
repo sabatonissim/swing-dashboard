@@ -50,7 +50,7 @@ import numpy as np
 import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field
 import yfinance as yf
 import psycopg2
@@ -74,6 +74,7 @@ import push_alerts    # v19: push notifications (watchlist signals, price alerts
 import fundamentals as fundlib   # v21: SEC fundamentals build + stored copies (also the nightly warm-up job)
 import scheduler      # starts the GitHub Actions workflows at exact ET times (see scheduler.py): providers -> processing -> uniform events (see econ_calendar.py)
 import db_meter       # v38: counts what each endpoint reads from the database (data_health.py reports it)
+import visits         # v70: the visitor log (a table in the database)
 from price_splits import fix_unadjusted_splits   # v65: splits Yahoo has not applied yet (also the scanner)
 db_meter.install("server", flush_every=db_meter.SERVER_FLUSH_EVERY, prune=True)
 
@@ -1642,7 +1643,7 @@ _KEY_NON_US = re.compile(r"\b(uk|u\.k\.|britain|british|euro ?zone|europe|europe
 # v19: "inflation report/data" alone also matched company and foreign reports ("Loblaw October food inflation
 # report" was shown as the key CPI event) — that weaker wording now needs a US / market word next to it.
 _KEY_US_MARKET = r"\b(u\.s\.|us|america|american|fed|treasur\w*|wall street|stocks?|markets?|s&p|nasdaq|dow)\b"
-_KEY_JUNK = re.compile(r"^\s*\d+\s|\b(stocks? to (buy|watch|own)|should you|is it time|smart buy|buy now|"
+_KEY_JUNK = re.compile(r"^\s*\d+\s|^\s*(watch|commentary|opinion|column)\b|\b(stocks? to (buy|watch|own)|should you|is it time|smart buy|buy now|"
                        r"dividend stocks?|what to expect|things to watch|how to|here'?s|according to analysts|"
                        r"this strategist|strategist says|cpi card group|"             # v37: a company, not the inflation report
                        # v41: a personal-finance story copied by 7 sites was the key "market" event (10.11.2026)
@@ -2070,7 +2071,8 @@ def get_data_health():
             "public_db_today_mb": round(_public_db_mb_today(), 2), "public_db_budget_mb": PUBLIC_DB_BUDGET_MB,
             "personal_db_today_mb": round(_personal_db_mb_today(), 2), "personal_db_budget_mb": PERSONAL_DB_BUDGET_MB,
             # v62: what this server saw today (memory, no database) — not part of `status`, which is the morning report's
-            "live": {"stock_news": stock_news_health()},
+            "live": {"stock_news": stock_news_health(),
+                      "visits": {"status": "warn" if visits.LOG.failed >= 2 else "ok", "failed_writes": visits.LOG.failed}},
             "status": rows[0]["status"], "results": rows[0]["results"],
             "recent": [{"day": r["day"].isoformat(), "status": r["status"]} for r in rows]}
 
@@ -6125,9 +6127,10 @@ def _macro_alert_loop():
         except Exception as e:  # noqa: BLE001
             print(f"[morning brief] check failed: {type(e).__name__}: {e}")
         try:
-            _track_flush_if_due()
+            if visits.LOG.due():              # v70: hh:01-hh:08 only, when the news job has the database awake
+                visits.LOG.flush(get_conn)
         except Exception as e:  # noqa: BLE001
-            print(f"[track] flush failed: {type(e).__name__}: {e}")
+            print(f"[visits] write failed: {type(e).__name__}: {e}")
         time.sleep(MACRO_ALERT_CHECK_SEC)
 
 
@@ -8192,89 +8195,13 @@ def get_insider_buys(days: int = 30, min_value: float = 100000):
     return data
 
 
-# v34: usage events (only from visitors who allowed them) are written in batches, not one database connection per click —
-# every click woke the database. Up to 30 minutes of anonymous counts can be lost in a restart; nothing depends on them.
-# Four events the site always sent were refused by the old list (a 422 in the browser's console).
-_TRACK_EVENTS = r"^(view_stock|view_macro|page_view|search_stock|watchlist_add|compare_stock|trade_saved|dd_tab)$"
-_TRACK_FLUSH_SEC = 1800
-_TRACK_FLUSH_MAX = 200
-_track_buffer: deque = deque(maxlen=5000)
-_track_flushed_at = time.time()
-
-
-class TrackEvent(BaseModel):
-    event_type: str = Field(pattern=_TRACK_EVENTS)
-    entity_id: Optional[str] = Field(default=None, max_length=60)
-    session_id: Optional[str] = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9-]*$")
-
-
-def _track_flush() -> int:
-    global _track_flushed_at
-    _track_flushed_at = time.time()
-    batch = []
-    while _track_buffer:
-        try:
-            batch.append(_track_buffer.popleft())
-        except IndexError:
-            break
-    if not batch:
-        return 0
-    with db_cursor() as (conn, cur):
-        psycopg2.extras.execute_values(
-            cur, 'INSERT INTO analytics_events (event_type, entity_id, session_id, "timestamp") VALUES %s', batch)
-        cur.execute("DELETE FROM analytics_events WHERE timestamp < NOW() - INTERVAL '180 days'")   # kept 180 days only
-        conn.commit()
-    return len(batch)
-
-
-def _track_flush_if_due() -> None:
-    if _track_buffer and time.time() - _track_flushed_at >= _TRACK_FLUSH_SEC:
-        _track_flush()
-
-
-@app.post("/api/track")
-def track_event(event: TrackEvent):
-    # v50: only kept in memory here. It used to write to the database after every 200 events: 60 requests a minute from one
-    # address = a write every ~3 minutes, so the database never fell asleep (and the table filled up). The alert loop
-    # writes the buffer at most every 30 minutes (_track_flush_if_due); the buffer keeps the newest 5,000 events.
-    _track_buffer.append((event.event_type, event.entity_id, event.session_id, dt.now(timezone.utc)))
-    return {"status": "logged"}
-
-
-@app.get("/api/analytics/top-interest", dependencies=[Depends(require_admin)])
-def top_interest(
-    event_type: str = Query(default="view_stock", pattern=_TRACK_EVENTS),
-    days: int = Query(7, ge=1, le=365),
-    limit: int = Query(10, ge=1, le=100),
-):
-    with db_cursor(dict_cursor=True) as (conn, cur):
-        cur.execute(
-            """
-            SELECT entity_id, COUNT(*) as clicks
-            FROM analytics_events
-            WHERE event_type = %s AND timestamp >= NOW() - (%s || ' days')::INTERVAL
-            GROUP BY entity_id
-            ORDER BY clicks DESC
-            LIMIT %s
-            """,
-            (event_type, days, limit),
-        )
-        rows = cur.fetchall()
-    return [dict(r) for r in rows]
-
-
-@app.get("/api/analytics/summary", dependencies=[Depends(require_admin)])
-def analytics_summary(days: int = Query(7, ge=1, le=365)):
-    with db_cursor(dict_cursor=True) as (conn, cur):
-        cur.execute(
-            """
-            SELECT date(timestamp) as day, event_type, COUNT(*) as count
-            FROM analytics_events
-            WHERE timestamp >= NOW() - (%s || ' days')::INTERVAL
-            GROUP BY day, event_type
-            ORDER BY day DESC
-            """,
-            (days,),
-        )
-        rows = cur.fetchall()
-    return [dict(r) for r in rows]
+# v70: the visitor log (visits.py). Replaces the single-click log of v14-v50 (analytics_events) and its two admin answers.
+# Nothing here opens the database: the alert loop writes what waits in memory once an hour, when the database is awake.
+@app.post("/api/track", status_code=204)
+async def track_visit(request: Request):
+    """The visit so far, from the visitor's browser (only with their permission). Always 204: a tab that was open since before
+    v70 sends the old message, which is ignored."""
+    if request.headers.get("origin") in ALLOWED_ORIGINS and not visits.is_bot(request.headers.get("user-agent") or ""):
+        visits.LOG.add(visits.parse(await request.body()), request.headers.get("cf-ipcountry") or "", _client_ip(request),
+                       ua=request.headers.get("user-agent") or "")
+    return Response(status_code=204)

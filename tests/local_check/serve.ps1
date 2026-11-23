@@ -56,7 +56,7 @@ while ($l.IsListening -and ((Get-Date) - $started).TotalMinutes -lt 60) {
             continue
         }
         elseif ($path -eq '/list') {
-            $names = @()
+            $names = @('index.html')      # v70: some tests compare the page with the server
             Get-ChildItem -LiteralPath $Project -Filter *.py -File | ForEach-Object { $names += $_.Name }
             Get-ChildItem -LiteralPath (Join-Path $Project 'tests') -Filter *.py -File | ForEach-Object { $names += "tests/$($_.Name)" }
             Get-ChildItem -LiteralPath (Join-Path $Project 'tests\fixtures') -File | ForEach-Object { $names += "tests/fixtures/$($_.Name)" }

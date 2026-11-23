@@ -129,7 +129,8 @@ EARNINGS_CHATTER_RE = re.compile(r":\s*(fiscal\s+)?q[1-4]\s+earnings snapshot\s*
                                  r"\bsaid on its q[1-4] earnings call\b|\breleases? (first|second|third|fourth)[- ]quarter earnings\b|"
                                  # v44: machine-made previews of one company's report ("Home Depot (HD) Reports Next Week: Wall
                                  # Street Expects Earnings Growth", "Earnings Preview: Spire (SR) Q4 Earnings Expected to Decline")
-                                 r"\bearnings preview\b|\breports next week\b|\bearnings expected to (decline|grow|rise|fall)\b|"
+                                 # v70: "Dollar Tree earnings: what to look for from DLTR" (23.11.2026)
+                                 r"\bearnings?:\s*what to (look for|expect|watch)\b|\bearnings preview\b|\breports next week\b|\bearnings expected to (decline|grow|rise|fall)\b|"
                                  r"\bexpected to beat earnings estimates\b|\banalysts estimate\b.*\bto report\b|"
                                  # v47: "Lowe's Companies, Inc. to Host Third Quarter 2026 Earnings Conference Call on Nov. 18",
                                  # "How Investors May Respond To Ross Stores Stock Ahead Of Earnings Growth Expectations",
@@ -152,6 +153,8 @@ LOCAL_RE = re.compile(r"\b(india|indian|russians?|ethiopia|ethiopian|pakistan|pa
 FOREIGN_INDEX_RE = re.compile(r"\b(tsx|canadian (stocks?|shares|markets?|stock market)|sensex|nifty|asx ?200|bovespa|"
                               # v51: "Saudi stocks fell 0.66% as inflation eased to 1.7%" was a sentence of the home page's
                               # summary of 15.11.2026
+                              # v70: "Spanish stocks - Factors to watch on November 23" (a market that moves ours still passes)
+                              r"(spanish|polish|swiss|nordic|czech|hungarian) (stocks?|shares)\b[^.]*\bfactors to watch|"
                               r"tadawul|(saudi|gulf|dubai|abu dhabi|qatari?|kuwaiti?|egyptian) (stocks?|shares|bourses?|markets?|index))\b",
                               re.I)
 # v51: Israel's own price index and home prices are not US market news ("Israel inflation rate drops to 1.1% in October",

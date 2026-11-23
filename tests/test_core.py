@@ -2741,16 +2741,142 @@ def test_public_endpoints_take_only_the_sites_own_values(api, monkeypatch):
             api.get_daily_digest_endpoint(day=bad.isoformat())
 
 
+# ------------------------------------------------------------------ v70: the visitor log (visits.py)
+import datetime as _vdt
+import json as _vjson
+import re as _vre
+import uuid as _vuuid
+
+import visits
+
+
+def _visit_msg(v=None, p=None, n=1, ev=None, **more):
+    d = {"v": v or str(_vuuid.uuid4()), "p": p or str(_vuuid.uuid4()), "n": n, "ago": 60, "w": 50, "src": "google.com", "land": "/he",
+         "dev": "phone", "lang": "he", "reg": 0, "pwa": 0, "tz": "Asia/Jerusalem", "ev": ev if ev is not None else [[0, "screen", "home"]]}
+    d.update(more)
+    return _vjson.dumps(d).encode()
+
+
+def test_visit_message_is_cleaned():
+    v = visits.parse(_visit_msg(ev=[[0, "screen", "home"], [9, "screen", "stock/NVDA"], [5, "hack", "x"], "junk", [1], [2, "share", {"a": 1}],
+                                    [3, "search_none", "a\u0000b\u202e" + "z" * 200]], src="<b>", w=1e99, dev="toaster", tz=5))
+    assert [e[1] for e in v["ev"]] == ["screen", "screen", "share", "search_none"]
+    assert v["ev"][2][2] == "" and len(v["ev"][3][2]) <= 80 and "\u0000" not in v["ev"][3][2]
+    assert v["dev"] == "" and v["tz"] == "" and v["seconds"] <= 12 * 3600
+    for bad in (b"", b"x", b"[]", b"{}", b"\xff", _visit_msg(v="not-an-id"), _visit_msg(ev=[]), _visit_msg(ev="x"),
+                b"[" * 5000, _visit_msg(land="x" * 50000), b'{"event_type":"page_view","session_id":"a"}'):
+        assert visits.parse(bad) is None, bad[:60]
+    assert visits.parse(_visit_msg(w=float("nan")))["seconds"] == 0
+
+
+def test_visit_log_keeps_the_longest_copy_and_its_limits():
+    log, a, p = visits.Log(), str(_vuuid.uuid4()), str(_vuuid.uuid4())
+    two = [[0, "screen", "home"], [8, "view_stock", "KO"]]
+    assert log.add(visits.parse(_visit_msg(a, p)), "IL", "1.1.1.1")
+    assert log.add(visits.parse(_visit_msg(a, p, ev=two)), "US", "1.1.1.1")
+    assert not log.add(visits.parse(_visit_msg(a, p)), "IL", "1.1.1.1")                    # a late, shorter copy
+    assert not log.add(visits.parse(_visit_msg(a, ev=two + [[9, "share", "KO"]])), "", "2.2.2.2")     # somebody else's id
+    assert len(log.waiting[a]["ev"]) == 2 and log.waiting[a]["country"] == "IL"
+    for _ in range(100):
+        log.add(visits.parse(_visit_msg()), "XX", "9.9.9.9")
+    assert len(log.waiting) == 1 + visits.MAX_NEW_PER_IP_HOUR
+    assert log.add(visits.parse(_vjson.dumps({"forget": p}).encode()))
+    assert a not in log.waiting and a not in log.changed and p in log.forget
+    at = lambda m: _vdt.datetime(2026, 11, 23, 10, m, tzinfo=_vdt.timezone.utc)
+    assert log.due(at(3)) and not log.due(at(20)) and not log.due(at(45))
+    # the alert loop looks every 5 minutes: every hour has a look inside the window
+    assert all(any((s + 5 * k) % 60 in visits.FLUSH_MINUTES for k in range(12)) for s in range(60))
+
+
+class _VisitCursor:
+    def __init__(self, fail): self.sql, self.fail = [], fail
+    def execute(self, q, a=None):
+        if self.fail:
+            raise RuntimeError("database down")
+        self.sql.append((q, a))
+
+
+class _VisitConn:
+    def __init__(self, fail=False): self.cur, self.closed, self.done = _VisitCursor(fail), False, False
+    def cursor(self): return self.cur
+    def commit(self): self.done = True
+    def close(self): self.closed = True
+
+
+def test_visit_log_writes_once_and_survives_a_failed_write():
+    log = visits.Log()
+    log.add(visits.parse(_visit_msg()), "IL", "1")
+    bad = _VisitConn(fail=True)
+    with pytest.raises(RuntimeError):
+        log.flush(lambda: bad)
+    assert bad.closed and len(log.changed) == 1 and log.failed == 1
+    good = _VisitConn()
+    assert log.flush(lambda: good) == 1 and good.done and good.closed and not log.changed and log.failed == 0
+    assert sum("INSERT INTO visits " in q for q, _ in good.cur.sql) == 1
+    assert log.flush(lambda: (_ for _ in ()).throw(AssertionError("nothing to write"))) == 0
+    assert len(log.waiting) == 1                 # the next copy of the visit is compared with it
+
+
+def test_visit_row_is_readable_in_neon():
+    now = _vdt.datetime(2026, 11, 23, 12, 0, tzinfo=_vdt.timezone.utc)
+    v = visits.parse(_visit_msg(n=3, w=200, reg=1, src="=HYPERLINK(1)", ev=[[0, "screen", "home"], [2, "section", "scans"],
+                     [40, "screen", "stock/NVDA"], [60, "dd_tab", "fund"], [90, "search_none", "TEVA.TA"], [95, "tap", "switchChart QQQ"], [96, "tap", "newButton x"],
+                     [97, "scroll", "100"], [98, "pick", "setScanFilter rs = 80+"], [99, "link", "reuters.com"], [170, "view_stock", "KO"],
+                     [171, "error", "not loaded"]]), now)
+    assert [s for k, _, s in visits.steps(v) if k == "screen"] == [40, 160]
+    r = dict(zip(visits.COLUMNS, visits.row(dict(v, country="IL", browser="Chrome / Windows", ld=4))))
+    for said in ("לחץ על גרף מדד QQQ", "לחץ על newButton x", "גלל עד הסוף", "בחר מסנן סריקה rs = 80+", "יצא לקישור reuters.com"):
+        assert said in r["steps"], said
+    assert r["last_screen"] == "ניתוח NVDA" and r["load_sec"] == 4 and r["browser"] == "Chrome / Windows"
+    assert visits.browser("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) CriOS/140 Safari/604") == "Chrome / iPhone"
+    assert visits.browser("") == ""
+    assert r["time_il"] == "2026-11-23 13:59" and r["visit_no"] == 3 and r["country"] == "ישראל" and r["device"] == "טלפון"
+    assert r["stocks"] == "NVDA, KO" and r["not_found"] == "TEVA.TA" and r["errors"] == "not loaded" and r["signed_in"] == "כן"
+    assert r["steps"].startswith("דף הבית (0:40) | ראה סריקות | ניתוח NVDA (2:40) | לשונית פונדמנטלס")
+    assert r["duration"] == "3:20" and r["source"] == "HYPERLINK(1)"          # an exported table runs nothing
+    assert v["p"].startswith(r["visitor"]) and r["visitor_id"] == v["p"]
+    long = visits.parse(_visit_msg(ev=[[i, "search_none", f"{i}" + "x" * 50] for i in range(120)]), now)
+    assert len(dict(zip(visits.COLUMNS, visits.row(long)))["steps"]) <= visits.MAX_STEPS_TEXT
+    cur = _VisitCursor(False)
+    visits.ensure_tables(cur)
+    visits.save(cur, v)
+    made = cur.sql[0][0]
+    assert all(_vre.search(rf"\b{c} (TEXT|INTEGER|TIMESTAMPTZ)", made) for c in visits.COLUMNS)
+    assert cur.sql[-1][0].count("%s") == len(cur.sql[-1][1]) == len(visits.COLUMNS)
+
+def test_every_step_the_site_sends_is_known():
+    src = (ROOT / "index.html").read_text(encoding="utf-8")
+    sent = set(_vre.findall(r"\btrack\('([a-z_]+)'", src)) | set(_vre.findall(r"\badd\('([a-z_]+)'", src)) & visits.EVENTS
+    assert {"view_stock", "dd_tab", "digest", "signin"} <= sent
+    assert sent <= visits.EVENTS, sent - visits.EVENTS
+    assert visits.EVENTS - {"screen"} == set(visits.EVENTS_HE)
+    parts = _vre.search(r"const parts = \{(.*?)\};", src, _vre.S).group(1)
+    assert set(_vre.findall(r"(\w+): '", parts)) == set(visits.SECTIONS_HE)
+
+
+def test_key_news_and_headlines_of_23_11(api):
+    import news_links, translation_fixes
+    assert api._KEY_JUNK.search("COMMENTARY: Oil's Iran war recovery masks a stubborn diesel shortage")
+    assert api._KEY_JUNK.search("Watch Fed’s Inflation Fight May Require More Hikes")
+    assert not api._KEY_JUNK.search("S&P 500 correction: Five forces behind the market sell-off")
+    assert news_links.is_unwanted_headline("Spanish stocks - Factors to watch on November 23")
+    assert news_links.is_unwanted_headline("Dollar Tree earnings: what to look for")
+    assert not news_links.is_unwanted_headline("Taiwan stocks rebound after a record weekly plunge as AI selloff eases")
+    out = translation_fixes.prep_en("The S&P 500 closed in correction territory, off 10% from their records.")
+    assert "record highs" in out
+
+
 def test_usage_events_and_health_do_not_touch_the_database(api, monkeypatch):
     def forbidden(*a, **k):
         raise AssertionError("the database was opened")
     monkeypatch.setattr(api, "get_conn", forbidden)
     monkeypatch.setattr(api, "db_cursor", forbidden)
-    api._track_buffer.clear()
-    for i in range(api._TRACK_FLUSH_MAX + 50):
-        api.track_event(api.TrackEvent(event_type="page_view", entity_id=str(i)))
-    assert len(api._track_buffer) == api._TRACK_FLUSH_MAX + 50
-    api._track_buffer.clear()
+    log = visits.Log()
+    monkeypatch.setattr(api.visits, "LOG", log)
+    for i in range(50):
+        log.add(visits.parse(_visit_msg(n=i)), "IL", f"10.0.0.{i}")
+    assert len(log.waiting) == 50
+    assert "/api/visits" not in {getattr(r, "path", "") for r in api.app.routes}      # the log is never served
     assert api.health() == {"status": "ok"}
     assert "/api/ui-strings" not in {getattr(r, "path", "") for r in api.app.routes}
 
