@@ -7783,7 +7783,7 @@ function renderConsentBanner(force){
   d.setAttribute('role','dialog');
   d.setAttribute('aria-label', en ? 'Privacy and cookies' : 'פרטיות ועוגיות');
   d.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:200;background:var(--panel);border-top:1px solid var(--line);padding:12px 16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;font-size:12.5px;color:var(--text);box-shadow:0 -6px 24px var(--shadow);';
-  d.innerHTML = `<span style="max-width:720px;">${en?"To improve the site we would like to record what you do on it (screens, stocks, clicks, searches) and for how long: without your name, email or IP address, under a random identifier, deleted after 90 days.":"כדי לשפר את האתר נשמח לרשום מה עשית בו (מסכים, מניות, לחיצות, חיפושים) וכמה זמן: בלי שם, מייל או כתובת IP, תחת מזהה אקראי, ונמחק אחרי 90 יום."} <a href="#" onclick="openLegal('privacy');return false;" style="color:var(--teal);">${en?'Privacy policy':'מדיניות פרטיות'}</a></span>
+  d.innerHTML = `<span style="max-width:720px;">${en?"We would like to collect information about how the site is used, in order to improve it.":"נשמח לאסוף מידע על השימוש באתר כדי לשפר אותו."} <a href="#" onclick="openLegal('privacy');return false;" style="color:var(--teal);">${en?'Privacy policy':'מדיניות פרטיות'}</a></span>
     <button onclick="setConsent('yes')" style="background:var(--amber);color:var(--on-amber);border:none;border-radius:8px;padding:7px 16px;font-weight:700;cursor:pointer;">${en?'Allow':'אישור'}</button>
     <button onclick="setConsent('no')" style="background:transparent;color:var(--text-dim);border:1px solid var(--line);border-radius:8px;padding:7px 16px;cursor:pointer;">${en?'Decline':'סירוב'}</button>`;
   document.body.appendChild(d);

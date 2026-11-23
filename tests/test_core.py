@@ -2784,6 +2784,8 @@ def test_visit_log_keeps_the_longest_copy_and_its_limits():
     assert a not in log.waiting and a not in log.changed and p in log.forget
     at = lambda m: _vdt.datetime(2026, 11, 23, 10, m, tzinfo=_vdt.timezone.utc)
     assert log.due(at(3)) and not log.due(at(20)) and not log.due(at(45))
+    half = lambda d, h: log.due(_vdt.datetime(2026, 11, d, h, 33, tzinfo=_vdt.timezone.utc))
+    assert half(23, 18) and not half(22, 18) and not half(23, 3)       # Monday 13:33 New York; Sunday; the night
     # the alert loop looks every 5 minutes: every hour has a look inside the window
     assert all(any((s + 5 * k) % 60 in visits.FLUSH_MINUTES for k in range(12)) for s in range(60))
 
@@ -2811,7 +2813,7 @@ def test_visit_log_writes_once_and_survives_a_failed_write():
         log.flush(lambda: bad)
     assert bad.closed and len(log.changed) == 1 and log.failed == 1
     good = _VisitConn()
-    assert log.flush(lambda: good) == 1 and good.done and good.closed and not log.changed and log.failed == 0
+    assert log.flush(lambda: good) == 1 and good.done and good.closed and not log.changed and log.failed == 0 and log.state()["written"] == 1
     assert sum("INSERT INTO visits " in q for q, _ in good.cur.sql) == 1
     assert log.flush(lambda: (_ for _ in ()).throw(AssertionError("nothing to write"))) == 0
     assert len(log.waiting) == 1                 # the next copy of the visit is compared with it

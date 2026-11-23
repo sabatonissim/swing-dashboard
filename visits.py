@@ -6,8 +6,8 @@ How it works:
   - the browser (index.html, "visitor log") keeps the steps of the visit and sends the WHOLE visit so far, again and again
     (POST /api/track). Only people who allowed it in the banner; a random id, no name, no email, no IP address.
   - here it waits in memory, the newest copy of each visit. The database gets ONE ROW PER VISIT in the table `visits`, in plain
-    Hebrew, written only in the first minutes of an hour, when the news job has the database awake anyway, and only if somebody
-    visited. Nothing in the site reads it.
+    Hebrew, written only in the first minutes of an hour (and of a half hour on working days), when the news job has the database
+    awake anyway, only if somebody visited, and once more when the server goes down (every upload to GitHub restarts it). Nothing in the site reads it.
   - moving to a domain: nothing here changes (only ALLOWED_ORIGINS in Render, which the whole site needs anyway).
 
 Numbers (docs/HISTORY.md 27.3 v70): 20 visits a day = ~40 KB; 500 = ~1 MB; kept 90 days, at most MAX_ROWS rows (~20 MB
@@ -30,7 +30,8 @@ MAX_WAITING = 1_000            # visits in memory between two writes
 MAX_NEW_PER_DAY = 2_000        # new visits accepted in one day (UTC): nobody can fill the database from outside
 MAX_NEW_PER_IP_HOUR = 30       # (the address is only in memory, for this count; it is never stored)
 FLUSH_MINUTES = range(1, 9)    # the news job starts at hh:00 and wakes the database; it sleeps ~5 minutes after the last query
-IL = ZoneInfo("Asia/Jerusalem")
+HALF_MINUTES = range(31, 39)   # ...and at hh:30 on working days, 06:00-20:00 New York (scheduler.py: news, quick, insider)
+IL, ET = ZoneInfo("Asia/Jerusalem"), ZoneInfo("America/New_York")
 
 # the steps the site sends (index.html, track()); anything else is dropped
 EVENTS = {"screen", "view_stock", "view_macro", "search_stock", "search_none", "watchlist_add", "compare_stock", "trade_saved",
@@ -111,6 +112,7 @@ class Log:
         self.day, self.new_today = None, 0
         self.ip_hour, self.ip_new = None, Counter()
         self.flushed_at = 0.0
+        self.written, self.last_write = 0, None      # since the server started
         self.failed = 0                # writes that failed in a row (/api/data-health -> live.visits)
 
     def add(self, visit: dict | None, country: str = "", ip: str = "", now: datetime = None, ua: str = "") -> bool:
@@ -152,7 +154,14 @@ class Log:
 
     def due(self, now: datetime = None) -> bool:
         now = now or datetime.now(timezone.utc)
-        return bool(self.changed or self.forget) and now.minute in FLUSH_MINUTES and time.time() - self.flushed_at > 1800
+        et = now.astimezone(ET)
+        awake = now.minute in FLUSH_MINUTES or (now.minute in HALF_MINUTES and et.weekday() < 5 and 6 <= et.hour < 20)
+        return bool(self.changed or self.forget) and awake and time.time() - self.flushed_at > 1200
+
+    def state(self) -> dict:
+        """For /api/data-health: numbers only."""
+        return {"status": "warn" if self.failed >= 2 else "ok", "failed_writes": self.failed, "waiting": len(self.changed),
+                "written": self.written, "last_write": self.last_write}
 
     def flush(self, connect) -> int:
         """Writes what changed. connect() -> a database connection. A failed write keeps everything for the next time."""
@@ -177,6 +186,8 @@ class Log:
         finally:
             conn.close()
         self.failed = 0
+        self.written += len(rows)
+        self.last_write = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self.lock:
             for r in rows:
                 if self.waiting.get(r["v"]) == r:          # changed again meanwhile = stays for the next write

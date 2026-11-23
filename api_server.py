@@ -29,6 +29,7 @@ CORS: only the origins in ALLOWED_ORIGINS (see below).
 """
 
 import functools
+import atexit
 import json
 import math
 import os
@@ -2072,7 +2073,7 @@ def get_data_health():
             "personal_db_today_mb": round(_personal_db_mb_today(), 2), "personal_db_budget_mb": PERSONAL_DB_BUDGET_MB,
             # v62: what this server saw today (memory, no database) — not part of `status`, which is the morning report's
             "live": {"stock_news": stock_news_health(),
-                      "visits": {"status": "warn" if visits.LOG.failed >= 2 else "ok", "failed_writes": visits.LOG.failed}},
+                      "visits": visits.LOG.state()},
             "status": rows[0]["status"], "results": rows[0]["results"],
             "recent": [{"day": r["day"].isoformat(), "status": r["status"]} for r in rows]}
 
@@ -6127,7 +6128,7 @@ def _macro_alert_loop():
         except Exception as e:  # noqa: BLE001
             print(f"[morning brief] check failed: {type(e).__name__}: {e}")
         try:
-            if visits.LOG.due():              # v70: hh:01-hh:08 only, when the news job has the database awake
+            if visits.LOG.due():              # v70: only in minutes when the news job has the database awake
                 visits.LOG.flush(get_conn)
         except Exception as e:  # noqa: BLE001
             print(f"[visits] write failed: {type(e).__name__}: {e}")
@@ -8205,3 +8206,14 @@ async def track_visit(request: Request):
         visits.LOG.add(visits.parse(await request.body()), request.headers.get("cf-ipcountry") or "", _client_ip(request),
                        ua=request.headers.get("user-agent") or "")
     return Response(status_code=204)
+
+
+@atexit.register
+def _write_waiting_visits():
+    """Every upload to GitHub restarts the server: what still waits in memory is written first."""
+    if visits.LOG.changed or visits.LOG.forget:
+        try:
+            db_meter.set_source("server alerts")
+            visits.LOG.flush(get_conn)
+        except Exception as e:  # noqa: BLE001 — never holds up a restart
+            print(f"[visits] write at shutdown failed: {type(e).__name__}: {e}")
