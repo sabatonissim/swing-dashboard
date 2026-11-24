@@ -1,7 +1,8 @@
 {
   "trailingSlash": false,
   "functions": {
-    "api/page.js": { "includeFiles": "index.html" }
+    "api/page.js": { "includeFiles": "index.html" },
+    "api/ratings.js": { "regions": ["fra1"] }
   },
   "rewrites": [
     { "source": "/stock/:ticker", "destination": "/api/page?kind=stock&lang=en&ticker=:ticker" },
