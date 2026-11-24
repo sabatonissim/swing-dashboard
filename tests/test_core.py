@@ -3441,3 +3441,71 @@ def test_v73_ratings_through_vercel(monkeypatch):
     assert [len(c) for c in calls[:3]] == [20, 20, 6] and max(len(c) for c in calls) <= ar.VERCEL_BATCH
     assert rows[0]["to_grade"] == "Buy" and rows[0]["pt_now"] == 250.0 and stats["newest"].year == 2026
     assert ar._variants()[-1][0] == ar.VERCEL and "yfinance" == ar._variants()[0][0]
+
+
+def test_v74_guidance_compared_with_the_same_thing():
+    """24.11.2026 on the site: ZM "next quarter's EPS +63%" (a wrong saved consensus) and J "revenue -35%" (net against gross)."""
+    import copy
+    import datetime as _dt
+    import data_health as dh
+    import earnings_guidance as eg
+    item = lambda metric, period, q, est, lo, hi, quote: {
+        "metric": metric, "period": period, "quarter": q, "fiscal_year": 2027, "est": est, "low": lo, "high": hi, "basis": "adjusted",
+        "quote": quote, "change": None, "vs_pct": round(((lo + hi) / 2 / est - 1) * 100, 2)}
+    zm = [item("revenue", "quarter", 4, 1297465330.0, 1.293e9, 1.298e9, "Total revenue is expected to be between $1.293 billion and $1.298 billion"),
+          item("eps", "quarter", 4, 0.9559, 1.55, 1.57, "Non-GAAP diluted EPS is expected to be between $1.55 and $1.57"),
+          item("eps", "year", None, 6.1362, 6.24, 6.25, "Non-GAAP diluted EPS is expected to be between $6.24 and $6.25")]
+    before = copy.deepcopy(zm)
+    got = eg.fair_comparisons(zm)
+    assert zm == before                                                  # the stored row is not changed
+    assert got[1]["est"] is None and got[1]["vs_pct"] is None and got[1]["unfair"].endswith("(+63%)") and got[1]["low"] == 1.55
+    assert got[0]["vs_pct"] == -0.15 and got[2]["vs_pct"] == 1.77 and eg.fair_comparisons(got) == got
+    # Jacobs: net revenue against all revenue; its EPS stays
+    j = [item("revenue", "year", None, 15651434390.0, 10.0e9, 10.35e9, "adjusted net revenue to range from $10.0B to $10.35B"),
+         item("eps", "year", None, 8.2369, 8.05, 8.45, "adjusted EPS to range from $8.05 to $8.45")]
+    got = eg.fair_comparisons(j)
+    assert got[0]["est"] is None and "another revenue measure" in got[0]["unfair"] and got[1]["vs_pct"] is not None
+    # "net revenue" that IS the consensus's measure, a large real gap in plain revenue, and a real gap that the year shares: all stay
+    ok = [item("revenue", "quarter", 1, 1.0e9, 1.02e9, 1.04e9, "net revenues of $1.02 - $1.04 billion"),
+          item("revenue", "year", None, 5.0e9, 7.0e9, 7.2e9, "revenue of $7.0 - $7.2 billion"),
+          item("eps", "quarter", 4, 1.00, 1.50, 1.60, "EPS of $1.50 to $1.60"), item("eps", "year", None, 4.00, 4.50, 4.60, "EPS of $4.50 to $4.60")]
+    assert eg.fair_comparisons(ok) == ok
+    # an early quarter up 30% with the year unchanged can be real; a quarter alone has nothing to be checked against
+    early = [item("eps", "quarter", 1, 1.00, 1.30, 1.30, "EPS of $1.30"), item("eps", "year", None, 4.00, 4.00, 4.00, "EPS of $4.00")]
+    assert eg.fair_comparisons(early) == early and eg.fair_comparisons(before[1:2]) == before[1:2]
+    assert eg.fair_comparisons(None) == [] and eg.fair_comparisons([{"metric": "revenue_growth", "vs_pct": None, "est": None}])
+    # ... on every save
+    s = eg.with_estimates(copy.deepcopy(zm), {"est_nq_eps": 0.9559, "est_nq_rev": 1297465330.0, "est_fy0_eps": 6.1362, "fy_end": _dt.date(2027, 1, 31)})
+    assert [x["vs_pct"] is None for x in s] == [False, True, False]
+
+    class Cur:
+        def execute(self, *a): pass
+        def fetchone(self): return {"ok": True}
+        def fetchall(self): return [{"ticker": "ZM", "status": "found", "items": before}]
+    line = dh.check_guidance(Cur(), _dt.datetime(2026, 11, 24, 12, 30, tzinfo=_dt.timezone.utc))[0]
+    assert line["status"] == "ok" and "comparison not shown: ZM eps" in line["detail"]
+
+
+def test_v74_headlines_of_24_11():
+    import news_links as nl
+    import translation_fixes as tf
+    for t in ("Earnings Calendar for:", "Primary Health Properties (LSE:PHP) Stock Looks Reasonably Priced On Current Earnings",
+              "Westpac (ASX: WBC) profit rises as rates stay high"):
+        assert nl.is_unwanted_headline(t), t
+    for t in ("BP (LSE:BP) (NYSE:BP) shares jump after earnings", "ASE Technology (NYSE: ASX) jumps 21% on AI demand",
+              "Chip, AI stocks retreat after record-breaking rally on Huang's return", "Stocks are priced for perfection before earnings season"):
+        assert not nl.is_unwanted_headline(t), t
+    p = tf.prep_en
+    assert p("ECB’s Simkus Says It’s ‘Prudent’ to Hike as Inflation Broadens").endswith("to raise interest rates as Inflation Broadens")
+    assert "to raise interest rates again" in p("Fed is ready to hike again, Williams says")
+    for same in ("Fed officials see firms ready to hike prices", "Thousands to hike in Yosemite as parks reopen", "Fed hikes rates by a quarter point"):
+        assert "to raise interest rates" not in p(same), same
+    assert p("AI market whipsaw puts Kevin Warsh's rate-hike strategy to the test").startswith("AI market volatility puts")
+    assert p("Chip, AI stocks retreat").lower().startswith("chip and ai stocks")
+    assert "rally led by Nvidia" in p("US Stock Futures Mixed After Nvidia-Led Rally as Investors Assess").replace("Rally", "rally")
+    assert "comes in below forecasts" in p("core measure undershoots forecasts")
+    for bad, good in (("סימקוס של ה-ECB אומר שזה 'שפוי' לעלות עם התרחבות האינפלציה", "'נבון' להעלות את הריבית עם"),
+                      ("צ'יפ, מניות בינה מלאכותית נסוגות", "מניות שבבים ובינה מלאכותית נסוגות"),
+                      ("מעורבים לאחר עליית Nvidia-Led כאשר", "לאחר עלייה בהובלת Nvidia כאשר"),
+                      ("שוט שוק AI מעמיד את", "תנודתיות בשוק ה-AI מעמידה את")):
+        assert good in tf.fix_he(bad) and tf.fix_he(tf.fix_he(bad)) == tf.fix_he(bad)

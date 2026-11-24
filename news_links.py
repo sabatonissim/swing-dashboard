@@ -122,7 +122,9 @@ _FORMAT_JUNK_RE = re.compile(r"^\s*(watch|video|listen|podcast)\s*[:\-\u2013\u20
                              r"\bstock price, news, quote\b|,? and more\s*$|\btop [\w ]{0,20}headlines at \d|"
                              # v51 (live feed 15.11.2026): a photo caption and a readers' poll as headlines ("FILE PHOTO: The
                              # Federal Reserve Board building is seen in Washington", "SA Asks: What are the most attractive ...")
-                             r"^\s*file photo\b|^\s*(?:photos?|pictures?)\s*:|^\s*sa asks\b", re.I)
+                             r"^\s*file photo\b|^\s*(?:photos?|pictures?)\s*:|^\s*sa asks\b|"
+                             # v74 (24.11.2026): "Earnings Calendar for:" was the headline of the earnings news of the day
+                             r"^\s*earnings calendar\b", re.I)
 # v37: machine-made pages about one company's report: 1,029 of the 1,564 headlines of 5.11.2026 were tagged as earnings, most
 # of them these. The stock's own page finds its company's news separately (_feed_clean with promo_only).
 EARNINGS_CHATTER_RE = re.compile(r":\s*(fiscal\s+)?q[1-4]\s+earnings snapshot\s*$|\bearnings call (highlights|transcript|is live)\b|"
@@ -136,7 +138,13 @@ EARNINGS_CHATTER_RE = re.compile(r":\s*(fiscal\s+)?q[1-4]\s+earnings snapshot\s*
                                  # "How Investors May Respond To Ross Stores Stock Ahead Of Earnings Growth Expectations",
                                  # "How Earnings Beat Will Impact Cloudflare Stock Investors", "(BOBS) Could Be 7% Undervalued As ..."
                                  r"\bto host\b.*\bearnings (conference )?call\b|\bhow investors may respond\b|"
-                                 r"\bhow earnings beat will impact\b|\bcould be \d+% (under|over)valued\b", re.I)
+                                 r"\bhow earnings beat will impact\b|\bcould be \d+% (under|over)valued\b|"
+                                 # v74: "Primary Health Properties (LSE:PHP) Stock Looks Reasonably Priced On Current Earnings"
+                                 r"\b(?:stock|shares?)\s+(?:looks?|seems?|appears?|is|are)\s+(?:reasonably|fairly|fully|attractively)\s+(?:priced|valued)\b",
+                                 re.I)
+# v74: a page about one company listed on another country's exchange ("(LSE:PHP)"); one that is listed in the US too stays.
+_FOREIGN_LISTING_RE = re.compile(r"\((?:LSE|LON|AIM|ASX|TSX|TSXV|CVE|NSE|BSE|SGX|KLSE|HKG|SEHK|JSE|EPA|ETR|AMS|TSE|TADAWUL)\s?:\s?[A-Z0-9.&-]+\)")
+_US_LISTING_RE = re.compile(r"\b(?:NYSE|NASDAQ|AMEX|NYSEARCA)\b", re.I)
 # Countries whose domestic news rarely moves US stocks — dropped unless the headline also ties it to the US / world markets
 # v37: also the adjectives. "Philippine Inflation Surges to 7.8%" passed and made the overview of a day the S&P 500 fell 4.36%.
 LOCAL_RE = re.compile(r"\b(india|indian|russians?|ethiopia|ethiopian|pakistan|pakistani|nigeria|nigerian|kenya|kenyan|bangladesh|"
@@ -182,6 +190,8 @@ def is_unwanted_headline(title: str) -> bool:
     if not t or PROMO_RE.search(t) or _FORMAT_JUNK_RE.search(t) or EARNINGS_CHATTER_RE.search(t) or FOREIGN_INDEX_RE.search(t):
         return True
     if PERSONAL_RE.search(t) or (_ISRAEL_LOCAL_RE.search(t) and not GLOBAL_RE.search(t)):
+        return True
+    if _FOREIGN_LISTING_RE.search(t) and not _US_LISTING_RE.search(t):
         return True
     if len(t.split()) < 5 and not _SUBSTANCE_RE.search(t):
         return True

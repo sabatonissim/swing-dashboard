@@ -7898,8 +7898,9 @@ def get_earnings_guidance(day: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"))
         cur.execute("""SELECT ticker, status, items, attempts FROM earnings_guidance
                        WHERE report_date = %s AND status IS NOT NULL""", (day,))
         rows = cur.fetchall()
+    from earnings_guidance import fair_comparisons      # v74: rows saved before it carry comparisons that are not like with like
     return {"day": day, "guidance": {
-        r["ticker"]: {"status": r["status"], "items": r["items"] or [],
+        r["ticker"]: {"status": r["status"], "items": fair_comparisons(r["items"]),
                       "final": r["status"] != "failed" or (r["attempts"] or 0) >= _GUIDANCE_MAX_ATTEMPTS}
         for r in rows}}
 

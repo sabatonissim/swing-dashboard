@@ -386,11 +386,15 @@ def check_guidance(cur, now: datetime) -> List[dict]:
     rows = cur.fetchall()
     if not rows:
         return [_line("earnings.guidance", "info", f"no reports on {day}")]
+    from earnings_guidance import fair_comparisons
+    rows = [dict(r, items=fair_comparisons(r["items"])) for r in rows]
+    hidden = [f"{r['ticker']} {x['metric']}: {x['unfair']}" for r in rows for x in r["items"] if x.get("unfair")]
     odd = guidance_problems(rows)
     found = sum(1 for r in rows if r["status"] == "found")
     none = sum(1 for r in rows if r["status"] == "none")
     return [_line("earnings.guidance", "warn" if odd else "ok",
-                  f"{day}: {len(rows)} reports, {found} with guidance, {none} without" + (f"; {'; '.join(odd)}" if odd else ""), len(odd))]
+                  f"{day}: {len(rows)} reports, {found} with guidance, {none} without" + (f"; {'; '.join(odd)}" if odd else "")
+                  + (f"; comparison not shown: {', '.join(hidden[:8])}" if hidden else ""), len(odd))]
 
 
 def check_market_caps(cur) -> List[dict]:

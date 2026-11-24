@@ -107,6 +107,20 @@ EN_REWRITES = [
     (r"\b(morgan|goldman(?: sachs)?|citi(?:group)?|barclays|ubs|bofa|traders|markets|investors|wall street)\s+price(?:s|d)?\s+in\b",
      r"\1 now expect"),
     (r"\b(interest rate (?:hike|cut)s?|rate (?:hike|cut)s?)\s+call\b", r"\1 forecast"),
+    # v74 (24.11.2026; each checked against clients5 from home):
+    # "ECB's Simkus Says It's 'Prudent' to Hike as Inflation Broadens" -> "'שפוי' לעלות". A central bank's hike with nothing
+    # after it that is hiked; "to hike prices" stays.
+    (r"^(?=.*\b(?:fed|fomc|ecb|boe|boj|boc|rba|rbnz|central banks?)\b)(.*?)\bto hike\b"
+     r"(?=\s*$|\s*[,.;:]|\s+(?:as|after|again|in|by|if|before|until|amid|further|once|twice|when|while)\b)", r"\1to raise interest rates"),
+    # "AI market whipsaw puts ..." -> "שוט שוק AI"
+    (r"\bmarket whipsaw\b", "market volatility"),
+    # "Chip, AI stocks retreat" -> "צ'יפ, מניות בינה מלאכותית"
+    (r"\bchip, (AI|tech|software|memory) (stocks|shares)\b", r"chip and \1 \2"),
+    # "Nvidia-Led Rally" -> "עליית Nvidia-Led"
+    (r"\b([A-Z][\w&.]+)-led (rally|rebound|sell-?off|surge|slump|decline|gains|drop)\b", r"\2 led by \1"),
+    # "undershoots forecasts" -> "מטה את התחזיות"
+    (r"\bundershoots?\s+(forecasts|expectations|estimates)\b", r"comes in below \1"),
+    (r"\bovershoots?\s+(forecasts|expectations|estimates)\b", r"comes in above \1"),
 ]
 
 HE_FIXES = [
@@ -167,6 +181,10 @@ HE_FIXES = [
     ("מזהיר מפני שביתות חדשות", "מזהיר מפני תקיפות חדשות"), ("מסלול שבועי של", "ירידה שבועית של"),
     # v68 (key events 22.11.2026): "Oil Posts Third Weekly Drop" -> "הנפט מפרסם ירידה"
     ("מפרסם ירידה", "רושם ירידה"), ("מפרסמת ירידה", "רושמת ירידה"), ("מפרסמים ירידה", "רושמים ירידה"),
+    # v74 (24.11.2026): rows saved before the EN_REWRITES of the same day
+    ("'שפוי' לעלות", "'נבון' להעלות את הריבית"), ("צ'יפ, מניות בינה מלאכותית", "מניות שבבים ובינה מלאכותית"),
+    ("שוט שוק AI מעמיד", "תנודתיות בשוק ה-AI מעמידה"), ("עליית Nvidia-Led", "עלייה בהובלת Nvidia"),
+    ("מטה את התחזיות", "נמוך מהתחזיות"),
     ("מפרסם הפסד", "רושם הפסד"), ("מפרסמת הפסד", "רושמת הפסד"), ("מפרסם עלייה", "רושם עלייה"), ("מפרסמת עלייה", "רושמת עלייה"),
 ]
 

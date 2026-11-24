@@ -275,7 +275,45 @@ def with_estimates(items: list, est: dict) -> list:
         it["est"] = round(float(e), 4) if e is not None else None
         mid = (it["low"] + it["high"]) / 2
         it["vs_pct"] = round((mid / e - 1) * 100, 2) if e is not None and e > 0 else None
-    return items
+    return fair_comparisons(items)
+
+
+OWN_MEASURE_PCT = 15             # v74: "net revenue" / "adjusted revenue" further than this from the consensus = not the same measure
+ODD_QUARTER_PCT = {4: 15}        # the fourth quarter is the rest of the year, so its check is exact; the others:
+ODD_QUARTER_DEFAULT_PCT = 40
+_OWN_REVENUE = re.compile(r"\badjusted\b|\bnet revenues?\b|\brevenues?,? (?:net|less|excluding)\b|\bex-tac\b", re.I)
+
+
+def _eps_gap(it):
+    return (it["low"] + it["high"]) / 2 - it["est"]
+
+
+def fair_comparisons(items: list) -> list:
+    """v74 (24.11.2026): the figures stay, a comparison that is not like with like goes (est and vs_pct None, "unfair" = why).
+    * Revenue: Jacobs gave "adjusted net revenue" of $10.0-10.35B, the consensus is of all revenue, $15.65B: shown as -35%.
+    * A quarter's EPS: Zoom, the saved consensus for the last quarter was 0.956 (Yahoo: 1.55 the next day), shown as +63%, while
+      the whole year was +1.8%. What a quarter adds to the consensus, the year must add too: when the year's figure of the same
+      fiscal year moved by less than half of it, the quarter's consensus is the wrong number.
+    Called on every save, and by the server and data_health.py on rows saved before."""
+    out = [dict(x) for x in (items or [])]
+    years = {x.get("fiscal_year"): x for x in out
+             if x.get("period") == "year" and x.get("metric") == "eps" and x.get("est") is not None and x.get("vs_pct") is not None}
+    for x in out:
+        vs = x.get("vs_pct")
+        if vs is None or x.get("est") is None:
+            continue
+        why = None
+        if x.get("metric") == "revenue" and abs(vs) > OWN_MEASURE_PCT and _OWN_REVENUE.search(x.get("quote") or ""):
+            why = "another revenue measure"
+        elif x.get("metric") == "eps" and x.get("period") == "quarter":
+            y = years.get(x.get("fiscal_year"))
+            if y and abs(vs) > ODD_QUARTER_PCT.get(x.get("quarter"), ODD_QUARTER_DEFAULT_PCT):
+                q_gap, y_gap = _eps_gap(x), _eps_gap(y)
+                if y_gap / q_gap < 0.5:            # the other direction counts as well (negative)
+                    why = "the consensus does not fit the year's"
+        if why:
+            x["est"], x["vs_pct"], x["unfair"] = None, None, f"{why} ({vs:+.0f}%)"
+    return out
 
 
 # ---------------------------------------------------------------- the work
