@@ -117,7 +117,27 @@ EN_REWRITES = [
     # "Chip, AI stocks retreat" -> "צ'יפ, מניות בינה מלאכותית"
     (r"\bchip, (AI|tech|software|memory) (stocks|shares)\b", r"chip and \1 \2"),
     # "Nvidia-Led Rally" -> "עליית Nvidia-Led"
-    (r"\b([A-Z][\w&.]+)-led (rally|rebound|sell-?off|surge|slump|decline|gains|drop)\b", r"\2 led by \1"),
+    # v76: also -fueled / -sparked; with the theme before "rally" ("Nvidia-fueled AI rally fades" -> "עצירת AI", "AI rally" -> "עצרת")
+    (r"\b([A-Z][\w&.]+)-(?:led|fuell?ed|sparked|driven) (AI|chip|tech|technology|memory|software) rally\b", r"\1-driven surge in \2 stocks"),
+    (r"\b(?:(?:the|an?)\s+)?(?<!-)(AI|chip|tech|memory|software) rally\b(?=\s+(?:fades?|cools?|stalls?|slows?|loses|continues?|extends?|broadens?|"
+     r"resumes?|pauses?|falters?|ends?)\b|\s*$)", r"the surge in \1 stocks"),
+    (r"\b([A-Z][\w&.]+)-(?:led|fuell?ed|sparked) (rally|rebound|sell-?off|surge|slump|decline|gains|drop)\b", r"\2 led by \1"),
+    # v76 (24.11.2026; each checked against clients5 from home): "Chip Stocks" in capitals -> "מניות צ'יפ" ("chip stocks" is right)
+    (r"\bchip stocks\b", "chip stocks"),
+    (r"\bwall st\b\.?(?!\w)", "Wall Street"),
+    # "Germany Eyes EU Sanctions" -> "גרמניה מבטלת סנקציות" (the opposite); "Apple eyes $5 trillion"
+    (r"(?<=\w )(?<!all )(?<!his )(?<!her )(?<!their )eyes (?=\$|\d)", "aims for "),
+    (r"(?<=[a-z] )(?<!all )(?<!his )(?<!her )(?<!their )(?<!s' )eyes (?!on\b|of\b|and\b|are\b|were\b|turn|as\b|to\b|for\b|in\b|wide\b|open|\$|\d)", "considers "),
+    # "bargain buying" -> "קניית מציאה"; "margin pressure" -> "לחץ שולי"; "US inflation data awaited" -> "נתוני האינפלציה ממתינים"
+    (r"\bbargain[- ](?:buying|hunting)\b", "buying at low prices"),
+    (r"\bmargin pressures?\b", "pressure on profit margins"),
+    (r"[;,]\s*((?:US |U\.S\. |key )?(?:inflation|jobs|cpi|pce|ppi|gdp|payrolls) (?:data|report|reading)) awaited\b", r"; markets await \1"),
+    # "Bond Market's Go-To Trade ... Roiled by Stocks Retreat" -> "סחר האג"ח ... שנובע מנסיגה"
+    (r"\bgo-to trade for\b", "popular trade on"),
+    (r"\broiled by stocks? retreat\b", "hurt by fall in stocks"),
+    # "Asian stocks rally as" -> "מתגברות"; "Dollar Tree rallies on Q3 results" -> "מתגבר על תוצאות"
+    (r"\b(stocks|shares|futures|equities|markets) rally\b(?=\s+(?:as|after|on|amid)\b)", r"\1 climb"),
+    (r"\brallies\b(?=\s+(?:on|after|as|amid)\b|\s+\d)", "jumps"),
     # "undershoots forecasts" -> "מטה את התחזיות"
     (r"\bundershoots?\s+(forecasts|expectations|estimates)\b", r"comes in below \1"),
     (r"\bovershoots?\s+(forecasts|expectations|estimates)\b", r"comes in above \1"),
@@ -185,6 +205,14 @@ HE_FIXES = [
     ("'שפוי' לעלות", "'נבון' להעלות את הריבית"), ("צ'יפ, מניות בינה מלאכותית", "מניות שבבים ובינה מלאכותית"),
     ("שוט שוק AI מעמיד", "תנודתיות בשוק ה-AI מעמידה"), ("עליית Nvidia-Led", "עלייה בהובלת Nvidia"),
     ("מטה את התחזיות", "נמוך מהתחזיות"),
+    # v76 (24.11.2026): rows saved before the EN_REWRITES of the same day
+    ("למניות צ'יפ", "למניות השבבים"), ("מניות צ'יפ", "מניות השבבים"), ("Wall St נפתח נמוך", "וול סטריט נפתחת נמוך"), ("על Wall St", "בוול סטריט"),
+    ("כאשר עצירת AI מבוססת Nvidia דועכת", "כאשר הזינוק במניות ה-AI בהובלת Nvidia דועך"), ("לאחר עצרת מונעת על ידי Nvidia", "לאחר עלייה בהובלת Nvidia"),
+    ("גרמניה מבטלת סנקציות של האיחוד האירופי", "גרמניה שוקלת סנקציות של האיחוד האירופי"), ("בקניית מציאה", "בקנייה במחירים נמוכים"),
+    ("לחץ שולי על", "לחץ על שולי הרווח על"), ("קפצה על הכאה ברבעון השלישי", "קפצה בעקבות תוצאות טובות מהצפוי ברבעון השלישי"),
+    ("נתוני האינפלציה בארה\"ב ממתינים", "השווקים ממתינים לנתוני האינפלציה בארה\"ב"), ("מניית של אנתרופיק", "מניית אנתרופיק"),
+    ("סחר האג\"ח של שוק האג\"ח להעלאות הפד שנובע מנסיגה במניות", "הפוזיציה הפופולרית בשוק האג\"ח על העלאות ריבית נפגעה מירידת המניות"),
+    ("תפקידו הפוטנציאלי של קווין וורש בפד", "מדיניות הפד בראשות קווין וורש"),
     ("מפרסם הפסד", "רושם הפסד"), ("מפרסמת הפסד", "רושמת הפסד"), ("מפרסם עלייה", "רושם עלייה"), ("מפרסמת עלייה", "רושמת עלייה"),
 ]
 

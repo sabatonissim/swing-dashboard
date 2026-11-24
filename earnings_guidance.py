@@ -112,6 +112,8 @@ Rules:
 - quote: copy the exact words of the text that hold the figures (at most 300 characters), character for character.
 - change: only when the text itself says this guidance was raised, lowered or reaffirmed / maintained; otherwise null.
 - basis: "adjusted" for non-GAAP / adjusted / core figures, "gaap" when the text says GAAP, otherwise null.
+- period: from the heading the figure stands under. A release often gives the year first and then, under "Fourth Quarter
+  Outlook" / "Quarter Ending", the quarter: each figure belongs to the last heading above it.
 - fiscal_year: the company's own fiscal year of that period ("fiscal 2027", "FY27" -> 2027; "fourth quarter of 2026" -> 2026).
 - No such guidance in the text: {"guidance":[]}"""
 
@@ -211,6 +213,8 @@ def _check_item(it: dict, src: str, ref: dict, report_date: date):
                 b = base * (1 if period == "quarter" else 4)
                 if abs(lo - b) > max(1.5 * abs(b), 0.5 if period == "quarter" else 2.0):
                     return f"EPS guidance {lo} does not fit (this quarter's consensus {base})"
+                if period == "year" and base >= 0.2 and 0 < hi < base and not _says_year(quote):       # v76 (DY)
+                    return f"EPS {lo}-{hi} for a year is below this one quarter's consensus {base}: the quote is a quarter's forecast"
     change = it.get("change")
     words = {"raised": r"rais|increas|lift|boost|improv|upgrad|higher",
              "lowered": r"lower|reduc|cut\b|decreas|trim",
@@ -288,6 +292,25 @@ def _eps_gap(it):
     return (it["low"] + it["high"]) / 2 - it["est"]
 
 
+# v76 (24.11.2026): Dycom's "Fourth Quarter Outlook ... Diluted EPS $2.48 to $2.78" was read as the whole year and shown as -84.6%.
+# A year's EPS below half of the year's consensus, or below the single quarter just reported, whose words do not name a year, is a
+# quarter's figure: not shown at all (the period itself is wrong, not only the comparison).
+YEAR_EPS_MIN_SHARE = 0.5
+_NAMES_A_YEAR = re.compile(r"\byears?\b|\bannual|\bfy\s?'?\d{2}|\bfiscal\s+(?:20)?\d{2}\b(?!\s+(?:first|second|third|fourth|q[1-4]))|\b12 months\b", re.I)
+_NAMES_A_QUARTER = re.compile(r"\bquarter|\bq[1-4]\b|\bthree months\b", re.I)
+
+
+def _says_year(quote) -> bool:
+    return bool(_NAMES_A_YEAR.search(quote or "")) and not _NAMES_A_QUARTER.search(quote or "")
+
+
+def is_quarter_as_year(it: dict) -> bool:
+    """A saved EPS figure marked as the year that can only be a quarter's (see above)."""
+    if it.get("metric") != "eps" or it.get("period") != "year" or not it.get("est") or it["est"] < 0.2 or _says_year(it.get("quote")):
+        return False
+    return 0 < (it["low"] + it["high"]) / 2 < YEAR_EPS_MIN_SHARE * it["est"]
+
+
 def fair_comparisons(items: list) -> list:
     """v74 (24.11.2026): the figures stay, a comparison that is not like with like goes (est and vs_pct None, "unfair" = why).
     * Revenue: Jacobs gave "adjusted net revenue" of $10.0-10.35B, the consensus is of all revenue, $15.65B: shown as -35%.
@@ -295,8 +318,8 @@ def fair_comparisons(items: list) -> list:
       the whole year was +1.8%. What a quarter adds to the consensus, the year must add too: when the year's figure of the same
       fiscal year moved by less than half of it, the quarter's consensus is the wrong number.
     Called on every save, and by the server and data_health.py on rows saved before."""
-    out = [dict(x) for x in (items or [])]
-    years = {x.get("fiscal_year"): x for x in out
+    out = [dict(x) for x in (items or []) if not is_quarter_as_year(x)]
+    years ={x.get("fiscal_year"): x for x in out
              if x.get("period") == "year" and x.get("metric") == "eps" and x.get("est") is not None and x.get("vs_pct") is not None}
     for x in out:
         vs = x.get("vs_pct")

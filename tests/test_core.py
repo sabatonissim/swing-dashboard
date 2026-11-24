@@ -3577,3 +3577,116 @@ def test_v75_health_eps_splits():
     assert dh.check_eps_splits(Cur([{"ticker": "A", "ratio": 0.1}]))[0]["status"] == "info"
     line = dh.check_eps_splits(Cur([{"ticker": f"T{i}", "ratio": 0.1} for i in range(9)]))[0]
     assert line["status"] == "warn" and "T0 (0.10x)" in line["detail"]
+
+
+def test_v76_a_quarter_read_as_the_year():
+    """Dycom, 24.11.2026: "Fourth Quarter Outlook ... EPS $2.48 to $2.78" was shown as the year, -84.6% from the consensus."""
+    import datetime as _dt
+    import data_health as dh
+    import earnings_guidance as eg
+    quote = "Non-GAAP Adjusted Diluted EPS (excluding amortization expense) $2.48 to $2.78"
+    item = lambda lo, hi, est, q: {"metric": "eps", "period": "year", "quarter": None, "fiscal_year": 2027, "est": est, "low": lo, "high": hi,
+                                   "basis": "adjusted", "quote": q, "change": None, "vs_pct": round(((lo + hi) / 2 / est - 1) * 100, 2)}
+    rev = {"metric": "revenue", "period": "year", "quarter": None, "fiscal_year": 2027, "est": 7591255740.0, "low": 7.66e9, "high": 7.73e9,
+           "basis": None, "quote": "Contract revenues $7.66 billion to $7.73 billion", "change": None, "vs_pct": 1.37}
+    dy = [rev, item(2.48, 2.78, 17.077, quote)]
+    assert eg.fair_comparisons(dy) == [rev] and len(dy) == 2
+    # the words name a year: a real (bad) forecast stays; so does an ordinary gap, and a tiny or missing consensus
+    for keep in (item(2.48, 2.78, 17.077, "full-year adjusted EPS of $2.48 to $2.78"), item(8.0, 8.2, 10.0, quote), item(0.05, 0.07, 0.15, quote),
+                 dict(item(2.48, 2.78, 17.077, quote), est=None, vs_pct=None)):
+        assert eg.fair_comparisons([keep]) == [keep], keep
+    assert eg._says_year("Adjusted EPS for fiscal 2027 of $3") and eg._says_year("FY27 EPS $3") and not eg._says_year("fiscal 2027 fourth quarter EPS $3")
+    # when it is read: below the single quarter just reported
+    text = "Outlook: the Company expects the following. Quarter Ending January 30, 2027 " + quote
+    it = {"period": "year", "fiscal_year": 2027, "metric": "eps", "basis": "adjusted", "low": "2.48", "high": "2.78", "unit": "dollars", "quote": quote}
+    ref = {"eps_estimate": 4.57, "revenue_estimate": 1.945e9}
+    got = eg._check_item(it, eg._norm(text), ref, _dt.date(2026, 11, 24))
+    assert isinstance(got, str) and "quarter's forecast" in got
+    assert isinstance(eg._check_item(dict(it, period="quarter", quarter=4), eg._norm(text), ref, _dt.date(2026, 11, 24)), dict)
+    assert isinstance(eg._check_item(it, eg._norm(text), {"eps_estimate": 0.7}, _dt.date(2026, 11, 24)), dict)
+
+    class Cur:
+        def execute(self, *a): pass
+        def fetchone(self): return {"ok": True}
+        def fetchall(self): return [{"ticker": "DY", "status": "found", "items": dy}]
+    line = dh.check_guidance(Cur(), _dt.datetime(2026, 11, 25, 12, 30, tzinfo=_dt.timezone.utc))[0]
+    assert line["status"] == "ok" and "DY eps: a quarter's figure read as the year (-85%)" in line["detail"]
+
+
+def test_v76_postponed_report(scanner, monkeypatch):
+    """VEEV stood on 19.11.2026 with no filing and no results, Yahoo had 3.12: tagged "3 trading days after a report"."""
+    import datetime as _dt
+    d = lambda n, m=11: _dt.date(2026, m, n)
+    keys = {("VEEV", d(19)), ("DONE", d(19)), ("SEC", d(19)), ("NEXTQ", d(19)), ("NOYAHOO", d(19)), ("TODAY", d(24)), ("SAME", d(19))}
+    nxt = {"VEEV": d(3, 12), "DONE": d(3, 12), "SEC": d(3, 12), "NEXTQ": _dt.date(2027, 2, 18), "TODAY": d(3, 12), "SAME": d(19)}
+    got = scanner.postponed_reports(keys, nxt, {("DONE", d(19)), ("SEC", d(19))}, d(24))
+    assert got == {("VEEV", d(19))} and scanner.postponed_reports(keys, {}, set(), d(24)) == set()
+    sql = []
+
+    class Cur:
+        def execute(self, q, p=None): sql.append((" ".join(q.split()), p))
+        def fetchall(self): return [("ADI", d(24), "bmo")]
+        def close(self): pass
+    scanner._drop_postponed(Cur(), got)
+    assert len(sql) == 1 and sql[0][1] == ("VEEV", d(19)) and "eps_actual IS NULL AND revenue_actual IS NULL" in sql[0][0] and "<> 'sec'" in sql[0][0]
+    scanner._drop_postponed(Cur(), set())
+    assert len(sql) == 1
+
+    class Conn:
+        def cursor(self): return Cur()
+        def close(self): pass
+    monkeypatch.setattr(scanner, "get_conn", lambda: Conn())
+    assert scanner.recent_reports() == {"ADI": (d(24), "bmo")}
+    assert "report_date >= CURRENT_DATE - 1 OR eps_actual IS NOT NULL OR revenue_actual IS NOT NULL OR session_source = 'sec'" in sql[-1][0]
+
+
+def test_v76_digest_of_24_11():
+    import json as _json
+    import ai_digest as d
+    assert d._own_guess("Kevin Warsh's potential Fed role is cited", "AI boom looms over Warsh's Fed") == "potential Fed role"
+    assert d._own_guess("his potential Fed role", "Markets weigh potential Fed role for X") is None
+    assert d._own_guess("The Fed chair said rates may rise", "") is None
+    assert d._no_dates("Trump backed it and U.S. stocks surged. the rest fell") == "Trump backed it and U.S. stocks surged. The rest fell"
+    assert d._no_dates("On 2026-11-10 stocks rose").startswith("Stocks rose") or d._no_dates("On 2026-11-10 stocks rose")[0].isupper()
+    en = {"overview": "Dollar Tree jumped on a Q3 beat.", "topics": []}
+    he = lambda t: _json.dumps({"overview": t, "topics": []}, ensure_ascii=False)
+    with pytest.raises(ValueError, match="above the forecast"):
+        d.clean_hebrew(he("Dollar Tree קפצה על הכאה ברבעון 3."), en)
+    assert d.clean_hebrew(he("Dollar Tree קפצה אחרי תוצאות טובות מהצפוי ברבעון 3."), en)
+
+
+def test_v76_headlines_of_24_11_evening():
+    import news_links as nl
+    import translation_fixes as tf
+    for t in ("Medtronic (MDT) Q2 Earnings: Taking a Look at Key Metrics Versus Estimates", "Dycom Industries (DY) Reports Q3 Earnings: What Key Metrics Have to Say",
+              "Globe Life (GL) Stock Could Be Undervalued On Its Earnings Strength", "After Earnings Beat, Can Dollar Tree Make You Some Cash?",
+              "Are Utilities Stocks Lagging WEC Energy Group (WEC) This Year?", "Is MediaAlpha (MAX) Outperforming Other Business Services Stocks This Year?",
+              "Agilent Q4 Earnings Call Maps Out Growth From Lab Upgrades", "Perimeter Medical Imaging AI Q3 GAAP EPS of $0.02, revenue of $0.6M",
+              "Germany Eyes EU Sanctions to Bar Russia From Hockey Championship", "Could Russia-Ukraine war threaten Libya’s fragile reunification process?",
+              "Brazil's tax revenue extends record run in October, buoyed by higher oil prices",
+              "IREN Fell 42% This Month: This Wall Street Pro Maintains That 440% Returns Are Coming",
+              "Rate Hike Risks and PCE Loom Over QQQ as Options Volatility Stays Elevated | Options Market Statistics"):
+        assert nl.is_unwanted_headline(t), t
+    for t in ("Dell Non-GAAP EPS of $2.59 beats by $0.10, revenue of $27.0B", "Is the Fed lagging behind inflation?", "Tech stocks are outperforming the S&P 500 this year",
+              "Libya oil output falls as field shuts down", "US sanctions Russian oil tankers", "Nvidia earnings call shakes chip stocks",
+              "Snowflake adjusted EPS of $0.30, revenue of $1.2B", "Why Are Oil Prices Falling to 3-Month Lows?"):
+        assert not nl.is_unwanted_headline(t), t
+    strip = nl.strip_outlet_suffix
+    assert strip("Trump Tariffs Return: WSJ - NVIDIA (NASDAQ:NVDA) - Benzinga", "Benzinga") == "Trump Tariffs Return: WSJ"
+    assert strip("Trump Tariffs Return: WSJ - NVIDIA (NASDAQ:NVDA)", "Benzinga") == "Trump Tariffs Return: WSJ"
+    assert strip("Nvidia (NASDAQ:NVDA) jumps 5%", "Benzinga") == "Nvidia (NASDAQ:NVDA) jumps 5%"
+    p = tf.prep_en
+    assert p("Wall St opens lower as Nvidia-fueled AI rally fades") == "Wall Street opens lower as Nvidia-driven surge in AI stocks fades"
+    assert p("Wall Street falls as the AI rally fades") == "Wall Street falls as the surge in AI stocks fades"
+    assert p("Chip Stocks Just Had Their Fourth-Best Day") == "chip stocks Just Had Their Fourth-Best Day"
+    assert p("Stocks Slide as Tech Stocks Partly Reverse Nvidia-Sparked Rally").endswith("Rally led by Nvidia")
+    assert "considers EU Sanctions" in p("Germany Eyes EU Sanctions to Bar Russia") and "aims for $5 trillion" in p("Apple eyes $5 trillion value")
+    for same in ("All eyes on Nvidia earnings", "Wall Street's eyes turn to the Fed", "Investors keep their eyes open", "Trump rallies support for tariffs"):
+        assert p(same) == same, same
+    assert "pressure on profit margins" in p("HPE faces margin pressure amid strong AI demand")
+    assert p("Gold gains on bargain buying; US inflation data awaited") == "Gold gains on buying at low prices; markets await US inflation data"
+    assert p("Asian stocks rally as Huang's return revives hopes").startswith("Asian stocks climb as") and "jumps on Q3" in p("Dell rallies on Q3 results")
+    for bad, good in (("למניות צ'יפ היה היום הרביעי הטוב ביותר", "למניות השבבים היה"), ("גרמניה מבטלת סנקציות של האיחוד האירופי", "שוקלת"),
+                      ("לחץ שולי על רקע", "לחץ על שולי הרווח על רקע"), ("Wall St נפתח נמוך יותר", "וול סטריט נפתחת נמוך יותר"),
+                      ("מניית של אנתרופיק יורדת", "מניית אנתרופיק יורדת"), ("נתוני האינפלציה בארה\"ב ממתינים", "השווקים ממתינים לנתוני האינפלציה")):
+        assert good in tf.fix_he(bad) and tf.fix_he(tf.fix_he(bad)) == tf.fix_he(bad), bad

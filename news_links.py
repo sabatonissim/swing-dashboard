@@ -92,7 +92,9 @@ PROMO_RE = re.compile(r"\b(stocks? to (buy|watch|own|bet on)|to bet on|should yo
                       r"ai-picked|we told you first|strong buy stocks?|blast off|"
                       # v44 (live feed 10.11.2026): "As Crude Oil Prices Retreat, Sell Soybean Oil Now" \u2014 advice, not news
                       r"(buy|sell|short)\s+(?:[\w&'-]+\s+){1,4}now(?!\s+that)|buying opportunity|"
-                      r"screaming buys?)\b"       # "Tech Sell-Off: Two AI Stocks That Are Screaming Buys Right Now" (11.11.2026)
+                      # v76 (24.11.2026): "This Wall Street Pro Maintains That 440% Returns Are Coming", "Can Dollar Tree Make You Some Cash?"
+                      r"wall street pro|make you (?:some |a lot of )?(?:cash|money|rich)|"
+                      r"screaming buys?)\b"      # "Tech Sell-Off: Two AI Stocks That Are Screaming Buys Right Now" (11.11.2026)
                       r"|^\s*(?:top\s+)?\d+\s+[\w\s&'-]{0,40}\bstocks?\b"
                       # v51 (live feed 15.11.2026): "Bank of America names 5 bullish stocks amid market fears"
                       r"|\b(?:names?|named|picks?|lists?|reveals?|highlights?)\s+\d+\s+(?:[\w&'-]+\s+){0,3}stocks?\b"
@@ -124,7 +126,9 @@ _FORMAT_JUNK_RE = re.compile(r"^\s*(watch|video|listen|podcast)\s*[:\-\u2013\u20
                              # Federal Reserve Board building is seen in Washington", "SA Asks: What are the most attractive ...")
                              r"^\s*file photo\b|^\s*(?:photos?|pictures?)\s*:|^\s*sa asks\b|"
                              # v74 (24.11.2026): "Earnings Calendar for:" was the headline of the earnings news of the day
-                             r"^\s*earnings calendar\b", re.I)
+                             r"^\s*earnings calendar\b|"
+                             # v76: "... Stays Elevated | Options Market Statistics"
+                             r"\|\s*options market statistics\b", re.I)
 # v37: machine-made pages about one company's report: 1,029 of the 1,564 headlines of 5.11.2026 were tagged as earnings, most
 # of them these. The stock's own page finds its company's news separately (_feed_clean with promo_only).
 EARNINGS_CHATTER_RE = re.compile(r":\s*(fiscal\s+)?q[1-4]\s+earnings snapshot\s*$|\bearnings call (highlights|transcript|is live)\b|"
@@ -140,7 +144,16 @@ EARNINGS_CHATTER_RE = re.compile(r":\s*(fiscal\s+)?q[1-4]\s+earnings snapshot\s*
                                  r"\bto host\b.*\bearnings (conference )?call\b|\bhow investors may respond\b|"
                                  r"\bhow earnings beat will impact\b|\bcould be \d+% (under|over)valued\b|"
                                  # v74: "Primary Health Properties (LSE:PHP) Stock Looks Reasonably Priced On Current Earnings"
-                                 r"\b(?:stock|shares?)\s+(?:looks?|seems?|appears?|is|are)\s+(?:reasonably|fairly|fully|attractively)\s+(?:priced|valued)\b",
+                                 r"\b(?:stock|shares?)\s+(?:looks?|seems?|appears?|is|are)\s+(?:reasonably|fairly|fully|attractively)\s+(?:priced|valued)\b|"
+                                 # v76: seven of the twelve headlines of 24.11.2026 18:00 were Zacks templates on Yahoo: "Titan Machinery
+                                 # (TITN) Q3 Earnings: Taking a Look at Key Metrics Versus Estimates", "... What Key Metrics Have to Say",
+                                 # "Are Utilities Stocks Lagging WEC Energy Group (WEC) This Year?", "Globe Life (GL) Stock Could Be
+                                 # Undervalued On Its Earnings Strength", "Agilent Q4 Earnings Call Maps Out Growth From Lab Upgrades"
+                                 r"\bkey metrics\b.*\b(?:estimates|have to say|tell|compare)\b|"
+                                 r"^\s*(?:is|are|has|have)\b.+\b(?:lagg(?:ing|ed)|outperform(?:ing|ed)|outpac(?:ing|ed))\b.+\bthis year\s*\?|"
+                                 r"\b(?:stock|shares?)\s+could be\s+(?:under|over)valued\b|\bearnings call (?:maps out|signals|points to|shows)\b|"
+                                 # a company with a few million dollars of sales ("Perimeter Medical Imaging AI Q3 GAAP EPS of $0.02, revenue of $0.6M")
+                                 r"\beps of -?\$[\d.]+.*\brevenue of \$\d{1,2}(?:\.\d+)?M\b",
                                  re.I)
 # v74: a page about one company listed on another country's exchange ("(LSE:PHP)"); one that is listed in the US too stays.
 _FOREIGN_LISTING_RE = re.compile(r"\((?:LSE|LON|AIM|ASX|TSX|TSXV|CVE|NSE|BSE|SGX|KLSE|HKG|SEHK|JSE|EPA|ETR|AMS|TSE|TADAWUL)\s?:\s?[A-Z0-9.&-]+\)")
@@ -155,6 +168,7 @@ LOCAL_RE = re.compile(r"\b(india|indian|russians?|ethiopia|ethiopian|pakistan|pa
                       r"brazil|brazilian|poland|polish|turkey|turkish|hungary|hungarian|czech|romania|romanian|chile|chilean|"
                       # v47: "Moldova to fully join EU sanctions against Russia and Belarus", "Irish annual CPI inflation rises to 4.3%"
                       r"moldova|moldovan|belarus|belarusian|cuba|cuban|serbia|serbian|bulgaria|bulgarian|ireland|irish|"
+                      r"libya|libyan|"          # v76: "Could Russia-Ukraine war threaten Libya's fragile reunification process?"
                       r"turkmenistan|azerbaijan|kazakhstan|uzbekistan|lebanon|lebanese)\b", re.I)
 # v44: another country's own stock index is not US market news even when the headline names the US as the reason
 # ("Canadian stock market today: TSX futures drift higher in critical US inflation test")
@@ -180,7 +194,10 @@ _SANCTIONS_RE = re.compile(r"\bsanction(s|ed|ing)?\b", re.I)
 _SANCTIONS_SUBJECT_RE = re.compile(r"\bU\.?S\.?\b|(?i:\b(america|american|trump|treasury|washington|white house|congress|"
                                    r"ofac|russia|russian|iran|iranian|china|chinese|venezuela|north korea|oil|crude|"
                                    r"energy|gas|tankers?|banks?|chips?|exports?)\b)")
-_LOCAL_MARKET_RE = re.compile(r"\b(stocks?|markets?|shares)\b", re.I)
+# v76: "Germany Eyes EU Sanctions to Bar Russia From Hockey Championship"; "Brazil's tax revenue ... buoyed by higher oil prices"
+_SPORTS_RE = re.compile(r"\b(hockey|soccer|football|olympics?|olympic games|world cup|championships?)\b", re.I)
+_LOCAL_TAX_RE = re.compile(r"\btax (?:revenues?|receipts|collections?)\b", re.I)
+_LOCAL_MARKET_RE =re.compile(r"\b(stocks?|markets?|shares)\b", re.I)
 _SUBSTANCE_RE = re.compile(r"\d|%|\$|\b(stocks?|shares|markets?|fed|rates?|earnings|oil|gold|bitcoin|economy)\b", re.I)
 
 
@@ -195,7 +212,9 @@ def is_unwanted_headline(title: str) -> bool:
         return True
     if len(t.split()) < 5 and not _SUBSTANCE_RE.search(t):
         return True
-    if _SANCTIONS_RE.search(t) and not _SANCTIONS_SUBJECT_RE.search(t):
+    if _SANCTIONS_RE.search(t) and (not _SANCTIONS_SUBJECT_RE.search(t) or _SPORTS_RE.search(t)):
+        return True
+    if LOCAL_RE.search(t) and _LOCAL_TAX_RE.search(t):
         return True
     return bool(LOCAL_RE.search(t)) and not GLOBAL_RE.search(t) and not _LOCAL_MARKET_RE.search(t)
 
@@ -336,7 +355,14 @@ def clean_publisher(name: str) -> str:
 
 def strip_outlet_suffix(title: str, publisher: str) -> str:
     """A title without a trailing " - <outlet name>" (Google News adds it; long outlet names escaped the old 40-char rule)."""
-    title = (title or "").strip()
+    return _TICKER_TAIL_RE.sub("", _without_outlet((title or "").strip(), publisher))
+
+
+# v76, Benzinga: "Trump Tariffs Return, China Could Be Hit Hardest: WSJ - NVIDIA (NASDAQ:NVDA)"
+_TICKER_TAIL_RE = re.compile(r"(?<=\S)\s+-\s+[^-]{2,60}\((?:NASDAQ|NYSE|AMEX|ARCA|OTC)\s?:\s?[A-Z.]{1,6}\)\s*$")
+
+
+def _without_outlet(title: str, publisher: str) -> str:
     for name in {(publisher or "").strip(), clean_publisher(publisher)}:
         if name and title.endswith(" - " + name):
             return title[: -len(" - " + name)].strip()

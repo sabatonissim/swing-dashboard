@@ -460,6 +460,7 @@ STRICT RULES:
 - The numbers say what happened; do not let a headline contradict them. Headlines saved today can tell yesterday's move: if a headline says oil tumbled and the numbers say oil rose today, that is yesterday's story, so do not tell it as today's.
 - One story per topic: do not attach an unrelated story (a central bank's decision does not belong in a topic about Asian stocks). "(N outlets)" = how many outlets ran that story; many outlets usually means it matters, and the items come most important first.
 - Never explain a number yourself. A reason comes only from an item. Do not write "suggests", "possibly", "reflecting", "investors sought" or "investors fled" of your own.
+- The chair of the Fed is Kevin Warsh. Write a person's office as the items do; never "potential", "possible" or "nominee" unless an item says it.
 - Keep who did what exactly as the item says. "The Magnificent 7 lost $1 trillion" is not "Nvidia lost $1 trillion".
 - The overview tells what happened: the main move and 2 or 3 of the most important numbers (how many stocks fell, which group led). The reason does NOT go in the overview: it goes in "why", which the site shows right after it. The site shows all the numbers next to it, so do not list them, and do not write index levels or dates.
 - "why" is ONE plain sentence that answers "why did the market move like this?" with the reason the items give, saying who did or said what. Example: "Chip stocks fell after Anthropic's first days of trading disappointed AI investors, and a Fed governor said rates may have to rise to bring inflation down." If the items give two reasons, give both. If no item explains the move, write exactly: "The news does not give a clear reason for the move." Never your own guess, and never "despite" or "as" to tie two stories that no item ties. "why_items" = the numbers of the items it comes from. Empty "why" (and why_items) on an ordinary day.
@@ -491,6 +492,8 @@ Keep the same fields and the same number of topics; an empty field stays empty. 
 _ADVICE = re.compile(r"\b(you should|we recommend|recommend(?:ed|s)? (?:to )?(?:buy|sell)|should (?:buy|sell|hold)|time to (?:buy|sell)|buy now|sell now)\b", re.I)
 # v37b, seen in the first real answer (5.11.2026): "suggested investors were not fleeing to bonds, possibly reflecting inflation concerns"
 _OWN_GUESS = re.compile(r"\b(suggest(?:s|ed|ing)?|possibly|perhaps|reflect(?:s|ed|ing)?|risk-off|risk-on|(?:investors?|traders?) (?:sought|fled|fleeing|rushed|were|are)|"
+                        # v76, 24.11.2026: "Kevin Warsh's potential Fed role" under headlines that said "Warsh's Fed"
+                        r"(?:potential|possible|prospective|future)\s+(?:[\w']+\s+){0,2}(?:role|chair\w*|nominee|nomination|candidate|appointment)|"
                         r"sought (?:safety|shelter|refuge)|"     # v67: 20.11.2026 "yields fell ... as traders sought safety"
                         r"profit[- ]taking|rotation|breadth was|reacted|relief|safe[- ]haven|across (?:all )?sectors)\b", re.I)
 # v37c: more than one of these in a topic = a list of the market numbers the site shows anyway, not a story
@@ -872,7 +875,8 @@ def _no_dates(text):
     """v40e: the dates the model copies from the MARKET part, out. 10.11.2026: "On 2026-11-10 the US stock market had not opened
     yet" lost only the date ("On the US stock market had not opened yet"), and the Hebrew followed it."""
     text = _ISO_DATE.sub("", str(text or "")).strip()
-    return re.sub(r"(^|[.!?]\s+)([a-z])", lambda m: m.group(1) + m.group(2).upper(), text)
+    # v76: not after "U.S." ("and U.S. Stocks surged", 24.11.2026)
+    return re.sub(r"(^|(?<![A-Z])[.!?]\s+)([a-z])", lambda m: m.group(1) + m.group(2).upper(), text)
 
 
 def _shorter(text, limit):
@@ -1171,6 +1175,9 @@ def clean_hebrew(text, en):
             raise ValueError(f"the field '{field}' says 'תיקון' for a rebound. Write 'התאוששות'")
         if re.search(r"\b(rout|sell-?off)", en_text or "", re.I) and re.search(r"(?<![א-ת])[הבלמ]?מסלול(?![א-ת])", he):
             raise ValueError(f"the field '{field}' says 'מסלול' for a rout. Write 'גל מכירות' or 'ירידה חדה'")
+        # v76, 24.11.2026: "jumped on a Q3 beat" -> "קפצה על הכאה ברבעון השלישי"
+        if re.search(r"\bbeat", en_text or "", re.I) and re.search(r"(?<![א-ת])[בל]?הכאה(?![א-ת])", he):
+            raise ValueError(f"the field '{field}' says 'הכאה' for results above the forecast. Write 'תוצאות טובות מהצפוי'")
     out["overview"] = fix_he(_GLUED_HE.sub(r"\1 ", out["overview"]))
     for t in out["topics"]:
         for k in t:

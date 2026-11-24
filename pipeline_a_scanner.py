@@ -349,12 +349,16 @@ POST_REPORT_SURGE_DAYS = 4        # reaction day among the last 5 bars (0-4 days
 
 
 def recent_reports() -> Dict[str, tuple]:
-    """{ticker: (report_date, session)} — each stock's latest report of the last 12 days, from the stored calendar."""
+    """{ticker: (report_date, session)} — each stock's latest report of the last 12 days, from the stored calendar.
+    v76: only a report that really came: it has results, or the SEC confirmed its time (today's and yesterday's may still wait
+    for theirs). VEEV, listed on 19.11.2026 and not reporting before December, was tagged "3 trading days after a report"."""
     try:
         conn = get_conn()
         cur = conn.cursor()
         cur.execute("""SELECT DISTINCT ON (ticker) ticker, report_date, session FROM earnings_calendar
                        WHERE report_date BETWEEN CURRENT_DATE - 12 AND CURRENT_DATE
+                         AND (report_date >= CURRENT_DATE - 1 OR eps_actual IS NOT NULL OR revenue_actual IS NOT NULL
+                              OR session_source = 'sec')
                        ORDER BY ticker, report_date DESC""")
         out = {t: (d, s) for t, d, s in cur.fetchall()}
         cur.close()
@@ -3278,6 +3282,26 @@ def moved_reports(rows, listed_keys, stored_keys):
             if t in new_day and t not in twice and d != new_day[t] and (t, d) not in listed_keys and source != "sec"]
 
 
+# v76: the new day can be further than the week this table covers. Nasdaq still listed VEEV on 19.11.2026 five days later, with no
+# filing and no results; Yahoo had 3.12. A past day with neither results nor an SEC time, when Yahoo's next date is this close, is
+# the same report postponed (a real next quarter is ~90 days away).
+POSTPONED_MAX_DAYS = 45
+
+
+def postponed_reports(keys, yahoo_next, proven, today):
+    """The (ticker, day) keys to leave out. yahoo_next = {ticker: Yahoo's report date}, proven = keys with results or an SEC time."""
+    return {(t, d) for t, d in keys if d < today and (t, d) not in proven and yahoo_next.get(t) and yahoo_next[t] > today
+            and (yahoo_next[t] - d).days <= POSTPONED_MAX_DAYS}
+
+
+def _drop_postponed(cur, postponed):
+    for t, d in sorted(postponed):
+        cur.execute("""DELETE FROM earnings_calendar WHERE ticker = %s AND report_date = %s AND eps_actual IS NULL
+                       AND revenue_actual IS NULL AND COALESCE(session_source, '') <> 'sec'""", (t, d))
+    if postponed:
+        print("[info] earnings calendar: not reported yet, a later date is known: " + ", ".join(f"{t} {d}" for t, d in sorted(postponed)))
+
+
 def _drop_moved_reports(cur, listed_keys, stored_keys, window_start, window_end):
     cur.execute("SELECT ticker, report_date, session_source FROM earnings_calendar WHERE report_date BETWEEN %s AND %s",
                 (window_start.isoformat(), window_end.isoformat()))
@@ -3300,12 +3324,13 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
     window_start = today - timedelta(days=EARNINGS_CALENDAR_WINDOW_PAST_DAYS)
     window_end = today + timedelta(days=EARNINGS_CALENDAR_WINDOW_FUTURE_DAYS)
 
-    in_window = []
+    in_window, yahoo_next = [], {}
     for ticker, mcap, ts in earnings_candidates:
         try:
             dt_utc = datetime.fromtimestamp(ts, tz=timezone.utc)
         except Exception:
             continue
+        yahoo_next[ticker] = dt_utc.date()
         if window_start <= dt_utc.date() <= window_end:
             in_window.append((ticker, mcap or 0, dt_utc))
 
@@ -3360,6 +3385,7 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
         # v27: rows that need no Yahoo call this run — both results in, or (before the report) both estimates in
         complete = {(row[0], row[1]) for row in chk_rows if row[2] and row[4]}
         estimated = {(row[0], row[1]) for row in chk_rows if row[3] and row[5]}
+        proven = {(row[0], row[1]) for row in chk_rows if row[2] or row[4]}          # v76
         # v68: the days and times the SEC filings confirmed (confirm_earnings_times); Nasdaq still lists the old day
         cur_chk.execute("""SELECT ticker, listed_date, real_date, session FROM earnings_time_fix
                            WHERE real_date IS NOT NULL AND listed_date BETWEEN %s AND %s""",
@@ -3373,6 +3399,7 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
         stored_rev_est = {}
         complete, estimated = set(), set()
         time_fixes = {}
+        chk_rows, proven, yahoo_next = [], set(), {}         # results unknown: nothing is called postponed
 
     def _fixed(r):
         fix = time_fixes.get((r[0], r[2].date()))
@@ -3384,6 +3411,10 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
     sec_keys = {(k[0], v[0]) for k, v in time_fixes.items()}
     top = list({(r[0], r[2].date()): r for r in map(_fixed, top)}.values())
     in_window = [_fixed(r) for r in in_window]
+    postponed = postponed_reports({(r[0], r[2].date()) for r in top + in_window} | {(row[0], row[1]) for row in chk_rows},
+                                  yahoo_next, proven | sec_keys, today)
+    top = [r for r in top if (r[0], r[2].date()) not in postponed]
+    in_window = [r for r in in_window if (r[0], r[2].date()) not in postponed]
 
     protected = [r for r in in_window if r[0] in already_reported and r[0] not in top_tickers]
     if protected:
@@ -3479,6 +3510,7 @@ def update_earnings_calendar(earnings_candidates: List[tuple]):
         if real != listed:
             cur.execute("DELETE FROM earnings_calendar WHERE ticker = %s AND report_date = %s AND COALESCE(session_source, '') <> 'sec'",
                         (t, listed))
+    _drop_postponed(cur, postponed)
     _drop_moved_reports(cur, {(r[0], r[2].date()) for r in in_window}, {(r[0], r[2].date()) for r in enriched},
                         window_start, window_end)
     # Revenue surprise is always derived from what is NOW stored (pre-report
