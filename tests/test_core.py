@@ -3655,6 +3655,34 @@ def test_v76_digest_of_24_11():
     assert d.clean_hebrew(he("Dollar Tree קפצה אחרי תוצאות טובות מהצפוי ברבעון 3."), en)
 
 
+def test_v76b_the_forecast_is_not_the_result(scanner):
+    """DELL, 24.11.2026: the site showed EPS 8.40, its forecast for the next quarter; the result was 9.45. Text of the real release."""
+    import datetime as _dt
+    import data_health as dh
+    p = scanner._parse_press_release_eps
+    summary = ("Third-Quarter Summary • Record revenue of $54.9 billion, up 103% year over year • Record diluted earnings per share (EPS) of $8.82, "
+               "up 287% year over year, and record non-GAAP diluted EPS of $9.45, up 265% • Record third-quarter cash flow. ")
+    table = ("Guidance Summary (in billions, except percentages and per share amounts) Fourth-Quarter Guidance Q4FY27 (% Y/Y) Revenue $ 56.3 69 % "
+             "GAAP diluted EPS $ 7.90 134 % Non-GAAP diluted EPS $ 8.40 116 % Full-Year Guidance FY27 Previous")
+    assert p(summary + table, 6.59) is None                    # the result is too far from the estimate: blank until Yahoo has it
+    assert p(table, 6.59) is None                              # a guidance table alone
+    assert p(summary + table, 9.0) == 9.45                     # the result fits: taken
+    assert p("Third-Quarter Results (in millions) Revenue $ 56.3 69 % Non-GAAP diluted EPS $ 8.40 116 %", 6.59) == 8.40
+    assert p("Company Raises Guidance. Third Quarter Highlights: Non-GAAP EPS $ 2.10, up 4%", 2.0) == 2.10
+
+    class Cur:
+        def __init__(self, rel): self.rel = rel
+        def execute(self, *a): pass
+        def fetchone(self): return {"ok": True}
+        def fetchall(self):
+            return [{"ticker": "DELL", "status": "found", "eps_actual": 8.4, "rel": self.rel,
+                     "items": [{"metric": "eps", "period": "quarter", "quarter": 4, "fiscal_year": 2027, "low": 8.4, "high": 8.4, "est": 6.7424, "vs_pct": 24.58, "quote": "x"}]}]
+    now = _dt.datetime(2026, 11, 25, 12, 30, tzinfo=_dt.timezone.utc)
+    line = dh.check_guidance(Cur(True), now)[0]
+    assert line["status"] == "warn" and "equals the forecast" in line["detail"] and "DELL" in line["detail"]
+    assert dh.check_guidance(Cur(False), now)[0]["status"] == "ok"
+
+
 def test_v76_headlines_of_24_11_evening():
     import news_links as nl
     import translation_fixes as tf
@@ -3681,6 +3709,13 @@ def test_v76_headlines_of_24_11_evening():
     assert p("Chip Stocks Just Had Their Fourth-Best Day") == "chip stocks Just Had Their Fourth-Best Day"
     assert p("Stocks Slide as Tech Stocks Partly Reverse Nvidia-Sparked Rally").endswith("Rally led by Nvidia")
     assert "considers EU Sanctions" in p("Germany Eyes EU Sanctions to Bar Russia") and "aims for $5 trillion" in p("Apple eyes $5 trillion value")
+    for t in ("Even After Big Gains, Insiders Are Loading Up on These 5 Stocks", "These 4 Utility Stocks Pay Dividends While AI Drives Demand",
+              "Salesforce (CRM) Stock Looks Cheap With Earnings In Focus", "Macy's Thanksgiving Day Parade balloon inflation 2026: How to watch"):
+        assert nl.is_unwanted_headline(t), t
+    assert not nl.is_unwanted_headline("GoodRx Holdings Non-GAAP EPS of $0.10 beats by $0.02, revenue of $218.4M beats by $16.31M")
+    assert p("GoodRx EPS of $0.10 beats by $0.02, revenue of $218.4M misses by $16.31M") == (
+        "GoodRx EPS of $0.10 is $0.02 above estimates, revenue of $218.4M is $16.31M below estimates")
+    assert "Open short positions in" in p("Open Short Interest Positions in Nasdaq Stocks") and p("interest rates rise") == "interest rates rise"
     for same in ("All eyes on Nvidia earnings", "Wall Street's eyes turn to the Fed", "Investors keep their eyes open", "Trump rallies support for tariffs"):
         assert p(same) == same, same
     assert "pressure on profit margins" in p("HPE faces margin pressure amid strong AI demand")

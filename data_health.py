@@ -380,7 +380,7 @@ def check_guidance(cur, now: datetime) -> List[dict]:
     cur.execute("SELECT to_regclass('earnings_guidance') IS NOT NULL AS ok")
     if not cur.fetchone()["ok"]:
         return [_line("earnings.guidance", "info", "no table yet (earnings_guidance.py: from its first run)")]
-    cur.execute("""SELECT c.ticker, g.status, g.items FROM earnings_calendar c
+    cur.execute("""SELECT c.ticker, g.status, g.items, c.eps_actual, COALESCE(c.eps_from_release, FALSE) AS rel FROM earnings_calendar c
                    LEFT JOIN earnings_guidance g USING (ticker, report_date)
                    WHERE c.report_date = %s AND (c.eps_actual IS NOT NULL OR c.revenue_actual IS NOT NULL)""", (day,))
     rows = cur.fetchall()
@@ -392,6 +392,11 @@ def check_guidance(cur, now: datetime) -> List[dict]:
     rows = [dict(r, items=fair_comparisons(r["items"])) for r in rows]
     hidden += [f"{r['ticker']} {x['metric']}: {x['unfair']}" for r in rows for x in r["items"] if x.get("unfair")]
     odd = guidance_problems(rows)
+    # v76b: DELL's EPS of 24.11.2026 on the site was its forecast for the next quarter
+    mixed = [r["ticker"] for r in rows if r.get("rel") and r.get("eps_actual") is not None and any(
+        x.get("metric") == "eps" and x.get("low") == x.get("high") and abs(x["low"] - float(r["eps_actual"])) < 0.005 for x in r["items"])]
+    if mixed:
+        odd.append("the EPS result equals the forecast (read from the wrong place?): " + ", ".join(mixed))
     found = sum(1 for r in rows if r["status"] == "found")
     none = sum(1 for r in rows if r["status"] == "none")
     return [_line("earnings.guidance", "warn" if odd else "ok",

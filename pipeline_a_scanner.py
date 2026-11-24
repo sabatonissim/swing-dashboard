@@ -3099,6 +3099,10 @@ _EPS_BAD = re.compile(
     r"year\s+to\s+date|year[-\s]to[-\s]date|range|next\s+quarter|current\s+quarter|second\s+half|\bto\s+be\b|\bwould\b)", re.I)
 _EPS_BAD_AFTER = re.compile(
     r"^\W{0,3}(?:a\s+year\s+ago|last\s+year|in\s+the\s+(?:year[-\s]ago|prior|same)|for\s+the\s+(?:year|full)|compared)", re.I)
+# v76b, DELL 24.11.2026: the release said "record non-GAAP diluted EPS of $9.45" (43% above the estimate, outside the band), so the
+# next figure was taken: the fourth quarter's forecast in "Guidance Summary ... Non-GAAP diluted EPS $ 8.40 116 %".
+_EPS_TABLE_ROW = re.compile(r"(?:EPS|share)\s*(?:\([^)]{0,30}\)\s*)?\(?\$\s?\(?\d[\d.]*\)?$", re.I)
+_GUIDANCE_HEADING = re.compile(r"\b(?:Guidance|GUIDANCE|Outlook|OUTLOOK)\b(?!.*\b(?:Results|RESULTS|Highlights|HIGHLIGHTS)\b)", re.S)
 _EPS_RANGE_AFTER = re.compile(r"^\s*(?:to|-|–|—)\s*\$", re.I)    # "$5.90 to $6.20" = guidance (Lumentum)
 
 
@@ -3109,6 +3113,7 @@ def _parse_press_release_eps(text, estimate):
         return None
     head = text[:15000]
     best = None   # (position, value)
+    far = None    # v76b: position of the first clean adjusted figure that is too far from the estimate
     for rx in _EPS_PATTERNS:
         for m in rx.finditer(head):
             val = float(m.group(1))
@@ -3123,10 +3128,15 @@ def _parse_press_release_eps(text, estimate):
                 continue
             if re.search(r"GAAP\s+and\s+$", before, re.I) and not re.match(r"GAAP\s+and", m.group(0), re.I):
                 continue                              # the GAAP half of "GAAP and non-GAAP ... of $A and $B"
+            if _EPS_TABLE_ROW.search(m.group(0)) and _GUIDANCE_HEADING.search(head[max(0, m.start() - 260):m.start()]):
+                continue                              # a row of a guidance table (its heading is further up than `before` looks)
             if abs(val - estimate) > max(EPS_RELEASE_BAND * abs(estimate), 0.10):
+                far = m.start() if far is None else min(far, m.start())
                 continue
             if best is None or m.start() < best[0]:
                 best = (m.start(), val)
+    if best and far is not None and far < best[0]:
+        return None                                   # the release's own first figure did not fit, so a later one is something else
     return best[1] if best else None
 
 

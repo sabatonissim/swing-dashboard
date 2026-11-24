@@ -132,6 +132,10 @@ EN_REWRITES = [
     (r"\bbargain[- ](?:buying|hunting)\b", "buying at low prices"),
     (r"\bmargin pressures?\b", "pressure on profit margins"),
     (r"[;,]\s*((?:US |U\.S\. |key )?(?:inflation|jobs|cpi|pce|ppi|gdp|payrolls) (?:data|report|reading)) awaited\b", r"; markets await \1"),
+    # v76b: "EPS of $0.10 beats by $0.02" -> "EPS של 0.10 דולר ב-0.02 דולר" (the beat was lost); "short interest" -> "ריבית קצרה"
+    (r"\b(EPS|revenue) of (-?\$[\d.]+[MBK]?) beats by (\$[\d.]+[MBK]?)(?!\w)", r"\1 of \2 is \3 above estimates"),
+    (r"\b(EPS|revenue) of (-?\$[\d.]+[MBK]?) misses by (\$[\d.]+[MBK]?)(?!\w)", r"\1 of \2 is \3 below estimates"),
+    (r"\bshort interest(?: positions?)?\b", "short positions"),
     # "Bond Market's Go-To Trade ... Roiled by Stocks Retreat" -> "סחר האג"ח ... שנובע מנסיגה"
     (r"\bgo-to trade for\b", "popular trade on"),
     (r"\broiled by stocks? retreat\b", "hurt by fall in stocks"),

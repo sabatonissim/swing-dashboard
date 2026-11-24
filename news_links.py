@@ -93,6 +93,8 @@ PROMO_RE = re.compile(r"\b(stocks? to (buy|watch|own|bet on)|to bet on|should yo
                       # v44 (live feed 10.11.2026): "As Crude Oil Prices Retreat, Sell Soybean Oil Now" \u2014 advice, not news
                       r"(buy|sell|short)\s+(?:[\w&'-]+\s+){1,4}now(?!\s+that)|buying opportunity|"
                       # v76 (24.11.2026): "This Wall Street Pro Maintains That 440% Returns Are Coming", "Can Dollar Tree Make You Some Cash?"
+                      # v76b: "Insiders Are Loading Up on These 5 Stocks", "These 4 Utility Stocks Pay Dividends", "Salesforce Stock Looks Cheap"
+                      r"these \d+ (?:[\w&'-]+ ){0,2}stocks|stock looks (?:cheap|expensive)|how to watch|"
                       r"wall street pro|make you (?:some |a lot of )?(?:cash|money|rich)|"
                       r"screaming buys?)\b"      # "Tech Sell-Off: Two AI Stocks That Are Screaming Buys Right Now" (11.11.2026)
                       r"|^\s*(?:top\s+)?\d+\s+[\w\s&'-]{0,40}\bstocks?\b"
