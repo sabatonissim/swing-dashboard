@@ -950,6 +950,10 @@
   .fund-stat .k{color:var(--text-dim);font-size:10.5px;margin-bottom:2px;}
   .fund-stat .v{font-family:'JetBrains Mono',monospace;font-size:13px;}
   .fund-empty{color:var(--text-dim);font-size:12.5px;padding:10px 2px;}
+  .fg-row{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-bottom:9px;}
+  .fg-row .fg-gap{width:10px;}
+  .fg-now{font-size:12px;color:var(--text-dim);margin-bottom:8px;min-height:17px;}
+  .fg-now b{color:var(--text);font-family:'JetBrains Mono',monospace;font-weight:600;}
   .fund-legend{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px;font-size:11px;color:var(--text-dim);}
   .fund-legend-item{display:flex;align-items:center;gap:5px;}
   .fund-legend-dot{width:9px;height:9px;border-radius:2px;display:inline-block;}
@@ -5268,9 +5272,9 @@ function _earnDetailHtml(it, todayStr){
       const max = Math.max(...last8.filter(v => v != null && v > 0), 1);
       const bars = last8.map((v, i) => `<div class="${i === last8.length-1 ? 'last' : ''}" style="height:${v != null && v > 0 ? Math.max(3, v / max * 100) : 0}%" title="${escH(lab8[i] || '')}: ${v != null ? _earnBig(v) : '—'}"></div>`).join('');
       const L = rev.length - 1;
-      const yoy = (arr) => (arr.length >= 5 && arr[L] != null && arr[L-4] != null && arr[L-4] > 0) ? (arr[L] / arr[L-4] - 1) * 100 : null;
+      const yoy = (arr) => arr.length === labels.length ? fundYoy(labels, arr)[L] : null;      // v75: by date, not "4 places back"
       const ni = Array.isArray(f.net_income) ? f.net_income : [];
-      const niYoy = (ni.length === rev.length && ni[L] != null && ni[L-4] != null && ni[L-4] > 0 && ni[L] > 0) ? (ni[L] / ni[L-4] - 1) * 100 : null;
+      const niYoy = ni[L] > 0 ? yoy(ni) : null;
       const qLabel = escH(labels[L] || '');
       const g = [];
       g.push(card(en ? 'Revenue' : 'הכנסות', _earnBig(rev[L]), yoy(rev) != null ? `${_earnPct(yoy(rev))} ${en ? 'vs a year ago' : 'מול שנה קודמת'}` : ''));
@@ -6380,6 +6384,10 @@ const FUND_TIPS = {
     he: 'EPS מדולל = הרווח הנקי חלקי כל המניות (כולל אופציות/מניות המרה פוטנציאליות) — התמונה ה"שמרנית" ביותר של הרווח למניה. אין כאן תחזית אנליסטים להשוואה עבור המניה הזו, רק המספר המדווח בפועל.',
     en: 'Diluted EPS = net income divided by all shares including potential options/convertibles — the most "conservative" per-share profit figure. There\'s no analyst estimate available to compare against for this ticker, just the actual reported number.'
   },
+  growth: {
+    he: 'העמודות: סכום 4 הרבעונים האחרונים בכל נקודת זמן ("12 חודשים") או כל רבעון לחוד. הקו: בכמה אחוזים זה שונה מאותה תקופה שנה קודם. סכום של 12 חודשים לא מושפע מעונתיות (למשל רבעון החגים), ולכן קל יותר לראות בו מגמה. אין קו כשיש הפסד, או כשבשנה הקודמת היה הפסד או רווח אפסי, כי אז האחוז חסר משמעות. ה-EPS כאן הוא המדווח (GAAP, מדולל), לפי מספר המניות של היום.',
+    en: 'Bars: the sum of the last 4 quarters at each point ("12 months"), or each quarter alone. Line: the change from the same period a year earlier. A 12-month sum has no seasonality (a holiday quarter, for example), so the trend is easier to see. There is no line at a loss, or where the year before was a loss or close to zero — the percentage would mean nothing. EPS here is as reported (GAAP, diluted), per share as counted today.'
+  },
   pe_band: {
     he: 'מראה את מכפיל ה-P/E ההיסטורי של המניה מול הממוצע שלה ±סטיית תקן אחת. המניה מעל האזור הירוק/מעל +1σ = יקרה יחסית להיסטוריה שלה עצמה. מתחת ל--1σ = זולה יחסית להיסטוריה שלה. זו השוואה למניה מול עצמה בעבר, לא מול מניות אחרות.',
     en: 'Shows the stock\'s historical P/E vs its own mean ±1 standard deviation. Above +1σ = expensive relative to its own history. Below -1σ = cheap relative to its own history. This compares the stock to itself over time, not to other stocks.'
@@ -6919,7 +6927,7 @@ function renderDeepDivePeCard(){
 // though the fundamentals card further down the page had the real number.
 // v21: the last good answer per ticker is kept in this browser (25 tickers). It is drawn at once while the server
 // answers, and if the server fails it stays on screen with its date instead of "could not load".
-const FUND_LOCAL_KEY = 'swing_fund_v2_';
+const FUND_LOCAL_KEY = 'swing_fund_v3_';      // v75: the copies of v2 hold a P/E history mixed up by stock splits
 const FUND_LOCAL_MAX = 25;
 function fundLocalGet(ticker){
   try {
@@ -7001,6 +7009,129 @@ async function loadFundamentals(ticker, containerId){
   return data;
 }
 
+// ---- v75 (owner, 24.11.2026): growth — 12-month sums and the change from a year ago. Everything is computed here from the
+// quarters the page already has (no request, no database). ONE chart whose content the buttons change, so the page gets one
+// canvas and not twelve.
+const FUND_MONTHS = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+function fundMonthIdx(label){                                   // "Sep 2026" -> months since year 0
+  const m = /^([A-Z][a-z]{2}) (\d{4})$/.exec(label || '');
+  return m && FUND_MONTHS[m[1]] !== undefined ? Number(m[2]) * 12 + FUND_MONTHS[m[1]] : null;
+}
+// sums of four quarters in a row; null where a quarter is missing, so a hole never becomes a wrong 12 months
+function fundLtm(labels, values){
+  const at = (labels || []).map(fundMonthIdx);
+  return (values || []).map((v, i) => {
+    if(i < 3) return null;
+    let sum = 0;
+    for(let k = i - 3; k <= i; k++){
+      if(values[k] == null || at[k] == null) return null;
+      if(k > i - 3 && !(at[k] - at[k-1] >= 2 && at[k] - at[k-1] <= 4)) return null;
+      sum += values[k];
+    }
+    const span = at[i] - at[i-3];
+    return span >= 8 && span <= 10 ? sum : null;
+  });
+}
+// % change from the point a year earlier, found by its date (quarters end a month earlier or later in some years). A base that
+// is a loss or close to zero next to today's figure has no meaningful percentage.
+const FUND_YOY_MAX = 1000;
+function fundYoy(labels, values){
+  const at = (labels || []).map(fundMonthIdx);
+  return (values || []).map((v, i) => {
+    if(v == null || v < 0 || at[i] == null) return null;        // a profit that became a loss: "-214%" says nothing
+    let best = -1;
+    for(let j = 0; j < i; j++){
+      const d = at[j] == null ? 0 : at[i] - at[j];
+      if(d >= 11 && d <= 13 && (best < 0 || Math.abs(d - 12) < Math.abs(at[i] - at[best] - 12))) best = j;
+    }
+    const base = best < 0 ? null : values[best];
+    if(base == null || !(base > 0)) return null;
+    const p = (v / base - 1) * 100;
+    return Math.abs(p) > FUND_YOY_MAX ? null : p;
+  });
+}
+var _fundGrowth = {metric: 'revenue', mode: 'ltm'};
+function fundGrowthMetrics(data){
+  const t = lang === 'en';
+  const eps = v => (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
+  return [
+    {k:'revenue', label:t?'Revenue':'הכנסות', labels:data.income_labels, values:data.revenue, fmt:fmtCompactMoney, color:'#5b8def'},
+    {k:'ni', label:t?'Net income':'רווח נקי', labels:data.income_labels, values:data.net_income, fmt:fmtCompactMoney, color:'#3ecf7e'},
+    {k:'eps', label:t?'EPS':'רווח למניה (EPS)', labels:data.diluted_eps_labels, values:data.eps_per_todays_share ? data.diluted_eps : null, fmt:eps, color:'#9b7bea'},
+    {k:'fcf', label:'FCF', labels:data.income_labels, values:data.fcf, fmt:fmtCompactMoney, color:'#e8a33d'},
+  ].filter(m => fundYoy(m.labels, fundLtm(m.labels, m.values)).some(v => v != null));      // at least one 12 months with a year before it
+}
+function fundGrowthView(data){
+  const all = fundGrowthMetrics(data);
+  if(!all.length) return null;
+  const m = all.find(x => x.k === _fundGrowth.metric) || all[0], mode = _fundGrowth.mode;
+  let bars = mode === 'ltm' ? fundLtm(m.labels, m.values) : m.values.slice();
+  let yoy = fundYoy(m.labels, bars), labels = m.labels;
+  let from = bars.findIndex(v => v != null);                     // 12-month sums start at the fourth quarter
+  if(from > 0){ bars = bars.slice(from); yoy = yoy.slice(from); labels = labels.slice(from); }
+  return {all, m, mode, labels, bars, yoy};
+}
+function fundGrowthHtml(data){
+  const v = fundGrowthView(data);
+  if(!v) return '';
+  const t = lang === 'en', last = v.bars.length - 1;
+  const tab = (on, kind, val, text) => `<button type="button" class="chart-tab${on?' active':''}" data-fg="${kind}:${val}" aria-pressed="${on}" onclick="setFundGrowth(this,'${kind}','${val}')">${text}</button>`;
+  return `<div class="fund-card-title">${t?'Growth':'צמיחה'}${fundInfoIcon('growth')}</div>
+    <div class="fg-row">${v.all.map(m => tab(m.k === v.m.k, 'metric', m.k, m.label)).join('')}<span class="fg-gap"></span>${
+      tab(v.mode === 'ltm', 'mode', 'ltm', t?'12 months':'12 חודשים')}${tab(v.mode !== 'ltm', 'mode', 'q', t?'Quarterly':'רבעוני')}</div>
+    <div class="fg-now">${v.bars[last] == null ? '' : `<span dir="ltr">${v.labels[last]}</span>: <b dir="ltr">${v.m.fmt(v.bars[last])}</b>${
+      v.yoy[last] == null ? '' : ` · <b dir="ltr">${v.yoy[last] >= 0 ? '+' : ''}${v.yoy[last].toFixed(1)}%</b> ${t?'vs a year earlier':'מול שנה קודם'}`}`}</div>
+    ${fundLegendHtml([{color:v.m.color, label:v.m.label + ' · ' + (v.mode === 'ltm' ? (t?'12 months':'12 חודשים') : (t?'quarter':'רבעון'))},
+                      {color:'var(--text)', label:t?'Change from a year earlier (%, right scale)':'שינוי מול שנה קודם (%, הסולם הימני)'}])}
+    ${fundChartCanvas('chart-growth')}`;
+}
+// the scale of the % line: a single freak year (+800%) must not flatten all the others
+function fundYoyRange(yoy){
+  const a = yoy.filter(v => v != null).sort((x, y) => x - y);
+  if(!a.length) return {min: 0, max: 10};
+  const q = p => a[Math.min(a.length - 1, Math.max(0, Math.round(p * (a.length - 1))))];
+  const pad = Math.max((q(.95) - q(.05)) * 0.25, 2);
+  return {min: Math.floor(Math.min(0, Math.max(a[0], q(.05) - pad))), max: Math.ceil(Math.max(0, Math.min(a[a.length-1], q(.95) + pad)))};
+}
+function drawFundGrowth(data, containerId){
+  const el = document.getElementById(containerId);
+  const ctx = el && el.querySelector('canvas[data-fc="chart-growth"]'), v = ctx && fundGrowthView(data);
+  if(!v || typeof Chart === 'undefined') return;
+  // two scales, one on each side: the chart always fits its box (no sideways scroll), so both stay in view. On a phone that
+  // is the last ~4 years.
+  const avail = Math.max(ctx.parentElement.clientWidth || 0, 280), keep = Math.max(8, Math.floor((avail - 90) / 14));
+  if(v.labels.length > keep){ v.labels = v.labels.slice(-keep); v.bars = v.bars.slice(-keep); v.yoy = v.yoy.slice(-keep); }
+  ctx.width = avail; ctx.height = 190;
+  const r = fundYoyRange(v.yoy), opt = fundBarOptions(v.m.fmt), line = getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#eef1f5';
+  opt.plugins.tooltip = {callbacks: {label: c => c.parsed.y == null ? '' : c.dataset.yAxisID === 'p' ? `${c.dataset.label}: ${c.parsed.y >= 0 ? '+' : ''}${c.parsed.y.toFixed(1)}%` : `${c.dataset.label}: ${v.m.fmt(c.parsed.y)}`}};
+  opt.interaction = {mode: 'index', intersect: false};
+  opt.animation = false;
+  opt.scales.y.position = 'left';
+  opt.scales.p = {position:'right', min:r.min, max:r.max, grid:{drawOnChartArea:false}, ticks:{font:{size:9}, maxTicksLimit:6, callback:x => Math.round(x) + '%'}};
+  try {
+    const chart = new Chart(ctx, {data: {labels: v.labels, datasets: [
+      {type:'line', label:lang==='en'?'vs a year earlier':'מול שנה קודם', data:v.yoy, yAxisID:'p', borderColor:line, backgroundColor:line, borderWidth:2, pointRadius:1.8, tension:.2, spanGaps:false, clip:4},
+      {type:'bar', label:v.m.label, data:v.bars, backgroundColor:v.m.color},
+    ]}, options: opt});
+    activeFundCharts.push({chart, box: containerId, part: 'growth'});
+  } catch(e){ console.error('[fundamentals] growth chart failed', e); }
+}
+var _fundDataOf = {};                                             // container id -> the data drawn in it (the buttons redraw from it)
+function setFundGrowth(btn, kind, val){
+  _fundGrowth[kind] = val;
+  const card = btn.closest('.fund-growth'), box = card && card.dataset.box, data = box && _fundDataOf[box];
+  if(!data) return;
+  activeFundCharts = activeFundCharts.filter(c => {               // only this card's chart; the others stay as they are
+    if(c.box !== box || c.part !== 'growth') return true;
+    try { c.chart.destroy(); } catch(e){}
+    return false;
+  });
+  card.innerHTML = fundGrowthHtml(data);
+  drawFundGrowth(data, box);
+  const again = card.querySelector(`[data-fg="${kind}:${val}"]`);
+  if(again) again.focus({preventScroll: true});
+}
+
 function renderFundamentals(data, containerId){
   containerId = containerId || "fundamentals-section";
   const el = document.getElementById(containerId);
@@ -7037,6 +7168,9 @@ function renderFundamentals(data, containerId){
   ${fundChartCanvas('chart-rev-ni-fcf')}</div>`;
   // v27: an empty card said nothing — now it says why (banks/insurers have no "cost of revenue"; some filers stopped tagging debt)
   const fundNoData = (he, en) => `<div class="fund-empty" style="padding:18px 4px;font-size:12px;">${t?en:he}</div>`;
+  _fundDataOf[containerId] = data;
+  const growthHtml = fundGrowthHtml(data);                        // v75; foreign companies have ~5 quarters, so no card
+  if(growthHtml) html += `<div class="fund-card fund-wide fund-growth" data-box="${containerId}">${growthHtml}</div>`;
   html += `<div class="${fundCardClass(marginN)}"><div class="fund-card-title">${t?'Gross Margin %':'שולי רווח גולמי %'}${fundInfoIcon('gross_margin')}</div>${marginN
     ? fundChartCanvas('chart-margin') + (data.margin_source==='yahoo' ? `<div style="font-size:10px;color:var(--text-dim);margin-top:4px;">${t?'Source: Yahoo Finance (SEC filings have no gross profit for this company).':'מקור: Yahoo Finance (בדוחות ל-SEC אין לחברה הזו רווח גולמי).'}</div>` : '')
     : fundNoData('החברה לא מדווחת רווח גולמי בדוחות שלה (נפוץ בבנקים, ביטוח, נדל"ן וחלק מחברות התוכנה) — לכן אין כאן גרף.',
@@ -7100,6 +7234,10 @@ function renderFundamentals(data, containerId){
 
   el.innerHTML = html;
 
+  // v75: in a hidden tab nothing is drawn. The charts came out at the wrong width there and were drawn a second time when the
+  // tab opened (setDdTab), so every visit that never opened it paid for charts nobody saw.
+  if(containerId === 'dd-fundamentals-section' && _ddFundDrawnHidden && ddTab !== 'fund') return;
+
   if(typeof Chart === 'undefined'){
     // Chart.js didn't load (blocked script, network issue, ad-blocker, etc).
     // This would otherwise crash identically on every single ticker at the
@@ -7136,6 +7274,7 @@ function renderFundamentals(data, containerId){
     });
     scrollFundChartToEnd(revCtx);
   }
+  drawFundGrowth(data, containerId);
 
   const marginCtx = fundCanvas('chart-margin');
   if(marginCtx && data.margin_labels && data.margin_labels.length){

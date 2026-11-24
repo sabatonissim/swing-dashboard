@@ -411,6 +411,29 @@ def check_market_caps(cur) -> List[dict]:
     return [_line("value.market_cap", "warn" if odd else "ok", detail or "the stock page's market caps agree with the scanner's", len(odd))]
 
 
+EPS_SPLIT_RATIO = 5        # v75: net income / EPS = the share count behind it; this far apart over the stored years = a split was missed
+EPS_SPLIT_WARN = 8         # a few companies really issued that many shares, so only more than this is a warning
+
+
+def check_eps_splits(cur) -> List[dict]:
+    """v75: EPS per today's share all through the stored quarters? (Until 24.11.2026 old figures were as filed: after a split the
+    P/E history of NVDA, NFLX, WMT, AVGO, CMG, ORLY was wrong, and nothing checked it.) The database compares, only odd rows come."""
+    cur.execute("""SELECT ticker, a / b AS ratio FROM (
+                     SELECT ticker,
+                            (data->'net_income'->>0)::float8 / NULLIF((data->'diluted_eps'->>0)::float8, 0) AS a,
+                            (data->'net_income'->>-1)::float8 / NULLIF((data->'diluted_eps'->>-1)::float8, 0) AS b
+                     FROM fundamentals_cache
+                     WHERE (data->>'eps_per_todays_share')::boolean
+                       AND data->'income_labels'->>0 = data->'diluted_eps_labels'->>0
+                       AND data->'income_labels'->>-1 = data->'diluted_eps_labels'->>-1
+                       AND (data->'diluted_eps'->>0)::float8 > 0.05 AND (data->'diluted_eps'->>-1)::float8 > 0.05) q
+                   WHERE a > 0 AND b > 0 AND a / b NOT BETWEEN %s AND %s ORDER BY ticker""", (1 / EPS_SPLIT_RATIO, EPS_SPLIT_RATIO))
+    odd = cur.fetchall()
+    detail = ", ".join(f"{r['ticker']} ({r['ratio']:.2f}x)" for r in odd[:20])
+    return [_line("value.eps_splits", "warn" if len(odd) > EPS_SPLIT_WARN else "info" if odd else "ok",
+                  f"share count behind the oldest EPS against the newest: {detail}" if odd else "EPS is per today's share in all stored quarters", len(odd))]
+
+
 def check_ratings(cur, now: datetime) -> List[dict]:
     """v39: the last trading day's analyst changes. Every trading day has some (AMD alone had 8 on 4.11.2026); none at all =
     Yahoo's answer changed shape or the job did not read it."""
@@ -518,6 +541,7 @@ def main() -> int:
                           ("arithmetic", lambda: check_arithmetic(cur)), ("values", lambda: check_values(cur)),
                           ("earnings", lambda: check_earnings(cur, now)), ("guidance", lambda: check_guidance(cur, now)),
                           ("market caps", lambda: check_market_caps(cur)),
+                          ("eps splits", lambda: check_eps_splits(cur)),
                           ("profiles", lambda: check_profiles(cur)), ("digest", lambda: check_digest(cur)),
                           ("ratings", lambda: check_ratings(cur, now)),
                           ("size", lambda: check_db_size(cur)), ("usage", lambda: check_db_usage(cur, now))):

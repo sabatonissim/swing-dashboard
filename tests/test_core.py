@@ -3509,3 +3509,71 @@ def test_v74_headlines_of_24_11():
                       ("מעורבים לאחר עליית Nvidia-Led כאשר", "לאחר עלייה בהובלת Nvidia כאשר"),
                       ("שוט שוק AI מעמיד את", "תנודתיות בשוק ה-AI מעמידה את")):
         assert good in tf.fix_he(bad) and tf.fix_he(tf.fix_he(bad)) == tf.fix_he(bad)
+
+
+def test_v75_eps_per_todays_share():
+    """24.11.2026: NFLX's EPS of Dec 2025 was -17.14 (the year after the 10-for-1 split minus nine months before it), and the P/E
+    history of every company that split in five years was wrong. Rows below are NFLX's real ones."""
+    import fundamentals as f
+    row = lambda s, e, v, form, filed: {"start": s, "end": e, "val": v, "form": form, "filed": filed}
+    rows = [row("2025-01-01", "2025-03-31", 6.61, "10-Q", "2025-04-18"), row("2025-01-01", "2025-03-31", 0.66, "10-Q", "2026-04-17"),
+            row("2025-01-01", "2025-06-30", 13.8, "10-Q", "2025-07-18"), row("2025-04-01", "2025-06-30", 7.19, "10-Q", "2025-07-18"),
+            row("2025-01-01", "2025-09-30", 19.67, "10-Q", "2025-10-22"), row("2025-07-01", "2025-09-30", 5.87, "10-Q", "2025-10-22"),
+            row("2025-01-01", "2025-12-31", 2.53, "10-K", "2026-01-23"), row("2026-01-01", "2026-03-31", 1.23, "10-Q", "2026-04-17")]
+    splits = [("2015-07-15", 7.0), ("2025-11-17", 10.0)]
+    got = f._flow_quarters(f.for_splits(rows, splits))
+    assert {d: round(v, 2) for d, v in got.items()} == {"2025-03-31": 0.66, "2025-06-30": 0.72, "2025-09-30": 0.59, "2025-12-31": 0.56, "2026-03-31": 1.23}
+    assert rows[0]["val"] == 6.61 and f.for_splits(rows, []) is rows
+    facts = {"EarningsPerShareDiluted": {"units": {"USD/shares": rows}}}
+    assert round(f.sec_quarterly_series(facts, f.EPS_TAGS, instant=False)["2025-12-31"], 2) == -17.14        # as it was
+    assert round(f.sec_quarterly_series(facts, f.EPS_TAGS, instant=False, splits=splits)["2025-12-31"], 2) == 0.56
+    # a reverse split, and two splits after one filing (NVDA: 4-for-1 and 10-for-1)
+    assert f.for_splits([row("", "", 2.0, "10-Q", "2021-01-01")], [("2021-08-02", 0.125)])[0]["val"] == 16.0
+    assert f.for_splits([row("", "", 4.0, "10-Q", "2021-05-01")], [("2021-07-20", 4.0), ("2024-06-10", 10.0)])[0]["val"] == 0.1
+
+
+def test_v75_seventeen_week_quarter_and_gaps():
+    import fundamentals as f
+    row = lambda s, e, v, form="10-Q": {"start": s, "end": e, "val": v, "form": form}
+    # Costco, fiscal 2023 (53 weeks): the last quarter is 119 days, and was missing
+    rows = [row("2022-08-29", "2022-11-20", 1364), row("2022-08-29", "2023-02-12", 2830), row("2022-08-29", "2023-05-07", 4132),
+            row("2022-08-29", "2023-09-03", 6292, "10-K")]
+    assert f._flow_quarters(rows) == {"2022-11-20": 1364, "2023-02-12": 1466.0, "2023-05-07": 1302.0, "2023-09-03": 2160.0}
+    assert f._flow_quarters([row("2023-01-01", "2023-05-02", 100)]) == {}                      # a 4-month transition period is not a quarter
+    assert f.consecutive(["2022-11-20", "2023-02-12", "2023-05-07", "2023-09-03"])
+    assert f.consecutive(["2025-12-31", "2026-03-31", "2026-06-30", "2026-09-30"])
+    assert not f.consecutive(["2023-02-12", "2023-05-07", "2023-11-26", "2024-02-18"])           # the hole: 15 months
+    assert not f.consecutive(["2026-03-31", "2026-06-30", "2026-09-30"]) and not f.consecutive([None] * 4)
+
+
+def test_v75_pe_history():
+    import pandas as pd
+    import fundamentals as f
+    days = pd.bdate_range("2024-01-01", "2026-11-20", tz="America/New_York")
+    hist = pd.DataFrame({"Close": [100.0] * len(days), "Stock Splits": [0.0] * len(days)}, index=days)
+    hist.loc[pd.Timestamp("2025-11-17", tz="America/New_York"), "Stock Splits"] = 10.0
+    assert f.splits_of(hist) == [("2025-11-17", 10.0)] and f.splits_of(None) == []
+    ends = [d.strftime("%Y-%m-%d") for d in pd.date_range("2023-03-31", "2026-09-30", freq="QE")]
+    band = f.compute_pe_band_sec("X", ends, [1.0] * len(ends), hist)
+    assert set(band["values"]) == {25.0} and band["current"] == 25.0 and band["dates"][-1] == "2026-11-16"
+    # a missing quarter: no P/E from a "year" of 15 months, and none from an old year
+    holes = [1.0] * len(ends)
+    holes[ends.index("2025-06-30")] = None
+    gap = f.compute_pe_band_sec("X", ends, holes, hist)
+    assert len(gap["dates"]) < len(band["dates"]) and "2026-02-02" not in gap["dates"] and set(gap["values"]) == {25.0}
+    assert f.compute_pe_band_sec("X", ends, [1.0] * len(ends), None) is None
+    assert f.compute_pe_band_sec("X", ends[:3], [1.0] * 3, hist) is None
+
+
+def test_v75_health_eps_splits():
+    import data_health as dh
+
+    class Cur:
+        def __init__(self, rows): self.rows = rows
+        def execute(self, q, p): self.p = p
+        def fetchall(self): return self.rows
+    c = Cur([])
+    assert dh.check_eps_splits(c)[0]["status"] == "ok" and c.p == (0.2, 5)
+    assert dh.check_eps_splits(Cur([{"ticker": "A", "ratio": 0.1}]))[0]["status"] == "info"
+    line = dh.check_eps_splits(Cur([{"ticker": f"T{i}", "ratio": 0.1} for i in range(9)]))[0]
+    assert line["status"] == "warn" and "T0 (0.10x)" in line["detail"]

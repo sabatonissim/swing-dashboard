@@ -41,7 +41,7 @@ import yfinance as yf
 
 SEC_HEADERS = {"User-Agent": "SwingDesk-Dashboard admin@swingdesk.app"}   # SEC fair-use: a descriptive User-Agent
 
-CACHE_VERSION = 4             # bump when the numbers' logic changes, so stored copies are rebuilt, not served
+CACHE_VERSION = 5             # bump when the numbers' logic changes, so stored copies are rebuilt, not served
 PE_NM_ABOVE = 300              # trailing P/E above this = earnings near zero -> shown as "not meaningful"
 SIDE_CALLS_BUDGET_SEC = 9      # all Yahoo extras together; whatever is slower is skipped (SEC data still returned)
 
@@ -141,6 +141,36 @@ def _order_by_freshness(facts: dict, tags: List[str], need_start: bool) -> List[
     return [t for t, _ in sorted(present, key=lambda p: p[1], reverse=True)]
 
 
+MAX_QUARTER_DAYS = 120          # v75: a 17-week quarter (119 days: Costco's of Sep 2023 was missing); 4-month transition periods are ~122
+
+
+def consecutive(ends: List[str]) -> bool:
+    """v75: four quarter-end dates that really are four quarters in a row (a missing one in between = not a 12-month sum)."""
+    try:
+        d = [date.fromisoformat(x) for x in ends]
+    except (TypeError, ValueError):
+        return False
+    return len(d) == 4 and 245 <= (d[3] - d[0]).days <= 300 and all(60 <= (b - a).days <= 125 for a, b in zip(d, d[1:]))
+
+
+def for_splits(rows: list, splits: list) -> list:
+    """v75: per-share rows as of today's share. A company restates old per-share figures only in filings made AFTER a split, so
+    the old filings' figures are divided by every split since their own filing date ("filed"). Before this the two kinds were
+    mixed: NFLX (10-for-1, 17.11.2025) had an EPS of -17.14 for Dec 2025 (the year of 2.53 minus nine months of 19.67) and the
+    P/E history divided today's split-adjusted prices by old EPS (NVDA's of 2021: 4 instead of ~80, ORLY's: 1.5).
+    splits = [(day 'YYYY-MM-DD', ratio)]; ratio 10.0 = 10-for-1, 0.1 = 1-for-10."""
+    if not splits:
+        return rows
+    out = []
+    for e in rows:
+        f = 1.0
+        for day, ratio in splits:
+            if day > (e.get("filed") or ""):
+                f *= ratio
+        out.append({**e, "val": e["val"] / f} if f != 1.0 and e.get("val") is not None else e)
+    return out
+
+
 def _flow_quarters(rows: list) -> dict:
     """{period end: value} for ONE tag of a flow measure (revenue, profit, EPS, cash flow).
     A clean single-quarter row (~75-105 days) is taken as is. Otherwise the quarter is derived from year-to-date
@@ -174,13 +204,13 @@ def _flow_quarters(rows: list) -> dict:
             gap = (end_d - prev_end).days
             if gap <= 0:
                 continue        # the same period filed again (comparative / restated) — the first one is kept
-            if end not in out and 60 <= gap <= 115:
+            if end not in out and 60 <= gap <= MAX_QUARTER_DAYS:
                 out[end] = val - prev_val
             prev_val, prev_end = val, end_d
     return out
 
 
-def sec_quarterly_series(facts: dict, tag_candidates: List[str], instant: bool) -> dict:
+def sec_quarterly_series(facts: dict, tag_candidates: List[str], instant: bool, splits: Optional[list] = None) -> dict:
     """{end date: value} merged across the candidate tags (companies switch tags between years).
     Flow measures: per tag (never subtracting one tag's YTD from another's), freshest tag first, older tags only
     fill dates the fresher ones lack. Instant measures (cash, debt, shares): point-in-time, given order."""
@@ -195,7 +225,7 @@ def sec_quarterly_series(facts: dict, tag_candidates: List[str], instant: bool) 
                     out.setdefault(end, val)
         return out
     for tag in _order_by_freshness(facts, tag_candidates, need_start=True):
-        for end, val in _flow_quarters(_main_unit_rows(facts[tag])).items():
+        for end, val in _flow_quarters(for_splits(_main_unit_rows(facts[tag]), splits or [])).items():
             out.setdefault(end, val)
     return out
 
@@ -269,35 +299,51 @@ def _analyst_eps(ticker: str):
     return labels, actual, estimate, surprise
 
 
-def compute_pe_band_sec(ticker: str, dates_sorted: List[str], diluted_eps: List[Optional[float]]):
-    """Weekly P/E band: yfinance .history() for price, matched against SEC trailing-twelve-month diluted EPS."""
+def price_history(ticker: str):
+    """v75: 10 years of daily prices as traded (no dividend adjustment), split-adjusted, with the day of each split."""
+    from price_splits import fix_unadjusted_splits
+    hist = yf.Ticker(ticker).history(period="10y", interval="1d", auto_adjust=False)
+    return None if hist is None or hist.empty else fix_unadjusted_splits(hist)
+
+
+def splits_of(hist) -> list:
+    """[(day, ratio)] from a price history's "Stock Splits" column."""
+    if hist is None or "Stock Splits" not in getattr(hist, "columns", ()):
+        return []
+    s = hist["Stock Splits"]
+    return [(idx.strftime("%Y-%m-%d"), float(v)) for idx, v in s[(s > 0) & (s != 1)].items()]
+
+
+PE_BAND_WEEKS = 262              # five years
+
+
+def compute_pe_band_sec(ticker: str, dates_sorted: List[str], diluted_eps: List[Optional[float]], hist):
+    """Weekly P/E band: price_history() (not called here) against SEC trailing-twelve-month diluted EPS, per today's share."""
     try:
         pairs = [(d, v) for d, v in zip(dates_sorted, diluted_eps) if v is not None]
-        if len(pairs) < 4:
-            return None
-        eps_series = pd.Series([p[1] for p in pairs], index=pd.to_datetime([p[0] for p in pairs])).sort_index()
-        ttm_eps = eps_series.rolling(4).sum().dropna()
-        if ttm_eps.empty:
-            return None
-
-        hist = yf.Ticker(ticker).history(period="5y", interval="1wk")
-        if hist.empty:
+        # v75: only four quarters in a row make a year (four figures with one missing in between spanned 15 months)
+        ttm = [(pairs[i][0], sum(p[1] for p in pairs[i - 3:i + 1])) for i in range(3, len(pairs))
+               if consecutive([p[0] for p in pairs[i - 3:i + 1]])]
+        if not ttm or hist is None or hist.empty:
             return None
 
         ttm_df = pd.DataFrame({
-            "date": pd.to_datetime(ttm_eps.index).tz_localize(None).astype("datetime64[ns]"),
-            "ttm_eps": ttm_eps.values,
+            "date": pd.to_datetime([d for d, _ in ttm]).astype("datetime64[ns]"),
+            "ttm_eps": [float(v) for _, v in ttm],
         }).sort_values("date")
+        ttm_df["eps_date"] = ttm_df["date"]
 
-        hist2 = hist.reset_index()
-        date_col = "Date" if "Date" in hist2.columns else hist2.columns[0]
+        close = hist["Close"].dropna()
+        if getattr(close.index, "tz", None) is not None:
+            close.index = close.index.tz_localize(None)
+        weekly = close.resample("W-MON", label="left", closed="left").last().dropna().tail(PE_BAND_WEEKS)
         # merge_asof needs the exact same datetime resolution on both sides (SEC strings vs yfinance index)
-        hist2["date"] = pd.to_datetime(hist2[date_col]).dt.tz_localize(None).astype("datetime64[ns]")
-        hist2 = hist2.sort_values("date")
+        hist2 = pd.DataFrame({"date": weekly.index.astype("datetime64[ns]"), "Close": weekly.values}).sort_values("date")
 
         merged = pd.merge_asof(hist2, ttm_df, on="date", direction="backward")
         merged["pe"] = merged["Close"] / merged["ttm_eps"]
-        merged = merged[(merged["ttm_eps"] > 0) & merged["pe"].notna() & (merged["pe"] < 500) & (merged["pe"] > 0)]
+        merged = merged[(merged["ttm_eps"] > 0) & merged["pe"].notna() & (merged["pe"] < 500) & (merged["pe"] > 0)
+                        & ((merged["date"] - merged["eps_date"]).dt.days <= 200)]      # an old year's EPS is not used for years
         if merged.empty:
             return None
 
@@ -314,7 +360,6 @@ def compute_pe_band_sec(ticker: str, dates_sorted: List[str], diluted_eps: List[
     except Exception as e:
         print(f"[warn] P/E band calc failed for {ticker}: {e}")
         return None
-
 
 def _run_side_calls(calls: dict, budget_sec: float) -> dict:
     """Runs {name: zero-arg function} in parallel; returns {name: result} for the ones that finished in time
@@ -487,7 +532,8 @@ def _build_fundamentals_yf(ticker: str, cik10: Optional[str], sec_currency: Opti
         except Exception:
             market_cap = None
 
-    ltm = lambda vals: round(sum(vals[-4:]), 2) if len(vals) >= 4 and all(v is not None for v in vals[-4:]) else None
+    ltm = lambda vals: (round(sum(vals[-4:]), 2) if len(vals) >= 4 and all(v is not None for v in vals[-4:])
+                        and consecutive(income_dates[-4:]) else None)
     revenue_ltm, net_income_ltm, fcf_ltm = ltm(revenue), ltm(net_income), ltm(fcf)
 
     trailing_pe = info.get("trailingPE")
@@ -672,7 +718,7 @@ def build_fundamentals(ticker: str, cik_map: dict, info_getter: Optional[Callabl
     ni_s      = sec_quarterly_series(combined, NET_INCOME_TAGS, instant=False)
     gross_s   = sec_quarterly_series(combined, ["GrossProfit"], instant=False)
     cost_s    = sec_quarterly_series(combined, COST_OF_REVENUE_TAGS, instant=False)
-    eps_s     = sec_quarterly_series(combined, EPS_TAGS, instant=False)
+    eps_facts = {tag: combined[tag] for tag in EPS_TAGS if combined.get(tag)}   # v75: read below, once the splits are known
     ocf_s     = sec_quarterly_series(combined, OCF_TAGS, instant=False)
     capex_s   = sec_quarterly_series(combined, CAPEX_TAGS, instant=False)
     cash_s    = sec_quarterly_series(combined, CASH_TAGS, instant=True)
@@ -692,7 +738,7 @@ def build_fundamentals(ticker: str, cik_map: dict, info_getter: Optional[Callabl
     # v27: series the company stopped reporting are dropped instead of drawn up to an old year
     latest_income = max(list(revenue_s) + list(ni_s))
     debt_reported = bool(debt_s)     # a debt tag that went stale (JPM 2014) is not "no debt" -> no net-debt chart
-    eps_s, capex_s, cash_s, debt_s = (_drop_if_stale(s, latest_income) for s in (eps_s, capex_s, cash_s, debt_s))
+    capex_s, cash_s, debt_s = (_drop_if_stale(s, latest_income) for s in (capex_s, cash_s, debt_s))
     for d, (r, c) in _nearest_pair(revenue_s, cost_s, tolerance_days=0).items():
         if _nearest(gross_s, d) is None:
             gross_s[d] = r - c
@@ -727,16 +773,12 @@ def build_fundamentals(ticker: str, cik_map: dict, info_getter: Optional[Callabl
         net_debt_map = {}
     debt_labels, net_debt = _to_chart(net_debt_map)
 
-    eps_dates = sorted(eps_s)[-32:]
-    diluted_eps_labels = [dt.strptime(d, "%Y-%m-%d").strftime("%b %Y") for d in eps_dates]
-    diluted_eps = [round(float(v), 4) if (v := eps_s.get(d)) is not None else None for d in eps_dates]
-
     latest_shares = pick_shares(shares_s, diluted_s, latest_income)
     del combined
 
     # Yahoo extras, in parallel, within one time budget (each used to run one after the other)
     calls = {
-        "pe_band": lambda: compute_pe_band_sec(ticker, eps_dates, diluted_eps),
+        "prices": lambda: price_history(ticker),
         "analyst_eps": lambda: _analyst_eps(ticker),
         "price": lambda: last_price(ticker),
     }
@@ -751,7 +793,14 @@ def build_fundamentals(ticker: str, cik_map: dict, info_getter: Optional[Callabl
         if yf_margin:
             margin_labels, gross_margin_pct = _to_chart(yf_margin)
             margin_source = "yahoo"
-    pe_band = side.get("pe_band")
+    # v75: per today's share; without the price history (= the splits) the figures stay as filed and no P/E history is drawn
+    hist = side.get("prices")
+    eps_s = _drop_if_stale(sec_quarterly_series(eps_facts, EPS_TAGS, instant=False, splits=splits_of(hist)), latest_income)
+    del eps_facts
+    eps_dates = sorted(eps_s)[-32:]
+    diluted_eps_labels = [dt.strptime(d, "%Y-%m-%d").strftime("%b %Y") for d in eps_dates]
+    diluted_eps = [round(float(v), 4) if (v := eps_s.get(d)) is not None else None for d in eps_dates]
+    pe_band = compute_pe_band_sec(ticker, eps_dates, diluted_eps, hist)
     eps_labels, eps_actual, eps_estimate, eps_surprise_pct = side.get("analyst_eps") or ([], [], [], [])
     info = side.get("info") or {}
     price = side.get("price")
@@ -759,7 +808,7 @@ def build_fundamentals(ticker: str, cik_map: dict, info_getter: Optional[Callabl
     # LTM = sum of the last 4 quarters (how Koyfin and most terminals show it), only when all 4 are there
     def _ltm_sum(values):
         recent = [v for v in values[-4:] if v is not None]
-        return round(sum(recent), 2) if len(recent) == 4 else None
+        return round(sum(recent), 2) if len(recent) == 4 and consecutive(income_dates[-4:]) else None    # v75: in a row
 
     revenue_ltm = _ltm_sum(revenue)
     net_income_ltm = _ltm_sum(net_income)
@@ -805,6 +854,7 @@ def build_fundamentals(ticker: str, cik_map: dict, info_getter: Optional[Callabl
         "price_at_build": price,
         "diluted_eps_labels": diluted_eps_labels,
         "diluted_eps": diluted_eps,
+        "eps_per_todays_share": hist is not None,      # v75: False = splits unknown, so no sums or growth from diluted_eps
         "eps_labels": eps_labels,
         "eps_actual": eps_actual,
         "eps_estimate": eps_estimate,
