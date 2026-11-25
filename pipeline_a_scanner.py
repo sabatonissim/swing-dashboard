@@ -3072,8 +3072,11 @@ def _revenue_from_press_release(ticker, report_date, reference=None, estimate=No
 # release says adjusted $4.59 and Yahoo holds the GAAP $3.66. Tuned on the same releases, so it is not a guarantee: Yahoo's
 # figure replaces this one when it arrives (eps_from_release marks it until then, and the site says where it came from).
 # ------------------------------------------------------------------
+RELEASE_RECHECK_MAX = 8          # v77: figures from a release read again per run (about 3 SEC requests each)
 EPS_RELEASE_BAND = 0.4           # at most this far from the estimate (or $0.10), else it is some other figure
-_EPS_NOUN = r"(?:EPS|earnings\s+per\s+(?:diluted\s+)?(?:common\s+)?share|(?:net\s+)?income\s+per\s+(?:diluted\s+)?(?:common\s+)?share)"
+_EPS_NOUN = (r"(?:(?:net\s+|continuing\s+)?EPS|(?:earnings|profit)\s+per\s+(?:diluted\s+)?(?:common\s+)?share|"
+             r"(?:net\s+)?income\s+per\s+(?:diluted\s+)?(?:common\s+)?share)")
+_EPS_GAP = r"(?:[^$.;]|\.(?=\d))"            # v77: "Adjusted EPS (1) increased 10.3% to $3.52" (Stryker): a decimal point is not a full stop
 _EPS_NUM = r"\(?\$\s?(\d{1,4}\.\d{2,3})\)?"
 _EPS_ADJ = r"(?:non[-\s]?GAAP|adjusted|core|comparable)"
 _EPS_PATTERNS = [
@@ -3084,13 +3087,21 @@ _EPS_PATTERNS = [
     # "Non-GAAP EPS increased 14% from $5.64 to $6.45" (Amgen): the figure after "to"
     re.compile(_EPS_ADJ + r"\s+(?:diluted\s+)?" + _EPS_NOUN + r"[^$.;]{0,40}?\bfrom\s+\(?\$\s?[\d.]+\)?\s+to\s+" + _EPS_NUM, re.I),
     # "Adjusted Diluted EPS of $3.82" / "Non-GAAP EPS was $2.49" / "non-GAAP EPS (a) increased 70% to $20.07"
-    re.compile(_EPS_ADJ + r"\s+(?:diluted\s+)?" + _EPS_NOUN + r"(?:\s*\([^)]{0,30}\))?[^$.;]{0,50}?" + _EPS_NUM, re.I),
+    # v77: "Adjusted (3) Diluted EPS of" (Pfizer), "Adjusted-diluted EPS" (West), "non-GAAP diluted net EPS of" (HP)
+    re.compile(_EPS_ADJ + r"(?:\s*\(\d\)|\s\d(?=\s))?[-\s]+(?:diluted\s+)?" + _EPS_NOUN + r"(?:\s*\([^)]{0,30}\))?" + _EPS_GAP + r"{0,50}?" + _EPS_NUM, re.I),
     # "Earnings per share (non-GAAP) $ 7.48" (Lilly)
     re.compile(_EPS_NOUN + r"[^$.;]{0,25}?\b" + _EPS_ADJ + r"\b[^$.;]{0,30}?" + _EPS_NUM, re.I),
     # "$1.20 adjusted diluted EPS"
-    re.compile(_EPS_NUM + r"\s+(?:of\s+|in\s+)?" + _EPS_ADJ + r"\s+(?:diluted\s+)?" + _EPS_NOUN, re.I),
+    # v77: not the end of a table row with the next row's name after it ("Earnings per share $2.29 Adjusted earnings per share 1,2,3
+    # $2.21", "... $2.22 - $2.28 Adjusted diluted EPS growth"), nor "to $1.02 Adjusted EPS was $0.78"
+    re.compile(_EPS_NUM + r"\s+(?:of\s+|in\s+)?" + _EPS_ADJ + r"\s+(?:diluted\s+)?" + _EPS_NOUN +
+               r"(?!\s*(?:\([^)]{0,30}\)|[\d,*]+)?\s*(?:\$|growth|was\b|were\b|of\b|increased|decreased|grew|up\b|down\b|rose|fell))", re.I),
+    # v77: "Non-GAAP net income was $143.4 million, or $3.52 per diluted share" (Tyler, Monolithic, Zoom, Allstate)
+    re.compile(_EPS_ADJ + r",?\s+(?:adjusted\s+)?(?:net\s+income|(?:net\s+|operating\s+)?earnings|operating\s+income|profit)(?:\s*(?:\(\d\)|\*+|\d))?"
+               r"(?:[^$.;]|\.(?=\d)){0,90}?\$\s?[\d,.]+\s+(?:million|billion)(?:\s*\(\d\))?\s*,?\s+or\s+(?:a\s+record\s+)?" + _EPS_NUM +
+               r"\s+per\s+(?:fully\s+)?(?:diluted\s+)?(?:common\s+)?share", re.I),
     # "Adjusted earnings for the third quarter were a record $2.21 per diluted share" (AMETEK)
-    re.compile(_EPS_ADJ + r"\s+(?:net\s+income|earnings|profit)[^$.;]{0,60}?" + _EPS_NUM + r"\s+per\s+(?:diluted\s+)?share", re.I),
+    re.compile(_EPS_ADJ + r"\s+(?:net\s+income|(?:operating\s+)?earnings|profit)[^$.;]{0,60}?" + _EPS_NUM + r"\s+per\s+(?:diluted\s+)?share", re.I),
 ]
 # Not this quarter's figure: guidance, a comparison, an older or longer period, or a sum that "includes" other items
 _EPS_BAD = re.compile(
@@ -3098,12 +3109,38 @@ _EPS_BAD = re.compile(
     r"prior[-\s]year|year[-\s]ago|last\s+year|full[-\s]year|fiscal\s+(?:year\s+)?20\d\d|nine\s+months|six\s+months|"
     r"year\s+to\s+date|year[-\s]to[-\s]date|range|next\s+quarter|current\s+quarter|second\s+half|\bto\s+be\b|\bwould\b)", re.I)
 _EPS_BAD_AFTER = re.compile(
-    r"^\W{0,3}(?:a\s+year\s+ago|last\s+year|in\s+the\s+(?:year[-\s]ago|prior|same)|for\s+the\s+(?:year|full)|compared)", re.I)
+    r"^\W{0,3}(?:a\s+year\s+ago|last\s+year|in\s+the\s+(?:year[-\s]ago|prior|same)|for\s+the\s+(?:year|full)|excluding\s+(?:total\s+)?notable)", re.I)
+# v77: ", compared to ..." after the figure says it IS this quarter's when the figure itself is stated ("was $2.82, compared to", Workday)
+_EPS_COMPARED_AFTER = re.compile(r"^\W{0,3}compared", re.I)
+_EPS_STATED = re.compile(r"\b(?:was|were|of|to)\s+\(?\$\s?[\d.]+\)?", re.I)
 # v76b, DELL 24.11.2026: the release said "record non-GAAP diluted EPS of $9.45" (43% above the estimate, outside the band), so the
 # next figure was taken: the fourth quarter's forecast in "Guidance Summary ... Non-GAAP diluted EPS $ 8.40 116 %".
 _EPS_TABLE_ROW = re.compile(r"(?:EPS|share)\s*(?:\([^)]{0,30}\)\s*)?\(?\$\s?\(?\d[\d.]*\)?$", re.I)
 _GUIDANCE_HEADING = re.compile(r"\b(?:Guidance|GUIDANCE|Outlook|OUTLOOK)\b(?!.*\b(?:Results|RESULTS|Highlights|HIGHLIGHTS)\b)", re.S)
 _EPS_RANGE_AFTER = re.compile(r"^\s*(?:to|-|–|—)\s*\$", re.I)    # "$5.90 to $6.20" = guidance (Lumentum)
+
+
+_EPS_QUARTER_RE = r"\b(?:first|second|third|fourth)[-\s]+quarter\s+(?:of\s+)?(?:fiscal\s+)?(?:year\s+)?"
+_EPS_QUARTER_OF = re.compile(_EPS_QUARTER_RE + r"(20\d\d)\b", re.I)
+_EPS_SECOND_COLUMN = re.compile(r"^\s*\$\s?(\d{1,4}\.\d{2,3})\s+\$?\s?(\(?-?[\d.]+\)?)\s*(%?)")
+_EPS_RESPECTIVELY = re.compile(r"^\s*and\s+\$\s?(\d{1,4}\.\d{2,3})\s*,?\s+respectively", re.I)
+
+
+def _this_quarters_column(val, after):
+    """v77: a table row with last year first ("Adjusted Earnings Per Share $1.62 $1.86 15%", Emerson; "$ 0.45 $ 0.49 $ 0.04",
+    Ford): the change column says which of the two is this quarter's. Not clear = the first one, as before."""
+    m = _EPS_SECOND_COLUMN.match(after)
+    if not m or val <= 0:
+        return val
+    second = float(m.group(1))
+    try:
+        change = float(re.sub(r"[()\-]", "", m.group(2))) * (-1 if re.search(r"[(\-]", m.group(2)) else 1)
+    except ValueError:
+        return val
+    if second <= 0 or abs(second - val) < 0.005:
+        return val
+    up, down, near = ((second / val - 1) * 100, (val / second - 1) * 100, 1.0) if m.group(3) else (second - val, val - second, 0.006)
+    return second if abs(change - up) <= near < abs(change - down) else val
 
 
 def _parse_press_release_eps(text, estimate):
@@ -3120,11 +3157,27 @@ def _parse_press_release_eps(text, estimate):
             if re.search(r"\(\s?\$\s?$", head[max(0, m.start(1) - 5):m.start(1)]):
                 val = -val                            # "($0.05)" is a loss
             before = re.split(r"[;.!?]\s", head[max(0, m.start() - 70):m.start()])[-1]
+            if re.search(r"outlook|guidance", before, re.I):
+                continue
+            before = re.split(r"[•●▪■◦○]", before)[-1]               # v77: the bullet above ("up 61% compared to prior year ● Adjusted ...")
+            before = re.sub(r"\bfrom\s+continuing\s+operations\b", " ", before, flags=re.I)
             after = head[m.end():m.end() + 40]
-            inside = re.sub(r"\bfrom\s+\(?\$\s?[\d.]+\)?\s+to\b", " ", m.group(0), flags=re.I)   # "from $A to $B" is fine
+            # "from $A to $B" is fine; v77: so is "for the first quarter of fiscal year 2027", when it is the newest one the release names
+            # (Zoom: "In the third quarter of fiscal year 2026, non-GAAP net income was ... $1.52 per share" is last year's)
+            inside = re.sub(r"\bfrom\s+\(?\$\s?[\d.]+\)?\s+to\b|\bfrom\s+continuing\s+operations\b", " ", m.group(0), flags=re.I)
+            named = _EPS_QUARTER_OF.search(inside)
+            if named and not re.search(_EPS_QUARTER_RE + str(int(named.group(1)) + 1) + r"\b", head, re.I):
+                inside = _EPS_QUARTER_OF.sub(" ", inside)
+            both = _EPS_RESPECTIVELY.match(after)
+            if both and re.search(r"\band\s+" + _EPS_ADJ, before + m.group(0), re.I):       # "diluted EPS and Adjusted Diluted EPS were $0.22 and $0.44, respectively"
+                val = float(both.group(1))
+            else:
+                val = _this_quarters_column(val, after)
             if _EPS_BAD.search(before) or _EPS_BAD.search(inside):
                 continue
             if _EPS_RANGE_AFTER.match(after) or _EPS_BAD_AFTER.match(after):
+                continue
+            if _EPS_COMPARED_AFTER.match(after) and not _EPS_STATED.search(m.group(0)):
                 continue
             if re.search(r"GAAP\s+and\s+$", before, re.I) and not re.match(r"GAAP\s+and", m.group(0), re.I):
                 continue                              # the GAAP half of "GAAP and non-GAAP ... of $A and $B"
@@ -3140,19 +3193,37 @@ def _parse_press_release_eps(text, estimate):
     return best[1] if best else None
 
 
-def _eps_from_press_release(ticker, report_date, estimate):
+def _read_release_eps(ticker, report_date, estimate):
+    """(adjusted EPS or None, was a release really read). "Read and not found" and "could not be read" are different answers."""
+    read = False
     try:
         cik = _sec_cik_for(ticker)
         if not cik or estimate is None:
-            return None
+            return None, False
         for acc in _sec_release_accessions(cik, report_date):
-            val = _parse_press_release_eps(_sec_release_text(cik, acc), float(estimate))
+            text = _sec_release_text(cik, acc)
+            read = read or bool(text)
+            val = _parse_press_release_eps(text, float(estimate))
             if val is not None:
-                return val
-        return None
+                return val, True
+        return None, read
     except Exception as e:
         print(f"[warn] press-release EPS fetch failed for {ticker}: {type(e).__name__}: {e}")
-        return None
+        return None, False
+
+
+def _eps_from_press_release(ticker, report_date, estimate):
+    return _read_release_eps(ticker, report_date, estimate)[0]
+
+
+def recheck_release_eps(ticker, report_date, estimate, stored):
+    """v77: a figure already taken from a release, read again until Yahoo has one: "same", "clear" (the release was read and has
+    no such figure) or the corrected number. DELL, 24.11.2026: 8.40 (its forecast) stood on the site for hours after the
+    reader was fixed, because only a blank was ever read. A release that cannot be read now changes nothing."""
+    val, read = _read_release_eps(ticker, report_date, estimate)
+    if val is None:
+        return "clear" if read else "same"
+    return "same" if abs(val - float(stored)) < 0.005 else val
 
 
 def _latest_statement_revenue(inc):
@@ -3886,7 +3957,7 @@ def refresh_earnings_results(fast: bool = False):
             todo.append((ticker, rdate, report_dt, eps_actual, rev_actual, rev_est, eps_stored, from_release))
     print(f"[info] earnings refresh{' (fast)' if fast else ''}: {len(todo)} reported name(s) still missing EPS or revenue.")
 
-    updates = []
+    updates, wrong, rechecks = [], [], 0
     t_start = time.time()
     budget = EARNINGS_FAST_BUDGET_SEC if fast else EARNINGS_REFRESH_BUDGET_SEC
     for ticker, rdate, report_dt, eps_actual, rev_actual, rev_est, eps_stored, from_release in todo:
@@ -3911,6 +3982,17 @@ def refresh_earnings_results(fast: bool = False):
                     eps_src = rdate      # init_db clears any EPS without a source date (the v8 cleanup)
                     eps_sur = round((eps_new - float(est)) / abs(float(est)) * 100, 2) if est else None
                     print(f"[info] earnings {ticker}: adjusted EPS ${eps_new} taken from the SEC press release (estimate {est}).")
+            elif rechecks < RELEASE_RECHECK_MAX:          # from a release, and Yahoo still has nothing
+                rechecks += 1
+                est = eps_est if eps_est is not None else eps_stored
+                again = recheck_release_eps(ticker, rdate, est, eps_actual)
+                if again == "clear":
+                    wrong.append((ticker, rdate))
+                    print(f"[warn] earnings {ticker}: {eps_actual} from the release is not its result after all — cleared.")
+                elif again != "same":
+                    eps_new, release_flag, eps_src = again, True, rdate
+                    eps_sur = round((again - float(est)) / abs(float(est)) * 100, 2) if est else None
+                    print(f"[warn] earnings {ticker}: {eps_actual} from the release corrected to {again}.")
         if rev_actual is None:
             if fast:
                 rev_new = _revenue_from_press_release(ticker, rdate, None, float(rev_est) if rev_est else None)
@@ -3921,9 +4003,13 @@ def refresh_earnings_results(fast: bool = False):
         if eps_new is not None or rev_new is not None:
             updates.append((ticker, rdate, eps_est, eps_new, eps_sur, eps_src, rev_new, rev_pe, release_flag))
 
-    if updates:
+    if updates or wrong:
         conn = get_conn()
         cur = conn.cursor()
+        for ticker, rdate in wrong:
+            cur.execute("""UPDATE earnings_calendar SET eps_actual = NULL, surprise_pct = NULL, eps_source_date = NULL,
+                               eps_from_release = FALSE, updated_at = NOW()
+                           WHERE ticker = %s AND report_date = %s AND eps_from_release""", (ticker, rdate))
         for ticker, rdate, eps_est, eps_new, eps_sur, eps_src, rev_new, rev_pe, release_flag in updates:
             cur.execute(
                 """UPDATE earnings_calendar SET

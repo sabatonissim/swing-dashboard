@@ -97,7 +97,8 @@ def _num(s):
 # ---------------------------------------------------------------- the AI answer, checked
 SYSTEM = """You read a company's earnings press release and copy out its FORWARD guidance: the company's own forecast for a
 coming quarter or fiscal year. Only these metrics:
-- "revenue": total revenue / net sales / total revenues (not bookings, not a segment, not gross margin, not EBITDA)
+- "revenue": total revenue / net sales / total revenues (not bookings, not a segment or one part of the revenue such as
+  subscription revenue when total revenue is given too, not gross margin, not EBITDA)
 - "eps": earnings per share (GAAP or adjusted / non-GAAP)
 - "revenue_growth": growth of total revenue or net sales in percent
 Never this quarter's results, never analysts' figures, never targets beyond the next fiscal year.
@@ -288,6 +289,23 @@ ODD_QUARTER_DEFAULT_PCT = 40
 _OWN_REVENUE = re.compile(r"\badjusted\b|\bnet revenues?\b|\brevenues?,? (?:net|less|excluding)\b|\bex-tac\b", re.I)
 
 
+# v77, WDAY 24.11.2026: "Subscription revenues of $2.600 billion" next to the consensus of ALL revenue ($2.778B) was shown as -6.4%
+# while the company raised its forecast. A part of the revenue is never compared, and the site names it ("part").
+_PART_REVENUE = re.compile(r"\b(subscriptions?|products?|services?|licen[sc]e|cloud|software|hardware|recurring|advertising|segment)\s+"
+                           r"(?:net\s+)?(?:revenues?|sales)\b", re.I)
+_WHOLE_REVENUE = re.compile(r"\btotal\s+(?:company\s+|net\s+)?(?:revenues?|sales)\b|\bproducts?\s+and\s+services?\s", re.I)
+
+
+def part_of_revenue(it: dict):
+    """"subscription" / "cloud" / ... when the quoted words are about one part of the revenue, else None."""
+    if it.get("metric") not in ("revenue", "revenue_growth"):
+        return None
+    m = _PART_REVENUE.search(it.get("quote") or "")
+    if not m or _WHOLE_REVENUE.search(it["quote"]):
+        return None
+    return re.sub(r"s$", "", m.group(1).lower())
+
+
 def _eps_gap(it):
     return (it["low"] + it["high"]) / 2 - it["est"]
 
@@ -322,11 +340,16 @@ def fair_comparisons(items: list) -> list:
     years ={x.get("fiscal_year"): x for x in out
              if x.get("period") == "year" and x.get("metric") == "eps" and x.get("est") is not None and x.get("vs_pct") is not None}
     for x in out:
+        part = part_of_revenue(x)
+        if part:
+            x["part"] = part
         vs = x.get("vs_pct")
         if vs is None or x.get("est") is None:
             continue
         why = None
-        if x.get("metric") == "revenue" and abs(vs) > OWN_MEASURE_PCT and _OWN_REVENUE.search(x.get("quote") or ""):
+        if part:
+            why = f"only the {part} revenue"
+        elif x.get("metric") == "revenue" and abs(vs) > OWN_MEASURE_PCT and _OWN_REVENUE.search(x.get("quote") or ""):
             why = "another revenue measure"
         elif x.get("metric") == "eps" and x.get("period") == "quarter":
             y = years.get(x.get("fiscal_year"))

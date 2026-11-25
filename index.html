@@ -5107,6 +5107,11 @@ function _earnGuidePeriod(g){
 }
 function _earnGuideMetric(g){
   const en = lang==='en';
+  if(g.part){   // v77: the company's forecast is of one part of its revenue (Workday: subscriptions), so it is named and not compared
+    const subs = g.part === 'subscription', grow = g.metric === 'revenue_growth';
+    return en ? `${subs ? 'Subscription revenue' : 'Part of the revenue'}${grow ? ' growth' : ''}`
+              : `${grow ? 'צמיחת ' : ''}${subs ? 'הכנסות ממנויים' : 'חלק מההכנסות'}`;
+  }
   if(g.metric === 'revenue') return en ? 'Revenue' : 'הכנסות';
   if(g.metric === 'revenue_growth') return en ? 'Revenue growth' : 'צמיחת הכנסות';
   return g.basis === 'adjusted' ? (en ? 'Adj. EPS' : 'EPS מתואם') : g.basis === 'gaap' ? (en ? 'GAAP EPS' : 'EPS (GAAP)') : 'EPS';

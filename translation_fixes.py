@@ -145,6 +145,47 @@ EN_REWRITES = [
     # "undershoots forecasts" -> "מטה את התחזיות"
     (r"\bundershoots?\s+(forecasts|expectations|estimates)\b", r"comes in below \1"),
     (r"\bovershoots?\s+(forecasts|expectations|estimates)\b", r"comes in above \1"),
+    # v77 (25.11.2026; each checked against clients5 from home):
+    # "Huang Relief Rally Fades" -> "עצרת הסיוע"; "Nvidia bounce fades" -> "הקפצת Nvidia"; "AI rally proves fleeting" -> "עצרת AI"
+    (r"\brelief rally\b", "rebound"),
+    (r"\bbounce(?=\s+(?:fades?|fizzles?|fading|stalls?|cools?)\b)", "rebound"),
+    (r"(?<!-)\b(AI|chip|tech|memory|software) rally reversal\b", r"reversal in \1 stocks"),
+    (r"(?<!-)\b(AI|chip|tech|memory|software) rally (proves?)\b", r"the surge in \1 stocks \2"),
+    (r"\bsingle session\b", "single trading day"),
+    # "Stocks Settle Mostly Lower" -> "מתיישבות"; "WTI trades below settlement ... crude build" -> "מתחת להתנחלות ... בנייה קטנה"
+    (r"\b(stocks|shares|futures|oil|crude|brent|wti|gold|silver|copper|prices|wall street)\s+settle(s|d)?\b(?=\s+(?:mostly|at|up|down|higher|lower|near|above|below|little|mixed|flat)\b)",
+     lambda m: m.group(1) + " close" + (m.group(2) or "")),
+    (r"\b(above|below)\s+settlement\b", r"\1 the closing price"),
+    (r"\bcrude (?:oil )?build\b", "rise in crude oil inventories"),
+    (r"\bcrude (?:oil )?draw\b", "drop in crude oil inventories"),
+    (r"\bon an?\s+rout\s+in\b", "on plunge in"),
+    (r"\bmajor\s+sell-?off\b", "major wave of selling"),
+    # "Risk of Fed Hikes Stalling Economy" -> "עליית עליות הפד בכלכלה"; "Fed hike bets" -> "הימורי עלייה"; "Case for Another Hike" -> "לטיול נוסף"
+    (r"\brisk of ((?:fed|ecb|boe|boj|rba)\b[\w\s-]{3,40}?) stalling (?:the )?economy\b", r"risk that \1 stall the economy"),
+    (r"\b(fed|ecb|boe|boj|boc|rba|rbnz) hike(s?)\b(?=\s+(?:bets?|stall|stalling|path|odds|fears|expectations|hopes|risk|risks|wagers|speculation|looms?|ahead)\b|\s*[,.;:]|\s*$)",
+     r"\1 interest rate hike\2"),
+    (r"^(?=.*\b(?:fed|fomc|ecb|boe|boj|boc|rba|rbnz|central banks?)\b)(.*?)\b(another|further|more) hike(s?)\b", r"\1\2 interest rate hike\3"),
+    # "Dell reports Q3 beat on revenue and earnings" -> "רווחים ורווחים"; "amid earnings beats" -> "פעימות הרווח"
+    (r"\breports?\s+(q[1-4]\s+)?beat on (revenues?|sales) and (earnings|profit)\b",
+     lambda m: "reports " + (m.group(1) or "") + m.group(2) + " and " + m.group(3) + " above estimates"),
+    (r"\bearnings beats\b", "better-than-expected earnings"),
+    (r"\b(tops?|beats?)\s+(q[1-4])\s+(earnings(?: and revenues?)?|revenues?)\s+estimates\b", r"reports \2 \3 above estimates"),
+    (r"\bmisses\s+(q[1-4])\s+(earnings(?: and revenues?)?|revenues?)\s+estimates\b", r"reports \1 \2 below estimates"),
+    (r"\b(q[1-4]) earnings match estimates\b", r"\1 earnings in line with estimates"),
+    (r"\b(earnings|results|profits?|sales|revenues?) (?:crush(?:es|ed)?|smash(?:es|ed)?) (estimates|expectations|forecasts)\b", r"\1 are far above \2"),
+    (r"\bdemand roars\b", "demand surges"),
+    (r"\b(stock|stocks|shares) tanks?\b", r"\1 plunges"),
+    (r"\bblowout (earnings|results|quarter)\b", r"very strong \1"),
+    # "strong guidance" -> "הנחיה / הדרכה חזקה"
+    (r"(?<!forward )(?<!fed )(?<!policy )(?<!rate )\bguidance\b", "outlook"),
+    (r"\b(?:sour|sours|soured) on\b", "lose faith in"),
+    (r"\binflation release\b", "inflation data"),
+    (r"[;,]\s*((?:US |U\.S\. |key )?(?:cpi|pce|ppi)(?: inflation)?) awaited\b", r"; markets await \1"),
+    (r"\b(investors|traders|markets|analysts) eye\b", r"\1 watch"),
+    # the currencies: "Aussie slumps" -> "אוסי צונחת", "Kiwi Slides" -> "קיווי גולש"
+    (r"\baussie\b(?=\s+(?:and\b|set\b|slumps?|falls?|slides?|rises?|drops?|jumps?|weakens?|tumbles?|steadies|slips|dollar\b)|\s*[,;]|\s*$)(?:\s+dollar\b)?", "Australian dollar"),
+    (r"\bkiwi\b(?=\s+(?:and\b|set\b|slumps?|falls?|slides?|rises?|drops?|jumps?|weakens?|tumbles?|dollar\b))(?:\s+dollar\b)?", "New Zealand dollar"),
+    (r"\bdollar rallies\b", "dollar jumps"),
 ]
 
 HE_FIXES = [
@@ -217,6 +258,14 @@ HE_FIXES = [
     ("נתוני האינפלציה בארה\"ב ממתינים", "השווקים ממתינים לנתוני האינפלציה בארה\"ב"), ("מניית של אנתרופיק", "מניית אנתרופיק"),
     ("סחר האג\"ח של שוק האג\"ח להעלאות הפד שנובע מנסיגה במניות", "הפוזיציה הפופולרית בשוק האג\"ח על העלאות ריבית נפגעה מירידת המניות"),
     ("תפקידו הפוטנציאלי של קווין וורש בפד", "מדיניות הפד בראשות קווין וורש"),
+    # v77 (25.11.2026): rows saved before the EN_REWRITES of the same day
+    ("כשעצרת הסיוע של הואנג דועכת", "כשהריבאונד של הואנג דועך"), ("עצרת הסיוע כבר דועכת", "הריבאונד כבר דועך"), ("מתחת להתנחלות", "מתחת למחיר הסגירה"),
+    ("על בנייה קטנה של גולמי", "על עלייה קטנה במלאי הנפט הגולמי"), ("הסיכון לעליית עליות הפד בכלכלה", "הסיכון שהעלאות ריבית של הפד יעכבו את הכלכלה"),
+    ("מניות מתיישבות לרוב בירידה במניות", "המניות נסגרו ברובן בירידה עם צניחה במניות"), ("על רווחים ורווחים ברבעון", "על הכנסות ורווחים מעל ההערכות ברבעון"),
+    ("פעימות הרווח", "רווחים טובים מהצפוי"), ("מחממים על אנתרופיק", "מאבדים אמון באנתרופיק"), ("שחרור האינפלציה", "פרסום נתוני האינפלציה"),
+    ("הקפצת Nvidia דועכת", "הריבאונד של Nvidia דועך"), ("היפוך עצירת בינה מלאכותית", "היפוך במניות הבינה המלאכותית"), ("לטיול נוסף", "להעלאת ריבית נוספת"),
+    ("יום עבודה (WDAY) בראש הרווחים וההערכות ההכנסות", "Workday (WDAY) מדווחת על רווחים והכנסות מעל ההערכות"), ("הנחיה חזקה", "תחזית חזקה"),
+    ("מלאי מניות של Dell לאחר רווחי התפוצצות", "מניית Dell צוללת לאחר רווחים חזקים מאוד"), ("גווני אפור", "Grayscale"), ("לאחר סילוף גדול", "לאחר גל מכירות גדול"),
     ("מפרסם הפסד", "רושם הפסד"), ("מפרסמת הפסד", "רושמת הפסד"), ("מפרסם עלייה", "רושם עלייה"), ("מפרסמת עלייה", "רושמת עלייה"),
 ]
 
@@ -235,6 +284,7 @@ COMPANY_WORD_NAMES = [
     "Digital Realty", "American Tower", "Crown Castle", "Boston Scientific", "Intuitive Surgical", "Marathon Petroleum",
     "Steel Dynamics", "Vulcan Materials", "Republic Services", "Waste Management", "Quest Diagnostics", "Cardinal Health",
     "Southwest Airlines", "United Airlines", "American Airlines", "Delta Air Lines", "Principal Financial", "Constellation Brands",
+    "Workday", "Tapestry", "Occidental", "Grayscale", "Toll Brothers", "Dick's Sporting Goods",      # v77
     "Constellation Energy", "Dominion Energy", "Duke Energy", "Charter Communications", "Church & Dwight", "Brown & Brown",
 ]
 _SUFFIX = "Inc"
@@ -275,7 +325,9 @@ _PLAIN_EN = {"the", "a", "an", "of", "to", "in", "on", "at", "as", "is", "are", 
              "by", "from", "after", "before", "below", "above", "over", "under", "into", "amid", "its", "their", "that", "this",
              "will", "says", "said", "fell", "rose", "falls", "rises", "than", "more", "not", "has", "have", "had", "be",
              # v51: a headline in Title Case has no small words: "רווחי Nvidia ו-Anthropic IPO Lead Market Week" (15.11.2026)
-             "lead", "leads", "week", "market", "markets", "stocks", "shares", "ahead", "test", "tests", "faces", "face"}
+             "lead", "leads", "week", "market", "markets", "stocks", "shares", "ahead", "test", "tests", "faces", "face",
+             # v77: "Dow Jones Futures: Nvidia, Anthropic Lead AI Retreat אבל מגזרים רבים חזקים"; "Puts, Eyes Fresh Nvidia Short קרוב"
+             "retreat", "rally", "futures", "fresh", "eyes", "short", "many", "sectors"}
 
 
 def half_translated(hebrew: str) -> bool:

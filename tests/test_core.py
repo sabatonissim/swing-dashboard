@@ -3725,3 +3725,130 @@ def test_v76_headlines_of_24_11_evening():
                       ("לחץ שולי על רקע", "לחץ על שולי הרווח על רקע"), ("Wall St נפתח נמוך יותר", "וול סטריט נפתחת נמוך יותר"),
                       ("מניית של אנתרופיק יורדת", "מניית אנתרופיק יורדת"), ("נתוני האינפלציה בארה\"ב ממתינים", "השווקים ממתינים לנתוני האינפלציה")):
         assert good in tf.fix_he(bad) and tf.fix_he(tf.fix_he(bad)) == tf.fix_he(bad), bad
+
+def test_v77_adjusted_eps_in_real_releases(scanner):
+    """Measured on 321 real releases (28.10-24.11.2026) against Yahoo: right 130 -> 179, wrong 10 -> 3 (and those 3 are the company's
+    adjusted figure where Yahoo holds GAAP: AMRZ, UBER, WSM). The sentences are the companies' own."""
+    p = scanner._parse_press_release_eps
+    for want, est, text in (
+            (2.82, 2.74, "impacted by restructuring expenses of $0.21 per share. Non-GAAP diluted net income per share was $2.82, compared to non-GAAP diluted net income per share of $2.32 in the same period last year."),
+            (0.83, 0.74, "• Fourth quarter non-GAAP diluted net EPS of $0.83, inclusive of tariff refunds, and down 10.8% from the prior year period"),
+            (3.52, 3.55, "• Reported EPS decreased 11.7% to $1.96 • Adjusted EPS (1) increased 10.3% to $3.52 Third Quarter Net Sales Growth"),
+            (0.87, 0.74, "Third-Quarter 2026 Reported (4) Diluted EPS of $0.56, and Adjusted (3) Diluted EPS of $0.87 ■ Raises Full-Year"),
+            (2.66, 2.20, "EPS of $3.02 increased 57.3%. • Adjusted-diluted EPS of $2.66 increased 35.7%."),
+            (0.80, 0.73, "● GAAP Diluted EPS of $0.79, up 61% compared to prior year ● Adjusted Diluted EPS of $0.80, up 74% compared to prior year"),
+            (0.80, 0.74, "• Q3 EPS of $0.53 1 ; adjusted 2 EPS of $0.80 1 which grew 19% versus prior year 2026 Outlook • Increasing adjusted EPS guidan ce to $2.97 t o $3.05"),
+            (1.90, 1.88, "Third quarter diluted earnings per share were $1.00, a decrease of 13.8%; adjusted 1 diluted earnings per share were $1.90, consistent"),
+            (3.52, 3.49, "GAAP net income was $95.1 million, or $2.33 per diluted share, up 12.7%. Non-GAAP net income was $143.4 million, or $3.52 per diluted share, up 10.0%."),
+            (4.57, 4.22, "Non-GAAP net income for the first quarter of fiscal year 2027 was $461.1 million, or $4.57 per diluted share."),
+            (1.15, 1.19, "Non-GAAP Operating Earnings of $1.15 per share in Q3 2026 and $3.56 per share YTD"),
+            (0.78, 0.71, "Diluted EPS increased +78.9% to $1.02 Adjusted EPS was $0.78 which increased +5.5%"),
+            (2.21, 1.86, "Earnings per share 2,3 $2.29 Adjusted earnings per share 1,2,3 $2.21 Cash flow"),                 # was 2.29
+            (2.21, 1.82, "and adjusted diluted EPS (1) grew 78% to $2.21 compared to third quarter 2025. Adjusted diluted EPS (1) $2.22 - $2.28 Adjusted diluted EPS growth"),
+            (0.44, 0.35, "Third quarter 2026 diluted earnings per share and Adjusted Diluted EPS¹ were $0.22 and $0.44, respectively."),   # was 0.22
+            (1.86, 1.85, "Adjusted Earnings Per Share 5 $1.62 $1.86 15% $6.01 $6.59 10%"),                                   # was 1.62, last year's
+            (0.49, 0.40, "Adjusted EPS (Diluted) $ 0.45 $ 0.49 $ 0.04 $ 0.96"),
+            (1.05, 1.00, "Adjusted diluted earnings per share5 $ 1.05 $ 1.02 2.9% $ 1.78"),                                  # this year first: stays
+            (None, 2.77, "Adjusted earnings per share up 22% to $2.85 , excluding total notable items"),
+            # Zoom: the only figure in this shape is last year's
+            (None, 1.49, "Third Quarter of Fiscal Year 2027 results. Non-GAAP net income for the third quarter of fiscal year 2026 was $462.8 million, or $1.52 per share."),
+            (None, 1.49, "In the third quarter of fiscal year 2026, non-GAAP net income was $462.8 million, or $1.52 per share.")):
+        assert p(text, est) == want, (want, p(text, est), text)
+
+
+def test_v77_a_release_figure_is_read_again(scanner, monkeypatch):
+    """DELL: 8.40 (the forecast) stayed on the site for hours after the reader was fixed."""
+    import datetime as _dt
+    answers = {}
+    monkeypatch.setattr(scanner, "_read_release_eps", lambda t, d, e: answers[t])
+    d = _dt.date(2026, 11, 24)
+    answers.update(GONE=(None, True), DOWN=(None, False), SAME=(3.2, True), FIXED=(9.45, True))
+    assert scanner.recheck_release_eps("GONE", d, 6.59, 8.4) == "clear"
+    assert scanner.recheck_release_eps("DOWN", d, 6.59, 8.4) == "same"          # the SEC did not answer: nothing changes
+    assert scanner.recheck_release_eps("SAME", d, 3.07, 3.2) == "same"
+    assert scanner.recheck_release_eps("FIXED", d, 9.0, 8.4) == 9.45
+
+
+def test_v77_the_release_could_not_be_read(scanner, monkeypatch):
+    import datetime as _dt
+    d = _dt.date(2026, 11, 24)
+    monkeypatch.setattr(scanner, "_sec_cik_for", lambda t: 1)
+    monkeypatch.setattr(scanner, "_sec_release_accessions", lambda c, dd: ["a"])
+    monkeypatch.setattr(scanner, "_sec_release_text", lambda c, a: "no figure here")
+    assert scanner._read_release_eps("X", d, 1.0) == (None, True) and scanner._eps_from_press_release("X", d, 1.0) is None
+    monkeypatch.setattr(scanner, "_sec_release_text", lambda c, a: None)
+    assert scanner._read_release_eps("X", d, 1.0) == (None, False)
+    monkeypatch.setattr(scanner, "_sec_release_text", lambda c, a: "Adjusted EPS of $1.05 for the quarter")
+    assert scanner._read_release_eps("X", d, 1.0) == (1.05, True)
+
+    def down(*a):
+        raise OSError("SEC")
+    monkeypatch.setattr(scanner, "_sec_release_accessions", down)
+    assert scanner._read_release_eps("X", d, 1.0) == (None, False)
+
+
+def test_v77_part_of_the_revenue_is_not_the_revenue():
+    """Workday, 24.11.2026: subscription revenue against the consensus of all revenue, shown as -6.4% while the forecast was raised."""
+    import earnings_guidance as eg
+    item = lambda q, vs=-6.4, metric="revenue", est=2778376840.0: {"metric": metric, "period": "quarter", "quarter": 4, "fiscal_year": 2027, "est": est,
+                                                                   "low": 2.6e9, "high": 2.6e9, "basis": None, "quote": q, "change": None, "vs_pct": vs}
+    w = [item("Subscription revenues of $2.600 billion, representing growth of 10%")]
+    got = eg.fair_comparisons(w)
+    assert got[0]["part"] == "subscription" and got[0]["est"] is None and got[0]["vs_pct"] is None and "subscription" in got[0]["unfair"]
+    assert "part" not in w[0] and eg.fair_comparisons(got) == got
+    assert eg.fair_comparisons([item("subscription revenue growth of 13%", None, "revenue_growth", None)])[0]["part"] == "subscription"
+    assert eg.fair_comparisons([item("Cloud revenue of $2.6 billion")])[0]["part"] == "cloud"
+    for q in ("Contract revenues $7.66 billion to $7.73 billion", "Total revenues of $2.6 billion, of which subscription revenues of $2.4 billion",
+              "Net sales of $5.7 billion to $5.8 billion", "Revenue is expected to be between $70.0 million and $75.0 million", "products and services revenue of $2 billion"):
+        assert eg.fair_comparisons([item(q)]) == [item(q)], q
+
+
+def test_v77_headlines_of_25_11():
+    import news_links as nl
+    import translation_fixes as tf
+    for t in ("Ahead of Polestar Earnings, Here's What Barchart Data Says Comes Next for PSNY Stock", "GDS Holdings And 2 Other AI Infrastructure Stocks",
+              "AeroVironment, Inc. to Announce Second Quarter of Fiscal Year 2027 Earnings and Host Conference Call", "THOR Industries to Release 2027 Q1 Earnings on Dec. 8",
+              "MIND Technology Announces Fiscal 2027 Third Quarter Earnings Release and Conference Call Schedule", "Medtronic plc Q2 2027 Earnings Call Summary",
+              "Strapped for cash, a divided St. Marie clashes over water rate hike", "PNM requests new rate hike months after the last increase went into effect",
+              "ICC approves $74 million rate hike for Illinois American Water Co. Customers", "Henderson commissioners vote in favor of utility rate hike",
+              "If You Invest $5,000 Into These 3 Stocks, You Could Have $10,000 by 2030", "Gas Prices Are Weak, but EQT (EQT) Made Our List of Dirt-Cheap Stocks for 2027",
+              "Josh Brown's best stocks in the market: SharkNinja, Target and eBay", "Jim Cramer sizes up six retail stocks after earnings — and names his two favorites",
+              "Most Stocks Are Losers. Here's How You Can Still Win", "Jim Cramer and Tom Lee are Buying More AI Stocks. Are They Right?",
+              "Watch Retailers Post Strong Earnings Ahead of Holidays", "META Stock Quote Price and Forecast", "Caleb Martin posts 13 points, seven ‘stocks’",
+              "UNL Husker Pantry stocks up ahead of holiday closures", "How the Federal Reserve Bank stays connected to you", "Tax Interest Rates To Rise In 1st Quarter",
+              "Li Auto (LI) Could Be 29% Below Fair Value On Q3 Earnings Watch", "Learn Why The Bull Case For IQVIA Stock Could Change Following Earnings Beat",
+              "Is MiniMed Group (MMED) A Bargain As Earnings Recover And Flex Launches?", "Earnings Upgrades Could Be A Big Deal For EOG Stock",
+              "Poste Italiane (BIT:PST) Reports Stronger Q3 Earnings", "SanDisk Trades at 4.6x Earnings—And Still Got Cut in Half",
+              "NRR: Earnings and rents grew, while H2 disposals target a return toward sub-40% LTV", "Dimeco announces third-quarter earnings",
+              "GoodRx Holdings, Inc. reports results for the quarter ended September 30 - Earnings Summary"):
+        assert nl.is_unwanted_headline(t), t
+    for t in ("U.S. Stocks Mixed as Huang Relief Rally Fades", "Fed rate hike is driving the 'story of the year': Morgan Stanley", "Utility stocks fall as rate hike bets build",
+              "Dell reports Q3 beat on revenue and earnings, announces $25 billion share buyback", "CPI: Core inflation rose while food fell, and earnings lagged",
+              "Nvidia announces $50 billion buyback with third-quarter results", "Workday (WDAY) Tops Q3 Earnings and Revenue Estimates", "Dow jumps 500 points, led by banks",
+              "Investors watch tariffs and inflation in Europe", "Gold price falls 2% on hawkish Fed bets", "Illinois Tool Works raises outlook", "Mortgage rate hike hits customers",
+              "Berkshire is buying more Apple stock", "Wall Street strategists lay out the bull case for the S&P 500", "Nvidia to report earnings on Wednesday"):
+        assert not nl.is_unwanted_headline(t), t
+    strip = nl.strip_outlet_suffix
+    assert strip("Global stocks mixed | Daily Sabah", "Daily Sabah") == "Global stocks mixed"
+    assert strip("Dollar up ahead of inflation data By Reuters - Investing.com", "Investing.com") == "Dollar up ahead of inflation data"
+    p = tf.prep_en
+    for a, b in (("U.S. Stocks Mixed as Huang Relief Rally Fades", "U.S. Stocks Mixed as Huang rebound Fades"),
+                 ("WTI trades below settlement as API reports small U.S. crude build", "WTI trades below the closing price as API reports small U.S. rise in crude oil inventories"),
+                 ("Stocks Settle Mostly Lower on a Rout in Chipmakers", "Stocks close Mostly Lower on plunge in Chipmakers"), ("Oil settles at three-month low", "Oil closes at three-month low"),
+                 ("Bond Traders Rush to Hedge Risk of Fed Hikes Stalling Economy", "Bond Traders Rush to Hedge risk that Fed interest rate Hikes stall the economy"),
+                 ("Gold holds near 15-mth lows on Fed hike bets; PCE inflation awaited", "Gold holds near 15-mth lows on Fed interest rate hike bets; markets await PCE inflation"),
+                 ("BOJ's Indicator Backs Case for Another Hike", "BOJ's Indicator Backs Case for Another interest rate hike"),
+                 ("Dell reports Q3 beat on revenue and earnings", "Dell reports Q3 revenue and earnings above estimates"), ("Investors sour on Anthropic", "Investors lose faith in Anthropic"),
+                 ("Workday (WDAY) Tops Q3 Earnings and Revenue Estimates", "Workday Inc (WDAY) reports Q3 Earnings and Revenue above estimates"),
+                 ("Ambarella (AMBA) Misses Q3 Earnings and Revenue Estimates", "Ambarella (AMBA) reports Q3 Earnings and Revenue below estimates"),
+                 ("Autodesk shares fall despite strong guidance", "Autodesk shares fall despite strong outlook"), ("Traders Eye US Inflation", "Traders watch US Inflation"),
+                 ("Aussie slumps before inflation release", "Australian dollar slumps before inflation data"), ("Dell stock tanks after blowout earnings", "Dell stock plunges after very strong earnings")):
+        assert p(a).lower() == b.lower(), (p(a), b)
+    for same in ("Fed hikes rates by a quarter point", "Fed forward guidance stays unchanged", "Aussie shares end lower", "Traders settle lawsuit with the SEC", "All eyes on the Fed"):
+        assert p(same) == same, p(same)
+    assert tf.half_translated("Dow Jones Futures: Nvidia, Anthropic Lead AI Retreat אבל מגזרים רבים חזקים")
+    assert not tf.half_translated("מניות Dick's Sporting Goods ו-Best Buy עולות")
+    assert tf.fix_he("Workday Inc (WDAY) מדווחת על רווחים") == "Workday (WDAY) מדווחת על רווחים"
+    for bad, good in (("המניות בארה\"ב התערבבו כשעצרת הסיוע של הואנג דועכת", "כשהריבאונד של הואנג דועך"), ("WTI נסחרת מתחת להתנחלות מכיוון", "מתחת למחיר הסגירה"),
+                      ("ממהרים לגדר את הסיכון לעליית עליות הפד בכלכלה", "העלאות ריבית של הפד"), ("המשקיעים מחממים על אנתרופיק", "מאבדים אמון באנתרופיק")):
+        assert good in tf.fix_he(bad) and tf.fix_he(tf.fix_he(bad)) == tf.fix_he(bad), bad

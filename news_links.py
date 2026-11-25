@@ -96,6 +96,12 @@ PROMO_RE = re.compile(r"\b(stocks? to (buy|watch|own|bet on)|to bet on|should yo
                       # v76b: "Insiders Are Loading Up on These 5 Stocks", "These 4 Utility Stocks Pay Dividends", "Salesforce Stock Looks Cheap"
                       r"these \d+ (?:[\w&'-]+ ){0,2}stocks|stock looks (?:cheap|expensive)|how to watch|"
                       r"wall street pro|make you (?:some |a lot of )?(?:cash|money|rich)|"
+                      # v77 (25.11.2026): "If You Invest $5,000 Into These 3 Stocks, You Could Have $10,000 by 2030", "Made Our List of
+                      # Dirt-Cheap Stocks", "Josh Brown's best stocks in the market", "Cramer ... names his two favorites",
+                      # "These Most Accurate Analysts Revise Forecasts", "Here's How You Can Still Win", "GDS Holdings And 2 Other AI ... Stocks"
+                      r"if you (?:had )?invest(?:ed)? \$|dirt[- ]cheap stocks?|(?:made|on) our list|best stocks in the market|most accurate analysts|"
+                      r"names? (?:his|her) (?:\w+ )?favorites|\d favorites|how you can still win|and \d+ other (?:[\w&'-]+ ){0,4}stocks|"
+                      r"generate a return from|are they right|barchart data|"
                       r"screaming buys?)\b"      # "Tech Sell-Off: Two AI Stocks That Are Screaming Buys Right Now" (11.11.2026)
                       r"|^\s*(?:top\s+)?\d+\s+[\w\s&'-]{0,40}\bstocks?\b"
                       # v51 (live feed 15.11.2026): "Bank of America names 5 bullish stocks amid market fears"
@@ -129,6 +135,10 @@ _FORMAT_JUNK_RE = re.compile(r"^\s*(watch|video|listen|podcast)\s*[:\-\u2013\u20
                              r"^\s*file photo\b|^\s*(?:photos?|pictures?)\s*:|^\s*sa asks\b|"
                              # v74 (24.11.2026): "Earnings Calendar for:" was the headline of the earnings news of the day
                              r"^\s*earnings calendar\b|"
+                             # v77 (25.11.2026): "Watch Retailers Post Strong Earnings Ahead of Holidays" (a video), "META Stock Quote Price and
+                             # Forecast", "Caleb Martin posts 13 points, seven 'stocks'", "UNL Husker Pantry stocks up", "Earnings Check-In: ..."
+                             r"^\s*watch\s+(?!list\b)|\bstock quote price\b|\bposts \d+ points,|\bpantry stocks\b|\bearnings check-in\b|"
+                             r"\bstays connected to you\b|^\s*tax interest rates\b|"
                              # v76: "... Stays Elevated | Options Market Statistics"
                              r"\|\s*options market statistics\b", re.I)
 # v37: machine-made pages about one company's report: 1,029 of the 1,564 headlines of 5.11.2026 were tagged as earnings, most
@@ -154,11 +164,25 @@ EARNINGS_CHATTER_RE = re.compile(r":\s*(fiscal\s+)?q[1-4]\s+earnings snapshot\s*
                                  r"\bkey metrics\b.*\b(?:estimates|have to say|tell|compare)\b|"
                                  r"^\s*(?:is|are|has|have)\b.+\b(?:lagg(?:ing|ed)|outperform(?:ing|ed)|outpac(?:ing|ed))\b.+\bthis year\s*\?|"
                                  r"\b(?:stock|shares?)\s+could be\s+(?:under|over)valued\b|\bearnings call (?:maps out|signals|points to|shows)\b|"
+                                 # v77 (25.11.2026): announcements of a date ("AeroVironment, Inc. to Announce ... Earnings and Host Conference
+                                 # Call", "THOR Industries to Release 2027 Q1 Earnings on Dec. 8"), call summaries, a local bank's "announces
+                                 # third-quarter earnings", and the valuation templates of Simply Wall St on Yahoo (9 of 60 headlines)
+                                 r"\bto (?:announce|release)\b.*\b(?:earnings|results)\b.*(?:\bhost\b|\bconference call\b|\bon [a-z]{3,9}\.? \d)|"
+                                 r"\bearnings release and conference call\b|\bearnings call (?:summary|recap|details)\b|\brecap of .*\bearnings call\b|"
+                                 r"\bannounces? (?:first|second|third|fourth)[- ]quarter (?:earnings|results)\s*$|- earnings summary\s*$|"
+                                 r"\breports results for the quarter ended\b|"
+                                 r"\bfair value\b|^(?=.*\bstock\b).*\bbull case\b|\bchange the case for\b|\bearnings beat change\b|\b(?:could be|be) a (?:game changer|big deal) for\b|"
+                                 r"\bstill (?:a bargain|cheap|trading at a discount)\b|\b(?:is|are)\b.*\ba bargain\b|\btrade at a discount\b|\blooks? (?:over|under)valued\b|"
+                                 r"\balready reflect(?:s|ed)? its\b|\bjustify its price\b|\bhow investors are reacting to\b|\bstrong earnings potential\b|"
+                                 r"\bmeans for shareholders\b|\bstock gains attention\b|\bstocks with pricing power\b|"
+                                 r"\bquant[- ](?:rated|ratings?|rankings?)\b|\btrades at [\d.]+x earnings\b|"
+                                 # TradingView's machine summaries of companies abroad ("NRR: Earnings and rents grew, while H2 disposals ...")
+                                 r"^(?!(?:CPI|PPI|PCE|GDP|FED|WSJ|ECB|BOJ|BOE|OPEC|IMF)\b)(?-i:[A-Z]{3,5}): .*\b(?:earnings|revenue|ffo|aum)\b.*\b(?:while|as|but|and)\b|"
                                  # a company with a few million dollars of sales ("Perimeter Medical Imaging AI Q3 GAAP EPS of $0.02, revenue of $0.6M")
                                  r"\beps of -?\$[\d.]+.*\brevenue of \$\d{1,2}(?:\.\d+)?M\b",
                                  re.I)
 # v74: a page about one company listed on another country's exchange ("(LSE:PHP)"); one that is listed in the US too stays.
-_FOREIGN_LISTING_RE = re.compile(r"\((?:LSE|LON|AIM|ASX|TSX|TSXV|CVE|NSE|BSE|SGX|KLSE|HKG|SEHK|JSE|EPA|ETR|AMS|TSE|TADAWUL)\s?:\s?[A-Z0-9.&-]+\)")
+_FOREIGN_LISTING_RE = re.compile(r"\((?:LSE|LON|AIM|ASX|TSX|TSXV|CVE|NSE|BSE|SGX|KLSE|HKG|SEHK|JSE|EPA|ETR|AMS|TSE|TADAWUL|BIT|XTRA|SWX|BME|ENXTPA|OM|WSE)\s?:\s?[A-Z0-9.&-]+\)")
 _US_LISTING_RE = re.compile(r"\b(?:NYSE|NASDAQ|AMEX|NYSEARCA)\b", re.I)
 # Countries whose domestic news rarely moves US stocks — dropped unless the headline also ties it to the US / world markets
 # v37: also the adjectives. "Philippine Inflation Surges to 7.8%" passed and made the overview of a day the S&P 500 fell 4.36%.
@@ -203,6 +227,14 @@ _LOCAL_MARKET_RE =re.compile(r"\b(stocks?|markets?|shares)\b", re.I)
 _SUBSTANCE_RE = re.compile(r"\d|%|\$|\b(stocks?|shares|markets?|fed|rates?|earnings|oil|gold|bitcoin|economy)\b", re.I)
 
 
+# v77 (25.11.2026): eleven headlines of one night were on a water company's tariff ("Illinois American Water rate hike", "PNM
+# requests new rate hike", "Commissioners vote in favor of utility rate hike"), shown as interest rates ("העלאת ריבית המים").
+_UTILITY = r"(?:water|sewer|utility|utilities|electric(?:ity)?|PNM|SDG&E|PG&E|ComEd|toll|commissioners|commerce commission|customers|ratepayers)"
+_UTILITY_RATE_RE = re.compile(r"\b" + _UTILITY + r"\b.{0,90}\brate (?:hike|increase)|\brate (?:hike|increase)s?\b.{0,90}\b" + _UTILITY + r"\b|"
+                              r"\brequests? (?:a )?new rate hike\b", re.I)
+_CENTRAL_BANK_RE = re.compile(r"\b(?:fed|fomc|federal reserve|interest|ecb|boe|boj|boc|rba|central banks?|mortgage|treasur(?:y|ies)|stocks?)\b", re.I)
+
+
 def is_unwanted_headline(title: str) -> bool:
     """True for promotional listicles, video/Q&A items, too-short meaningless titles and far-away domestic news."""
     t = (title or "").strip()
@@ -215,6 +247,8 @@ def is_unwanted_headline(title: str) -> bool:
     if len(t.split()) < 5 and not _SUBSTANCE_RE.search(t):
         return True
     if _SANCTIONS_RE.search(t) and (not _SANCTIONS_SUBJECT_RE.search(t) or _SPORTS_RE.search(t)):
+        return True
+    if _UTILITY_RATE_RE.search(t) and not _CENTRAL_BANK_RE.search(t):
         return True
     if LOCAL_RE.search(t) and _LOCAL_TAX_RE.search(t):
         return True
@@ -357,17 +391,21 @@ def clean_publisher(name: str) -> str:
 
 def strip_outlet_suffix(title: str, publisher: str) -> str:
     """A title without a trailing " - <outlet name>" (Google News adds it; long outlet names escaped the old 40-char rule)."""
-    return _TICKER_TAIL_RE.sub("", _without_outlet((title or "").strip(), publisher))
+    return _BYLINE_RE.sub("", _TICKER_TAIL_RE.sub("", _without_outlet((title or "").strip(), publisher)))
 
 
 # v76, Benzinga: "Trump Tariffs Return, China Could Be Hit Hardest: WSJ - NVIDIA (NASDAQ:NVDA)"
 _TICKER_TAIL_RE = re.compile(r"(?<=\S)\s+-\s+[^-]{2,60}\((?:NASDAQ|NYSE|AMEX|ARCA|OTC)\s?:\s?[A-Z.]{1,6}\)\s*$")
 
 
+_BYLINE_RE = re.compile(r"\s+By (?:Reuters|Investing\.com)\s*$")       # v77: "Dollar up ahead of inflation data By Reuters" (also "מאת רויטרס")
+
+
 def _without_outlet(title: str, publisher: str) -> str:
     for name in {(publisher or "").strip(), clean_publisher(publisher)}:
-        if name and title.endswith(" - " + name):
-            return title[: -len(" - " + name)].strip()
+        for sep in (" - ", " | "):                                     # v77: "... AI rally reversal | Daily Sabah"
+            if name and title.endswith(sep + name):
+                return title[: -len(sep + name)].strip()
     short = clean_publisher(publisher)
     i = title.rfind(" - " + short) if short else -1
     if i > 0 and len(short) >= 4:          # the translated tail of a long tagline: cut from the outlet name on
