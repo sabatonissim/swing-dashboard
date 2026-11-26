@@ -306,7 +306,9 @@
   .chart-tab.active{background:var(--amber);color:var(--on-amber);border-color:var(--amber);font-weight:700;}
   .chart-tab:hover:not(.active){border-color:var(--amber-dim);color:var(--text);}
   #market-tv-chart{height:250px;border-radius:10px;overflow:hidden;background:var(--panel);direction:ltr;}
-  .sector-chart-wrap{height:250px;border-radius:10px;overflow:hidden;background:var(--panel);border:1px solid var(--line);padding:8px;box-sizing:border-box;}
+  .sector-chart-wrap{height:250px;border-radius:10px;overflow:hidden;background:var(--panel);border:1px solid var(--line);padding:8px;box-sizing:border-box;position:relative;}
+  .sector-cap{position:absolute;top:6px;left:8px;right:8px;text-align:center;font-size:11px;line-height:1.3;color:var(--text-dim);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none;}   /* v79d: the 1D / 1W caption */
   .pct-up{color:var(--green);}
   .pct-down{color:var(--red);}
 
@@ -317,7 +319,7 @@
      row — the heading takes one end, the toggle and the buttons sit together at the other */
   .movers-head-row{display:flex;justify-content:flex-start;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap;}
   .movers-head-row .movers-title{margin-bottom:0;margin-right:auto;}
-  html[lang="he"] #page-home .movers-head-row .movers-title{margin-right:0;margin-left:auto;}
+  #page-home .movers-head-row .movers-title{margin-right:0;margin-left:auto;}   /* v79d: both languages (see .home-grid) */
   .movers-toggle{display:flex;gap:4px;background:var(--panel-2);border-radius:8px;padding:2px;}
   .movers-toggle-btn{background:transparent;border:none;color:var(--text-dim);font-size:10.5px;font-weight:600;padding:5px 9px;border-radius:6px;cursor:pointer;font-family:'Heebo',sans-serif;white-space:nowrap;}
   .movers-toggle-btn.active{background:var(--amber);color:var(--on-amber);}
@@ -419,17 +421,29 @@
   /* v43b (owner: "in Hebrew it is still aligned to the left"): on the home page Hebrew reads from the right — the
      main column (scanner, news) on the right, the side column on the left, every heading at the right end of its row.
      Like the earnings calendar (v40c), a deliberate exception to "the layout is LTR in both languages". */
-  html[lang="he"] .today-head,
-  html[lang="he"] #page-home .col-title, html[lang="he"] #page-home .col-title-row,
-  html[lang="he"] #page-home .breaking-bar-title, html[lang="he"] #page-home .movers-head-row,
-  html[lang="he"] #page-home .market-charts-title-row{direction:rtl;}
-  html[lang="he"] .today-more{margin-left:0;margin-right:auto;}
+  /* v79d (owner, 26.11.2026: "when the language changes, the whole board must not change sides — only the words"): the
+     Hebrew arrangement is now the arrangement in BOTH languages (the owner chose "like in Hebrew"): the main column on the
+     right, the side column on the left, every heading at the right end of its row. Only the reading direction of a text
+     itself still follows its language (the rules on .today-text below). */
+  .today-head,
+  #page-home .col-title, #page-home .col-title-row,
+  #page-home .breaking-bar-title, #page-home .movers-head-row,
+  #page-home .market-charts-title-row{direction:rtl;}
+  /* English words inside those rows keep their own direction ("Scans (12)", not "(12) Scans"); a heading that is plain
+     text sits at the right end without being turned around */
+  /* (the button groups in them keep the inherited right-to-left order, so the buttons do not swap either) */
+  #page-home .chart-tabs{direction:rtl;}
+  html[lang="en"] .today-title, html[lang="en"] .today-sub, html[lang="en"] .today-more,
+  html[lang="en"] #page-home .col-title, html[lang="en"] #page-home .daily-digest-btn, html[lang="en"] #page-home .movers-title,
+  html[lang="en"] #page-home .market-charts-title{direction:ltr;unicode-bidi:isolate;}
+  html[lang="en"] #page-home .breaking-bar-title{direction:ltr;text-align:right;}
+  .today-more{margin-left:0;margin-right:auto;}
   /* v44b (owner's screenshot): the second line of the overview hugged the left edge, far from its heading */
   html[lang="he"] .today-text, html[lang="he"] .today-intro{direction:rtl;text-align:right;margin-left:auto;}
   @media(min-width:901px){
-    html[lang="he"] .home-grid{grid-template-columns:minmax(0,2fr) minmax(0,3fr);}
-    html[lang="he"] .home-main{grid-column:2;grid-row:1;border-right:0;border-left:1px solid var(--line);}
-    html[lang="he"] .home-side{grid-column:1;grid-row:1;}
+    .home-grid{grid-template-columns:minmax(0,2fr) minmax(0,3fr);}
+    .home-main{grid-column:2;grid-row:1;border-right:0;border-left:1px solid var(--line);}
+    .home-side{grid-column:1;grid-row:1;}
   }
   /* v43b (owner): "show all" opens the whole list inside a box that scrolls on its own, so the news under the
      scanner and the side column stay within reach */
@@ -1129,7 +1143,7 @@
   .mover-row.sector-picked + .mover-row:not(.sector-picked){border-top:1px solid var(--amber-dim);}
   .scan-pattern-filter{display:flex;gap:8px;}                     /* pattern + sector dropdowns side by side */
   .scan-pattern-filter select{flex:1;min-width:0;margin-top:0 !important;}
-  html[lang="he"] .scan-pattern-filter{flex-direction:row-reverse;}
+  .scan-pattern-filter{flex-direction:row-reverse;}       /* v79d: the same order in both languages */
   /* v23: scanner filters (RS, market cap, trend, earnings, volume, today's move, insider buying) + sort */
   .scan-filter-btn{flex:0 0 auto;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:0 12px;font-size:13px;font-family:'Heebo',sans-serif;cursor:pointer;white-space:nowrap;}
   .scan-filter-btn.on{border-color:var(--amber);color:var(--amber);}
@@ -1168,7 +1182,7 @@
        covered the bottom of an opened stock (position calculator buttons...), v19e */
     .bottom-nav{display:flex;direction:ltr !important;position:fixed;left:0;right:0;bottom:0;z-index:45;
       background:var(--panel);border-top:1px solid var(--line);padding:4px 4px calc(4px + env(safe-area-inset-bottom));}
-    html[lang="he"] .bottom-nav{flex-direction:row-reverse;}
+    .bottom-nav{flex-direction:row-reverse;}            /* v79d: the phone's menu keeps its order in both languages */
     .bottom-nav button{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;background:none;border:none;
       color:var(--text-dim);font-family:'Heebo',sans-serif;font-size:11px;padding:6px 2px;cursor:pointer;border-radius:8px;}
     .bottom-nav button.active{color:var(--amber);}
@@ -3205,8 +3219,8 @@ let sectorPeriod = 'YTD';       // '1D' | '1W' | '1M' | '3M' | 'YTD' | '1Y'
 // v79c (owner): the day and the week (from Monday, not 7 days back) next to the long periods
 const SECTOR_PERIODS = ['1D', '1W', '1M', '3M', 'YTD', '1Y'];
 function sectorPeriodLabel(p){
-  if(p === '1D') return lang === 'en' ? 'Today' : 'יומי';
-  if(p === '1W') return lang === 'en' ? 'This week' : 'שבועי';
+  if(p === '1D') return lang === 'en' ? 'day' : 'יומי';
+  if(p === '1W') return lang === 'en' ? 'week to date' : 'מתחילת השבוע';
   return p;
 }
 let sectorChartInstance = null;
@@ -5555,12 +5569,18 @@ function setChartMode(mode){
 
   if(mode === 'indices'){
     tabsEl.innerHTML = INDICES_TABS_HTML;
+    // v79d: the copy above was taken in the language of the page load; the two named tabs in the current one
+    const gl = document.getElementById('chart-tab-gld-label'), iw = document.getElementById('chart-tab-iwm-label');
+    if(gl) gl.textContent = UI[lang].gld_label;
+    if(iw) iw.textContent = UI[lang].iwm_label;
     sectorEl.style.display = 'none';
     tvEl.style.display = '';
     switchChart(currentChartSymbol);
   } else {
+    // v79d (owner: "the font is very odd"): the tabs keep the short codes of the others (1D 1W ...) in both languages;
+    // the words are in the list's title and above the chart
     tabsEl.innerHTML = SECTOR_PERIODS.map(p =>
-      `<button class="chart-tab ${p===sectorPeriod?'active':''}" data-period="${p}" onclick="switchSectorPeriod('${p}')">${sectorPeriodLabel(p)}</button>`
+      `<button class="chart-tab ${p===sectorPeriod?'active':''}" data-period="${p}" onclick="switchSectorPeriod('${p}')">${p}</button>`
     ).join('');
     tvEl.style.display = 'none';
     sectorEl.style.display = '';
@@ -5643,16 +5663,27 @@ function renderSectorChart(data){
   // v79c: the day / the week: the times in the viewer's own clock, and what the line is measured from
   const intra = !!data.intraday && Array.isArray(data.stamps);
   const en = lang === 'en';
-  const labels = intra ? data.stamps.map(s => {
-    const d = new Date(s * 1000);
-    const hm = d.toLocaleTimeString(en ? 'en-GB' : 'he-IL', {hour:'2-digit', minute:'2-digit'});
-    return data.period === '1W' ? `${d.toLocaleDateString(en ? 'en-GB' : 'he-IL', {weekday:'short'})} ${hm}` : hm;
-  }) : (data.dates||[]);
+  // v79d (owner's screenshot): every tick of the week read "יום ב׳ 16:30", mixed right-to-left on the canvas and hard to
+  // follow. Now the week's axis names each day once, where it starts; the time is in the tooltip.
+  const dayName = (d) => d.toLocaleDateString(en ? 'en-GB' : 'he-IL', {weekday:'long'});
+  const hmOf = (d) => d.toLocaleTimeString(en ? 'en-GB' : 'he-IL', {hour:'2-digit', minute:'2-digit'});
+  const pts = intra ? data.stamps.map(s => new Date(s * 1000)) : [];
+  const labels = intra ? pts.map(d => data.period === '1W' ? `${dayName(d)} ${hmOf(d)}` : hmOf(d)) : (data.dates||[]);
+  const nyDay = (d) => d.toLocaleDateString('en-CA', {timeZone:'America/New_York'});
+  const weekTick = (i) => (i === 0 || nyDay(pts[i]) !== nyDay(pts[i - 1])) ? dayName(pts[i]) : null;
   const dm = (iso) => iso ? new Date(iso + 'T12:00:00').toLocaleDateString(en ? 'en-GB' : 'he-IL', {weekday:'long', day:'2-digit', month:'2-digit'}) : '';
   const caption = !intra ? '' : data.period === '1D'
-    ? (en ? `${dm(data.session_day)}, against the previous close · your local time` : `${dm(data.session_day)}, מול הסגירה הקודמת · לפי השעה אצלך`)
-    : (en ? `Since the start of the week (${dm(data.since)}), against the close before it · your local time`
-          : `מתחילת השבוע (${dm(data.since)}), מול הסגירה שלפניו · לפי השעה אצלך`);
+    ? (en ? `${dm(data.session_day)} · vs. the prior close · your time` : `${dm(data.session_day)} · מול הסגירה הקודמת · לפי השעה אצלך`)
+    : (en ? `Since ${dm(data.since)} · vs. the prior close · your time` : `מאז ${dm(data.since)} · מול הסגירה שלפניו · לפי השעה אצלך`);
+  // v79d (owner: "the text above the sector tickers looks odd"): on the canvas, Hebrew with dates and brackets came out in
+  // the wrong order. It is ordinary page text now, over the top of the chart.
+  const wrapEl = canvas.parentElement;
+  let capEl = wrapEl.querySelector('.sector-cap');
+  if(!capEl){ capEl = document.createElement('div'); capEl.className = 'sector-cap'; wrapEl.insertBefore(capEl, canvas); }
+  capEl.textContent = caption;
+  capEl.dir = en ? 'ltr' : 'rtl';
+  capEl.dataset.lang = lang;
+  capEl.style.display = caption ? '' : 'none';
   sectorChartInstance = new Chart(canvas, {
     type: 'line',
     data: { labels, datasets },
@@ -5672,10 +5703,13 @@ function renderSectorChart(data){
                               fontColor: on ? getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#eef1f5' : '#8a93a3' };
                    }) } },
         tooltip:{ callbacks:{ label:(ctx)=>`${ctx.dataset.label}: ${ctx.parsed.y>=0?'+':''}${ctx.parsed.y.toFixed(2)}%` } },
-        subtitle:{ display: !!caption, text: caption, color:'#8a93a3', font:{size:10}, padding:{bottom:4} },
       },
+      layout:{ padding:{ top: caption ? 16 : 0 } },     // v79d: room for the caption above (drawn as page text, not on the canvas)
       scales:{
-        x:{ grid:{display:false}, ticks:{ font:{size:9}, maxRotation:0, autoSkip:true, maxTicksLimit:8 } },
+        x: intra && data.period === '1W'
+          ? { grid:{display:true, color:(c) => (c.index !== undefined && weekTick(c.index)) ? chartGrid() : 'transparent'},
+              ticks:{ font:{size:10}, maxRotation:0, autoSkip:false, callback:(v, i) => weekTick(i) } }
+          : { grid:{display:false}, ticks:{ font:{size:9}, maxRotation:0, autoSkip:true, maxTicksLimit:8 } },
         y:{ position:'right', grid:{color:chartGrid()}, ticks:{ font:{size:9}, callback:(v)=>v+'%' } },
       }
     }
@@ -5693,7 +5727,9 @@ function renderMoversOrSectorList(){
   const toggleEl = document.querySelector('.movers-toggle');
   const addBtn = document.getElementById('watchlist-add-btn');
   if(chartMode === 'sectors'){
-    document.querySelectorAll('#chart-tabs-container .chart-tab[data-period]').forEach(b => { b.textContent = sectorPeriodLabel(b.dataset.period); });   // v79c: language switch
+    // v79d: after a language switch the day / week chart is drawn again (its time labels and caption are in words)
+    const cap = document.querySelector('#sector-chart-wrap .sector-cap');
+    if(cap && cap.dataset.lang && cap.dataset.lang !== lang && latestSectorData) renderSectorChart(latestSectorData);
     if(toggleEl) toggleEl.style.display = 'none';
     if(addBtn) addBtn.style.display = 'none';
     document.getElementById('movers-title').textContent =
@@ -5718,7 +5754,7 @@ function renderMoversOrSectorList(){
       return `
         <div class="mover-row ${sectorSelected.has(r.ticker)?'sector-picked':''}" onclick="showTickerDrawer('${r.ticker}')">
           <div class="mover-ticker">${r.ticker}</div>
-          <div class="mover-trigger">${escH(r.name||'')}${sectorPeriod === '1D' ? '' : ` · ${escH(sectorPeriodLabel(sectorPeriod))}: <span class="${perClass}">${perSign}${r.period_change_pct.toFixed(1)}%</span>`}</div>
+          <div class="mover-trigger">${escH(r.name||'')}${sectorPeriod === '1D' ? '' : ` · ${escH(sectorPeriodLabel(sectorPeriod))}: <span class="${perClass}" dir="ltr">${perSign}${r.period_change_pct.toFixed(1)}%</span>`}</div>
           <div class="mover-pct ${dayClass}">${daySign}${r.change_pct.toFixed(1)}%</div>
         </div>
       `;
@@ -10488,8 +10524,10 @@ function applyLang(){
   document.getElementById('dd-ticker-input').placeholder = t.dd_placeholder;
   document.getElementById('mode-btn-indices').textContent = t.mode_indices;
   document.getElementById('mode-btn-sectors').textContent = t.mode_sectors;
-  document.getElementById('chart-tab-gld-label').textContent = t.gld_label;
-  document.getElementById('chart-tab-iwm-label').textContent = t.iwm_label;
+  // v79d: these two exist only while the chart shows the indices; in the sectors view the rest of applyLang stopped here
+  const gldLbl = document.getElementById('chart-tab-gld-label'), iwmLbl = document.getElementById('chart-tab-iwm-label');
+  if(gldLbl) gldLbl.textContent = t.gld_label;
+  if(iwmLbl) iwmLbl.textContent = t.iwm_label;
   document.getElementById('movers-toggle-hot').textContent = t.movers_hot;
   document.getElementById('movers-toggle-watchlist').textContent = t.movers_watchlist_toggle;
   document.getElementById('watchlist-add-btn').title = t.watchlist_add_title;
