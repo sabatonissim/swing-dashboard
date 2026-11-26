@@ -4017,3 +4017,121 @@ def test_v77b_headlines_of_the_holiday_26_11():
                       ("חבר בבנק הוקיש ביפן מבקש העלאות ריבית", "חבר ניצי בבנק יפן"), ("שוק דובי של ביטקוין מזדקן, אבל אולי לא נעשה", "אולי לא נגמר"),
                       ("המניות מטפסות כאשר סוחרים מתנערים מהמחסום האחרון בארה\"ב", "מתעלמים מסבב המכסים האחרון של ארה\"ב")):
         assert good in tf.fix_he(bad) and tf.fix_he(tf.fix_he(bad)) == tf.fix_he(bad), bad
+
+
+def test_v79_digest_tells_how_the_session_went():
+    """v79 (owner, 26.11.2026): on 25.11 the S&P 500 opened 1.96% lower, was down 3.21%, and closed 0.25% lower (+1.74% from its
+    open; the Nasdaq +2.78%). The digest said "the S&P 500 fell 0.25%". Real bars of 19, 20 and 25.11.2026."""
+    import datetime as _dt
+    import json as _json
+    from zoneinfo import ZoneInfo
+    import ai_digest as d
+    import data_health as dh
+    D, et = _dt.date, ZoneInfo("America/New_York")
+    sp = d.session_path(7201.1, (7060.3, 7199.3, 6970.1, 7182.8))
+    assert sp["open_pct"] == pytest.approx(-1.96, abs=0.011) and sp["low_pct"] == pytest.approx(-3.21, abs=0.011)
+    assert sp["close_pct"] == pytest.approx(-0.25, abs=0.011) and sp["from_open_pct"] == pytest.approx(1.74, abs=0.011)
+    assert d.day_shape({"^GSPC": sp}) == "rebound"
+    assert d.day_shape({"^IXIC": d.session_path(23733.5, (22948.5, 23627.4, 22632.4, 23585.8))}) == "rebound"
+    assert d.day_shape({"^GSPC": d.session_path(7175.8, (7150.4, 7198.7, 6882.7, 6910.4))}) is None      # 20.11: a plain fall
+    assert d.day_shape({"^GSPC": d.session_path(7323.6, (7389.3, 7415.6, 7173.6, 7175.8))}) == "fade"    # 19.11: up 1.26%, closed -2%
+    closes = {"^GSPC": [(D(2026, 11, 24), 7201.1), (D(2026, 11, 25), 7182.8)], "^IXIC": [(D(2026, 11, 24), 23733.5), (D(2026, 11, 25), 23585.8)]}
+
+    def hist(symbol):
+        if symbol not in closes:
+            raise RuntimeError("not in this test")
+        return closes[symbol]
+
+    class NoTables:
+        def cursor(self):
+            return self
+        def execute(self, *a):
+            raise RuntimeError("no table")
+        def rollback(self): pass
+        def close(self): pass
+    real, real_ohlc = d._history, dict(d._OHLC)
+    d._history = hist
+    d._OHLC.update({"^GSPC": {D(2026, 11, 25): (7060.3, 7199.3, 6970.1, 7182.8)}, "^IXIC": {D(2026, 11, 25): (22948.5, 23627.4, 22632.4, 23585.8)}})
+    try:
+        m = d.market_facts(NoTables(), D(2026, 11, 25), now=_dt.datetime(2026, 11, 25, 20, 0, tzinfo=et))
+    finally:
+        d._history = real
+        d._OHLC.clear()
+        d._OHLC.update(real_ohlc)
+    assert m["move"] == "normal" and m["shape"] == "rebound" and d.big_day(m) and [p["symbol"] for p in m["path"]] == ["^GSPC", "^IXIC"]
+    text = d._market_text(m, D(2026, 11, 25))
+    assert "TURNAROUND UP" in text and "low -3.21%" in text and "+1.74% from its open" in text and "SIZE OF THE DAY" not in text
+    items = [dict(id=1, title="Wall Street claws back from steep losses as tech stocks rebound", tag="שוק", url="https://x.example/1", title_he="", body=""),
+             dict(id=2, title="Trump proposes new tariffs on China", tag="מכסים", url="https://x.example/2", title_he="", body="")]
+    answer = lambda overview: _json.dumps({"overview": overview, "why": d.NO_REASON, "why_items": [], "topics": [
+        {"title": "Stocks claw back from steep losses", "summary": "Wall Street clawed back from steep losses as tech stocks rebounded.",
+         "impact": "", "items": [1]}]})
+    flat = "The S&P 500 fell 0.25% and the Nasdaq fell 0.62%."
+    with pytest.raises(ValueError, match="turnaround"):
+        d.clean_answer(answer(flat), items, m)
+    good = d.clean_answer(answer("The S&P 500 fell as much as 3.21% and then recovered to close 0.25% lower."), items, m)
+    assert good["overview_en"].startswith("The S&P 500 fell as much as 3.21%")
+    saved = d.clean_answer(answer(flat), items, m, strict=False)
+    assert saved["overview_en"].startswith("The S&P 500 fell as much as 3.21% during the session and then recovered: it closed 0.25% lower")
+    assert any("turnaround" in p for p in dh.digest_problems({"overview_en": flat, "market": m}))
+    assert dh.digest_problems({"overview_en": good["overview_en"], "why_en": d.NO_REASON, "market": m}) == []
+    # the day's own path is not "an earlier day's story", on a turnaround day only
+    up = dict(m, indices=[dict(i, change_pct=1.5) if i["symbol"] == "^IXIC" else i for i in m["indices"]])
+    assert d.contradicts_market("The Nasdaq fell as much as 4.64% at the open.", up) is None
+    assert d.contradicts_market("The Nasdaq fell 4.64%.", up)
+    assert d.contradicts_market("The Nasdaq fell as much as 4.64% at the open.", dict(up, shape=None))
+
+
+def test_v79_digest_before_the_open_and_the_days_earnings():
+    """v79 (owner): "before the open there can be interesting news, and the summary only told yesterday's moves"; and one line
+    about the day's notable reports."""
+    import datetime as _dt
+    import json as _json
+    from zoneinfo import ZoneInfo
+    import ai_digest as d
+    D, et = _dt.date, ZoneInfo("America/New_York")
+    assert d.prev_session(D(2026, 11, 27)) == D(2026, 11, 25) and d.prev_session(D(2026, 11, 30)) == D(2026, 11, 27)
+    deere = {"ticker": "DE", "name": "Deere", "eps": 4.1, "eps_estimate": 3.9, "revenue_surprise_pct": 3.1, "move": {"state": "pre", "pct": 4.1}}
+    m = {"day": "2026-11-27", "session_day": "2026-11-25", "same_day": False, "status": "pre_open", "move": "closed", "last_move": "normal",
+         "indices": [{"symbol": "^GSPC", "name_en": "S&P 500", "name_he": "S&P 500", "close": 7182.8, "change_pct": -0.25, "change_points": -18.3}],
+         "before_open": {"futures": [{"symbol": "ES=F", "name_en": "S&P 500 futures", "name_he": "חוזי S&P 500", "change_pct": 0.67}],
+                         "events": [{"time_et": "08:30", "name_en": "Initial Jobless Claims", "actual": "215K", "forecast": "220K", "previous": None}],
+                         "reports": [deere]}}
+    text = d._market_text(m, D(2026, 11, 27))
+    assert "S&P 500 futures +0.67%" in text and "08:30 Initial Jobless Claims (actual 215K, forecast 220K)" in text and "TODAY COMES FIRST" in text
+    assert "Deere (DE): EPS 4.10 against a forecast of 3.90, revenue 3.1% above the forecast, shares +4.10% before the open" in text
+    items = [dict(id=1, title="Deere shares jump premarket after results top forecasts", tag="דוחות", url="https://x.example/1", title_he="", body="")]
+    ok = d.clean_answer(_json.dumps({"overview": "S&P 500 futures rose 0.67% before the open, and Deere shares rose 4.1% before the open.",
+                                     "topics": [{"title": "Deere results", "summary": "Deere shares rose before the open after its results.",
+                                                 "impact": "", "items": [1]}]}), items, m)
+    assert len(ok["topics"]) == 1
+    # the share moves
+    c = [(D(2026, 11, 24), 100.0), (D(2026, 11, 25), 110.0)]
+    at = lambda day, h, mi=0: _dt.datetime(2026, 11, day, h, mi, tzinfo=et)
+    assert d.reaction(c, [], D(2026, 11, 24), D(2026, 11, 25), at(26, 1)) == {"state": "closed", "pct": 10.0}
+    assert d.reaction(c, [], D(2026, 11, 24), D(2026, 11, 25), at(25, 11)) == {"state": "live", "pct": 10.0}
+    assert d.reaction(c[:1], [(at(25, 8), 104.0)], D(2026, 11, 24), D(2026, 11, 25), at(25, 8, 30)) == {"state": "pre", "pct": 4.0}
+    assert d.reaction(c, [(at(25, 15, 45), 110.0), (at(25, 17, 30), 99.0)], D(2026, 11, 25), D(2026, 11, 26), at(25, 18)) == {"state": "post", "pct": -10.0}
+    assert d.reaction(c, [], D(2026, 11, 20), D(2026, 11, 25), at(26, 1)) is None          # no close before the report
+    # the rows: since the last close (reacting today) / after today's close
+    rows = [("DE", D(2026, 11, 25), "bmo", 1.2e11, "Deere & Company", 4.1, 3.9, 5.13, 1.0e10, 9.7e9, 3.09),
+            ("ADSK", D(2026, 11, 24), "amc", 6e10, "Autodesk, Inc.", 3.2, 2.9, 10.3, 1.8e9, 1.7e9, 5.9),
+            ("HPQ", D(2026, 11, 25), "amc", 3e10, "HP Inc.", 0.83, 0.8, 3.75, None, 1.4e10, None),
+            ("HMC", D(2026, 11, 25), "bmo", 4e10, "Honda Motor Co., Ltd.", 1.0, 0.9, 11.1, 5.8e12, 5.5e12, 5.4)]
+
+    class Conn:
+        def cursor(self):
+            return self
+        def execute(self, sql, params):
+            assert params == (d.EARN_MIN_CAP, D(2026, 11, 25), D(2026, 11, 24))
+        def fetchall(self):
+            return rows
+        def close(self): pass
+    e = d.earnings_rows(Conn(), D(2026, 11, 25))
+    assert [r["ticker"] for r in e["reacted"]] == ["DE", "ADSK", "HMC"] and [r["ticker"] for r in e["tonight"]] == ["HPQ"]
+    assert [r["name"] for r in e["reacted"]] == ["Deere", "Autodesk", "Honda Motor"]
+    assert e["reacted"][0]["revenue_surprise_pct"] == 3.1 and e["reacted"][2]["revenue_surprise_pct"] is None   # yen, not dollars
+    assert e["tonight"][0]["revenue_surprise_pct"] is None and e["tonight"][0]["eps_surprise_pct"] == 3.8
+    kept = d.notable_earnings({"reacted": e["reacted"] * 3, "tonight": []})
+    assert len(kept["reacted"]) == d.EARN_SHOWN and kept["reacted_more"] == 3 and kept["tonight"] == []
+    assert d.notable_earnings({"reacted": [], "tonight": []}) is None

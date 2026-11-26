@@ -109,21 +109,270 @@ def bars_from_chart(data):
     return sorted(bars.items())
 
 
+def ohlc_from_chart(data):
+    """v79: {UTC date: (open, high, low, close)} from Yahoo's chart answer; bars with a missing price are left out."""
+    r = data["chart"]["result"][0]
+    q = r["indicators"]["quote"][0]
+    out = {}
+    for ts, o, h, l, c in zip(r["timestamp"], q.get("open") or [], q.get("high") or [], q.get("low") or [], q.get("close") or []):
+        if None not in (o, h, l, c):
+            out[datetime.fromtimestamp(ts, tz=timezone.utc).date()] = (float(o), float(h), float(l), float(c))
+    return out
+
+
+_OHLC = {}      # v79: symbol -> {date: (open, high, low, close)} of the last _history() answer (the session's path)
+_YAHOO_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0 Safari/537.36"}
+
+
 def _history(symbol):
     """[(date, close)] of the last month. v37e: the chart answer itself first: for Bitcoin, yfinance's history gave Thursday's
-    -5.55% as Friday's move (the real one: -0.26%). yfinance only if that fails, as the jobs in GitHub Actions already call it."""
+    -5.55% as Friday's move (the real one: -0.26%). yfinance only if that fails, as the jobs in GitHub Actions already call it.
+    v79: the open, high and low of each day are kept in _OHLC (how the day went, not only where it ended)."""
     try:
         r = requests.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(symbol, safe='')}", params={"range": "1mo", "interval": "1d"},
-                         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0 Safari/537.36"}, timeout=20)
+                         headers=_YAHOO_HEADERS, timeout=20)
         r.raise_for_status()
-        bars = bars_from_chart(r.json())
+        data = r.json()
+        bars = bars_from_chart(data)
         if len(bars) >= 2:
+            try:
+                _OHLC[symbol] = ohlc_from_chart(data)
+            except Exception:  # noqa: BLE001 — the closes are what matters; the path is extra
+                _OHLC.pop(symbol, None)
             return bars
     except Exception as e:  # noqa: BLE001
         print(f"[warn] {symbol}: chart answer failed ({type(e).__name__}), using yfinance")
     import yfinance as yf
     h = yf.Ticker(symbol).history(period="1mo", interval="1d", auto_adjust=False)
+    _OHLC[symbol] = {i.date(): (float(o), float(hi), float(lo), float(c))
+                     for i, o, hi, lo, c in zip(h.index, h["Open"], h["High"], h["Low"], h["Close"]) if c == c and o == o}
     return [(i.date(), float(c)) for i, c in zip(h.index, h["Close"]) if c == c]
+
+
+def _intraday(symbol):
+    """v79: [(New York time, price)] of the last 5 days in 15-minute bars, before the open and after the close included."""
+    r = requests.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(symbol, safe='')}",
+                     params={"range": "5d", "interval": "15m", "includePrePost": "true"}, headers=_YAHOO_HEADERS, timeout=20)
+    r.raise_for_status()
+    res = r.json()["chart"]["result"][0]
+    return [(datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(_ET), float(c))
+            for ts, c in zip(res.get("timestamp") or [], res["indicators"]["quote"][0].get("close") or []) if c is not None]
+
+
+# ------------------------------------------------------------------ v79: how the session went (owner, 26.11.2026)
+# 25.11.2026: the S&P 500 opened 1.96% lower, was down 3.21%, and closed 0.25% lower (+1.74% from its open; the Nasdaq +2.78%).
+# The digest said "the S&P 500 fell 0.25%" and nothing about the turn. The day's open/low/high now go to the model, and a day
+# whose index moved at least the "notable" size from its open, after being that far the other way, is a turnaround it must tell.
+SHAPE_INDICES = (("^GSPC", NOTABLE_SP500), ("^IXIC", NOTABLE_NASDAQ))
+
+
+def session_path(prev_close, bar):
+    """Where the index opened, its low and high, and where it is now / closed, in % from the previous close; and from its open."""
+    o, h, l, c = bar
+    pct = lambda x: round((x / prev_close - 1) * 100, 2)
+    return {"open_pct": pct(o), "low_pct": pct(l), "high_pct": pct(h), "close_pct": pct(c), "from_open_pct": round((c / o - 1) * 100, 2)}
+
+
+def day_shape(paths):
+    """rebound (fell hard, came back) / fade (rose hard, gave it back) / None. paths: {symbol: session_path}."""
+    for symbol, size in SHAPE_INDICES:
+        p = paths.get(symbol)
+        if not p:
+            continue
+        if p["from_open_pct"] >= size and p["low_pct"] <= -size:
+            return "rebound"
+        if p["from_open_pct"] <= -size and p["high_pct"] >= size:
+            return "fade"
+    return None
+
+
+def shape_index(market):
+    """The path of the index that made the day a turnaround (the S&P 500 first)."""
+    paths = {p["symbol"]: p for p in market.get("path") or []}
+    for symbol, size in SHAPE_INDICES:
+        p = paths.get(symbol)
+        if p and day_shape({symbol: p}) == market.get("shape"):
+            return p
+    return None
+
+
+_TOLD_REBOUND = re.compile(r"\b(?:recover\w*|rebound\w*|bounc\w*|pared|erased|came back|clawed|reversed?|reversal|turn(?:ed|ing)? "
+                           r"(?:higher|positive|up)|turnaround|off (?:its|the) lows?|from (?:its|their|the|session|the day's) lows?)\b", re.I)
+_TOLD_FADE = re.compile(r"\b(?:gave (?:up|back)|giving (?:up|back)|fad\w+|reversed?|reversal|erased|turn(?:ed|ing)? (?:lower|negative|down)|"
+                        r"turnaround|off (?:its|the) highs?|from (?:its|their|the|session|the day's) highs?)\b", re.I)
+
+
+def tells_shape(text, market):
+    """On a turnaround day: does the text tell the turn (the fall and the recovery, or the rise and the fade)?"""
+    shape = (market or {}).get("shape")
+    if not shape:
+        return True
+    return bool((_TOLD_REBOUND if shape == "rebound" else _TOLD_FADE).search(text or ""))
+
+
+def _shape_lead(market):
+    """'The S&P 500 fell as much as 3.21% during the session and recovered to close 0.25% lower.'"""
+    p = shape_index(market)
+    if not p:
+        return ""
+    end = "is now" if market.get("intraday") else "closed"
+    where = "higher" if p["close_pct"] > 0 else "lower"
+    if market["shape"] == "rebound":
+        return (f"The {p['name_en']} fell as much as {abs(p['low_pct']):.2f}% during the session and then recovered: it {end} "
+                f"{abs(p['close_pct']):.2f}% {where}, {p['from_open_pct']:.2f}% above its open.")
+    return (f"The {p['name_en']} rose as much as {p['high_pct']:.2f}% during the session and then gave it back: it {end} "
+            f"{abs(p['close_pct']):.2f}% {where}, {abs(p['from_open_pct']):.2f}% below its open.")
+
+
+# ------------------------------------------------------------------ v79: before the open (owner: "the morning summary only told yesterday")
+FUTURES = (("ES=F", "S&P 500 futures", "חוזי S&P 500"), ("NQ=F", "Nasdaq 100 futures", 'חוזי נאסד"ק 100'))
+CALENDAR_SNAPSHOTS = "list-21-14"      # the economic calendar the server keeps (econ_calendar.build_calendar's default)
+
+
+def futures_now(day):
+    """US index futures now against their last settlement. Futures trade through the night: the bar of `day` is the price now."""
+    out = []
+    for symbol, en, he in FUTURES:
+        try:
+            bars = _history(symbol)
+        except Exception as e:  # noqa: BLE001
+            print(f"[warn] {symbol}: {type(e).__name__}: {e}")
+            continue
+        if len(bars) >= 2 and bars[-1][0] == day and bars[-2][1]:
+            out.append({"symbol": symbol, "name_en": en, "name_he": he, "change_pct": round((bars[-1][1] / bars[-2][1] - 1) * 100, 2)})
+    return out
+
+
+def events_of_day(conn, day):
+    """The day's US data from the calendar the server stored (econ_snapshots): the list, and this month's view if someone opened
+    it. The database picks the rows, so a few hundred bytes come back. [] when there is no recent copy."""
+    cur = conn.cursor()
+    try:
+        cur.execute("""SELECT DISTINCT ON (e->>'id') e->>'time_et', e->>'name_en', e->>'name_he', e->>'impact', e->>'actual',
+                              e->>'forecast', e->>'previous'
+                       FROM econ_snapshots s, json_array_elements(s.payload::json->'events') e
+                       WHERE s.skey IN (%s, %s) AND s.updated_at > NOW() - INTERVAL '3 days'
+                         AND e->>'date_et' = %s AND e->>'impact' IN ('high', 'medium')
+                       ORDER BY e->>'id', s.updated_at DESC""",
+                    (CALENDAR_SNAPSHOTS, f"month-{day.year:04d}-{day.month:02d}", day.isoformat()))
+        rows = cur.fetchall()
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        print(f"[ai_digest] no calendar for the morning ({type(e).__name__}: {e})")
+        rows = []
+    finally:
+        cur.close()
+    out = [{"time_et": r[0] or "", "name_en": r[1] or "", "name_he": r[2] or "", "impact": r[3], "actual": r[4],
+            "forecast": r[5], "previous": r[6]} for r in rows if r[1]]
+    return sorted(out, key=lambda e: e["time_et"])
+
+
+# ------------------------------------------------------------------ v79: the day's notable earnings (data, not the AI)
+EARN_MIN_CAP = 10e9
+EARN_SHOWN = 6
+REV_MCAP_MAX = 10       # revenue above 10x the market cap is in another currency: TWIN of api_server._REV_MCAP_MAX
+_NAME_TAIL = re.compile(r",?\s+(?:inc\.?|incorporated|corp\.?|corporation|company|co\.|plc|ltd\.?|limited|n\.v\.|s\.a\.|holdings?|group)\s*$", re.I)
+
+
+def prev_session(day):
+    d = day - timedelta(days=1)
+    while d.weekday() >= 5 or d in nyse_holidays(d.year):
+        d -= timedelta(days=1)
+    return d
+
+
+def short_name(name, ticker):
+    name = (name or "").strip()
+    for _ in range(2):
+        name = _NAME_TAIL.sub("", name).strip().rstrip(",&").strip()
+    return name or ticker
+
+
+def report_row(r):
+    """One earnings_calendar row as the digest shows it. Revenue surprise only when both numbers are usable (as the calendar)."""
+    ticker, rd, session, cap, name, eps, eps_est, eps_surp, rev, rev_est, rev_surp = r
+    usable = lambda v: v is not None and v > 0 and not (cap and v > REV_MCAP_MAX * cap)
+    out = {"ticker": ticker, "name": short_name(name, ticker), "report_date": rd.isoformat(), "session": session or "unknown",
+           "market_cap": cap, "eps": round(eps, 2) if eps is not None else None,
+           "eps_estimate": round(eps_est, 2) if eps_est is not None and eps is not None else None,
+           "eps_surprise_pct": round(eps_surp, 1) if eps_surp is not None and eps is not None and eps_est is not None else None,
+           "revenue_surprise_pct": round(rev_surp, 1) if rev_surp is not None and usable(rev) and usable(rev_est) else None}
+    return out
+
+
+def earnings_rows(conn, day):
+    """Reports with results of companies of $10B+ whose shares react on `day`: before the open (or at an unknown time) on `day`,
+    and after the close of the session before it; and the ones after `day`'s close. ~40 short rows at most."""
+    prev = prev_session(day)
+    cur = conn.cursor()
+    try:
+        cur.execute("""SELECT ticker, report_date, COALESCE(session, 'unknown'), market_cap, company_name, eps_actual, eps_estimate,
+                              surprise_pct, revenue_actual, revenue_estimate, revenue_surprise_pct
+                       FROM earnings_calendar
+                       WHERE market_cap >= %s AND (eps_actual IS NOT NULL OR revenue_actual IS NOT NULL)
+                         AND (report_date = %s OR (report_date = %s AND session = 'amc'))
+                       ORDER BY market_cap DESC LIMIT 40""", (EARN_MIN_CAP, day, prev))
+        rows = cur.fetchall()
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        print(f"[ai_digest] no earnings for the digest ({type(e).__name__}: {e})")
+        rows = []
+    finally:
+        cur.close()
+    reacted, tonight = [], []
+    for r in rows:
+        row = report_row(r)
+        (tonight if r[1] == day and row["session"] == "amc" else reacted).append(row)
+    return {"reacted": reacted, "tonight": tonight}
+
+
+def reaction(closes, intra, base_day, react_day, now_et):
+    """The shares against the last close before the report: on the day of the reaction (so far / at the close), or before the
+    open / after the close when that day has not traded yet. None when there is no price to say it with."""
+    base = dict(closes).get(base_day)
+    if not base:
+        return None
+    pct = lambda x: round((x / base - 1) * 100, 2)
+    day_close = dict(closes).get(react_day)
+    if day_close and (now_et.date() > react_day or now_et.time() >= MARKET_OPEN):
+        live = now_et.date() == react_day and now_et.time() < dtime(16, 5)
+        return {"state": "live" if live else "closed", "pct": pct(day_close)}
+    after = datetime.combine(base_day, dtime(16, 0), tzinfo=_ET)
+    ext = [(t, c) for t, c in intra or [] if t >= after and not (MARKET_OPEN <= t.time() < dtime(16, 0))]
+    if not ext:
+        return None
+    t, c = ext[-1]
+    return {"state": "post" if t.time() >= dtime(16, 0) else "pre", "pct": pct(c)}
+
+
+def add_reactions(earn, day, now=None):
+    """The share moves, from Yahoo (no database): one daily chart per company, and the 15-minute one only when needed."""
+    now_et = (now or datetime.now(timezone.utc)).astimezone(_ET)
+    prev = prev_session(day)
+    for side, base_day, react_day in (("reacted", prev, day), ("tonight", day, None)):
+        for row in earn.get(side) or []:
+            try:
+                closes = _history(row["ticker"])
+                rd = react_day or next((d for d, _ in closes if d > day), day + timedelta(days=1))
+                traded = dict(closes).get(rd) and (now_et.date() > rd or now_et.time() >= MARKET_OPEN)
+                intra = [] if traded else _intraday(row["ticker"])
+                row["move"] = reaction(closes, intra, base_day, rd, now_et)
+            except Exception as e:  # noqa: BLE001
+                print(f"[ai_digest] {row['ticker']}: no share move ({type(e).__name__})")
+                row["move"] = None
+    return earn
+
+
+def notable_earnings(earn):
+    """What the digest keeps: the largest companies first, EARN_SHOWN of each side, and how many more there were. None if empty."""
+    if not earn or not (earn.get("reacted") or earn.get("tonight")):
+        return None
+    out = {}
+    for side in ("reacted", "tonight"):
+        rows = earn.get(side) or []
+        out[side] = rows[:EARN_SHOWN]
+        out[side + "_more"] = max(0, len(rows) - EARN_SHOWN)
+    return out
 
 
 def move_size(indices, same_day):
@@ -278,6 +527,20 @@ def market_facts(conn, day, now=None):
               "move": move_size(indices, same_day)}
     if not same_day:                      # v67: how big the last session was, so a weekend after a crash opens with it
         market["last_move"] = move_size(indices, True)
+    else:                                 # v79: how the session went, not only where it ended
+        path = []
+        for i in indices:
+            bar = (_OHLC.get(i["symbol"]) or {}).get(session_day)
+            prev = i["close"] - i["change_points"]
+            if i["symbol"] in dict(SHAPE_INDICES) and bar and prev > 0:
+                path.append(dict({"symbol": i["symbol"], "name_en": i["name_en"], "name_he": i["name_he"]}, **session_path(prev, bar)))
+        if path:
+            market["path"] = path
+            shape = day_shape({p["symbol"]: p for p in path})
+            if shape:
+                market["shape"] = shape
+    if market["status"] == "pre_open":    # v79: what is ahead for the session that is about to open
+        market["before_open"] = {"futures": futures_now(day), "events": events_of_day(conn, day)}
     if week:
         market["week"] = week
     if today:
@@ -327,7 +590,12 @@ def _no_session_text(market, day):
     if market.get("week"):
         lines.append(f"THE TRADING WEEK that ended on {wd}: {_week_line(market)}. "
                      + ("Call it 'this past week' or 'the week', never 'last week'." if market.get("status") == "weekend" else ""))
-    if last_session_large(market):
+    pre = market.get("status") == "pre_open"
+    if last_session_large(market) and pre:
+        lines.append(f"SIZE OF THE LAST SESSION: {'EXTREME' if market['last_move'] == 'extreme' else 'LARGE'}. The overview tells it "
+                     f"right after what is ahead today (below), naming the day ('on {wd}') and the index with its number. "
+                     "'why' gives its reason from the items.")
+    elif last_session_large(market):
         lines.append(f"SIZE OF THE LAST SESSION: {'EXTREME' if market['last_move'] == 'extreme' else 'LARGE'}. The overview opens "
                      f"with it: what the US market did on {wd} (and in the week), naming the day and the index with its number. "
                      "'why' gives its reason from the items. Then the most important news for when trading resumes.")
@@ -336,7 +604,51 @@ def _no_session_text(market, day):
                      "may matter for US stocks when trading resumes. 'why' stays empty.")
     for a in market.get("today") or []:
         lines.append(f"{a['name_en']}, which trades every day: {_signed(a['change_pct'])}% on this day so far")
+    if pre:
+        lines += _before_open_lines(market, day)
     return "\n".join(lines)
+
+
+def _event_line(e):
+    bits = [x for x in (f"actual {e['actual']}" if e.get("actual") else "", f"forecast {e['forecast']}" if e.get("forecast") else "",
+                        f"previous {e['previous']}" if e.get("previous") else "") if x]
+    return f"{e['time_et']} {e['name_en']}" + (f" ({', '.join(bits)})" if bits else "")
+
+
+_MOVE_WORDS = {"pre": "before the open", "post": "after the close", "live": "today so far", "closed": "at the close"}
+
+
+def report_line(r):
+    """'Deere (DE): EPS 4.10 against a forecast of 3.90, revenue 3.1% above the forecast, shares +4.10% before the open'."""
+    bits = []
+    if r.get("eps") is not None:
+        bits.append(f"EPS {r['eps']:.2f}" + (f" against a forecast of {r['eps_estimate']:.2f}" if r.get("eps_estimate") is not None else ""))
+    if r.get("revenue_surprise_pct") is not None:
+        bits.append(f"revenue {abs(r['revenue_surprise_pct']):.1f}% {'above' if r['revenue_surprise_pct'] >= 0 else 'below'} the forecast")
+    mv = r.get("move")
+    if mv:
+        bits.append(f"shares {_signed(mv['pct'])}% {_MOVE_WORDS.get(mv['state'], '')}".strip())
+    return f"{r['name']} ({r['ticker']}): " + ", ".join(bits)
+
+
+def _before_open_lines(market, day):
+    """v79, the owner: 'before the open there can be interesting news, and the summary only told yesterday's moves'."""
+    bo = market.get("before_open") or {}
+    lines = [f"BEFORE TODAY'S OPEN ({_weekday(day)}), real data:"]
+    fut = bo.get("futures") or []
+    if fut:
+        lines.append("Futures now, against their last settlement: " + ", ".join(f"{f['name_en']} {_signed(f['change_pct'])}%" for f in fut))
+    evs = bo.get("events") or []
+    if evs:
+        lines.append("US economic data today (New York time): " + "; ".join(_event_line(e) for e in evs))
+    reps = bo.get("reports") or []
+    if reps:
+        lines.append("Results of large companies since the last close: " + "; ".join(report_line(r) for r in reps))
+    lines.append("TODAY COMES FIRST: the overview opens with what is ahead for today's US session: the futures, the data and the "
+                 "results above, and the most important news of the morning. Futures are futures: never write that the market or an "
+                 "index rose or fell today. Do not say what the data or the futures mean for the market. A topic may be about a company's "
+                 "results only if an item tells them.")
+    return lines
 
 
 def _market_text(market, day):
@@ -354,6 +666,11 @@ def _market_text(market, day):
             lines.append(f"{i['name_en']}: {_signed(i['change_pct'])}% (at {i['close']})")
         else:                                              # v37b: with the levels, the overview became a list of "fell 4.36% to 7353.73"
             lines.append(f"{i['name_en']}: {_signed(i['change_pct'])}%")
+    now_word = "now" if market["intraday"] else "close"
+    for p in market.get("path") or []:          # v79: how the session went
+        lines.append(f"{p['name_en']} during the session, from the previous close: opened {_signed(p['open_pct'])}%, low "
+                     f"{_signed(p['low_pct'])}%, high {_signed(p['high_pct'])}%, {now_word} {_signed(p['close_pct'])}%; "
+                     f"{_signed(p['from_open_pct'])}% from its open")
     b = market.get("breadth")
     if b:
         lines.append(f"S&P 500 stocks that rose / fell: {b['advancers']} / {b['decliners']}")
@@ -363,10 +680,21 @@ def _market_text(market, day):
     for side, label in (("down", "Biggest falls"), ("up", "Biggest rises")):
         if mv.get(side):
             lines.append(f"{label} among large companies: " + ", ".join(f"{m['ticker']} {_signed(m['change_pct'])}%" for m in mv[side]))
-    lines.append({"extreme": "SIZE OF THE DAY: EXTREME. This is the main story of the day. The overview must open with it, name the index "
-                             "and give its number, and 'why' must give its reason.",
-                  "notable": "SIZE OF THE DAY: a clearly large move. The overview must mention it, and 'why' must give its reason.",
-                  "normal": "SIZE OF THE DAY: ordinary. 'why' may stay empty.", "closed": "SIZE OF THE DAY: no session today."}[market["move"]])
+    shape = market.get("shape")
+    if not (shape and market["move"] == "normal"):
+        lines.append({"extreme": "SIZE OF THE DAY: EXTREME. This is the main story of the day. The overview must open with it, name the index "
+                                 "and give its number, and 'why' must give its reason.",
+                      "notable": "SIZE OF THE DAY: a clearly large move. The overview must mention it, and 'why' must give its reason.",
+                      "normal": "SIZE OF THE DAY: ordinary. 'why' may stay empty.", "closed": "SIZE OF THE DAY: no session today."}[market["move"]])
+    if shape == "rebound":
+        lines.append("SHAPE OF THE DAY: A TURNAROUND UP. The index fell hard during the session and then recovered (see 'during the "
+                     "session'). This is the main story of the day, more than where it ended: the overview opens with both parts, the fall "
+                     "and the recovery, with their numbers (\"The S&P 500 fell as much as X% and then recovered to close Y% lower\"). "
+                     "Never tell it simply as a down day. 'why' gives the reasons the items give for the fall and for the recovery.")
+    elif shape == "fade":
+        lines.append("SHAPE OF THE DAY: A TURNAROUND DOWN. The index rose strongly during the session and then gave it back (see 'during "
+                     "the session'). This is the main story of the day, more than where it ended: the overview opens with both parts, the "
+                     "rise and the fade, with their numbers. Never tell it simply as an up day. 'why' gives the reasons the items give.")
     return "\n".join(lines)
 
 
@@ -430,10 +758,11 @@ def rank_items(items, cap=MAX_ITEMS):
 SYSTEM = """You are the markets editor of a website for people who follow the US stock market. You write the day's summary. A reader who opens only this must understand what happened to the market today and why.
 
 ORDER OF IMPORTANCE:
-1. What the US market did: the indices, how big the move was, which stocks and sectors led it. If the MARKET NUMBERS say the day was extreme, this is the first thing in the overview and the first topic, with the numbers.
+1. What the US market did: the indices, how big the move was, how the session went (a deep fall that turned into a recovery is a different day from a quiet one, even when both end flat), which stocks and sectors led it. If the MARKET NUMBERS say the day was extreme or a turnaround, this is the first thing in the overview and the first topic, with the numbers.
 2. Why it happened, as far as the items say: this goes in "why" (below). A reader must never be left with a large move and no reason.
 3. What else can move US stocks: the Fed and rates, US data (inflation, jobs), oil and war, trade and tariffs, US politics, the largest companies.
-On a day the MARKET part says the US market did not trade (weekend, holiday, before the open): if the LAST SESSION was large, the overview opens with it, naming its day ("On Friday the S&P 500 fell 3.7%"), "why" gives its reason, and the first topic is that story. Otherwise there is no point 1: the overview opens with the most important news of the day. Never tell a move as if it happened today.
+On a weekend or holiday (the MARKET part says the US market does not trade today): if the LAST SESSION was large, the overview opens with it, naming its day ("On Friday the S&P 500 fell 3.7%"), "why" gives its reason, and the first topic is that story. Otherwise there is no point 1: the overview opens with the most important news of the day. Never tell a move as if it happened today.
+Before the open (the MARKET part says so): the reader is getting ready for today's session. The overview opens with what is ahead today, from BEFORE TODAY'S OPEN and the morning's items; the last session comes after that, and only if it was large.
 4. Other countries only if the item ties them to US stocks, oil, the dollar or world markets. The domestic news of a smaller country (its local inflation or local interest rate) is not a topic and is not in the overview. Results of one smaller company are not a topic unless they moved the market.
 
 STRICT RULES:
@@ -465,6 +794,7 @@ SYSTEM_HE = """Translate this market summary from English into natural, simple I
 Keep the meaning exactly: who did what must not change, and add nothing. Never leave an ordinary English word in the Hebrew.
 Glossary: stocks = מניות; session = יום מסחר (never "מפגש"); sell-off or rout = גל מכירות (never "מסלול"); safe haven = נכס מפלט; crypto = קריפטו; 10-year Treasury yield = תשואת אג"ח ממשלתי ל-10 שנים; index = מדד; chip stocks = מניות השבבים; interest rate = ריבית; rate hike = העלאת ריבית; yield = תשואה; Treasury bond = אג"ח ממשלתי; inflation = אינפלציה; results / earnings = דוחות או רווחים; forecast / outlook = תחזית; oil = נפט; tariffs = מכסים; sanctions = סנקציות; midterm elections = בחירות אמצע הקדנציה; the news is dominated by = הכותרות עוסקות בעיקר ב (never "מודגמות"); has not opened yet = עוד לא נפתח; the Fed = הפד; Wall Street = וול סטריט; AI = בינה מלאכותית.
 More (v67, words that came out as a word-for-word translation on 20-21.11.2026): correction territory / in correction = בתיקון (ירידה של יותר מ-10% מהשיא), never "טריטוריה"; names (meaning stocks) = מניות, never "שמות"; turned negative for the year / wiped out its gains for the year = מחק את כל העליות מתחילת השנה; will be watched closely = יעמדו במוקד, never "יעקבו"; this past week = השבוע שהסתיים, never "השבוע שעבר"; the sell-off accelerated = הירידות התגברו; a rebound / bounce / recovery after a fall = התאוששות (never "תיקון", which in Hebrew means a fall); a weekly rout = ירידה שבועית חדה; military strikes = תקיפות (never "שביתות"); safe-haven flows = מעבר לנכסי מפלט; IPO debut = ההנפקה / היום הראשון למסחר; a sentence that starts with "Why:" starts with "הסיבה:".
+More (v79): opened lower = נפתח בירידה; fell as much as X% = ירד עד X% במהלך המסחר; recovered / pared its losses = התאושש / צמצם את הירידה; above its open = מעל מחיר הפתיחה; gave back its gains = מחק את העליות; a turnaround = תפנית; futures = החוזים העתידיים; before the open = לפני הפתיחה; results above the forecast = תוצאות טובות מהצפי.
 Write the way an Israeli financial reporter would: short, clear sentences, the verb early, not English word order.
 Names of companies, indices and people stay in English letters (Nvidia, S&P 500, Nasdaq, VIX). A company is feminine in Hebrew. Keep every number exactly as written.
 Write Hebrew abbreviations with the mark ״ (ארה״ב, נאסד״ק), never with a plain double quote.
@@ -716,9 +1046,11 @@ def contradicts_market(text, market):
         if pct is None or abs(pct) < MOVE_THAT_COUNTS:
             continue
         verbs = _FELL if pct > 0 else _ROSE
-        m = re.search(rf"\b(?:{name})\b(?:\s+\w+){{0,2}}\s+(?:{verbs})\b", text, re.I)
-        if m:
-            return f"'{m.group(0)}', and the MARKET NUMBERS say {pct:+.2f}% that day"
+        for s in re.split(r"(?<=[.!?])\s+", text):
+            m = re.search(rf"\b(?:{name})\b(?:\s+\w+){{0,2}}\s+(?:{verbs})\b", s, re.I)
+            # v79: on a turnaround day "fell as much as 3% at the open" is the day's own path, not an earlier day's story
+            if m and not (market.get("shape") and _PATH_TOLD.search(s)):
+                return f"'{m.group(0)}', and the MARKET NUMBERS say {pct:+.2f}% that day"
     # v40e: the verb before the name. 9.11.2026 (S&P +2.35%): "midterm election results rattled Wall Street", a story of the week before
     pct = changes.get("^GSPC")
     if pct is not None and pct >= MOVE_THAT_COUNTS:
@@ -728,6 +1060,8 @@ def contradicts_market(text, market):
     return None
 
 
+_PATH_TOLD = re.compile(r"\b(?:open(?:ed|ing)?|as much as|lows?|highs?|intraday|during the (?:session|day)|early|recover\w*|rebound\w*|"
+                        r"pared|gave (?:up|back)|fad\w+|turnaround|revers\w+)\b", re.I)
 _SHOOK = re.compile(r"\b(?:rattl|spook|roil|jolt|rock|shook|shak)\w*\s+(?:the\s+)?(?:wall street|us stocks|the (?:us )?stock market|"
                     r"(?:us )?investors|markets?)\b", re.I)
 
@@ -788,7 +1122,9 @@ def big_day(market):
     """A move that needs its reason in 'why': a large session today, or (no session today) a large last one."""
     if not market:
         return False
-    return market.get("move") in ("extreme", "notable") if market.get("same_day") else last_session_large(market)
+    if market.get("same_day"):
+        return market.get("move") in ("extreme", "notable") or bool(market.get("shape"))     # v79: a turnaround needs its reason too
+    return last_session_large(market)
 
 
 def _weekend_lead(market):
@@ -965,7 +1301,7 @@ def clean_answer(text, items, market, strict=True):
     topics.sort(key=lambda t: t["_rank"])
     # v67: Saturday 21.11.2026 put "inflation data in focus next week" above the week's crash. After a large last session the
     # first topic that tells the market (the indices or a sell-off) goes first.
-    if last_session_large(market):
+    if last_session_large(market) and market.get("status") != "pre_open":     # v79: before the open, today comes first
         tells = [t for t in topics if _MARKET_RE.search(f"{t['title_en']} {t['summary_en']}")]
         if tells:
             topics.remove(tells[0])
@@ -1012,12 +1348,19 @@ def clean_answer(text, items, market, strict=True):
             raise ValueError("the MARKET NUMBERS say the day was extreme, and the overview does not say so. Open the overview "
                              "with the index and its number")
         overview = f"{_forced_lead(market)} {overview}"
+    # v79: 25.11.2026 (S&P 500 down 3.21% during the day, closed -0.25%) was told as "the S&P 500 fell 0.25%"
+    if not tells_shape(overview, market):
+        if strict:
+            raise ValueError("the MARKET NUMBERS say the day was a turnaround (see SHAPE OF THE DAY), and the overview does not say so. "
+                             "Open it with both parts of the day, with their numbers")
+        overview = f"{_shape_lead(market)} {overview}".strip()
     # v67: Saturday 21.11.2026 opened with "inflation data in focus this week"; Friday had been -3.7% / -5.3%
     if last_session_large(market) and market.get("last_move") == "extreme" and not re.search(r"S&P|Nasdaq|Dow\b|Wall Street|US stocks", overview):
         if strict:
             raise ValueError(f"the last session ({_weekday(market['session_day'])}) was extreme, and the overview does not say so. "
-                             f"Open it with what the market did on {_weekday(market['session_day'])}, naming the day and the index with its number")
-        overview = f"{_weekend_lead(market)} {overview}".strip()
+                             f"Tell what the market did on {_weekday(market['session_day'])}, naming the day and the index with its number")
+        lead = _weekend_lead(market)
+        overview = (f"{overview} {lead}" if market.get("status") == "pre_open" else f"{lead} {overview}").strip()
     if market and market.get("status") == "weekend":
         said = _LAST_WEEK.search(" ".join([overview] + [f"{t['title_en']} {t['summary_en']} {t['impact_en']}" for t in topics]))
         if said and strict:
@@ -1267,6 +1610,12 @@ def _update_day(get_conn, day, translate_fn, force=False, final=False):
             print(f"[ai_digest] {day}: no headline left after the filters")
             return False
         market = market_facts(conn, day)
+        # v79: the day's notable earnings (shown by the site as data; before the open the model is told them too)
+        earn = notable_earnings(earnings_rows(conn, day)) if market and market.get("status") in ("pre_open", "open", "traded") else None
+    if earn:
+        earn = add_reactions(earn, day)
+        if market.get("status") == "pre_open":
+            market.setdefault("before_open", {})["reports"] = earn["reacted"]
     print(f"[ai_digest] {day}: {len(fetched)} headlines, sending {len(sel)} stories, market move: "
           f"{market['move'] if market else 'no numbers'}; first: {sel[0]['title'][:80]}")
 
@@ -1279,8 +1628,10 @@ def _update_day(get_conn, day, translate_fn, force=False, final=False):
                 payload = add_earlier_why(payload, market, _earlier_why(conn, day, market))
         payload = _add_hebrew(payload, translate_fn, row["payload"] if row else None, deadline + 120)
     payload["market"] = market
+    if earn:
+        payload["earnings"] = earn
 
-    stamps = [it["ts"] for it in fetched if it.get("ts")]
+    stamps =[it["ts"] for it in fetched if it.get("ts")]
     if stamps:
         payload["covers_from"], payload["covers_to"] = min(stamps).isoformat(), max(stamps).isoformat()
     payload["day"] = day.isoformat()

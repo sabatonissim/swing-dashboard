@@ -4228,7 +4228,13 @@ function digestStoredMarketHtml(ai){
     const up = i.change_pct >= 0;
     return `<div class="dg-chip"><span>${escH(t ? i.name_en : i.name_he)} ${t ? 'this week' : 'בשבוע'}</span><b class="${up?'pct-up':'pct-down'}" dir="ltr">${up?'+':''}${i.change_pct.toFixed(2)}%</b></div>`;
   }).join('');
-  return `${today ? `<div class="dg-market">${today}</div>` : ''}${other}<div class="dg-market">${chips}</div>${week ? `<div class="dg-market">${week}</div>` : ''}${digestSessionHtml(ai)}`;
+  // v79: before the open, the index futures when the summary was written (ai_digest.py -> market.before_open)
+  const fut = (m.status === 'pre_open' && m.before_open && Array.isArray(m.before_open.futures) ? m.before_open.futures : [])
+    .filter(i => typeof i.change_pct === 'number').map(i => {
+      const up = i.change_pct >= 0;
+      return `<div class="dg-chip"><span>${escH(t ? i.name_en : i.name_he)}</span><b class="${up?'pct-up':'pct-down'}" dir="ltr">${up?'+':''}${i.change_pct.toFixed(2)}%</b></div>`;
+    }).join('');
+  return `${today ? `<div class="dg-market">${today}</div>` : ''}${fut ? `<div class="dg-market">${fut}</div>` : ''}${other}<div class="dg-market">${chips}</div>${week ? `<div class="dg-market">${week}</div>` : ''}${digestSessionHtml(ai)}`;
 }
 
 // v38b: why there are no numbers of the day itself, and which day the numbers below are of
@@ -4261,6 +4267,15 @@ function digestSessionHtml(ai){
   const m = ai && ai.market;
   if(!m) return '';
   const t = lang==='en', lines = [];
+  // v79: on a turnaround day, how the session went (ai_digest.py -> market.path): the open, the low/high and the close
+  if(m.shape && Array.isArray(m.path)){
+    const sg = (x) => `<span dir="ltr">${x > 0 ? '+' : ''}${Number(x).toFixed(2)}%</span>`;
+    const end = m.intraday ? (t ? 'now' : 'עכשיו') : (t ? 'close' : 'סגירה');
+    m.path.forEach(p => {
+      const turn = m.shape === 'rebound' ? `${t ? 'low' : 'שפל'} ${sg(p.low_pct)}` : `${t ? 'high' : 'שיא'} ${sg(p.high_pct)}`;
+      lines.push(`${escH(t ? p.name_en : p.name_he)} ${t ? 'during the day' : 'במהלך היום'}: ${t ? 'open' : 'פתיחה'} ${sg(p.open_pct)} · ${turn} · ${end} ${sg(p.close_pct)} (${sg(p.from_open_pct)} ${t ? 'from the open' : 'מהפתיחה'})`);
+    });
+  }
   if(m.breadth && m.breadth.advancers != null) lines.push(t ? `S&P 500 stocks: ${m.breadth.advancers} rose, ${m.breadth.decliners} fell` : `מניות S&P 500: ${m.breadth.advancers} עלו, ${m.breadth.decliners} ירדו`);
   const mv = m.movers || {};
   const names = (arr) => (arr || []).map(x => `${escH(x.ticker)} <span dir="ltr">${x.change_pct > 0 ? '+' : ''}${Number(x.change_pct).toFixed(1)}%</span>`).join(', ');
@@ -4289,6 +4304,33 @@ async function digestNextHtml(){
       <span class="dg-next-name">${escH(t ? e.name_en : (e.name_he || e.name_en))}</span>
       <span class="dg-next-when">${escH(fmt(e.datetime_utc))}${e.estimated ? (t?' (est.)':' (משוער)') : ''}</span>
     </div>`).join('');
+}
+
+// v79 (owner): the day's notable earnings, the largest companies first (ai_digest.py -> earnings) — data, not the AI.
+// "reacted" = reported since the last close (the shares move on this day); "tonight" = after this day's close.
+function digestEarningsHtml(e){
+  if(!e || !(Array.isArray(e.reacted) && e.reacted.length || Array.isArray(e.tonight) && e.tonight.length)) return '';
+  const t = lang==='en';
+  const num = (x) => `<span dir="ltr" class="dg-nowrap">${Number(x).toFixed(2)}</span>`;
+  const pct = (x, digits) => `<span dir="ltr" class="dg-nowrap ${x >= 0 ? 'pct-up' : 'pct-down'}">${x > 0 ? '+' : ''}${Number(x).toFixed(digits)}%</span>`;
+  const when = {pre: t ? 'before the open' : 'לפני הפתיחה', post: t ? 'after the close' : 'אחרי הסגירה',
+                live: t ? 'today so far' : 'היום עד עכשיו', closed: t ? 'on the day' : 'ביום התגובה'};
+  const row = (r) => {
+    const bits = [];
+    if(r.eps != null) bits.push(`EPS ${num(r.eps)}${r.eps_estimate != null ? ` ${t ? 'vs. forecast' : 'מול צפי'} ${num(r.eps_estimate)}` : ''}`);
+    if(r.revenue_surprise_pct != null) bits.push(`${t ? 'revenue' : 'הכנסות'} ${pct(r.revenue_surprise_pct, 1)} ${t ? 'vs. forecast' : 'מהצפי'}`);
+    if(r.move && typeof r.move.pct === 'number') bits.push(`${t ? 'shares' : 'המניה'} ${pct(r.move.pct, 1)} ${when[r.move.state] || ''}`);
+    return `<div class="dg-rating">
+      <a href="#" class="dg-rating-tk" onclick="closeDailyDigest(); openEarnAnalysis('${escH(r.ticker)}'); return false;">${escH(r.ticker)}</a>
+      <span class="dg-rating-what">${escH(r.name || '')}${bits.length ? ' · ' + bits.join(' · ') : ''}</span>
+    </div>`;
+  };
+  const block = (rows, more, title) => !(rows && rows.length) ? '' : `<div class="dg-session" style="margin-top:6px;"><b>${title}</b></div>${rows.map(row).join('')}${more ? `<div class="dg-session">${t ? `and ${more} more` : `ועוד ${more}`}</div>` : ''}`;
+  return `<div class="dg-h">${t ? 'Notable earnings' : 'דוחות בולטים'}</div>
+    ${block(e.reacted, e.reacted_more, t ? 'Reported since the last close' : 'דיווחו מאז הסגירה הקודמת')}
+    ${block(e.tonight, e.tonight_more, t ? 'Reported after the close' : 'דיווחו אחרי הסגירה')}
+    <div class="dg-session">${t ? 'Companies of $10B and up. Results and forecasts from our earnings calendar; the shares against the last close before the report.'
+                               : 'חברות בשווי 10 מיליארד דולר ומעלה. התוצאות והצפי מיומן הדוחות; המניה מול הסגירה שלפני הדוח.'}</div>`;
 }
 
 // v39: the day's analyst rating changes (analyst_ratings.py), as the firms published them — data, not the AI
@@ -4360,6 +4402,7 @@ function renderDailyDigest(data, picked){
     <div id="digest-body">
       ${picked ? `<div class="digest-note" style="margin:0 0 10px;"><a href="#" onclick="openDailyDigest();return false;" style="color:var(--teal);">${t?'Back to the latest summary':'חזרה לסיכום האחרון'}</a></div>` : ''}
       ${hasAi ? aiSummaryHtml(ai, {marketHtml: data.is_today ? digestMarketHtml(ai) : digestStoredMarketHtml(ai)}) : (data.is_today ? digestMarketHtml(ai) : '') + fallback}
+      ${hasAi ? digestEarningsHtml(ai.earnings) : ''}
       <div id="digest-next"></div>
       ${digestRatingsHtml(data.analyst_ratings)}
       <div class="dg-foot">${t
@@ -5978,8 +6021,11 @@ function openMacroDrawerItem(m, onTop){
       ${escH(getNewsText(m))}
     </div>
     ${(() => {
+      // v79: a Google News item's "body" is its own title + the outlet's name, and its Hebrew was an older, worse translation
+      // of the title ("...BoE הימורים עלייה סקירת בנקאות"). Nothing more than the title -> no box.
+      if(bodyIsTitleOnly(m.body_en, m.summary_en)) return '';
       const body = lang==='en' ? m.body_en : m.body_he;
-      return body ? `<div class="ai-box"><div class="label">${lang==='en'?'More from the source':'עוד מהמקור'}</div>${escH(body)}</div>` : '';
+      return body ?`<div class="ai-box"><div class="label">${lang==='en'?'More from the source':'עוד מהמקור'}</div>${escH(body)}</div>` : '';
     })()}
     ${hookText(m) ? `<div class="ai-box"><div class="label">${lang==='en'?'Why this matters':'למה זה חשוב'}</div>${escH(hookText(m))}</div>` : ''}
     <div class="ai-box">
@@ -8568,6 +8614,15 @@ function compositeRank(s){
 
 function sortByCompositeRank(list){
   return list.slice().sort((a,b)=> compositeRank(b) - compositeRank(a));
+}
+
+// v79: true when the English body is only the headline again, plus at most a few words (the outlet's name)
+function bodyIsTitleOnly(bodyEn, titleEn){
+  const norm = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9%$ ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const b = norm(bodyEn), tt = norm(titleEn);
+  if(!b || !tt || !b.startsWith(tt)) return false;
+  const rest = b.slice(tt.length).trim();
+  return !rest || rest.split(' ').length <= 6;
 }
 
 function mapDbRowToMacro(r){

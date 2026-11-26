@@ -151,6 +151,11 @@ def digest_problems(payload: dict) -> List[str]:
     # v67: 20.11.2026, S&P 500 -3.7%: the reason was in the topics, not stated as the reason
     if market.get("move") in ("extreme", "notable") and not payload.get("why_en"):
         out.append(f"{market['move']} day (S&P 500 {sp}%) and the summary gives no reason (why)")
+    # v79: 25.11.2026, down 3.21% during the day and -0.25% at the close, told as "the S&P 500 fell 0.25%"
+    if market.get("shape"):
+        from ai_digest import tells_shape
+        if not tells_shape(overview, market):
+            out.append(f"a turnaround day ({market['shape']}) and the overview does not tell the turn")
     return out
 
 
