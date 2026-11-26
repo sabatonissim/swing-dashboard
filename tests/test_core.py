@@ -3953,7 +3953,8 @@ def test_v78b_pares_losses_and_holiday_headlines():
     import translation_fixes as tf
     p = tf.prep_en
     for a, b in (("Asian shares rebound led by AI stocks after Wall Street pares sharp losses", "Asian shares rebound led by AI stocks after Wall Street cuts sharp losses"),
-                 ("Sterling Steady as Dollar Pauses; BoE Rate Hike Bets Rise", "British pound holds steady as the Dollar Pauses; BoE interest rate hike Bets Rise"),
+                 ("Sterling Steady as Dollar Pauses; BoE Rate Hike Bets Rise", "British pound holds steady as the dollar pauses; traders raise bets on a BoE interest rate hike"),
+                 ("Gold slips as Fed rate-hike bets rise", "Gold falls slightly as traders raise bets on a Fed interest rate hike"),
                  ("investingLive European session wrap: European stocks ride Wall Street's comeback", "Summary of the European trading session: European stocks ride Wall Street's comeback"),
                  ("Stocks pared gains", "Stocks cut gains")):
         assert p(a).lower() == b.lower(), (p(a), b)
@@ -3967,6 +3968,8 @@ def test_v78b_pares_losses_and_holiday_headlines():
     bad = "מניות אסיה התאוששו בהובלת מניות בינה מלאכותית לאחר שוול סטריט ספגה הפסדים חדים"
     assert "צמצמה הפסדים" in tf.fix_he(bad) and tf.fix_he(tf.fix_he(bad)) == tf.fix_he(bad)
     assert tf.fix_he("וול סטריט ספגה הפסדים חדים ביום שישי") == "וול סטריט ספגה הפסדים חדים ביום שישי"
+    boe = "הפאונד הבריטי יציב כשהדולר עוצר; העלאת הריבית של BoE ההימורים עולים"       # v78c, the row saved on 26.11
+    assert tf.fix_he(boe) == "הפאונד הבריטי יציב כשהדולר עוצר; סוחרים מעלים הימורים על העלאת ריבית של BoE"
 
 
 def test_v77c_cut_translation_shown_in_english(api):

@@ -242,6 +242,9 @@ EN_REWRITES = [
     (r"\b(pound|euro|yen|dollar|yuan) steady as (?:the )?", r"\1 holds steady as the "),
     (r"^\s*investinglive\s+", ""),
     (r"\b(European|Asian|US|North American|Americas) session wrap\b", r"Summary of the \1 trading session"),
+    # v78c (clients5): "BoE Rate Hike Bets Rise" -> "העלאת הריבית של BoE ההימורים עולים"; "as the Dollar Pauses" -> "כשהדולר פוסק"
+    (r"\b(Fed|ECB|BoE|BOJ|BoC|RBA) (?:interest )?rate[- ]hike bets (?:rise|grow|increase|climb|jump)\b", r"traders raise bets on a \1 interest rate hike"),
+    (r"\bas the dollar pauses\b", "as the dollar pauses"),
 ]
 
 HE_FIXES = [
@@ -345,6 +348,8 @@ HE_FIXES = [
     # v78b: rows saved before the EN_REWRITES above (the first one only in its own sentence: "ספגה הפסדים" is right elsewhere)
     ("בהובלת מניות בינה מלאכותית לאחר שוול סטריט ספגה הפסדים חדים", "בהובלת מניות בינה מלאכותית לאחר שוול סטריט צמצמה הפסדים חדים"),
     ("Sterling Steady כמו הפסקות דולרים", "הפאונד הבריטי יציב כשהדולר עוצר"), ("השקעה חיה בסשן אירופאי", "סיכום המסחר באירופה"),
+    # v78c
+    ("העלאת הריבית של BoE ההימורים עולים", "סוחרים מעלים הימורים על העלאת ריבית של BoE"), ("כשהדולר פוסק", "כשהדולר עוצר"),
 ]
 
 # v38c: company names that are ordinary English words, which Google translates ("Ball" -> "כדור", "Visa slips" -> "תלושי ויזה",
