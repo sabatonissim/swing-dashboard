@@ -70,6 +70,7 @@ from news_links import is_google_news, decode_google_news_url   # v18d: Google N
 from news_links import PROMO_RE, is_unwanted_headline, clean_publisher, strip_outlet_suffix   # v28: headline clean-up
 from news_links import story_groups                                                          # v47: one line per story
 from news_links import is_advice_outlet                                                      # v56: shown rows too
+from news_links import home_score, HOME_MIN_SCORE                                            # v78: the home page's news
 import push_alerts    # v19: push notifications (watchlist signals, price alerts) — also used by the scanner
 import fundamentals as fundlib   # v21: SEC fundamentals build + stored copies (also the nightly warm-up job)
 import scheduler      # starts the GitHub Actions workflows at exact ET times (see scheduler.py): providers -> processing -> uniform events (see econ_calendar.py)
@@ -1971,8 +1972,18 @@ def get_macro_news(limit: int = 25):
     reserved = {r["id"] for r in critical_rows}
     combined = list(critical_rows) + list(other_rows)
     combined.sort(key=lambda r: r["timestamp"], reverse=True)
+    try:
+        key_ids = {i for e in _recent_key_events() for i in e["ids"]}
+    except Exception as e:
+        key_ids = None
+        print(f"[warn] macro-news: key events unavailable: {type(e).__name__}: {e}")
     out, per_tag = [], {}
     for story in _fold_stories(combined):
+        # v78: a story at the bottom of the daily summary's score is not shown here (part of a KEY event always is)
+        if key_ids is not None and not key_ids.intersection(story["story_ids"]) and home_score(
+                story.get("summary_en") or "", story.get("source_name") or "", story.get("category_tag") or "",
+                1 + len(story.get("more_sources") or [])) < HOME_MIN_SCORE:      # outlets, as in the summary
+            continue
         if not reserved.intersection(story["story_ids"]):       # the reserved slice is not counted against its category
             tag = story.get("category_tag")
             if per_tag.get(tag, 0) >= per_category_cap:
@@ -1982,12 +1993,9 @@ def get_macro_news(limit: int = 25):
         if len(out) >= limit:
             break
     # v18d: "Critical" on the site = part of a KEY event (see KEY NEWS above), not the old loose keyword label
-    try:
-        key_ids = {i for e in _recent_key_events() for i in e["ids"]}
+    if key_ids is not None:
         for r in out:
             r["impact_level"] = "Critical" if key_ids.intersection(r["story_ids"]) else "High"
-    except Exception as e:
-        print(f"[warn] macro-news: key-event labels skipped: {type(e).__name__}: {e}")
     for r in out:
         r.pop("story_ids", None)
         r.pop("story_ts", None)

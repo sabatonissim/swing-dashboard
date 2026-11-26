@@ -3918,6 +3918,36 @@ def test_v77c_cut_translation_and_headlines_of_26_11():
         assert good in tf.fix_he(bad) and tf.fix_he(tf.fix_he(bad)) == tf.fix_he(bad), bad
 
 
+def test_v78_home_page_hides_headlines_at_the_bottom_of_the_score():
+    import news_links as nl
+    import ai_digest as ad
+    low = (("Alabama Power Rate Cut | Cullman Today Shorts", "The Cullman Tribune", "מאקרו"),
+           ("Bitrue Research Institute Publishes Review of Five AI Trading Bot Platforms in 2026", "Investing.com", "AI"),
+           ("Meat woes force Orior to cut annual sales and earnings outlook", "www.just-food.com", "דוחות"),
+           ("Why Is Nucor (NUE) Down 8.4% Since Last Earnings Report?", "Yahoo Finance", "דוחות"))
+    for t, s, tag in low:
+        assert nl.home_score(t, s, tag) < nl.HOME_MIN_SCORE or nl.is_unwanted_headline(t), t
+    # the owner (26.11.2026): one company's report with its result or move stays on the home page
+    for t in ("Deere Shares Fall 3.8% as Fourth-Quarter Earnings Miss Expectations", "Workday Shares Fall 10.2% as Slowing Subscription Growth Overshadows",
+              "Autodesk Q3 Earnings Beat on Strong Renewals, Revenues Rise Y/Y"):
+        assert nl.home_score(t, "Yahoo Finance", "דוחות") >= nl.HOME_MIN_SCORE and not nl.is_unwanted_headline(t), t
+    for t in ("Why Is Nucor (NUE) Down 8.4% Since Last Earnings Report?", "HLBANK: Q1 profit rose 4.6% as associate earnings and lower loan impairments supported results",
+              "AURA SMART AIR LTD Rights 2026 - 27.11.26 For shares Earnings and Revenue – TASE:AUSA.R1"):
+        assert nl.is_unwanted_headline(t), t
+    kept = (("Ukraine says five jets damaged in attack on Russia’s Savasleyka airbase", "Al Jazeera", "גאופוליטי"),
+            ("Europe markets climb as easing AI fears lift investor sentiment", "Seeking Alpha", "שוק"),
+            ("BOJ's Tamura signals chance of faster-pace interest rate hikes", "Yahoo Finance", "ריבית"),
+            ("Oil Prices Rise as Renewed Middle East Attacks Threaten Persian Gulf Supply Recovery", "Yahoo Finance", "אנרגיה"),
+            ("Trump, NATO chief caution Russia as attacks on Ukraine’s energy infrastructure intensify", "CNBC", "גאופוליטי"),
+            ("Nvidia shipment halt threatens to stall the AI rally", "CoinDesk", "AI"),
+            ("Airlines strained by Iran-war fuel price shock", "Reuters", "אנרגיה"))
+    for t, s, tag in kept:
+        assert nl.home_score(t, s, tag) >= nl.HOME_MIN_SCORE, t
+    # the daily summary's score is the same function (moved, not changed, except the two additions of v78)
+    it = {"title": "Deere Q4 Earnings Miss Estimates on Large Agriculture Weakness", "source": "Yahoo Finance", "tag": "דוחות", "outlets": 1}
+    assert ad.item_score(it) == nl.headline_score(it["title"], it["source"], it["tag"]) == -4
+
+
 def test_v77c_cut_translation_shown_in_english(api):
     en = "Hawkish Fed risks deeper market selloff as real yields climb, Brooks warns"
     r = api._tidy_news_row({"summary_en": en, "summary_he": "ברוקס מזהיר", "source_name": "Seeking Alpha"})

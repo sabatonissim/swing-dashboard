@@ -197,6 +197,8 @@ EARNINGS_CHATTER_RE = re.compile(r":\s*(fiscal\s+)?q[1-4]\s+earnings snapshot\s*
                                  r"\bsaid on its (?:h[12]|fy|full[- ]year|half[- ]year|(?:first|second|third|fourth)[- ]quarter) earnings call\b|\bgrowth-at-a-reasonable-price\b|"
                                  # v77c (26.11.2026): "Sanmina (SANM) Stock Still Looks Like A Bargain On Earnings", "【The First Insurance FY2026 Q3
                                  # Earnings Call】Underwriting Profit Surges 68.9% ... NT$1.369 Billion" (a Taiwanese insurer, machine-written)
+                                 # v78 (Zacks on Yahoo, 8 in a week): "Why Is Nucor (NUE) Down 8.4% Since Last Earnings Report?", "... : Can It Rebound?"
+                                 r"\bsince last earnings report\b|"
                                  r"\bstill looks? like a bargain\b|\blooks? like a bargain\b|^\s*【|\bearnings call\s*】|"
                                  # v77b: "How Upcoming Earnings At Deere (DE) Has Changed Its Investment Story", "Ingles Markets GAAP EPS of
                                  # $0.97, revenue of $1.37B" (a page made by a machine), "New Zealand King Salmon posts record earnings"
@@ -205,7 +207,10 @@ EARNINGS_CHATTER_RE = re.compile(r":\s*(fiscal\s+)?q[1-4]\s+earnings snapshot\s*
                                  r"\bmeans for shareholders\b|\bstock gains attention\b|\bstocks with pricing power\b|"
                                  r"\bquant[- ](?:rated|ratings?|rankings?)\b|\btrades at [\d.]+x earnings\b|"
                                  # TradingView's machine summaries of companies abroad ("NRR: Earnings and rents grew, while H2 disposals ...")
-                                 r"^(?!(?:CPI|PPI|PCE|GDP|FED|WSJ|ECB|BOJ|BOE|OPEC|IMF)\b)(?-i:[A-Z]{3,5}): .*\b(?:earnings|revenue|ffo|aum)\b.*\b(?:while|as|but|and)\b|"
+                                 # v78: also 6 letters ("HLBANK: Q1 profit rose 4.6% as associate earnings ..."), and the Tel Aviv listing
+                                 # notes ("AURA SMART AIR LTD Rights 2026 - 27.11.26 For shares Earnings and Revenue – TASE:AUSA.R1")
+                                 r"^(?!(?:CPI|PPI|PCE|GDP|FED|WSJ|ECB|BOJ|BOE|OPEC|IMF|NVIDIA|TESLA|APPLE)\b)(?-i:[A-Z]{3,6}): .*\b(?:earnings|revenue|ffo|aum)\b.*\b(?:while|as|but|and)\b|"
+                                 r"\bTASE:[A-Z0-9.]+\s*$|"
                                  # a company with a few million dollars of sales ("Perimeter Medical Imaging AI Q3 GAAP EPS of $0.02, revenue of $0.6M")
                                  r"\beps of -?\$[\d.]+.*\brevenue of \$\d{1,2}(?:\.\d+)?M\b",
                                  re.I)
@@ -316,6 +321,66 @@ TRUSTED_OUTLETS_RE = re.compile(
 
 def is_trusted_outlet(name: str) -> bool:
     return bool(TRUSTED_OUTLETS_RE.search((name or "").strip().lower()))
+
+
+# ------------------------------------------------------------------
+# v78 (26.11.2026): how much one headline matters to someone who follows the US market. Moved here from ai_digest.py
+# (item_score, v37), where it picks what the daily summary's model reads, so the home page can use the same rules:
+# a headline the score puts at the bottom is not shown there (still stored, still found by the search).
+# ------------------------------------------------------------------
+MAJOR_OUTLETS = ("reuters", "bloomberg", "cnbc", "wall street journal", "wsj", "associated press", "ap news", "financial times",
+                 "marketwatch", "barron", "new york times", "axios", "federal reserve", "bls")
+MARKET_RE = re.compile(r"\b(wall street|s&p( 500)?|nasdaq|dow( jones)?|stocks?|stock market|equities|sell-?off|rout|crash\w*|"
+                       r"plunge[sd]?|tumble[sd]?|slump\w*|sink[s]?|rall(y|ies|ied)|worst day|best day|record (high|close)|"
+                       r"correction|bear market|volatility|vix|"
+                       # v78: "Europe markets climb as easing AI fears lift investor sentiment" scored as a story about nothing
+                       r"(?:global|world|europe|european|asian?) (?:markets|shares))\b", re.I)
+US_MACRO_RE = re.compile(r"\b(fed|federal reserve|fomc|powell|warsh|cpi|inflation|payrolls?|jobs report|unemployment|jobless|"
+                         r"gdp|pce|treasur\w+|yields?|tariffs?|white house|congress|shutdown|midterms?|recession|consumer)\b", re.I)
+WORLD_RE = re.compile(r"\b(oil|crude|brent|wti|opec|iran|hormuz|china|ecb|bank of japan|bank of england|dollar|gold|bitcoin|"
+                      r"boj|boe)\b", re.I)          # v78: "BOJ's Tamura signals chance of faster-pace interest rate hikes"
+BIG_NAME_RE = re.compile(r"\b(apple|microsoft|nvidia|alphabet|google|amazon|meta|tesla|broadcom|amd|tsmc|intel|micron|oracle|"
+                         r"netflix|palantir|samsung|sk hynix|jpmorgan|goldman|berkshire|walmart|exxon|chevron|eli lilly|"
+                         r"magnificent|mag 7|data centers?|chips?|semiconductors?|ai stocks?)\b", re.I)
+EARNINGS_TAG = "דוחות"
+# for the home page only: the geopolitics stories the site has always shown ("Ukraine says five jets damaged in attack on
+# Russia's Savasleyka airbase" scores 2 on the summary's rules, which are about the market)
+_GEO_RE = re.compile(r"\b(war|wars|russia|russian|ukraine|ukrainian|nato|putin|zelensky\w*|israel|gaza|hamas|hezbollah|missiles?|"
+                     r"drones?|airstrikes?|strikes? on|attacks? on|ceasefire|sanctions|north korea|taiwan strait|red sea)\b", re.I)
+HOME_MIN_SCORE = 3
+
+
+def headline_score(title: str, source: str = "", tag: str = "", outlets: int = 1) -> int:
+    """The daily summary's score (fixed rules, so a choice can be explained)."""
+    t = title or ""
+    market, macro, world = bool(MARKET_RE.search(t)), bool(US_MACRO_RE.search(t)), bool(WORLD_RE.search(t))
+    big = bool(BIG_NAME_RE.search(t))
+    outlet = (source or "").lower()
+    score = 6 * market + 5 * macro + 3 * world + 3 * big
+    score += 2 * min(outlets or 1, 8)
+    score += 3 if any(m in outlet for m in MAJOR_OUTLETS) else 0
+    if tag == EARNINGS_TAG and not (big or market or macro):
+        score -= 6                                                  # one smaller company's results
+    if LOCAL_RE.search(t) and not (market or GLOBAL_RE.search(t)):
+        score -= 10                                                 # far-away domestic news
+    return score
+
+
+# the owner (26.11.2026): one company's report stays on the home page ("Deere Shares Fall 3.8% as Fourth-Quarter Earnings Miss")
+# when the headline tells its result or the stock's move; an essay around a report ("Hua Nan Financial Holdings: Record 9M26
+# earnings growth ...", "Meat woes force Orior to cut ... outlook") does not
+_REPORT_NEWS_RE = re.compile(r"\b(?:shares?|stock|beats?|miss(?:es)?|tops?|falls?|rises?|surges?|soars?|jumps?|plunges?|"
+                             r"sinks?|slides?|tumbles?|drops?|climbs?)\b|\d+(?:\.\d+)?%", re.I)
+
+
+def home_score(title: str, source: str = "", tag: str = "", outlets: int = 1) -> int:
+    """headline_score + 3 for a war / geopolitics story; for one company's report, without the summary's -6 (+1 more when
+    the headline gives the result or the move)."""
+    t = title or ""
+    score = headline_score(t, source, tag, outlets) + (3 if _GEO_RE.search(t) else 0)
+    if tag == EARNINGS_TAG and not (BIG_NAME_RE.search(t) or MARKET_RE.search(t) or US_MACRO_RE.search(t)):
+        score += 6 + (1 if _REPORT_NEWS_RE.search(t) else 0)
+    return score
 
 
 # ------------------------------------------------------------------

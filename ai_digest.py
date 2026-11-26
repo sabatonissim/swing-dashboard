@@ -46,6 +46,7 @@ import requests
 import llm_provider
 from news_links import is_unwanted_headline, LOCAL_RE, GLOBAL_RE
 from news_links import is_advice_outlet, FOREIGN_INDEX_RE          # v51
+import news_links as _nl                                             # v78: headline_score
 from translation_fixes import fix_he
 
 MAX_ITEMS = 70          # stories sent to the model
@@ -370,18 +371,9 @@ def _market_text(market, day):
 
 
 # ------------------------------------------------------------------ which headlines the model sees
-_MAJOR = ("reuters", "bloomberg", "cnbc", "wall street journal", "wsj", "associated press", "ap news", "financial times",
-          "marketwatch", "barron", "new york times", "axios", "federal reserve", "bls")
-_MARKET_RE = re.compile(r"\b(wall street|s&p( 500)?|nasdaq|dow( jones)?|stocks?|stock market|equities|sell-?off|rout|crash\w*|"
-                        r"plunge[sd]?|tumble[sd]?|slump\w*|sink[s]?|rall(y|ies|ied)|worst day|best day|record (high|close)|"
-                        r"correction|bear market|volatility|vix)\b", re.I)
-_US_MACRO_RE = re.compile(r"\b(fed|federal reserve|fomc|powell|warsh|cpi|inflation|payrolls?|jobs report|unemployment|jobless|"
-                          r"gdp|pce|treasur\w+|yields?|tariffs?|white house|congress|shutdown|midterms?|recession|consumer)\b", re.I)
-_WORLD_RE = re.compile(r"\b(oil|crude|brent|wti|opec|iran|hormuz|china|ecb|bank of japan|bank of england|dollar|gold|bitcoin)\b", re.I)
-_BIG_NAME_RE = re.compile(r"\b(apple|microsoft|nvidia|alphabet|google|amazon|meta|tesla|broadcom|amd|tsmc|intel|micron|oracle|"
-                          r"netflix|palantir|samsung|sk hynix|jpmorgan|goldman|berkshire|walmart|exxon|chevron|eli lilly|"
-                          r"magnificent|mag 7|data centers?|chips?|semiconductors?|ai stocks?)\b", re.I)
-_EARNINGS_TAG = "דוחות"
+# v78: the score moved to news_links.py (the home page uses it too); the old names stay for the code below
+_MAJOR, _MARKET_RE, _US_MACRO_RE, _WORLD_RE, _BIG_NAME_RE, _EARNINGS_TAG = (
+    _nl.MAJOR_OUTLETS, _nl.MARKET_RE, _nl.US_MACRO_RE, _nl.WORLD_RE, _nl.BIG_NAME_RE, _nl.EARNINGS_TAG)
 _STOP = {"after", "amid", "with", "from", "that", "this", "than", "into", "over", "what", "when", "will", "says", "said", "have",
          "their", "they", "more", "about", "stock", "stocks", "shares", "market", "markets", "news", "today", "report",
          # the same words in the results of any company: two companies' reports are not one story
@@ -395,18 +387,7 @@ def _words(title):
 
 def item_score(it):
     """How much one story matters to someone who follows the US market. Fixed rules, so a choice can be explained."""
-    t = it["title"]
-    market, macro, world = bool(_MARKET_RE.search(t)), bool(_US_MACRO_RE.search(t)), bool(_WORLD_RE.search(t))
-    big = bool(_BIG_NAME_RE.search(t))
-    outlet = (it.get("source") or "").lower()
-    score = 6 * market + 5 * macro + 3 * world + 3 * big
-    score += 2 * min(it.get("outlets", 1), 8)
-    score += 3 if any(m in outlet for m in _MAJOR) else 0
-    if it["tag"] == _EARNINGS_TAG and not (big or market or macro):
-        score -= 6                                                  # one smaller company's results
-    if LOCAL_RE.search(t) and not (market or GLOBAL_RE.search(t)):
-        score -= 10                                                 # far-away domestic news
-    return score
+    return _nl.headline_score(it["title"], it.get("source") or "", it.get("tag") or "", it.get("outlets", 1))
 
 
 def rank_items(items, cap=MAX_ITEMS):
