@@ -107,6 +107,7 @@ PROMO_RE = re.compile(r"\b(stocks? to (buy|watch|own|bet on)|to bet on|should yo
                       r"(?<!long )undervalued\b[^.:;]*\bstocks?|stocks? with attractive valuations?|next frontier for\b[^.]*\binvestors|"
                       # v77c (26.11.2026): "President Trump Just Hit Stock Market Investors With Bad News at a Bad Time" (written to be clicked)
                       r"\bjust (?:hit|handed|gave|sent|delivered)\b[^.]*\binvestors\b|bad news at a bad time|"
+                      r"(?:keeps?|is|are|been) buying this (?:ticker|stock)|"          # v78b (Barchart, also through Yahoo)
                       r"screaming buys?)\b"      # "Tech Sell-Off: Two AI Stocks That Are Screaming Buys Right Now" (11.11.2026)
                       r"|^\s*(?:top\s+)?\d+\s+[\w\s&'-]{0,40}\bstocks?\b"
                       r"|^\s*(?:top\s+)?(?:three|four|five|six|seven|eight|nine|ten|twelve|fifteen|twenty)\s+(?:[\w&'-]+\s+){0,2}stocks?\b"      # v77b
@@ -126,7 +127,10 @@ PERSONAL_RE = re.compile(r"\b\d{2}-year-old\b|\bwidow(?:er|s)?\b|\bsocial securi
 # v51: outlets whose articles are advice to the reader ("3 stocks to ...", "here is what to do"), not news. The site shows
 # facts and no recommendations, so they are left out of every feed. The stock's own news page is not touched.
 ADVICE_OUTLETS_RE = re.compile(r"motley fool|24/7 wall st|zacks|investorplace|insider monkey|stocks down under|"
-                               r"investorideas|chartmill", re.I)     # v77b (26.11.2026): "Is the Fed making a huge mistake ...?", "A Growth-at-a-Reasonable-Price Stock"
+                               r"investorideas|chartmill|"
+                               # v78b: "Warren Buffett vs. Greg Abel: ... The Other Keeps Buying This Ticker" (Barchart); BigGo = machine-
+                               # written ("The Real Reason US Tightening Is Crushing Global Stocks"); Bioengineer.org = science papers
+                               r"barchart|biggo|bioengineer", re.I)     # v77b (26.11.2026): "Is the Fed making a huge mistake ...?", "A Growth-at-a-Reasonable-Price Stock"
 
 
 def is_advice_outlet(name: str) -> bool:
@@ -173,7 +177,7 @@ EARNINGS_CHATTER_RE = re.compile(r":\s*(fiscal\s+)?q[1-4]\s+earnings snapshot\s*
                                  # "How Investors May Respond To Ross Stores Stock Ahead Of Earnings Growth Expectations",
                                  # "How Earnings Beat Will Impact Cloudflare Stock Investors", "(BOBS) Could Be 7% Undervalued As ..."
                                  r"\bto host\b.*\bearnings (conference )?call\b|\bhow investors may respond\b|"
-                                 r"\bhow earnings beat will impact\b|\bcould be \d+% (under|over)valued\b|"
+                                 r"\bhow earnings beat will impact\b|\b(?:could|may|might) be \d+% (under|over)valued\b|"      # v78b: "HP (HPQ) Stock May Be 42% Undervalued"
                                  # v74: "Primary Health Properties (LSE:PHP) Stock Looks Reasonably Priced On Current Earnings"
                                  r"\b(?:stock|shares?)\s+(?:looks?|seems?|appears?|is|are)\s+(?:reasonably|fairly|fully|attractively)\s+(?:priced|valued)\b|"
                                  # v76: seven of the twelve headlines of 24.11.2026 18:00 were Zacks templates on Yahoo: "Titan Machinery

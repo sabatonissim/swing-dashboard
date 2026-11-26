@@ -234,6 +234,14 @@ EN_REWRITES = [
     (r"\bred tape\b", "bureaucracy"),
     (r"\bdrifts (lower|higher)\b", lambda m: ("falls" if m.group(1).lower() == "lower" else "rises") + " slightly"),     # "equities drift lower" is fine (v44)
     (r"\b(fears|worries|concerns) loom\b", r"\1 grow"),
+    # v78b (26.11.2026, clients5): "after Wall Street pares sharp losses" -> "ספגה הפסדים חדים" (the opposite: the losses got
+    # smaller); "Sterling Steady as Dollar Pauses" -> "Sterling Steady כמו הפסקות דולרים"; "investingLive European session wrap:"
+    # -> "השקעה חיה בסשן אירופאי"
+    (r"\bpares\b", "cuts"), (r"\bpared\b", "cut"), (r"\bparing\b", "cutting"),
+    (r"\bsterling\b(?=\s+(?:steady|steadies|holds|rises|falls|slips|jumps|gains|drops|edges|firms|weakens|dips|slides|climbs)\b)", "British pound"),
+    (r"\b(pound|euro|yen|dollar|yuan) steady as (?:the )?", r"\1 holds steady as the "),
+    (r"^\s*investinglive\s+", ""),
+    (r"\b(European|Asian|US|North American|Americas) session wrap\b", r"Summary of the \1 trading session"),
 ]
 
 HE_FIXES = [
@@ -334,6 +342,9 @@ HE_FIXES = [
     ("כשהטכנולוגיה מחזיקה במשפט", "כשמניות הטכנולוגיה מובילות"), ("נגד הביטאון הפדרלי", "נגד הבירוקרטיה לפדרל ריזרב"),
     ("נסחף נמוך יותר", "יורד מעט"), ("נסחפים נמוך יותר", "יורדים מעט"), ("נסחף גבוה יותר", "עולה מעט"),
     ("החששות מהעלאת הריבית של הפד מתנשאים", "החששות מהעלאת הריבית של הפד גוברים"),
+    # v78b: rows saved before the EN_REWRITES above (the first one only in its own sentence: "ספגה הפסדים" is right elsewhere)
+    ("בהובלת מניות בינה מלאכותית לאחר שוול סטריט ספגה הפסדים חדים", "בהובלת מניות בינה מלאכותית לאחר שוול סטריט צמצמה הפסדים חדים"),
+    ("Sterling Steady כמו הפסקות דולרים", "הפאונד הבריטי יציב כשהדולר עוצר"), ("השקעה חיה בסשן אירופאי", "סיכום המסחר באירופה"),
 ]
 
 # v38c: company names that are ordinary English words, which Google translates ("Ball" -> "כדור", "Visa slips" -> "תלושי ויזה",

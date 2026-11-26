@@ -3948,6 +3948,27 @@ def test_v78_home_page_hides_headlines_at_the_bottom_of_the_score():
     assert ad.item_score(it) == nl.headline_score(it["title"], it["source"], it["tag"]) == -4
 
 
+def test_v78b_pares_losses_and_holiday_headlines():
+    import news_links as nl
+    import translation_fixes as tf
+    p = tf.prep_en
+    for a, b in (("Asian shares rebound led by AI stocks after Wall Street pares sharp losses", "Asian shares rebound led by AI stocks after Wall Street cuts sharp losses"),
+                 ("Sterling Steady as Dollar Pauses; BoE Rate Hike Bets Rise", "British pound holds steady as the Dollar Pauses; BoE interest rate hike Bets Rise"),
+                 ("investingLive European session wrap: European stocks ride Wall Street's comeback", "Summary of the European trading session: European stocks ride Wall Street's comeback"),
+                 ("Stocks pared gains", "Stocks cut gains")):
+        assert p(a).lower() == b.lower(), (p(a), b)
+    for same in ("Sterling Bancorp reports results", "Dollar steady", "The Sterling Silver market"):
+        assert p(same) == same, p(same)
+    for t in ("HP (HPQ) Stock May Be 42% Undervalued After Earnings Focus Returns",
+              "Warren Buffett vs. Greg Abel: 1 Berkshire CEO Called Buying Airline Stocks a ‘Mistake.’ The Other Keeps Buying This Ticker."):
+        assert nl.is_unwanted_headline(t), t
+    for o in ("Barchart.com", "BigGo Finance", "finance.biggo.com", "Bioengineer.org"):
+        assert nl.is_advice_outlet(o), o
+    bad = "מניות אסיה התאוששו בהובלת מניות בינה מלאכותית לאחר שוול סטריט ספגה הפסדים חדים"
+    assert "צמצמה הפסדים" in tf.fix_he(bad) and tf.fix_he(tf.fix_he(bad)) == tf.fix_he(bad)
+    assert tf.fix_he("וול סטריט ספגה הפסדים חדים ביום שישי") == "וול סטריט ספגה הפסדים חדים ביום שישי"
+
+
 def test_v77c_cut_translation_shown_in_english(api):
     en = "Hawkish Fed risks deeper market selloff as real yields climb, Brooks warns"
     r = api._tidy_news_row({"summary_en": en, "summary_he": "ברוקס מזהיר", "source_name": "Seeking Alpha"})
