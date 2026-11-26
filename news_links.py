@@ -105,6 +105,8 @@ PROMO_RE = re.compile(r"\b(stocks? to (buy|watch|own|bet on)|to bet on|should yo
                       # v77b (25.11.2026): "Five materials stocks with attractive valuations following Q3 earnings", "Ten undervalued
                       # energy stocks after Q3 earnings", "Why Space Stocks Could Be The Next Frontier For AI Investors"
                       r"(?<!long )undervalued\b[^.:;]*\bstocks?|stocks? with attractive valuations?|next frontier for\b[^.]*\binvestors|"
+                      # v77c (26.11.2026): "President Trump Just Hit Stock Market Investors With Bad News at a Bad Time" (written to be clicked)
+                      r"\bjust (?:hit|handed|gave|sent|delivered)\b[^.]*\binvestors\b|bad news at a bad time|"
                       r"screaming buys?)\b"      # "Tech Sell-Off: Two AI Stocks That Are Screaming Buys Right Now" (11.11.2026)
                       r"|^\s*(?:top\s+)?\d+\s+[\w\s&'-]{0,40}\bstocks?\b"
                       r"|^\s*(?:top\s+)?(?:three|four|five|six|seven|eight|nine|ten|twelve|fifteen|twenty)\s+(?:[\w&'-]+\s+){0,2}stocks?\b"      # v77b
@@ -193,6 +195,9 @@ EARNINGS_CHATTER_RE = re.compile(r":\s*(fiscal\s+)?q[1-4]\s+earnings snapshot\s*
                                  r"\balready reflect(?:s|ed)? its\b|\bjustify its price\b|\bhow investors are reacting to\b|\bstrong (?:forward )?earnings potential\b|"
                                  # v77b (26.11.2026): "What CMC Markets (CMCX) Said on Its H1 Earnings Call", "A Growth-at-a-Reasonable-Price Stock"
                                  r"\bsaid on its (?:h[12]|fy|full[- ]year|half[- ]year|(?:first|second|third|fourth)[- ]quarter) earnings call\b|\bgrowth-at-a-reasonable-price\b|"
+                                 # v77c (26.11.2026): "Sanmina (SANM) Stock Still Looks Like A Bargain On Earnings", "【The First Insurance FY2026 Q3
+                                 # Earnings Call】Underwriting Profit Surges 68.9% ... NT$1.369 Billion" (a Taiwanese insurer, machine-written)
+                                 r"\bstill looks? like a bargain\b|\blooks? like a bargain\b|^\s*【|\bearnings call\s*】|"
                                  # v77b: "How Upcoming Earnings At Deere (DE) Has Changed Its Investment Story", "Ingles Markets GAAP EPS of
                                  # $0.97, revenue of $1.37B" (a page made by a machine), "New Zealand King Salmon posts record earnings"
                                  r"\bchang(?:e|es|ed|ing) (?:its|the|their) investment (?:story|narrative|thesis|case)\b|"

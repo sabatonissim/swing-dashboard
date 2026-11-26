@@ -1161,13 +1161,13 @@ def test_key_events_read_only_new_rows(api, monkeypatch):
     monkeypatch.setattr(api, "_key_cache", {"until": 0.0, "events": None, "rows": {}, "last_id": 0})
     event = api._key_event_of(first[0]["summary_en"])
     assert event, "the rules changed: pick another headline"
-    db = _FakeDb([first, [dict(first[0], summary_he="הפד")]])
+    db = _FakeDb([first, [dict(first[0], summary_he="הפד מוריד את הריבית ברבע נקודת אחוז")]])     # v77c: a real length (cut_short)
     monkeypatch.setattr(api, "db_cursor", db)
     events = api._recent_key_events()
     assert api._key_cache["last_id"] == 4 and 4 not in api._key_cache["rows"]        # kept in memory: only key-event headlines
     assert db.sql[0][1][0] == 0 and "SELECT *" not in db.sql[0][0]
     if events:
-        assert "ANY" in db.sql[1][0] and events[0]["row"].get("summary_he") == "הפד"
+        assert "ANY" in db.sql[1][0] and events[0]["row"].get("summary_he") == "הפד מוריד את הריבית ברבע נקודת אחוז"
     api._key_cache["until"] = 0.0
     db2 = _FakeDb([[], []])
     monkeypatch.setattr(api, "db_cursor", db2)
@@ -1208,7 +1208,7 @@ def test_daily_digest_reads_full_rows_only_for_what_it_shows(api, monkeypatch):
         sql, params = conn.db.sql[-1]
         if "ANY" in sql:
             conn.db.answers.pop(0)
-            return [dict(r, summary_he="עברית", body_en="body") for r in light if r["id"] in params[0]]
+            return [dict(r, summary_he="הפד מוריד את הריבית ברבע נקודת אחוז", body_en="body") for r in light if r["id"] in params[0]]
         return real_fetchall()
     conn.db.fetchall = fetchall
     conn.db.fetchone = lambda: (False,) if "to_regclass" in conn.db.sql[-1][0] else None
@@ -1220,7 +1220,7 @@ def test_daily_digest_reads_full_rows_only_for_what_it_shows(api, monkeypatch):
     assert len(full_reads) == 1 and set(full_reads[0][0]) <= {1, 2, 3, 4, 5}
     assert out["total_items"] == 5 and [h["tag"] for h in out["hot_topics"]] == ["Fed", "Energy"]
     for h in out["hot_topics"]:
-        assert h["representative"]["summary_he"] == "עברית" and h["representative"]["impact_level"] in ("Critical", "High")
+        assert h["representative"]["summary_he"] == "הפד מוריד את הריבית ברבע נקודת אחוז" and h["representative"]["impact_level"] in ("Critical", "High")
     for c in out["critical"]:
         assert c["impact_level"] == "Critical" and c["body_en"] == "body"
 
@@ -3886,6 +3886,44 @@ def test_v77b_headlines_of_25_11_afternoon():
     for bad, good in (("המניות בארה\"ב התערבבו כשעצרת הסיוע של הואנג דועכת", "כשהריבאונד של הואנג דועך"), ("WTI נסחרת מתחת להתנחלות מכיוון", "מתחת למחיר הסגירה"),
                       ("ממהרים לגדר את הסיכון לעליית עליות הפד בכלכלה", "העלאות ריבית של הפד"), ("המשקיעים מחממים על אנתרופיק", "מאבדים אמון באנתרופיק")):
         assert good in tf.fix_he(bad) and tf.fix_he(tf.fix_he(bad)) == tf.fix_he(bad), bad
+
+
+def test_v77c_cut_translation_and_headlines_of_26_11():
+    import news_links as nl
+    import translation_fixes as tf
+    en = "Hawkish Fed risks deeper market selloff as real yields climb, Brooks warns"
+    assert tf.cut_short(en, "ברוקס מזהיר")
+    for he in ("ברוקס מזהיר כי הפד הניצי מסתכן במכירת שוק עמוקה יותר כאשר התשואות האמיתיות מטפסות",
+               "האם הפד עושה טעות ענקית בהעלאת הריבית?"):
+        assert not tf.cut_short(en if "ברוקס" in he else "Is the Fed making a huge mistake in raising interest rates?", he), he
+    assert not tf.cut_short("Oil rises", "הנפט עולה") and not tf.cut_short(en, en)     # short text; no Hebrew at all = another check
+    for t in ("Sanmina (SANM) Stock Still Looks Like A Bargain On Earnings",
+              "President Trump Just Hit Stock Market Investors With Bad News at a Bad Time",
+              "【The First Insurance FY2026 Q3 Earnings Call】Underwriting Profit Surges 68.9%, Lifting Pre-Tax Net Income to NT$1.369 Billion"):
+        assert nl.is_unwanted_headline(t), t
+    for t in ("Trump hits investors with new tariffs on China", "Gold drifts lower as Fed rate-hike fears loom", "Asian stocks enjoy another bounce as tech holds court",
+              "Hawkish Fed risks deeper market selloff as real yields climb, Brooks warns", "EUR/JPY Steadies as Markets Await Tokyo Inflation Data"):
+        assert not nl.is_unwanted_headline(t), t
+    p = tf.prep_en
+    for a, b in (("Hawkish Fed sentiment coincides with sharp drop in S&P 500 valuation", "expectations of a hawkish Fed coincides with sharp drop in S&P 500 valuation"),
+                 ("Hawkish Fed risks deeper selloff", "a hawkish Fed risks deeper selloff"), ("A hawkish Fed risks more", "A hawkish Fed risks more"),
+                 ("Asian stocks enjoy another bounce as tech holds court", "Asian stocks enjoy another bounce as tech stocks lead"),
+                 ("Tech billionaire takes his case against red tape to the Federal Reserve", "Tech billionaire takes his case against bureaucracy to the Federal Reserve"),
+                 ("Gold drifts lower as Fed rate-hike fears loom", "Gold falls slightly as Fed interest rate hike fears grow"), ("Dollar drifts higher", "Dollar rises slightly")):
+        assert p(a).lower() == b.lower(), (p(a), b)
+    for same in ("Gold price falls 2% on hawkish Fed bets, US inflation data in focus", "Hawkish Fed comments put PCE inflation in focus."):
+        assert p(same) == same, p(same)
+    for bad, good in (("סנטימנט הפד ההוקיש עולה בקנה אחד", "הציפיות לפד נצי"), ("מניות אסיה נהנות מקפיצה נוספת כשהטכנולוגיה מחזיקה במשפט", "כשמניות הטכנולוגיה מובילות"),
+                      ("הזהב נסחף נמוך יותר כאשר החששות מהעלאת הריבית של הפד מתנשאים", "הזהב יורד מעט כאשר החששות מהעלאת הריבית של הפד גוברים")):
+        assert good in tf.fix_he(bad) and tf.fix_he(tf.fix_he(bad)) == tf.fix_he(bad), bad
+
+
+def test_v77c_cut_translation_shown_in_english(api):
+    en = "Hawkish Fed risks deeper market selloff as real yields climb, Brooks warns"
+    r = api._tidy_news_row({"summary_en": en, "summary_he": "ברוקס מזהיר", "source_name": "Seeking Alpha"})
+    assert r["summary_he"] == en
+    ok = api._tidy_news_row({"summary_en": "Oil Prices Rise as Renewed Middle East Attacks Threaten Supply", "summary_he": "מחירי הנפט עולים כאשר התקפות מחודשות במזרח התיכון מאיימות על האספקה", "source_name": "Reuters"})
+    assert ok["summary_he"].startswith("מחירי הנפט")
 
 
 def test_v77b_headlines_of_the_holiday_26_11():

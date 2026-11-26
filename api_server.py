@@ -65,7 +65,7 @@ except Exception as _auth_import_err:  # server still boots; auth endpoints answ
     print(f"[warn] auth libraries missing: {_auth_import_err}")
 
 import econ_calendar  # US economic calendar
-from translation_fixes import prep_en, fix_he   # shared EN->HE translation fixes (also used by pipeline_b)
+from translation_fixes import prep_en, fix_he, cut_short   # shared EN->HE translation fixes (also used by pipeline_b)
 from news_links import is_google_news, decode_google_news_url   # v18d: Google News link -> real article (also pipeline_b)
 from news_links import PROMO_RE, is_unwanted_headline, clean_publisher, strip_outlet_suffix   # v28: headline clean-up
 from news_links import story_groups                                                          # v47: one line per story
@@ -1822,6 +1822,9 @@ def _tidy_news_row(r) -> dict:
     for k in ("summary_he", "body_he"):
         if r.get(k):
             r[k] = fix_he(r[k])          # v67: also the fixes added after the row was saved ("שמן מפרסם" -> "הנפט מפרסם")
+    # v77c: a Hebrew title of which the translator dropped most ("ברוקס מזהיר") is shown in English rather than as a wrong headline
+    if r.get("summary_he") and cut_short(r.get("summary_en") or "", r["summary_he"]):
+        r["summary_he"] = r.get("summary_en")
     raw = (r.get("source_name") or "").strip()
     if raw:
         r["source_name"] = clean_publisher(raw)

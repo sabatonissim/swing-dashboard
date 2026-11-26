@@ -224,6 +224,16 @@ EN_REWRITES = [
      r"aims|eyes|favors|wants|seeks|expects|hints)\b)", r"\1 policymaker \2"),
     (r"\bstock slump\b", "stock market slump"),
     (r"\b(tech|bank|chip|energy|mining|auto|retail), (tech|bank|chip|energy|mining|auto|retail) stocks\b", r"\1 stocks and \2 stocks"),
+    # v77c (26.11.2026, each checked against clients5 from home): "Hawkish Fed sentiment" -> "סנטימנט הפד ההוקיש"; "tech holds court" ->
+    # "מחזיקה במשפט"; "red tape" -> "הביטאון"; "Gold drifts lower ... fears loom" -> "נסחף נמוך יותר ... מתנשאים"
+    (r"\bhawkish (Fed|ECB|BOJ|BOE) sentiment\b", r"expectations of a hawkish \1"),
+    # only as the subject of a verb ("hawkish Fed bets", "Hawkish Fed comments" are not touched)
+    (r"(?<!a )(?<!the )\bhawkish (Fed|ECB|BOJ|BOE)\b(?=\s+(?:risks?|could|may|might|would|will|threatens?|looms?|weighs?|hits?|pushes?|keeps?|"
+     r"puts?|sends?|spooks?|rattles?|drags?)\b)", r"a hawkish \1"),
+    (r"\b(tech|chips?|AI|banks?|energy) holds? court\b", r"\1 stocks lead"),
+    (r"\bred tape\b", "bureaucracy"),
+    (r"\bdrifts (lower|higher)\b", lambda m: ("falls" if m.group(1).lower() == "lower" else "rises") + " slightly"),     # "equities drift lower" is fine (v44)
+    (r"\b(fears|worries|concerns) loom\b", r"\1 grow"),
 ]
 
 HE_FIXES = [
@@ -319,6 +329,11 @@ HE_FIXES = [
     ("מתנערים מהמחסום האחרון בארה\"ב", "מתעלמים מסבב המכסים האחרון של ארה\"ב"), ("חבר בבנק הוקיש ביפן", "חבר ניצי בבנק יפן"),
     ("בנק אוף יפן", "בנק יפן"), ("ככל שהטכנולוגיה מתקדמת, מניות הבנקים", "כשמניות הטכנולוגיה ומניות הבנקים"),
     ("צניחה של המניה ולהגיב", "הצניחה בבורסה ולהגיב"),
+    # v77c: rows saved before the EN_REWRITES above
+    ("סנטימנט הפד ההוקיש", "הציפיות לפד נצי"), ("ההוקיש", "הניצי"), ("הוקיש", "ניצי"),
+    ("כשהטכנולוגיה מחזיקה במשפט", "כשמניות הטכנולוגיה מובילות"), ("נגד הביטאון הפדרלי", "נגד הבירוקרטיה לפדרל ריזרב"),
+    ("נסחף נמוך יותר", "יורד מעט"), ("נסחפים נמוך יותר", "יורדים מעט"), ("נסחף גבוה יותר", "עולה מעט"),
+    ("החששות מהעלאת הריבית של הפד מתנשאים", "החששות מהעלאת הריבית של הפד גוברים"),
 ]
 
 # v38c: company names that are ordinary English words, which Google translates ("Ball" -> "כדור", "Visa slips" -> "תלושי ויזה",
@@ -391,6 +406,14 @@ def half_translated(hebrew: str) -> bool:
         if sum(w.lower() in _PLAIN_EN for w in run.split()) >= 2:
             return True
     return False
+
+
+def cut_short(english: str, hebrew: str) -> bool:
+    """v77c (26.11.2026): Google's dict-chrome-ex endpoint gave "ברוקס מזהיר" for "Hawkish Fed risks deeper market selloff
+    as real yields climb, Brooks warns" — only the last two words. In 50 headlines of the home page a correct Hebrew was at
+    least 0.64 of the English length; under 0.45 means part of the sentence was dropped."""
+    en, he = (english or "").strip(), (hebrew or "").strip()
+    return len(en) >= 30 and bool(re.search(r"[א-ת]", he)) and len(he) < 0.45 * len(en)
 
 
 def prep_en(text: str) -> str:

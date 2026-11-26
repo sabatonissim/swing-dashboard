@@ -403,7 +403,7 @@ def fetch_raw_headlines() -> List[dict]:
 
 # Translation fixes (v18): idioms rewritten before Google, known bad Hebrew renderings fixed after — shared with
 # api_server.py; see translation_fixes.py for the lists and for why the old placeholder masking was dropped.
-from translation_fixes import prep_en as _prep_en, fix_he as _fix_he, half_translated as _half_translated
+from translation_fixes import prep_en as _prep_en, fix_he as _fix_he, half_translated as _half_translated, cut_short as _cut_short
 from news_links import is_unwanted_headline, clean_publisher, strip_outlet_suffix   # v28: shared with api_server.py
 from news_links import is_trusted_outlet                                            # v47
 from news_links import is_advice_outlet                                             # v51
@@ -502,6 +502,9 @@ def translate_to_hebrew(text: str) -> str:
                 if result and _half_translated(result):
                     half = half or result
                     print(f"[warn] translation ({provider_name}): part of the text came back in English, trying the next provider")
+                    break
+                if result and _cut_short(clean, result):      # v77c: "ברוקס מזהיר" for a 12-word headline
+                    print(f"[warn] translation ({provider_name}): the answer is much shorter than the text, trying the next provider")
                     break
                 if result:
                     _provider_fails[provider_name] = 0
