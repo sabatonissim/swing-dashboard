@@ -319,7 +319,7 @@
      row — the heading takes one end, the toggle and the buttons sit together at the other */
   .movers-head-row{display:flex;justify-content:flex-start;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap;}
   .movers-head-row .movers-title{margin-bottom:0;margin-right:auto;}
-  #page-home .movers-head-row .movers-title{margin-right:0;margin-left:auto;}   /* v79d: both languages (see .home-grid) */
+  html[lang="he"] #page-home .movers-head-row .movers-title{margin-right:0;margin-left:auto;}
   .movers-toggle{display:flex;gap:4px;background:var(--panel-2);border-radius:8px;padding:2px;}
   .movers-toggle-btn{background:transparent;border:none;color:var(--text-dim);font-size:10.5px;font-weight:600;padding:5px 9px;border-radius:6px;cursor:pointer;font-family:'Heebo',sans-serif;white-space:nowrap;}
   .movers-toggle-btn.active{background:var(--amber);color:var(--on-amber);}
@@ -422,22 +422,16 @@
      main column (scanner, news) on the right, the side column on the left, every heading at the right end of its row.
      Like the earnings calendar (v40c), a deliberate exception to "the layout is LTR in both languages". */
   /* v79d (owner, 26.11.2026: "when the language changes, the whole board must not change sides — only the words"): the
-     Hebrew arrangement is now the arrangement in BOTH languages (the owner chose "like in Hebrew"): the main column on the
-     right, the side column on the left, every heading at the right end of its row. Only the reading direction of a text
-     itself still follows its language (the rules on .today-text below). */
-  .today-head,
-  #page-home .col-title, #page-home .col-title-row,
-  #page-home .breaking-bar-title, #page-home .movers-head-row,
-  #page-home .market-charts-title-row{direction:rtl;}
-  /* English words inside those rows keep their own direction ("Scans (12)", not "(12) Scans"); a heading that is plain
-     text sits at the right end without being turned around */
-  /* (the button groups in them keep the inherited right-to-left order, so the buttons do not swap either) */
-  #page-home .chart-tabs{direction:rtl;}
-  html[lang="en"] .today-title, html[lang="en"] .today-sub, html[lang="en"] .today-more,
-  html[lang="en"] #page-home .col-title, html[lang="en"] #page-home .daily-digest-btn, html[lang="en"] #page-home .movers-title,
-  html[lang="en"] #page-home .market-charts-title{direction:ltr;unicode-bidi:isolate;}
-  html[lang="en"] #page-home .breaking-bar-title{direction:ltr;text-align:right;}
-  .today-more{margin-left:0;margin-right:auto;}
+     Hebrew arrangement of the COLUMNS is now the arrangement in both languages (the owner chose "like in Hebrew"): the main
+     column on the right, the side column on the left (.home-grid below). */
+  /* v79e (owner's screenshot, 26.11: "the English is not aligned left"): the COLUMNS stay where they are in both languages,
+     but a heading row reads with its language: in English the title at the left, with its text, and the button at the
+     right; in Hebrew the other way round. */
+  html[lang="he"] .today-head,
+  html[lang="he"] #page-home .col-title, html[lang="he"] #page-home .col-title-row,
+  html[lang="he"] #page-home .breaking-bar-title, html[lang="he"] #page-home .movers-head-row,
+  html[lang="he"] #page-home .market-charts-title-row{direction:rtl;}
+  html[lang="he"] .today-more{margin-left:0;margin-right:auto;}
   /* v44b (owner's screenshot): the second line of the overview hugged the left edge, far from its heading */
   html[lang="he"] .today-text, html[lang="he"] .today-intro{direction:rtl;text-align:right;margin-left:auto;}
   @media(min-width:901px){
@@ -1552,6 +1546,17 @@
 </footer>
 <style>
 html[lang="he"] .only-en, html[lang="en"] .only-he{display:none;}
+/* v79e (owner's screenshot, 26.11.2026: the tag "GDP" sat at the left of a Hebrew card): a piece of text with no Hebrew
+   letter is not marked by hebDir, so in Hebrew it stayed at the left while the Hebrew around it sat at the right. Found by
+   walking every screen in Hebrew (home, daily summary, the 4 market views, track record, portfolio, a stock, a news
+   drawer): these are all the places. The words keep their own direction; only where they sit changes. A new card that
+   mixes an English-only line with Hebrew ones = add it here. */
+html[lang="he"] .breaking-card .b-tag,
+html[lang="he"] .hx-stat .k, html[lang="he"] .hx-stat .v,
+html[lang="he"] .stat .v, html[lang="he"] .fund-stat .v, html[lang="he"] .bt-rs-card .label,
+html[lang="he"] .pf-table th, html[lang="he"] .pf-table td,
+html[lang="he"] .bt-signals-table th, html[lang="he"] .bt-signals-table td{text-align:right;}
+html[lang="he"] .cal-pill{direction:rtl;text-align:right;}
 .site-links{max-width:1100px;margin:0 auto;padding:6px 16px 22px;font-size:12px;line-height:1.7;color:var(--text-dim);}
 .site-links p{margin:0 0 10px;}
 .site-links a{color:var(--text-dim);}
