@@ -4135,3 +4135,61 @@ def test_v79_digest_before_the_open_and_the_days_earnings():
     kept = d.notable_earnings({"reacted": e["reacted"] * 3, "tonight": []})
     assert len(kept["reacted"]) == d.EARN_SHOWN and kept["reacted_more"] == 3 and kept["tonight"] == []
     assert d.notable_earnings({"reacted": [], "tonight": []}) is None
+
+def test_v79_stock_lookup_runs_its_parts_together(api, monkeypatch):
+    """v79 (owner: "it takes a while"): a first visit to a stock took 5.2 s, its parts one after another (.info tried and
+    blocked, two database reads, up to 2.5 s for a description). Now they run together and .info is not asked."""
+    import sys as _sys
+    import time as _t
+    import pandas as pd
+    if _sys.platform == "emscripten":
+        pytest.skip("no threads in the browser check; GitHub Actions runs it")
+    idx = pd.date_range("2026-11-20", periods=4, freq="D")
+    hist = pd.DataFrame({"Open": [1, 2, 3, 4.0], "High": [2, 3, 4, 5.0], "Low": [0.5, 1, 2, 3.0], "Close": [1.5, 2.5, 3.5, 4.5],
+                         "Volume": [10, 10, 10, 10]}, index=idx)
+    slow = lambda value, sec: (lambda *a: (_t.sleep(sec), value)[1])
+    monkeypatch.setattr(api, "_lookup_history", slow((hist, None), 0.4))
+    monkeypatch.setattr(api, "_next_report", slow({"date": None}, 0.4))
+    monkeypatch.setattr(api, "_fund_peek_safe", slow(None, 0.4))
+    monkeypatch.setattr(api, "_sec_fallback_description", slow("late", 3))
+    monkeypatch.setattr(api, "get_sp500_info_map", lambda: {"ZZLOOK": {"name": "Test Co", "sector": "Energy"}})
+
+    def no_info(*a):
+        raise AssertionError(".info was asked")
+    monkeypatch.setattr(api, "_get_info_with_retry", no_info)
+    t0 = _t.time()
+    out = api.lookup_stock("ZZLOOK")
+    assert _t.time() - t0 < 1.5
+    assert out["name"] == "Test Co" and out["sector"] == "Energy" and out["description"] is None
+    assert out["price"] == 4.5 and out["change_pct"] == 28.57 and out["next_report"] == {"date": None}
+
+
+def test_v79_ticker_list_for_the_search_box(api, monkeypatch):
+    """v79: the site's own stocks with names, for suggestions as you type: the scanner's universe (largest first), then
+    the S&P 500 names it lacks; read from the database once in 12 hours, and a cut list is not kept."""
+    from contextlib import contextmanager
+    calls = {"n": 0}
+    rows = [("NVDA", "NVIDIA Corporation"), ("ZETA", None), ("bad ticker!", "x")] + [(f"T{i:03d}", f"Company {i}") for i in range(450)]
+
+    @contextmanager
+    def cursor(*a, **k):
+        calls["n"] += 1
+
+        class C:
+            def execute(self, sql, params=None):
+                assert "universe_movers" in sql and "stock_leaders" in sql
+            def fetchall(self):
+                return rows
+        yield None, C()
+    monkeypatch.setattr(api, "db_cursor", cursor)
+    monkeypatch.setattr(api, "_sp500_map_nowait", lambda: {"ZETA": {"name": "Zeta Global"}, "KO": {"name": "Coca-Cola"}})
+    monkeypatch.setattr(api, "_TICKER_LIST", {"data": None, "ts": 0.0, "tried": 0.0})
+    out = api.get_ticker_list()
+    assert out["available"] and out["tickers"][:2] == [["NVDA", "NVIDIA Corporation"], ["ZETA", "Zeta Global"]]
+    assert out["tickers"][-1] == ["KO", "Coca-Cola"] and "_names" not in out and not any(t[0] == "bad ticker!" for t in out["tickers"])
+    assert api._known_names()["ZETA"] == "Zeta Global"
+    api.get_ticker_list()
+    assert calls["n"] == 1                                   # kept in memory
+    monkeypatch.setattr(api, "_TICKER_LIST", {"data": None, "ts": 0.0, "tried": 0.0})
+    rows[:] = rows[:3]
+    assert api.get_ticker_list() == {"available": False, "tickers": []} and api._TICKER_LIST["data"] is None

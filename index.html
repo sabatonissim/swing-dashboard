@@ -516,7 +516,7 @@
   .cs-list{max-height:320px;overflow-y:auto;margin-top:6px;}
   .cs-item{display:flex;align-items:center;gap:10px;padding:11px 10px;border-radius:8px;cursor:pointer;transition:background .12s;border-bottom:1px solid var(--line);}
   .cs-item:last-child{border-bottom:none;}
-  .cs-item:hover{background:var(--panel-2);}
+  .cs-item:hover,.cs-item.sel{background:var(--panel-2);}
   .cs-item .cs-ticker{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:13.5px;min-width:52px;}
   .cs-item .cs-trigger{font-size:11.5px;color:var(--text-dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .cs-empty{color:var(--text-dim);font-size:12.5px;padding:14px 4px;text-align:center;}
@@ -1486,7 +1486,7 @@
 <div id="page-deepdive" style="display:none;">
   <div class="pulse-page-wrap">
     <div class="dd-search-row">
-      <input type="text" id="dd-ticker-input" class="news-search-input" placeholder="הקלידו טיקר, למשל AAPL" aria-label="טיקר / Ticker" style="max-width:280px;" onkeydown="if(event.key==='Enter') loadDeepDive()">
+      <input type="text" id="dd-ticker-input" class="news-search-input" placeholder="הקלידו טיקר, למשל AAPL" aria-label="טיקר / Ticker" style="max-width:280px;" onkeydown="if(latinKey(event)) return; if(event.key==='Enter') loadDeepDive()">
       <button class="search-btn" id="dd-search-btn" onclick="loadDeepDive()">חפש</button>
     </div>
     <div id="deepdive-content"></div>
@@ -1596,6 +1596,22 @@ html[lang="he"] .only-en, html[lang="en"] .only-he{display:none;}
   <div class="risk-calc-modal line-alert-modal" id="line-alert-modal" role="dialog" aria-modal="true" aria-label="התראה על קו / Line alert"></div>
 </div>
 <div id="al-toast" class="al-toast" role="status" aria-live="polite"></div>
+<!-- v79: type a ticker anywhere (like TradingView) -->
+<div class="risk-calc-overlay" id="tk-search-overlay" onclick="if(event.target===this) closeTickerSearch();">
+  <div class="risk-calc-modal" id="tk-search-modal" role="dialog" aria-modal="true" aria-label="חיפוש מניה / Find a stock">
+    <div class="cs-head">
+      <h3 style="margin:0;" id="tk-search-title">חיפוש מניה</h3>
+      <button class="close-btn" onclick="closeTickerSearch()" aria-label="סגירה / Close">✕</button>
+    </div>
+    <div class="cs-input-wrap">
+      <span class="cs-input-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></span>
+      <input type="text" class="cs-input" id="tk-input" autocomplete="off" spellcheck="false" dir="ltr" aria-label="Ticker"
+             oninput="renderTickerSearch(this.value)" onkeydown="tickerSearchKey(event)">
+    </div>
+    <div class="cs-list" id="tk-list" role="listbox"></div>
+    <div class="cs-empty" id="tk-hint" style="text-align:start;padding:8px 4px 0;font-size:12px;"></div>
+  </div>
+</div>
 <div class="risk-calc-overlay" id="compare-search-overlay" onclick="if(event.target===this) closeCompareSearch();">
   <div class="risk-calc-modal" id="compare-search-modal" role="dialog" aria-modal="true" aria-label="השוואת מניות / Compare stocks"></div>
 </div>
@@ -2740,8 +2756,11 @@ async function loadDeepDive(){
   // The slow parts (sector comparison, technical setup and above all the SEC fundamentals — a first call can take 30s+ or
   // time out and be retried) used to hold the WHOLE page on "Loading...". Now they are started together but not awaited:
   // the page (price, chart, signals, news) is drawn first, and each slow section fills itself in when its data arrives.
+  // v79: what the search window already started loading for this stock (ddPrefetch) is taken over, not asked again
+  const pre = ddTakePrefetch(ticker);
+  if(!window.__isBot) tkRemember(ticker);
   const sectorP = fetchWithTimeout(`${API_BASE}/api/sector-comparison/${ticker}?period=${ddSectorPeriod}`, 30000).then(r => r.ok ? r.json() : Promise.reject());
-  const setupP = fetchWithTimeout(`${API_BASE}/api/technical-setup/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject());
+  const setupP = pre ? pre.setup : fetchWithTimeout(`${API_BASE}/api/technical-setup/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject());
   const fundP = fetchFundamentalsData(ticker);
   const insiderP = fetchWithTimeout(`${API_BASE}/api/insider/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject());   // v22
   const streetP = fetchWithTimeout(`${API_BASE}/api/street/${ticker}`, 20000).then(r => r.ok ? r.json() : Promise.reject());     // v23
@@ -2754,9 +2773,12 @@ async function loadDeepDive(){
 
   try {
     const [lookupRes, signalsRes] = await Promise.allSettled([
-      fetch(`${API_BASE}/api/lookup/${ticker}`).then(r => r.ok ? r.json() : Promise.reject(r.status)),
-      fetch(`${API_BASE}/api/signal-history/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
+      pre ? pre.lookup : fetch(`${API_BASE}/api/lookup/${ticker}`).then(r => r.ok ? r.json() : Promise.reject(r.status)),
+      pre ? pre.signals : fetch(`${API_BASE}/api/signal-history/${ticker}`).then(r => r.ok ? r.json() : Promise.reject()),
     ]);
+    if(lookupRes.status === 'fulfilled' && !pre) ddMap()[ticker] = {at: Date.now(), lookup: Promise.resolve(lookupRes.value),
+      signals: signalsRes.status === 'fulfilled' ? Promise.resolve(signalsRes.value) : Promise.reject(), setup: setupP};   // back to it soon = at once
+    if(ddMap()[ticker] && ddMap()[ticker].signals) ddMap()[ticker].signals.catch(() => {});
     if(loadId !== _ddLoadId) return;   // another ticker was searched meanwhile
 
     if(lookupRes.status !== 'fulfilled'){
@@ -5352,6 +5374,164 @@ function openEarnAnalysis(ticker){
   document.getElementById('dd-ticker-input').value = ticker;
   setPage('deepdive');
   loadDeepDive();
+}
+
+// ==== v79 (owner, 26.11.2026): "type a ticker without clicking the search box, like TradingView, and make it faster" ====
+// (1) A letter typed anywhere (not inside a field, no window open) opens a small search window with that letter in it.
+//     The key's position counts, not its language: a Hebrew keyboard's ש is A.
+// (2) Suggestions come from the site's own list of stocks (/api/ticker-list, kept in the browser a day), so they show
+//     at once; a rare name not on it is asked from /api/ticker-search. Empty box = the stocks opened last.
+// (3) When what was typed is a known ticker and the typing pauses, the stock's price and chart structure start loading,
+//     and loadDeepDive takes those same requests over (_ddPrefetch) — the page is often ready by the Enter.
+// (no const here: loadDeepDive, earlier in the file, can run before this line is reached — the names are literals)
+var _tkList = null, _tkListLoading = null, _tkSel = 0, _tkItems = [], _tkTimer = null, _tkSeq = 0;
+function tkLoadList(){
+  if(_tkList) return Promise.resolve(_tkList);
+  if(_tkListLoading) return _tkListLoading;
+  try {
+    const saved = JSON.parse(localStorage.getItem('swing_tickers_v1') || 'null');
+    if(saved && Array.isArray(saved.list) && Date.now() - saved.at < 864e5){ _tkList = saved.list; return Promise.resolve(_tkList); }
+  } catch(e){}
+  _tkListLoading = fetchWithTimeout(`${API_BASE}/api/ticker-list`, 15000).then(r => r.ok ? r.json() : null).then(d => {
+    if(d && Array.isArray(d.tickers) && d.tickers.length){
+      _tkList = d.tickers;
+      try { localStorage.setItem('swing_tickers_v1', JSON.stringify({at: Date.now(), list: _tkList})); } catch(e){}
+    }
+    return _tkList || [];
+  }).catch(() => []).finally(() => { _tkListLoading = null; });
+  return _tkListLoading;
+}
+function tkRecent(){ try { const r = JSON.parse(localStorage.getItem('swing_recent_tk') || '[]'); return Array.isArray(r) ? r.filter(x => TICKER_OK.test(x)) : []; } catch(e){ return []; } }
+function tkRemember(t){ try { localStorage.setItem('swing_recent_tk', JSON.stringify([t, ...tkRecent().filter(x => x !== t)].slice(0, 8))); } catch(e){} }
+function tkNameOf(t){ const r = (_tkList || []).find(x => x[0] === t); return r ? r[1] : ''; }
+// what the list offers for `q`: the exact ticker, tickers that start with it (largest companies first), then names
+function tkMatches(q, list){
+  const Q = canonTicker(q).replace(/[^A-Z0-9.\-^=]/g, ''), ql = q.trim().toLowerCase();
+  if(!ql) return [];
+  const out = [], seen = new Set();
+  const add = (r) => { if(!seen.has(r[0]) && out.length < 8){ seen.add(r[0]); out.push(r); } };
+  if(Q) list.filter(r => r[0] === Q).forEach(add);
+  if(Q) list.filter(r => r[0].startsWith(Q)).forEach(add);
+  if(ql.length >= 2) list.filter(r => r[1] && new RegExp('(^|[^a-z])' + ql.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(r[1].toLowerCase())).forEach(add);
+  return out;
+}
+function openTickerSearch(first){
+  const o = document.getElementById('tk-search-overlay'), inp = document.getElementById('tk-input');
+  if(!o || !inp) return;
+  const t = lang === 'en';
+  document.getElementById('tk-search-title').textContent = t ? 'Find a stock' : 'חיפוש מניה';
+  inp.placeholder = t ? 'Ticker or company name' : 'טיקר או שם חברה';
+  document.getElementById('tk-hint').textContent = t ? 'Enter opens the stock. Tip: start typing a ticker anywhere on the site.'
+                                                     : 'Enter פותח את המניה. טיפ: אפשר להתחיל להקליד טיקר מכל מקום באתר.';
+  inp.value = first || '';
+  o.classList.add('open');
+  inp.focus();
+  renderTickerSearch(inp.value);
+  tkLoadList().then(() => { if(o.classList.contains('open')) renderTickerSearch(inp.value); });
+}
+function closeTickerSearch(){ document.getElementById('tk-search-overlay')?.classList.remove('open'); }
+function renderTickerSearch(raw){
+  const box = document.getElementById('tk-list');
+  if(!box) return;
+  const t = lang === 'en', q = (raw || '').trim();
+  const typed = canonTicker(q).replace(/[^A-Z0-9.\-^=]/g, '');
+  let items;
+  if(!q) items = tkRecent().map(x => [x, tkNameOf(x)]);
+  else {
+    items = tkMatches(q, _tkList || []);
+    if(typed && TICKER_OK.test(typed) && !items.some(r => r[0] === typed)) items.push([typed, '']);   // whatever was typed, always
+  }
+  _tkItems = items; _tkSel = 0;
+  tkDraw(box, !q && items.length ? (t ? 'Opened recently' : 'נפתחו לאחרונה') : '');
+  clearTimeout(_tkTimer);
+  const seq = ++_tkSeq;
+  if(typed && items.length && items[0][0] === typed && tkNameOf(typed))      // a known ticker: start loading it
+    _tkTimer = setTimeout(() => { if(seq === _tkSeq) ddPrefetch(typed); }, 250);
+  else if(q.length >= 2 && items.filter(r => r[1]).length < 3)                // a name the list does not have
+    _tkTimer = setTimeout(async () => {
+      try {
+        const r = await fetch(`${API_BASE}/api/ticker-search?q=${encodeURIComponent(q)}`);
+        if(!r.ok || seq !== _tkSeq) return;
+        const more = ((await r.json()).results || []).filter(x => x.symbol && TICKER_OK.test(x.symbol) && !_tkItems.some(i => i[0] === x.symbol))
+          .map(x => [x.symbol, x.name || '']);
+        if(seq !== _tkSeq || !more.length) return;
+        _tkItems = _tkItems.filter(i => i[1] || i[0] !== typed).concat(more).slice(0, 8 + 2);
+        if(typed && !_tkItems.some(i => i[0] === typed)) _tkItems.push([typed, '']);
+        tkDraw(box, '');
+      } catch(e){}
+    }, 300);
+}
+function tkDraw(box, head){
+  const t = lang === 'en';
+  box.innerHTML = (head ? `<div class="cs-empty" style="text-align:start;padding:4px 4px 6px;">${escH(head)}</div>` : '')
+    + (_tkItems.length ? _tkItems.map((r, i) => `<div class="cs-item${i === _tkSel ? ' sel' : ''}" role="option" onclick="pickTicker('${escH(r[0])}')">
+        <span class="cs-ticker" dir="ltr">${escH(r[0])}</span><span class="cs-trigger" dir="ltr">${escH(r[1] || (t ? 'Open this ticker' : 'פתיחת הטיקר הזה'))}</span></div>`).join('')
+      : `<div class="cs-empty" style="text-align:start;padding:4px;">${t ? 'Type a ticker, for example AAPL.' : 'הקלידו טיקר, למשל AAPL.'}</div>`);
+}
+function tickerSearchKey(e){
+  if(latinKey(e)) return;
+  const box = document.getElementById('tk-list');
+  if(e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+    if(!_tkItems.length) return;
+    e.preventDefault();
+    _tkSel = (_tkSel + (e.key === 'ArrowDown' ? 1 : -1) + _tkItems.length) % _tkItems.length;
+    tkDraw(box, '');
+    if(_tkItems[_tkSel] && tkNameOf(_tkItems[_tkSel][0])) ddPrefetch(_tkItems[_tkSel][0]);
+  } else if(e.key === 'Enter'){
+    e.preventDefault();
+    const typed = canonTicker(e.target.value).replace(/[^A-Z0-9.\-^=]/g, '');
+    const pick = _tkItems[_tkSel] ? _tkItems[_tkSel][0] : typed;
+    if(pick) pickTicker(pick);
+  }
+}
+// A letter key pressed in a ticker box while the keyboard is in Hebrew: the Latin letter of that key goes in instead.
+function latinKey(e){
+  const m = /^Key([A-Z])$/.exec(e.code || '');
+  if(!m || e.ctrlKey || e.metaKey || e.altKey || /^[a-z]$/i.test(e.key)) return false;
+  e.preventDefault();
+  const el = e.target, s = el.selectionStart ?? el.value.length, end = el.selectionEnd ?? s;
+  el.value = el.value.slice(0, s) + m[1] + el.value.slice(end);
+  el.setSelectionRange(s + 1, s + 1);
+  el.dispatchEvent(new Event('input', {bubbles: true}));
+  return true;
+}
+function pickTicker(tk){
+  tk = canonTicker(tk);
+  if(!TICKER_OK.test(tk)) return;
+  closeTickerSearch();
+  tkRemember(tk);
+  openEarnAnalysis(tk);
+}
+document.addEventListener('keydown', e => {
+  if(e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.isComposing || e.repeat) return;
+  const m = /^Key([A-Z])$/.exec(e.code || '');
+  if(!m) return;
+  const a = document.activeElement;
+  if(a && (a.isContentEditable || a.matches('input,textarea,select,iframe'))) return;
+  if(document.querySelector('[id$="overlay"].open, [role="dialog"].open')) return;     // a window is open: its own keys
+  e.preventDefault();
+  openTickerSearch(m[1]);
+});
+
+// The requests loadDeepDive would send first, sent while the visitor is still choosing; kept 2 minutes and handed over.
+var _ddPrefetchMap = {};       // var + the guard below: see the note above tkLoadList
+function ddMap(){ return _ddPrefetchMap || (_ddPrefetchMap = {}); }
+function ddPrefetch(tk){
+  if(!TICKER_OK.test(tk)) return;
+  const p = ddMap()[tk];
+  if(p && Date.now() - p.at < 120e3) return;
+  const get = (url, ms, status) => fetchWithTimeout(url, ms).then(r => r.ok ? r.json() : Promise.reject(status ? r.status : undefined));
+  const entry = {at: Date.now(),
+    lookup: get(`${API_BASE}/api/lookup/${tk}`, 30000, true),
+    signals: get(`${API_BASE}/api/signal-history/${tk}`, 20000),
+    setup: get(`${API_BASE}/api/technical-setup/${tk}`, 20000)};
+  Object.values(entry).forEach(x => x && x.catch && x.catch(() => {}));
+  entry.lookup.catch(() => { if(ddMap()[tk] === entry) delete ddMap()[tk]; });   // a failure is not kept
+  ddMap()[tk] = entry;
+}
+function ddTakePrefetch(tk){
+  const p = ddMap()[tk];
+  return p && Date.now() - p.at < 120e3 ? p : null;
 }
 
 
@@ -10468,7 +10648,8 @@ const kbd = (function(){
   const WINDOWS = [['overlay', () => closeDrawer()], ['digest-overlay', () => closeDailyDigest()],
                    ['risk-calc-overlay', () => closeRiskCalc()], ['info-modal-overlay', () => closeInfoModal()],
                    ['line-alert-overlay', () => closeLineAlert()],
-                   ['compare-search-overlay', () => closeCompareSearch()]];
+                   ['compare-search-overlay', () => closeCompareSearch()],
+                   ['tk-search-overlay', () => closeTickerSearch()]];
   // A grid of hundreds of tiles (the heatmap: 503) is one Tab stop: Tab enters it, the arrow keys move inside it,
   // the next Tab leaves it ("roving" focus: only the current tile has tabindex 0).
   const GRID = '.heatmap-tile';

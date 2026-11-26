@@ -28,6 +28,7 @@ Endpoints:
 CORS: only the origins in ALLOWED_ORIGINS (see below).
 """
 
+import contextvars
 import functools
 import json
 import math
@@ -5099,17 +5100,83 @@ def _build_watchlist_setups(user_id: int):
     return {"results": results}
 
 
-def _description_quick(ticker: str) -> Optional[str]:
-    """v34: the SEC + Wikipedia description is three slow requests the first time a stock is opened, and the whole stock
-    page waited for it (7 s measured on BRK-B). At most 2.5 s here; what is slower finishes in the background and is kept
-    for the next visitor. Most stocks show their company profile instead anyway."""
-    ex = ThreadPoolExecutor(max_workers=1)
+LOOKUP_DESCRIPTION_WAIT_SEC = 0.4      # v79: after the prices are in; a cached description is there at once
+
+
+def _lookup_history(ticker: str):
+    """(a year of daily bars, last error). Two attempts: Yahoo sometimes answers a valid ticker (ADRs especially) with an EMPTY
+    frame when it is throttling us; only a repeated empty answer with no error counts as a real 404."""
+    tk = yf.Ticker(ticker)
+    hist, last_err = None, None
+    for attempt in range(2):
+        try:
+            # actual prices, like TradingView (v18). v34: a full year — this also gives the 52-week range
+            hist = fix_unadjusted_splits(tk.history(period="1y", interval="1d", auto_adjust=False))   # v65
+            if hist is not None and not hist.empty:
+                break
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+        if attempt == 0:
+            time.sleep(0.8)
+    return hist, last_err
+
+
+def _fund_peek_safe(ticker: str) -> Optional[dict]:
     try:
-        return ex.submit(_sec_fallback_description, ticker).result(timeout=2.5)
-    except Exception:  # noqa: BLE001
+        return _fund_peek(ticker)
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] lookup {ticker}: stored fundamentals not read: {type(e).__name__}: {e}")
         return None
-    finally:
-        ex.shutdown(wait=False)
+
+
+# v79 (owner: type a ticker anywhere, like TradingView): the site's own list of stocks, with names, for instant suggestions
+# in the browser (which keeps it a day). One database read per 12 hours (~860 short rows of the scanner's universe).
+_TICKER_LIST = {"data": None, "ts": 0.0, "tried": 0.0}
+TICKER_LIST_TTL = 12 * 3600
+
+
+def _known_names() -> dict:
+    """ticker -> name from the list above, only if it is already in memory (never reads the database itself)."""
+    return (_TICKER_LIST["data"] or {}).get("_names") or {}
+
+
+def _ticker_list() -> dict:
+    c = _TICKER_LIST
+    now = time.time()
+    if c["data"] and now - c["ts"] < TICKER_LIST_TTL:
+        return c["data"]
+    if now - c["tried"] < 600:                 # a failed / cut answer is asked again after 10 minutes, not per visitor
+        return c["data"] or {"available": False, "tickers": []}
+    c["tried"] = now
+    rows = []
+    try:
+        with db_cursor() as (conn, cur):
+            cur.execute("""SELECT u.ticker, l.name FROM universe_movers u LEFT JOIN stock_leaders l ON l.ticker = u.ticker
+                           WHERE u.timestamp > NOW() - INTERVAL '14 days'
+                           ORDER BY COALESCE(l.market_cap, u.market_cap) DESC NULLS LAST LIMIT 3000""")
+            rows = cur.fetchall()
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] ticker-list: {type(e).__name__}: {e}")
+    sp = _sp500_map_nowait() or {}
+    names, order = {}, []
+    for t, name in rows:
+        if t and _TICKER_OK_RE.match(t) and t not in names:
+            names[t] = (name or (sp.get(t) or {}).get("name") or "").strip()
+            order.append(t)
+    for t, info in sp.items():
+        if t not in names:
+            names[t] = ((info or {}).get("name") or "").strip()
+            order.append(t)
+    if len(order) < 400:                       # a cut list would hide real stocks from the suggestions
+        return c["data"] or {"available": False, "tickers": []}
+    c["data"], c["ts"] = {"available": True, "tickers": [[t, names[t]] for t in order], "_names": names}, now
+    return c["data"]
+
+
+@app.get("/api/ticker-list")
+def get_ticker_list():
+    data = _ticker_list()
+    return {k: v for k, v in data.items() if not k.startswith("_")}
 
 
 def _nyse_holidays(year: int) -> set:
@@ -5193,65 +5260,58 @@ def lookup_stock(ticker: str):
     # especially) with an EMPTY frame when it is throttling us, which used
     # to be reported as "ticker not found". Only a repeated empty answer
     # with no error counts as a real 404; an exception is a 502 ("try again").
-    tk = yf.Ticker(ticker)
-    hist = None
-    last_err = None
-    for attempt in range(2):
+    # v79 (owner, 26.11.2026: "it takes a while"): a first visit took 5.2 s (ORCL). The parts ran one after another: the year
+    # of prices, two tries at .info (blocked from Render, CLAUDE.md §3) with a 1.2 s pause every 15 minutes, two database
+    # reads and up to 2.5 s for a description. Now .info is not asked here at all, and the prices, the two reads and the
+    # description start together; the description is waited for only a moment (it is kept for the next visit).
+    pool = ThreadPoolExecutor(max_workers=4)
+    run = lambda fn, *a: pool.submit(contextvars.copy_context().run, fn, *a)     # each thread keeps the request's db_meter source
+    try:
+        f_hist = run(_lookup_history, ticker)
+        f_next = run(_next_report, ticker)
+        f_fund = run(_fund_peek_safe, ticker)
+        f_desc = run(_sec_fallback_description, ticker)
+        f_sp = run(get_sp500_info_map)          # in memory for a day; a cold server downloads it meanwhile
+        hist, last_err = f_hist.result()
+        if hist is None or hist.empty:
+            if last_err is not None:
+                print(f"[warn] lookup {ticker}: history failed twice: {last_err}")
+                raise HTTPException(status_code=502, detail="שגיאה בשליפת הנתונים, נסה שוב")
+            raise HTTPException(status_code=404, detail=f"הטיקר {ticker} לא נמצא")
+        next_report = f_next.result()
+        fund_data = f_fund.result()
         try:
-            # actual prices, like TradingView (v18). v34: a full year — this also gives the 52-week range below
-            hist = fix_unadjusted_splits(tk.history(period="1y", interval="1d", auto_adjust=False))   # v65
-            if hist is not None and not hist.empty:
-                break
-        except Exception as e:
-            last_err = e
-        if attempt == 0:
-            time.sleep(0.8)
-
-    if hist is None or hist.empty:
-        if last_err is not None:
-            print(f"[warn] lookup {ticker}: history failed twice: {last_err}")
-            raise HTTPException(status_code=502, detail="שגיאה בשליפת הנתונים, נסה שוב")
-        raise HTTPException(status_code=404, detail=f"הטיקר {ticker} לא נמצא")
+            sp_map = f_sp.result() or {}
+        except Exception:  # noqa: BLE001
+            sp_map = {}
+        try:
+            description = f_desc.result(timeout=LOOKUP_DESCRIPTION_WAIT_SEC)
+        except Exception:  # noqa: BLE001 — still running (kept in its cache when it ends) or failed
+            description = None
+    finally:
+        pool.shutdown(wait=False)
 
     price = float(hist["Close"].iloc[-1])
     prev_close = float(hist["Close"].iloc[-2]) if len(hist) > 1 else price
     change_pct = round(((price - prev_close) / prev_close) * 100, 2) if prev_close else 0.0
+    info = {}        # v79: .info is not asked here any more (always blocked from Render); the keys below stay for the site
 
-    info = _get_info_with_retry(tk, ticker, "lookup")
-
-    # Prefer .info's price if it's actually there (more current intraday
-    # value) but never let a missing/failed .info block the response.
-    if info.get("currentPrice") or info.get("regularMarketPrice"):
-        price = info.get("currentPrice") or info.get("regularMarketPrice")
-        prev_close_info = info.get("previousClose")
-        if prev_close_info:
-            change_pct = round(((price - prev_close_info) / prev_close_info) * 100, 2)
-
-    # Name/sector fall back to the reliable CSV list (see get_sp500_info_map
-    # above) when .info didn't come through — same reliability reasoning
-    # used throughout this endpoint.
-    csv_info = get_sp500_info_map().get(ticker) or {}
+    # Name/sector from the S&P 500 list; other names from the site's own stock list (v79, /api/ticker-list)
+    csv_info = sp_map.get(ticker) or {}
 
     market_cap = info.get("marketCap")
     pe_ratio = info.get("trailingPE")
-    # Same .info-blocked problem as elsewhere: fall back to the
-    # SEC-based numbers /api/fundamentals already computed for this
-    # ticker, if that's already sitting in cache (read-only — this
-    # endpoint doesn't trigger a fresh fundamentals computation itself,
-    # to avoid slowing down a simple quote lookup).
-    if market_cap is None or pe_ratio is None:
-        fund_data = _fund_peek(ticker)     # v21: also the stored copy, at this quote's price
-        if fund_data:
-            fund_data = fundlib.rescale_to_price(fund_data, price)
-            if market_cap is None:
-                market_cap = fund_data.get("market_cap")
-            if pe_ratio is None:
-                pe_ratio = fund_data.get("trailing_pe")
+    # The SEC-based numbers /api/fundamentals already computed for this ticker, if they are in memory or stored
+    # (read-only — this endpoint never starts a fundamentals build).
+    if fund_data:
+        fund_data = fundlib.rescale_to_price(fund_data, price)
+        market_cap = fund_data.get("market_cap")
+        pe_ratio = fund_data.get("trailing_pe")
 
     return {
         "ticker": ticker,
-        "next_report": _next_report(ticker),
-        "name": info.get("longName") or info.get("shortName") or csv_info.get("name") or ticker,
+        "next_report": next_report,
+        "name": csv_info.get("name") or _known_names().get(ticker) or ticker,
         "price": round(float(price), 2),
         "change_pct": change_pct,
         "market_cap": market_cap,
@@ -5262,7 +5322,7 @@ def lookup_stock(ticker: str):
         # every stock page (INTC: "low" $59.29, really $32.89). Now the intraday high/low of the full year, like Yahoo's.
         "week52_high": info.get("fiftyTwoWeekHigh") or round(float(hist["High"].max()), 2),
         "week52_low": info.get("fiftyTwoWeekLow") or round(float(hist["Low"].min()), 2),
-        "description": info.get("longBusinessSummary") or _description_quick(ticker),
+        "description": description,
         "sub_industry": csv_info.get("sub_industry"),
         "exchange": info.get("exchange"),
         "sector": info.get("sector") or csv_info.get("sector"),
