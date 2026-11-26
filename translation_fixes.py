@@ -130,6 +130,7 @@ EN_REWRITES = [
     (r"(?<=[a-z] )(?<!all )(?<!his )(?<!her )(?<!their )(?<!s' )eyes (?!on\b|of\b|and\b|are\b|were\b|turn|as\b|to\b|for\b|in\b|wide\b|open|\$|\d)", "considers "),
     # "bargain buying" -> "קניית מציאה"; "margin pressure" -> "לחץ שולי"; "US inflation data awaited" -> "נתוני האינפלציה ממתינים"
     (r"\bbargain[- ](?:buying|hunting)\b", "buying at low prices"),
+    (r"\b(PC|memory|chip|cloud|gross) margin pressures?\b", r"pressure on \1 profit margins"),      # v77b: "PC pressure on profit margins"
     (r"\bmargin pressures?\b", "pressure on profit margins"),
     (r"[;,]\s*((?:US |U\.S\. |key )?(?:inflation|jobs|cpi|pce|ppi|gdp|payrolls) (?:data|report|reading)) awaited\b", r"; markets await \1"),
     # v76b: "EPS of $0.10 beats by $0.02" -> "EPS של 0.10 דולר ב-0.02 דולר" (the beat was lost); "short interest" -> "ריבית קצרה"
@@ -186,6 +187,43 @@ EN_REWRITES = [
     (r"\baussie\b(?=\s+(?:and\b|set\b|slumps?|falls?|slides?|rises?|drops?|jumps?|weakens?|tumbles?|steadies|slips|dollar\b)|\s*[,;]|\s*$)(?:\s+dollar\b)?", "Australian dollar"),
     (r"\bkiwi\b(?=\s+(?:and\b|set\b|slumps?|falls?|slides?|rises?|drops?|jumps?|weakens?|tumbles?|dollar\b))(?:\s+dollar\b)?", "New Zealand dollar"),
     (r"\bdollar rallies\b", "dollar jumps"),
+    # v77b (25.11.2026, a day tech fell; each checked against clients5 from home): "Stock Sell-Off" -> "מכירת מניות", "tech sell-off" ->
+    # "המכירה הטכנולוגית", "AI jitters" -> "ריצוד AI", "A.I. Players" -> "A.I. שחקנים", "Nvidia whiplash" -> "צליפת שוט"
+    (r"\bA\.I\.(?=\s)", "AI"),
+    (r"\b(AI|chip) players\b", r"\1 companies"),
+    (r"(?<!-)\b(AI|chip|tech|bond|memory|software) sell-?off\b", lambda m: "sharp fall in " + (m.group(1) + "s" if m.group(1).lower() == "bond" else m.group(1) + " stocks")),
+    (r"\b(AI|chip|tech|bank|memory|software) stocks? sell-?off\b", r"sharp fall in \1 stocks"),     # not "Tech sharp fall in stocks"
+    (r"\bstocks? sell-?off\b", "sharp fall in stocks"),
+    (r"\b(AI|tech|chip|market|inflation|tariff) jitters\b", r"\1 worries"),
+    (r"\b(AI|chip|tech) trade struggles\b", r"\1 stocks struggle"),
+    (r"\bto regain (?:its |their )?footing\b", "to recover"),
+    (r"\bwhiplash\b(?= tests?\b)", "volatility"),
+    (r"\btakes? (?:a )?breather\b", "pauses"),
+    # "as new US tariffs loom" -> "מתנשאים"; "Aussie jumps on CPI" -> "זינק במדד המחירים"
+    (r"\b(tariffs|data|deadline|meeting|decision|report) (loom)(s?)\b(?=\s*[,;:.]|\s*$)", lambda m: m.group(1) + " approach" + ("es" if m.group(3) else "")),
+    (r"\b(jumps|rises|climbs|gains|falls|slips|drops) on (CPI|PCE|PPI)\b(?! data)", r"\1 after \2 data"),
+    # "rate expectations" -> "ציפיות תעריפים"; "extend losses" -> "מאריכות את ההפסדים"; "revenue miss" -> "הפסקת הכנסות"
+    (r"(?<!interest )(?<!growth )(?<!inflation )(?<!tax )(?<!unemployment )(?<!exchange )\brate expectations\b", "interest rate expectations"),
+    (r"\bextend(s?) losses\b", r"continue\1 to fall"),
+    (r"\brevenue miss\b(?! (?:the )?(?:estimates|expectations|forecasts|consensus|street|wall|views))", "lower-than-expected revenue"),
+    (r"(?<!are )(?<!is )(?<!be )(?<!were )(?<!remain )\bat odds over\b", "disagree over"),        # -> "מתנגדים לסיבות"
+    (r"\bcautious earnings outlook\b", "cautious profit forecast"),
+    (r"\b(overshadows?) (?:quarterly|q[1-4]) beat\b", r"\1 better-than-expected quarter"),
+    (r"\b(report|data) to (provide|show|give)\b", r"\1 will \2"),
+    # v77b (26.11.2026, each checked against clients5 from home): "may not be done" -> "אולי לא נעשה"; "in first since Cold War" ->
+    # "בהתחלה מאז"; "shrug off latest US tariff salvo" -> "מתנערים מהמחסום"; "Hawkish Bank of Japan member" -> "חבר בבנק הוקיש ביפן";
+    # "Bank of Japan's Tamura" -> "בנק אוף יפן Tamura"; "Monitor Stock Slump" -> "צניחה של המניה"; "as tech, bank stocks rebound" ->
+    # "ככל שהטכנולוגיה מתקדמת"
+    (r"\bmay not be done\b(?=\s*[.,;:!]|\s*$)", "may not be over"),
+    (r"\s+in first since\b", ", the first time since"),
+    (r"\bshrug(s?) off\b", r"ignore\1"),
+    (r"\btariff salvo\b", "round of tariffs"),
+    (r"\bhawkish (Bank of Japan|Bank of England|ECB|Fed|BOJ|BOE) (?:member|official|policymaker)\b", r"\1 policymaker with a hawkish stance"),
+    # only a person's name before a verb ("Bank of Japan's December decision" is not touched)
+    (r"\b(Bank of Japan|Bank of England)['’]s ((?-i:[A-Z][a-z]+))(?=\s+(?:says|said|considers|sees|signals|warns|backs|calls|flags|urges|"
+     r"aims|eyes|favors|wants|seeks|expects|hints)\b)", r"\1 policymaker \2"),
+    (r"\bstock slump\b", "stock market slump"),
+    (r"\b(tech|bank|chip|energy|mining|auto|retail), (tech|bank|chip|energy|mining|auto|retail) stocks\b", r"\1 stocks and \2 stocks"),
 ]
 
 HE_FIXES = [
@@ -267,6 +305,20 @@ HE_FIXES = [
     ("יום עבודה (WDAY) בראש הרווחים וההערכות ההכנסות", "Workday (WDAY) מדווחת על רווחים והכנסות מעל ההערכות"), ("הנחיה חזקה", "תחזית חזקה"),
     ("מלאי מניות של Dell לאחר רווחי התפוצצות", "מניית Dell צוללת לאחר רווחים חזקים מאוד"), ("גווני אפור", "Grayscale"), ("לאחר סילוף גדול", "לאחר גל מכירות גדול"),
     ("מפרסם הפסד", "רושם הפסד"), ("מפרסמת הפסד", "רושמת הפסד"), ("מפרסם עלייה", "רושם עלייה"), ("מפרסמת עלייה", "רושמת עלייה"),
+    # v77b: rows saved before the EN_REWRITES of the same day
+    ("כאשר ריצוד AI נמשך", "כשהחשש סביב ה-AI נמשך"), ("הפסקת הכנסות", "הכנסות נמוכות מהצפוי"), ("וציפיות תעריפים", "וציפיות לריבית"),
+    ("מאריכות את ההפסדים", "ממשיכות לרדת"), ("מתנגדים לסיבות לאינפלציה", "חלוקים לגבי הסיבות לאינפלציה"), ("צליפת שוט של Nvidia בוחנת", "התנודתיות של Nvidia בוחנת"),
+    ("הדולר לוקח אוויר", "הדולר עוצר"), ("זינק במדד המחירים לצרכן", "זינק אחרי נתוני מדד המחירים לצרכן"), ("בארה\"ב מתנשאים", "בארה\"ב מתקרבים"),
+    ("פוטנציאליים מתנשאים", "פוטנציאליים מתקרבים"), ("מכירת מניות אמורה להימשך כ-A.I. שחקנים נופלים", "הירידה במניות אמורה להימשך כשחברות AI נופלות"),
+    ("סחר בינה מלאכותית נאבקת להחזיר את דרכה", "מניות הבינה המלאכותית נאבקות להתאושש"), ("מכירת הטכנולוגיה מתגברת", "הירידה במניות הטכנולוגיה מתגברת"),
+    ("מלחץ מחשבים על שולי הרווח והרווח הזהיר", "מלחץ על שולי הרווח של מחשבים ומתחזית רווח זהירה"), ("דוח אינפלציה כדי לספק את", "דוח האינפלציה יספק את"),
+    ("שכן רוסיה מבטיחה תגמול", "בעוד רוסיה מבטיחה תגובה"),
+    # v77b (26.11.2026): rows saved before the EN_REWRITES above; "major U.S. trading partners" has no English that Google gets right
+    ("סחורות משותפות סחר גדולות בארה\"ב", "סחורות של שותפות הסחר הגדולות של ארה\"ב"), ("סחורות משותפות הסחר", "סחורות של שותפות הסחר"),
+    ("אבל אולי לא נעשה", "אבל אולי לא נגמר"), ("איומי רוסיה בהתחלה מאז", "איומי רוסיה, לראשונה מאז"),
+    ("מתנערים מהמחסום האחרון בארה\"ב", "מתעלמים מסבב המכסים האחרון של ארה\"ב"), ("חבר בבנק הוקיש ביפן", "חבר ניצי בבנק יפן"),
+    ("בנק אוף יפן", "בנק יפן"), ("ככל שהטכנולוגיה מתקדמת, מניות הבנקים", "כשמניות הטכנולוגיה ומניות הבנקים"),
+    ("צניחה של המניה ולהגיב", "הצניחה בבורסה ולהגיב"),
 ]
 
 # v38c: company names that are ordinary English words, which Google translates ("Ball" -> "כדור", "Visa slips" -> "תלושי ויזה",

@@ -3849,6 +3849,79 @@ def test_v77_headlines_of_25_11():
     assert tf.half_translated("Dow Jones Futures: Nvidia, Anthropic Lead AI Retreat אבל מגזרים רבים חזקים")
     assert not tf.half_translated("מניות Dick's Sporting Goods ו-Best Buy עולות")
     assert tf.fix_he("Workday Inc (WDAY) מדווחת על רווחים") == "Workday (WDAY) מדווחת על רווחים"
+
+
+def test_v77b_headlines_of_25_11_afternoon():
+    import news_links as nl
+    import translation_fixes as tf
+    for t in ("How Upcoming Earnings At Deere (DE) Has Changed Its Investment Story", "Forbes Daily: Inflation, Chip Shortages And A $1 Trillion Holiday Season",
+              "Macy's Thanksgiving Day Parade Inflation Celebration set as winds could impact balloons", "New Zealand King Salmon posts record earnings",
+              "Why Space Stocks Could Be The Next Frontier For AI Investors", "Ten undervalued energy stocks after Q3 earnings, led by Par Pacific",
+              "Five materials stocks with attractive valuations following Q3 earnings", "Ingles Markets GAAP EPS of $0.97, revenue of $1.37B",
+              "Anthropic, Nvidia, Dell, Workday, Deere, and More Stocks That Explain Today’s Market", "'This is a very difficult time' for more tariffs | Market Talk"):
+        assert nl.is_unwanted_headline(t), t
+    for t in ("Nasdaq futures slide over 2% as AI losses deepen; inflation data in focus", "Your Thanksgiving Meal Costs More as US Food Inflation Returns",
+              "New Zealand central bank raises rates as global inflation rises", "Two Fed officials back a hike as stocks fall", "Seven of 11 S&P sectors fall, led by tech stocks",
+              "Five Fed officials say stocks are stretched", "Nvidia results change the story for AI stocks", "Deere (DE) Q4 Earnings Miss Estimates",
+              "Ballooning deficit adds to inflation worries", "Dollar is undervalued, Trump adviser says"):
+        assert not nl.is_unwanted_headline(t), t
+    p = tf.prep_en
+    for a, b in (("Stock Sell-Off Set to Continue as A.I. Players Fall Again", "sharp fall in stocks Set to Continue as AI companies Fall Again"),
+                 ("Nasdaq futures fall as tech sell-off intensifies", "Nasdaq futures fall as sharp fall in tech stocks intensifies"),
+                 ("Bond selloff eases", "sharp fall in Bonds eases"), ("Tech stocks under pressure as AI jitters persist", "Tech stocks under pressure as AI worries persist"),
+                 ("Chip stocks fall again as AI trade struggles to regain footing", "chip stocks fall again as AI stocks struggle to recover"),
+                 ("Dollar takes breather ahead of U.S. data on Fed path; Aussie jumps on CPI", "Dollar pauses ahead of U.S. data on Fed path; Australian dollar jumps after CPI data"),
+                 ("World stocks fall as new US tariffs loom, AI rebound fades", "World stocks fall as new US tariffs approach, AI rebound fades"),
+                 ("CleanSpark falls as Revenue Miss and delays weigh", "CleanSpark falls as lower-than-expected revenue and delays weigh"),
+                 ("Tariff Risks and Rate Expectations Weigh", "Tariff Risks and interest rate expectations Weigh"), ("Chip Stocks Extend Losses", "chip stocks continue to fall"),
+                 ("Fed policymakers at odds over causes of high inflation", "Fed policymakers disagree over causes of high inflation"),
+                 ("HP falls as PC Margin Pressure and Cautious Earnings Outlook Overshadow Quarterly Beat",
+                  "HP falls as pressure on PC profit margins and cautious profit forecast Overshadow better-than-expected quarter"),
+                 ("Inflation report to provide Fed's preferred gauge", "Inflation report will provide Fed's preferred gauge")):
+        assert p(a).lower() == b.lower(), (p(a), b)
+    for same in ("Fed officials are at odds over rates", "Inflation rate expectations rise", "Profit, revenue miss the consensus", "Tariff risk looms over Europe"):
+        assert p(same) == same, p(same)
+    for he, want in (("העלייה בתעריפים בארה\"ב מתנשאים", "העלייה בתעריפים בארה\"ב מתקרבים"), ("הדולר האוסטרלי זינק במדד המחירים לצרכן", "הדולר האוסטרלי זינק אחרי נתוני מדד המחירים לצרכן")):
+        assert tf.fix_he(he) == want and tf.fix_he(want) == want
     for bad, good in (("המניות בארה\"ב התערבבו כשעצרת הסיוע של הואנג דועכת", "כשהריבאונד של הואנג דועך"), ("WTI נסחרת מתחת להתנחלות מכיוון", "מתחת למחיר הסגירה"),
                       ("ממהרים לגדר את הסיכון לעליית עליות הפד בכלכלה", "העלאות ריבית של הפד"), ("המשקיעים מחממים על אנתרופיק", "מאבדים אמון באנתרופיק")):
+        assert good in tf.fix_he(bad) and tf.fix_he(tf.fix_he(bad)) == tf.fix_he(bad), bad
+
+
+def test_v77b_headlines_of_the_holiday_26_11():
+    import news_links as nl
+    import translation_fixes as tf
+    for t in ("Recruiters Lured Brazilians to Fight Russia’s War, Then Stole Their Money", "Could EU delisting of Chinese firm pave way for wider sanctions relief?",
+              "Sen. Tim Kaine, D-Va., shares why he opposes Trump's proposed tariffs", "‘War Is Hell:’ A Foreign Soldier Writes Home From Ukraine",
+              "Holiday staples still surging ahead of Thanksgiving dinner. Economist shares how to save on the spread",
+              "Taiwan Stocks Rebound 956 Points, but Foreign Investors Still Pull NT$49.18 Billion; Taiwan Glass Hit with 81,000-Share Selloff",
+              "Canadian inflation could end the year below Bank of Canada forecast under renewed 2% target",
+              "Corcept Therapeutics (NASDAQ:CORT): A Growth-at-a-Reasonable-Price Stock With Strong Forward Earnings Potential",
+              "Opinion | The Next Fed Leader Should Be a Bot", "What CMC Markets (CMCX) Said on Its H1 Earnings Call",
+              "Rwanda hikes rates for fourth time this year with inflation far above target",
+              "India swaps, treasury bills signal possibility of outsized RBI rate hike next week"):
+        assert nl.is_unwanted_headline(t), t
+    for t in ("Trump administration proposes new tariffs on goods from major U.S. trading partners", "Stocks climb as traders shrug off latest US tariff salvo",
+              "Hawkish Bank of Japan member seeks quick rate hikes on inflation", "OPEC+ Considers Sticking With Current Oil Quotas, Delegates Say",
+              "Bitcoin’s bear market is getting old, but may not be done", "Will the Fed hike in December?",
+              "Can Iran Withstand Trump’s Naval Blockade as Inflation and Food Prices Soar?",
+              "Michael Burry Sells Remaining Nasdaq-100 Puts, Eyes Fresh Nvidia Short Near $200: ‘I Am Long Undervalued Common Stocks’","Australian dollar slides as RBA holds rates",
+              "Bank of Canada holds rates as US tariffs weigh", "Treasury bills rally as Fed cut bets rise", "European stocks rally as tech, bank stocks rebound, tariff fears ease",
+              "UK tells 100,000 military reservists to prepare for war amid Russia threats in first since Cold War"):
+        assert not nl.is_unwanted_headline(t), t
+    assert nl.is_advice_outlet("Investorideas.com") and nl.is_advice_outlet("ChartMill") and not nl.is_advice_outlet("Reuters")
+    p = tf.prep_en
+    for a, b in (("Bitcoin’s bear market is getting old, but may not be done", "Bitcoin’s bear market is getting old, but may not be over"),
+                 ("UK tells reservists to prepare for war amid Russia threats in first since Cold War", "UK tells reservists to prepare for war amid Russia threats, the first time since Cold War"),
+                 ("Stocks climb as traders shrug off latest US tariff salvo", "Stocks climb as traders ignore latest US round of tariffs"),
+                 ("Hawkish Bank of Japan member seeks quick rate hikes on inflation", "Bank of Japan policymaker with a hawkish stance seeks quick interest rate hikes on inflation"),
+                 ("Bank of Japan's Tamura Eyes December Rate Hike, to Monitor Stock Slump", "Bank of Japan policymaker Tamura considers December interest rate hike, to Monitor stock market slump"),
+                 ("European stocks rally as tech, bank stocks rebound", "European stocks climb as tech stocks and bank stocks rebound"),
+                 ("FTSE 100 Dip Over Tech Stocks Selloff", "FTSE 100 Dip Over sharp fall in Tech stocks")):
+        assert p(a).lower() == b.lower(), (p(a), b)
+    for same in ("Bank of Japan's December decision looms over yen", "Bank of England's Rate Decision", "The deal is done", "Inflation is not done yet"):
+        assert p(same) == same, p(same)
+    for bad, good in (("ממשל טראמפ מציע מכסים חדשים על סחורות משותפות סחר גדולות בארה\"ב", "סחורות של שותפות הסחר הגדולות של ארה\"ב"),
+                      ("חבר בבנק הוקיש ביפן מבקש העלאות ריבית", "חבר ניצי בבנק יפן"), ("שוק דובי של ביטקוין מזדקן, אבל אולי לא נעשה", "אולי לא נגמר"),
+                      ("המניות מטפסות כאשר סוחרים מתנערים מהמחסום האחרון בארה\"ב", "מתעלמים מסבב המכסים האחרון של ארה\"ב")):
         assert good in tf.fix_he(bad) and tf.fix_he(tf.fix_he(bad)) == tf.fix_he(bad), bad

@@ -102,8 +102,12 @@ PROMO_RE = re.compile(r"\b(stocks? to (buy|watch|own|bet on)|to bet on|should yo
                       r"if you (?:had )?invest(?:ed)? \$|dirt[- ]cheap stocks?|(?:made|on) our list|best stocks in the market|most accurate analysts|"
                       r"names? (?:his|her) (?:\w+ )?favorites|\d favorites|how you can still win|and \d+ other (?:[\w&'-]+ ){0,4}stocks|"
                       r"generate a return from|are they right|barchart data|"
+                      # v77b (25.11.2026): "Five materials stocks with attractive valuations following Q3 earnings", "Ten undervalued
+                      # energy stocks after Q3 earnings", "Why Space Stocks Could Be The Next Frontier For AI Investors"
+                      r"(?<!long )undervalued\b[^.:;]*\bstocks?|stocks? with attractive valuations?|next frontier for\b[^.]*\binvestors|"
                       r"screaming buys?)\b"      # "Tech Sell-Off: Two AI Stocks That Are Screaming Buys Right Now" (11.11.2026)
                       r"|^\s*(?:top\s+)?\d+\s+[\w\s&'-]{0,40}\bstocks?\b"
+                      r"|^\s*(?:top\s+)?(?:three|four|five|six|seven|eight|nine|ten|twelve|fifteen|twenty)\s+(?:[\w&'-]+\s+){0,2}stocks?\b"      # v77b
                       # v51 (live feed 15.11.2026): "Bank of America names 5 bullish stocks amid market fears"
                       r"|\b(?:names?|named|picks?|lists?|reveals?|highlights?)\s+\d+\s+(?:[\w&'-]+\s+){0,3}stocks?\b"
                       # v67 (home page 21.11.2026, MarketBeat): "Best Luxury Goods Stocks To Research - November 21st",
@@ -119,7 +123,8 @@ PERSONAL_RE = re.compile(r"\b\d{2}-year-old\b|\bwidow(?:er|s)?\b|\bsocial securi
                          r"\bfor long-term investors\b|\bmeans?(?: and [\w' ]{3,30})? for you\b|^\s*investors:\s", re.I)
 # v51: outlets whose articles are advice to the reader ("3 stocks to ...", "here is what to do"), not news. The site shows
 # facts and no recommendations, so they are left out of every feed. The stock's own news page is not touched.
-ADVICE_OUTLETS_RE = re.compile(r"motley fool|24/7 wall st|zacks|investorplace|insider monkey|stocks down under", re.I)
+ADVICE_OUTLETS_RE = re.compile(r"motley fool|24/7 wall st|zacks|investorplace|insider monkey|stocks down under|"
+                               r"investorideas|chartmill", re.I)     # v77b (26.11.2026): "Is the Fed making a huge mistake ...?", "A Growth-at-a-Reasonable-Price Stock"
 
 
 def is_advice_outlet(name: str) -> bool:
@@ -139,6 +144,18 @@ _FORMAT_JUNK_RE = re.compile(r"^\s*(watch|video|listen|podcast)\s*[:\-\u2013\u20
                              # Forecast", "Caleb Martin posts 13 points, seven 'stocks'", "UNL Husker Pantry stocks up", "Earnings Check-In: ..."
                              r"^\s*watch\s+(?!list\b)|\bstock quote price\b|\bposts \d+ points,|\bpantry stocks\b|\bearnings check-in\b|"
                              r"\bstays connected to you\b|^\s*tax interest rates\b|"
+                             # v77b: "Macy's Thanksgiving Day Parade Inflation Celebration" (balloons, shown as inflation news), "Forbes
+                             # Daily: ...", "Anthropic, Nvidia ... and More Stocks That Explain Today's Market", "... | Market Talk" (a video)
+                             r"\bthanksgiving day parade\b|\b(?:balloons?|parade)\b.*\binflation\b|\binflation celebration\b|^\s*forbes daily\b|"
+                             r"\band more stocks that\b|\|\s*market talk\s*$|"
+                             # v77b (26.11.2026, a holiday): "Opinion | The Next Fed Leader Should Be a Bot", "Sen. Tim Kaine, D-Va., shares
+                             # why he opposes ...", "Economist shares how to save on the spread", "'War Is Hell:' A Foreign Soldier Writes Home"
+                             r"^\s*opinion\s*[|:\-–—]|\bshares (?:why|how|what|his|her|their)\b|\bhow to save\b|\bwrites home\b|"
+                             # a speculative question as the whole headline ("Could EU delisting of Chinese firm pave way for wider
+                             # sanctions relief?"); "Will the Fed hike in December?" stays: it asks about a decision
+                             # ("Can Iran Withstand Trump's Naval Blockade as ... Soar?" is about the war and oil, and stays)
+                             # (and a question about the Fed stays: "Is the Fed lagging behind inflation?", kept on 23.11)
+                             r"^(?!.*\b(?:trump|iran|war|blockade|opec|oil|fed|fomc|powell|warsh)\b)\s*(?:could|can|should|is|are|has|have|might)\b[^?]{10,}\?\s*$|"
                              # v76: "... Stays Elevated | Options Market Statistics"
                              r"\|\s*options market statistics\b", re.I)
 # v37: machine-made pages about one company's report: 1,029 of the 1,564 headlines of 5.11.2026 were tagged as earnings, most
@@ -173,7 +190,13 @@ EARNINGS_CHATTER_RE = re.compile(r":\s*(fiscal\s+)?q[1-4]\s+earnings snapshot\s*
                                  r"\breports results for the quarter ended\b|"
                                  r"\bfair value\b|^(?=.*\bstock\b).*\bbull case\b|\bchange the case for\b|\bearnings beat change\b|\b(?:could be|be) a (?:game changer|big deal) for\b|"
                                  r"\bstill (?:a bargain|cheap|trading at a discount)\b|\b(?:is|are)\b.*\ba bargain\b|\btrade at a discount\b|\blooks? (?:over|under)valued\b|"
-                                 r"\balready reflect(?:s|ed)? its\b|\bjustify its price\b|\bhow investors are reacting to\b|\bstrong earnings potential\b|"
+                                 r"\balready reflect(?:s|ed)? its\b|\bjustify its price\b|\bhow investors are reacting to\b|\bstrong (?:forward )?earnings potential\b|"
+                                 # v77b (26.11.2026): "What CMC Markets (CMCX) Said on Its H1 Earnings Call", "A Growth-at-a-Reasonable-Price Stock"
+                                 r"\bsaid on its (?:h[12]|fy|full[- ]year|half[- ]year|(?:first|second|third|fourth)[- ]quarter) earnings call\b|\bgrowth-at-a-reasonable-price\b|"
+                                 # v77b: "How Upcoming Earnings At Deere (DE) Has Changed Its Investment Story", "Ingles Markets GAAP EPS of
+                                 # $0.97, revenue of $1.37B" (a page made by a machine), "New Zealand King Salmon posts record earnings"
+                                 r"\bchang(?:e|es|ed|ing) (?:its|the|their) investment (?:story|narrative|thesis|case)\b|"
+                                 r"^(?!.*\b(?:beats|misses|in[- ]line)\b).*(?<!non-)\bgaap eps of -?\$[\d.]+.*\brevenue of \$|\bnew zealand\b.*\b(?:posts?|reports?)\b.*\b(?:earnings|profits?)\b|"
                                  r"\bmeans for shareholders\b|\bstock gains attention\b|\bstocks with pricing power\b|"
                                  r"\bquant[- ](?:rated|ratings?|rankings?)\b|\btrades at [\d.]+x earnings\b|"
                                  # TradingView's machine summaries of companies abroad ("NRR: Earnings and rents grew, while H2 disposals ...")
@@ -195,7 +218,16 @@ LOCAL_RE = re.compile(r"\b(india|indian|russians?|ethiopia|ethiopian|pakistan|pa
                       # v47: "Moldova to fully join EU sanctions against Russia and Belarus", "Irish annual CPI inflation rises to 4.3%"
                       r"moldova|moldovan|belarus|belarusian|cuba|cuban|serbia|serbian|bulgaria|bulgarian|ireland|irish|"
                       r"libya|libyan|"          # v76: "Could Russia-Ukraine war threaten Libya's fragile reunification process?"
-                      r"turkmenistan|azerbaijan|kazakhstan|uzbekistan|lebanon|lebanese)\b", re.I)
+                      r"turkmenistan|azerbaijan|kazakhstan|uzbekistan|lebanon|lebanese|"
+                      # v77b (26.11.2026): "Rwanda hikes rates for fourth time this year", "Recruiters Lured Brazilians to Fight ..."
+                      r"rwanda|rwandan|zambia|zambian|mozambique|angola|angolan|senegal|ivory coast|cameroon|mongolia|"
+                      r"brazilians|colombians|indians|filipinos|indonesians|nigerians|pakistanis|egyptians)\b", re.I)
+# v77b: another country's central bank on its own rates ("Canadian inflation could end the year below Bank of Canada forecast",
+# "India swaps, treasury bills signal possibility of outsized RBI rate hike") — the Fed, ECB, BOJ, BOE stay.
+_FAR_CENTRAL_BANK_RE = re.compile(r"\b(?:bank of canada|boc|reserve bank of (?:india|australia|new zealand)|rbi|rba|rbnz|"
+                                  r"bank of korea|banxico|bank of mexico|central bank of brazil|riksbank|norges bank|snb|"
+                                  r"swiss national bank|national bank of poland|bank of thailand|bank indonesia)\b", re.I)
+_US_RATES_RE = re.compile(r"\bU\.?S\.?\b|(?i:\b(?:fed|fomc|federal reserve|powell|warsh|wall street|dollar|treasur(?:y|ies) yields?|s&p|nasdaq|dow)\b)")
 # v44: another country's own stock index is not US market news even when the headline names the US as the reason
 # ("Canadian stock market today: TSX futures drift higher in critical US inflation test")
 FOREIGN_INDEX_RE = re.compile(r"\b(tsx|canadian (stocks?|shares|markets?|stock market)|sensex|nifty|asx ?200|bovespa|"
@@ -203,7 +235,11 @@ FOREIGN_INDEX_RE = re.compile(r"\b(tsx|canadian (stocks?|shares|markets?|stock m
                               # summary of 15.11.2026
                               # v70: "Spanish stocks - Factors to watch on November 23" (a market that moves ours still passes)
                               r"(spanish|polish|swiss|nordic|czech|hungarian) (stocks?|shares)\b[^.]*\bfactors to watch|"
-                              r"tadawul|(saudi|gulf|dubai|abu dhabi|qatari?|kuwaiti?|egyptian) (stocks?|shares|bourses?|markets?|index))\b",
+                              r"tadawul|(saudi|gulf|dubai|abu dhabi|qatari?|kuwaiti?|egyptian) (stocks?|shares|bourses?|markets?|index)|"
+                              # v77b (26.11.2026): "Taiwan Stocks Rebound 956 Points, but Foreign Investors Still Pull NT$49.18 Billion"
+                              # ("Taiwan stocks rebound ... as AI selloff eases" is about the chip trade and stays)
+                              r"taiex|taiwan (?:stocks?|shares) (?:rebound|rise|fall|close|end|open|gain|drop|slip|climb)s?(?![^.]*\b(?:ai|chips?|tsmc|nvidia|semiconductors?)\b)|"
+                              r"kospi|nikkei (?:closes|ends|opens)|hang seng (?:closes|ends|opens))\b",
                               re.I)
 # v51: Israel's own price index and home prices are not US market news ("Israel inflation rate drops to 1.1% in October",
 # "Contrary to forecasts, CPI falls, inflation drops and home prices fall across Israel"). Israel in a war or oil story
@@ -211,7 +247,7 @@ FOREIGN_INDEX_RE = re.compile(r"\b(tsx|canadian (stocks?|shares|markets?|stock m
 _ISRAEL_LOCAL_RE = re.compile(r"\bisrael(?:i|'s|’s)?\b[^.]*\b(inflation|cpi|consumer prices?|home prices?|housing|shekel|bank of israel)\b|"
                               r"\b(inflation|cpi|consumer price index|home prices?)\b[^.]*\bisrael\b", re.I)
 GLOBAL_RE = re.compile(r"\bU\.?S\.?\b|(?i:\b(america|american|fed|wall street|trump|washington|oil|crude|opec|global|"
-                       r"world|dollar|treasur(y|ies)|tariffs?|nasdaq|s&p|chips?)\b)")
+                       r"world|dollar|treasur(y|ies)(?! bills)|tariffs?|nasdaq|s&p|chips?)\b)")     # v77b: India's "treasury bills" are not the US's
 # v47: "sanctions" used to be in the list above, so the word itself let far-away news in ("Poland passes bill targeting
 # crypto assets under sanctions", "Lukashenka calls for dialogue with Poland, criticizes sanctions"). And a sanctions
 # headline must say who or what is hit that matters to US markets ("France threatens sanctions against EPR
@@ -251,6 +287,8 @@ def is_unwanted_headline(title: str) -> bool:
     if _UTILITY_RATE_RE.search(t) and not _CENTRAL_BANK_RE.search(t):
         return True
     if LOCAL_RE.search(t) and _LOCAL_TAX_RE.search(t):
+        return True
+    if _FAR_CENTRAL_BANK_RE.search(t) and not _US_RATES_RE.search(t):
         return True
     return bool(LOCAL_RE.search(t)) and not GLOBAL_RE.search(t) and not _LOCAL_MARKET_RE.search(t)
 
