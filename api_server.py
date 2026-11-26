@@ -6625,6 +6625,82 @@ def _fetch_sector_performance(period: str) -> dict:
     return {"period": period, "dates": all_dates, "series": series, "table": table}
 
 
+# v79c (owner, 26.11.2026): the sectors by the day and by the week too. "1D" = the last session in 5-minute steps against
+# the close before it; "1W" = from Monday's open (the week of the last session) to now in 30-minute steps, against the last
+# close before that Monday — not 7 days back. The 11 ETFs are asked together, from Yahoo only (no database).
+INTRADAY_SECTOR_STEP = {"1D": "5m", "1W": "30m"}
+
+
+def _sector_bars(ticker: str, interval: str):
+    """(daily closes {date: close}, [(New York time, price)] of the last 5 sessions) of one ETF; regular hours only."""
+    tk = yf.Ticker(ticker)
+    daily = tk.history(period="1mo", interval="1d", auto_adjust=False)["Close"].dropna()
+    intra = tk.history(period="5d", interval=interval, auto_adjust=False)["Close"].dropna()
+    idx = pd.DatetimeIndex(intra.index)
+    idx = idx.tz_convert(_EM_NY) if idx.tz is not None else idx.tz_localize("UTC").tz_convert(_EM_NY)
+    return ({pd.Timestamp(d).date(): float(v) for d, v in daily.items()},
+            [(t.to_pydatetime(), float(v)) for t, v in zip(idx, intra.values)])
+
+
+def sector_window(period: str, daily: dict, bars: list):
+    """The stretch a 1D / 1W line covers and the close it is measured against: (first day, base close, last session day)."""
+    if not bars:
+        return None
+    session = bars[-1][0].date()
+    first = session if period == "1D" else session - timedelta(days=session.weekday())
+    before = [d for d in daily if d < first]
+    if not before:
+        return None
+    return first, daily[max(before)], session
+
+
+def _fetch_sector_intraday(period: str) -> dict:
+    pool = ThreadPoolExecutor(max_workers=6)
+    try:
+        futures = {t: pool.submit(_sector_bars, t, INTRADAY_SECTOR_STEP[period]) for t in SECTOR_ETFS}
+        got = {}
+        for t, f in futures.items():
+            try:
+                got[t] = f.result(timeout=30)
+            except Exception as e:  # noqa: BLE001 — one ETF failing does not take the other ten down
+                print(f"[warn] sector {period} fetch failed for {t}: {type(e).__name__}: {e}")
+    finally:
+        pool.shutdown(wait=False)
+    per, stamps = {}, set()
+    for t, (daily, bars) in got.items():
+        w = sector_window(period, daily, bars)
+        if not w:
+            continue
+        first, base, session = w
+        pts = [(when, v) for when, v in bars if first <= when.date() <= session]
+        if not pts or not base:
+            continue
+        prev = [d for d in daily if d < session]
+        prev_close = daily[max(prev)] if prev else base
+        per[t] = (base, prev_close, pts, first, session)
+        stamps.update(int(when.timestamp()) for when, _ in pts)
+    if not per:
+        raise RuntimeError(f"no sector ETF data for {period}")
+    order = sorted(stamps)
+    series, table = [], []
+    for t, (base, prev_close, pts, first, session) in per.items():
+        by = {int(when.timestamp()): v for when, v in pts}
+        last, values = None, []
+        for s in order:
+            last = by.get(s, last)
+            values.append(round((last / base - 1) * 100, 2) if last is not None else None)
+        series.append({"ticker": t, "name": SECTOR_ETFS[t], "values": values})
+        price = pts[-1][1]
+        table.append({"ticker": t, "name": SECTOR_ETFS[t], "price": round(price, 2),
+                      "change_pct": round((price / prev_close - 1) * 100, 2) if prev_close else 0.0,
+                      "period_change_pct": round((price / base - 1) * 100, 2)})
+    table.sort(key=lambda r: r["period_change_pct"], reverse=True)
+    any_t = next(iter(per.values()))
+    return {"period": period, "intraday": True, "stamps": order,
+            "dates": [dt.fromtimestamp(s, _EM_NY).strftime("%Y-%m-%d %H:%M") for s in order],
+            "since": any_t[3].isoformat(), "session_day": any_t[4].isoformat(), "series": series, "table": table}
+
+
 _heatmap_last: dict = {}     # index -> (time of the newest prices, when read, the answer)
 
 
@@ -7205,15 +7281,16 @@ def get_daily_digest_days(limit: int = Query(default=14, ge=1, le=60)):
 
 
 @app.get("/api/sector-performance")
-def sector_performance(period: str = Query(default="YTD", pattern="^(1M|3M|YTD|1Y)$")):
+def sector_performance(period: str = Query(default="YTD", pattern="^(1D|1W|1M|3M|YTD|1Y)$")):
     now = time.time()
     cached = _sector_cache.get(period)
-    if cached and (now - cached["ts"]) < SECTOR_CACHE_TTL_SEC:
+    ttl = 300 if period in INTRADAY_SECTOR_STEP else SECTOR_CACHE_TTL_SEC      # v79c: a day's line moves
+    if cached and (now - cached["ts"]) < ttl:
         return cached["data"]
 
     executor = ThreadPoolExecutor(max_workers=1)
     try:
-        future = executor.submit(_fetch_sector_performance, period)
+        future = executor.submit(_fetch_sector_intraday if period in INTRADAY_SECTOR_STEP else _fetch_sector_performance, period)
         result = future.result(timeout=40)
         _sector_cache[period] = {"data": result, "ts": now}
         return result

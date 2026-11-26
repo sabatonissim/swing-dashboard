@@ -3201,7 +3201,14 @@ function formatMarketCap(n){
   return String(n);
 }
 
-let sectorPeriod = 'YTD';       // '1M' | '3M' | 'YTD' | '1Y'
+let sectorPeriod = 'YTD';       // '1D' | '1W' | '1M' | '3M' | 'YTD' | '1Y'
+// v79c (owner): the day and the week (from Monday, not 7 days back) next to the long periods
+const SECTOR_PERIODS = ['1D', '1W', '1M', '3M', 'YTD', '1Y'];
+function sectorPeriodLabel(p){
+  if(p === '1D') return lang === 'en' ? 'Today' : 'יומי';
+  if(p === '1W') return lang === 'en' ? 'This week' : 'שבועי';
+  return p;
+}
 let sectorChartInstance = null;
 let sectorDataCache = {};       // period -> API response (avoid re-fetching on every toggle)
 let latestSectorData = null;
@@ -5552,8 +5559,8 @@ function setChartMode(mode){
     tvEl.style.display = '';
     switchChart(currentChartSymbol);
   } else {
-    tabsEl.innerHTML = ['1M','3M','YTD','1Y'].map(p =>
-      `<button class="chart-tab ${p===sectorPeriod?'active':''}" onclick="switchSectorPeriod('${p}')">${p}</button>`
+    tabsEl.innerHTML = SECTOR_PERIODS.map(p =>
+      `<button class="chart-tab ${p===sectorPeriod?'active':''}" data-period="${p}" onclick="switchSectorPeriod('${p}')">${sectorPeriodLabel(p)}</button>`
     ).join('');
     tvEl.style.display = 'none';
     sectorEl.style.display = '';
@@ -5565,7 +5572,7 @@ function setChartMode(mode){
 function switchSectorPeriod(period){
   sectorPeriod = period;
   document.querySelectorAll('#chart-tabs-container .chart-tab').forEach(t=>{
-    t.classList.toggle('active', t.textContent.trim() === period);
+    t.classList.toggle('active', t.dataset.period === period);
   });
   loadSectorPerformance(period);
   renderMoversOrSectorList();
@@ -5573,9 +5580,14 @@ function switchSectorPeriod(period){
 
 async function loadSectorPerformance(period){
   const wrap = document.getElementById('sector-chart-wrap');
+  // v79c: a day's / a week's line moves during the session: kept 5 minutes, not for the whole visit
+  if(sectorDataCache[period] && sectorDataCache[period].intraday && Date.now() - (sectorDataCache[period]._at || 0) > 300e3) delete sectorDataCache[period];
   if(sectorDataCache[period]){
     latestSectorData = sectorDataCache[period];
+    // v79c: the box may still say "loading" (another period's request was on its way): the chart needs its canvas back
+    if(!document.getElementById('sector-chart-canvas')) wrap.innerHTML = `<canvas id="sector-chart-canvas"></canvas>`;
     renderSectorChart(latestSectorData);
+    renderMoversOrSectorList();
     return;
   }
   wrap.innerHTML = `<div class="fund-empty" style="height:100%;display:flex;align-items:center;justify-content:center;">${lang==='en'?'Loading sector data...':'טוען נתוני סקטורים...'}</div>`;
@@ -5583,7 +5595,9 @@ async function loadSectorPerformance(period){
     const res = await fetch(`${API_BASE}/api/sector-performance?period=${period}`);
     if(!res.ok) throw new Error('bad response');
     const data = await res.json();
+    data._at = Date.now();
     sectorDataCache[period] = data;
+    if(period !== sectorPeriod) return;        // another tab was picked meanwhile
     latestSectorData = data;
     wrap.innerHTML = `<canvas id="sector-chart-canvas"></canvas>`;
     renderSectorChart(data);
@@ -5626,9 +5640,22 @@ function renderSectorChart(data){
     spanGaps: true,
     hidden: sectorSelected.size > 0 && !sectorSelected.has(s.ticker),
   }));
+  // v79c: the day / the week: the times in the viewer's own clock, and what the line is measured from
+  const intra = !!data.intraday && Array.isArray(data.stamps);
+  const en = lang === 'en';
+  const labels = intra ? data.stamps.map(s => {
+    const d = new Date(s * 1000);
+    const hm = d.toLocaleTimeString(en ? 'en-GB' : 'he-IL', {hour:'2-digit', minute:'2-digit'});
+    return data.period === '1W' ? `${d.toLocaleDateString(en ? 'en-GB' : 'he-IL', {weekday:'short'})} ${hm}` : hm;
+  }) : (data.dates||[]);
+  const dm = (iso) => iso ? new Date(iso + 'T12:00:00').toLocaleDateString(en ? 'en-GB' : 'he-IL', {weekday:'long', day:'2-digit', month:'2-digit'}) : '';
+  const caption = !intra ? '' : data.period === '1D'
+    ? (en ? `${dm(data.session_day)}, against the previous close · your local time` : `${dm(data.session_day)}, מול הסגירה הקודמת · לפי השעה אצלך`)
+    : (en ? `Since the start of the week (${dm(data.since)}), against the close before it · your local time`
+          : `מתחילת השבוע (${dm(data.since)}), מול הסגירה שלפניו · לפי השעה אצלך`);
   sectorChartInstance = new Chart(canvas, {
     type: 'line',
-    data: { labels: data.dates||[], datasets },
+    data: { labels, datasets },
     options: {
       responsive:true, maintainAspectRatio:false,
       interaction:{ mode:'nearest', intersect:false },
@@ -5645,6 +5672,7 @@ function renderSectorChart(data){
                               fontColor: on ? getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#eef1f5' : '#8a93a3' };
                    }) } },
         tooltip:{ callbacks:{ label:(ctx)=>`${ctx.dataset.label}: ${ctx.parsed.y>=0?'+':''}${ctx.parsed.y.toFixed(2)}%` } },
+        subtitle:{ display: !!caption, text: caption, color:'#8a93a3', font:{size:10}, padding:{bottom:4} },
       },
       scales:{
         x:{ grid:{display:false}, ticks:{ font:{size:9}, maxRotation:0, autoSkip:true, maxTicksLimit:8 } },
@@ -5665,10 +5693,11 @@ function renderMoversOrSectorList(){
   const toggleEl = document.querySelector('.movers-toggle');
   const addBtn = document.getElementById('watchlist-add-btn');
   if(chartMode === 'sectors'){
+    document.querySelectorAll('#chart-tabs-container .chart-tab[data-period]').forEach(b => { b.textContent = sectorPeriodLabel(b.dataset.period); });   // v79c: language switch
     if(toggleEl) toggleEl.style.display = 'none';
     if(addBtn) addBtn.style.display = 'none';
     document.getElementById('movers-title').textContent =
-      lang==='en' ? `US Sectors (${sectorPeriod})` : `סקטורים בארה"ב (${sectorPeriod})`;
+      lang==='en' ? `US Sectors (${sectorPeriodLabel(sectorPeriod)})` : `סקטורים בארה"ב (${sectorPeriodLabel(sectorPeriod)})`;
     const el = document.getElementById('movers-list');
     if(!el) return;
     const table = (latestSectorData && latestSectorData.table) || [];
@@ -5689,7 +5718,7 @@ function renderMoversOrSectorList(){
       return `
         <div class="mover-row ${sectorSelected.has(r.ticker)?'sector-picked':''}" onclick="showTickerDrawer('${r.ticker}')">
           <div class="mover-ticker">${r.ticker}</div>
-          <div class="mover-trigger">${escH(r.name||'')} · ${sectorPeriod}: <span class="${perClass}">${perSign}${r.period_change_pct.toFixed(1)}%</span></div>
+          <div class="mover-trigger">${escH(r.name||'')}${sectorPeriod === '1D' ? '' : ` · ${escH(sectorPeriodLabel(sectorPeriod))}: <span class="${perClass}">${perSign}${r.period_change_pct.toFixed(1)}%</span>`}</div>
           <div class="mover-pct ${dayClass}">${daySign}${r.change_pct.toFixed(1)}%</div>
         </div>
       `;

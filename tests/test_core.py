@@ -4193,3 +4193,29 @@ def test_v79_ticker_list_for_the_search_box(api, monkeypatch):
     monkeypatch.setattr(api, "_TICKER_LIST", {"data": None, "ts": 0.0, "tried": 0.0})
     rows[:] = rows[:3]
     assert api.get_ticker_list() == {"available": False, "tickers": []} and api._TICKER_LIST["data"] is None
+
+def test_v79c_sectors_by_the_day_and_the_week(api, monkeypatch):
+    """v79c (owner): the sectors by the day, and by the week "from the start of the week to now, not 7 days back"."""
+    import datetime as _dt
+    import sys as _sys
+    from zoneinfo import ZoneInfo
+    D, ny = _dt.date, ZoneInfo("America/New_York")
+    at = lambda d, h, m=0: _dt.datetime(2026, 11, d, h, m, tzinfo=ny)
+    daily = {D(2026, 11, 20): 100.0, D(2026, 11, 23): 104.0, D(2026, 11, 24): 101.0, D(2026, 11, 25): 102.0}
+    bars = [(at(23, 10), 103.0), (at(24, 15, 30), 101.0), (at(25, 9, 30), 99.0), (at(25, 15, 30), 102.0)]
+    assert api.sector_window("1D", daily, bars) == (D(2026, 11, 25), 101.0, D(2026, 11, 25))     # against Tuesday's close
+    assert api.sector_window("1W", daily, bars) == (D(2026, 11, 23), 100.0, D(2026, 11, 25))     # from Monday, against Friday's
+    assert api.sector_window("1W", {D(2026, 11, 23): 1.0}, bars) is None                            # no close before the week
+    assert api.sector_window("1D", daily, []) is None
+    params = {r.path: r for r in api.app.routes if hasattr(r, "dependant")}
+    assert "/api/sector-performance" in params
+    if _sys.platform == "emscripten":
+        pytest.skip("no threads in the browser check; GitHub Actions runs the rest")
+    monkeypatch.setattr(api, "_sector_bars", lambda t, step: (daily, bars) if t != "XLE" else (_ for _ in ()).throw(RuntimeError("down")))
+    out = api._fetch_sector_intraday("1W")
+    assert out["intraday"] and out["since"] == "2026-11-23" and out["session_day"] == "2026-11-25" and len(out["stamps"]) == 4
+    assert len(out["series"]) == len(api.SECTOR_ETFS) - 1 and out["series"][0]["values"] == [3.0, 1.0, -1.0, 2.0]
+    row = out["table"][0]
+    assert row["period_change_pct"] == 2.0 and row["change_pct"] == 0.99 and row["price"] == 102.0
+    day = api._fetch_sector_intraday("1D")
+    assert len(day["stamps"]) == 2 and day["series"][0]["values"] == [-1.98, 0.99] and day["since"] == "2026-11-25"
