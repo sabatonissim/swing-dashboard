@@ -7775,6 +7775,32 @@ def get_market_breadth():
     return data
 
 
+_themes_last: dict = {}      # "v" -> (updated_at of the stored row, the answer)
+
+
+@app.get("/api/themes")
+@_cached_answer(max_keys=1)
+def get_themes():
+    """v80: hot market themes, the latest row of theme_snapshots (themes.py, once after the close). The ~30KB payload is
+    read again only when a newer row exists — the check itself is one tiny row."""
+    with db_cursor(dict_cursor=True) as (conn, cur):
+        if not _table_exists(cur, "theme_snapshots"):
+            return {"available": False}
+        cur.execute("SELECT day, updated_at FROM theme_snapshots ORDER BY day DESC LIMIT 1")
+        head = cur.fetchone()
+        if not head:
+            return {"available": False}
+        prev = _themes_last.get("v")
+        if prev and prev[0] == head["updated_at"]:
+            return prev[1]
+        cur.execute("SELECT payload FROM theme_snapshots WHERE day = %s", (head["day"],))
+        row = cur.fetchone()
+    data = json.loads(row["payload"])
+    data["available"] = True
+    _themes_last["v"] = (head["updated_at"], data)
+    return data
+
+
 _INSIDER_DAYS = 183
 
 

@@ -269,7 +269,8 @@ EVENTS_HE = {"view_stock": "פתח סריקה של", "view_macro": "פתח יד�
              "error": "תקלה", "watchlist_remove": "הסיר ממעקב", "news_search": "חיפש בחדשות", "tap": "לחץ על",
              "pick": "בחר", "link": "יצא לקישור", "scroll": "גלל", "chart": "השתמש בגרף TradingView"}
 # what the buttons are called in words (index.html sends the name of the function; one that is not here is shown by that name)
-TAPS_HE = {"clearNewsSearch": "ניקוי חיפוש חדשות", "clearSelectedCategories": "ניקוי קטגוריות חדשות", "toggleSelectedCategory": "קטגוריית חדשות",
+TAPS_HE = {"setThemesPeriod": "נושאים חמים: תקופה", "toggleTheme": "נושאים חמים: פתיחת נושא",
+           "clearNewsSearch": "ניקוי חיפוש חדשות","clearSelectedCategories": "ניקוי קטגוריות חדשות", "toggleSelectedCategory": "קטגוריית חדשות",
            "toggleMacroMore": "עוד מקורות לידיעה", "setFundGrowth": "גרף הצמיחה", "openKeyNews": "אירוע מרכזי", "openDigestItem": "ידיעה בסיכום היומי",
            "openInfoModal": "חלון מידע", "toggleInfoSection": "סעיף בחלון המידע", "openLegal": "מדיניות / תנאים",
            "openAlertsPanel": "חלון ההתראות", "openLineAlert": "פעמון על קו בגרף", "deleteLineAlert": "מחיקת התראה", "deletePriceAlert": "מחיקת התראה",

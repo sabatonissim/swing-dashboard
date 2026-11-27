@@ -82,6 +82,7 @@ FRESHNESS = [
     ("econ_snapshots", "updated_at", 2, "warn"),
     ("scanned_stocks", "timestamp", 3, "warn"),     # the quality gate can leave a quiet day with no row at all
     ("analyst_ratings", "seen_at", 2, "warn"),      # v39: every run writes its own row, also on a day with no change
+    ("theme_snapshots", "updated_at", 2, "warn"),   # v80: hot market themes (themes.py), once after every market day
 ]
 _RANK = {"ok": 0, "info": 0, "warn": 1, "fail": 2}
 

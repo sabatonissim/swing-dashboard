@@ -4219,3 +4219,111 @@ def test_v79c_sectors_by_the_day_and_the_week(api, monkeypatch):
     assert row["period_change_pct"] == 2.0 and row["change_pct"] == 0.99 and row["price"] == 102.0
     day = api._fetch_sector_intraday("1D")
     assert len(day["stamps"]) == 2 and day["series"][0]["values"] == [-1.98, 0.99] and day["since"] == "2026-11-25"
+
+# ------------------------------------------------------------------ v80: hot market themes (themes.py, /api/themes)
+def _theme_frames(n=80):
+    days = pd.date_range("2026-07-01", periods=n, freq="B")
+    flat = np.full(n, 100.0)
+    up = np.concatenate([np.full(n - 5, 100.0), np.linspace(102, 110, 5)])       # +10% in the last 5 sessions
+    close = pd.DataFrame({"SPY": flat, "A": up, "B": up, "C": flat, "D": flat}, index=days)
+    vol = pd.DataFrame(1000.0, index=days, columns=close.columns)
+    vol.iloc[-5:] = 2000.0                                                          # twice the usual volume this week
+    return close, vol
+
+
+def test_v80_theme_list_is_clean():
+    import themes as th
+    keys = [t["key"] for t in th.THEMES]
+    assert len(keys) == len(set(keys)) and len(keys) >= 20
+    for t in th.THEMES:
+        m = th.members_of(t)
+        assert len(m) == len(set(m)) and len(m) >= 5, t["key"]
+        assert all(x == x.upper() for x in m)
+        assert t["he"] and t["en"] and t["wiki"] and t["news"]
+    # checked against Yahoo 27.11.2026: these are other companies now, or give no prices
+    gone = {"GOLD", "SATS", "CYBR", "PSTG", "INFN", "TERN", "ZEAL"}
+    assert not gone & set(th.all_tickers())
+    assert "SPY" in th.all_tickers()
+
+
+def test_v80_theme_news_patterns():
+    """The news patterns are Postgres regexes (\\y = word boundary); here they run in Python with \\b."""
+    import re
+    import themes as th
+    pat = {t["key"]: re.compile(t["news"].replace(r"\y", r"\b"), re.I) for t in th.THEMES}
+    hits = {
+        "cyber": ["CrowdStrike shares jump after strong quarter", "Ransomware attack hits hospital chain", "Hackers stole data"],
+        "quantum": ["Quantum computing stocks rally as IonQ wins contract"],
+        "gold": ["Gold hits a record as the dollar slips"],
+        "nuclear": ["Oklo surges on new reactor deal", "Uranium prices climb"],
+        "evtol": ["Joby begins air taxi tests in Dubai"],
+        "obesity": ["Eli Lilly weight-loss pill wins approval"],
+    }
+    for key, titles in hits.items():
+        for title in titles:
+            assert pat[key].search(title), (key, title)
+    misses = {"gold": "Golden State Warriors owner buys team", "cyber": "Hackett Group beats estimates",
+              "solar": "Solarwinds shares fall", "dc_power": "Gridlock in Congress over the budget"}
+    for key, title in misses.items():
+        assert not pat[key].search(title), (key, title)
+
+
+def test_v80_theme_labels():
+    import themes as th
+    base = dict(n=10, up_1w=7, above50=7, vol_ratio=1.5)
+    assert th.theme_label(dict(base, rel_1w=1.0, rel_1m=9.0, rel_3m=20.0)) == "hot"
+    assert th.theme_label(dict(base, rel_1w=3.4, rel_1m=-15.0, rel_3m=-20.0)) == "heating"     # cyber, 27.11.2026
+    assert th.theme_label(dict(base, rel_1w=3.4, rel_1m=0.0, rel_3m=0.0, vol_ratio=1.1)) == "quiet"   # no volume, no heating
+    assert th.theme_label(dict(base, rel_1w=-4.0, rel_1m=-6.0, rel_3m=25.0)) == "cooling"
+    assert th.theme_label(dict(base, rel_1w=-4.0, rel_1m=-28.0, rel_3m=-20.0)) == "weak"       # quantum, 27.11.2026
+    assert th.theme_label(dict(base, rel_1w=None, rel_1m=None, rel_3m=None)) == "quiet"
+    assert th.theme_label(dict(n=0)) == "quiet"
+
+
+def test_v80_theme_numbers():
+    import themes as th
+    close, vol = _theme_frames()
+    spec = dict(key="x", he="x", en="x", etf=None, members="A B C D MISSING", wiki=["X"], news=r"\yx\y")
+    spy = {"r1w": 0.0, "r1m": 0.0, "r3m": 0.0}
+    st = th.theme_stats(spec, close, vol, spy)
+    assert st["missing"] == ["MISSING"] and st["n"] == 4
+    assert st["r1w"] == 5.0 and st["rel_1w"] == 5.0                    # (10 + 10 + 0 + 0) / 4
+    assert st["up_1w"] == 2 and 2.0 <= st["vol_ratio"] <= 2.2           # dollar volume: twice the shares, a bit higher price
+    assert st["series"][0] == 0.0 and st["series"][-1] == 5.0 and len(st["series"]) == th.SERIES_DAYS + 1
+    assert st["members"][0]["ticker"] in ("A", "B") and st["members"][0]["from_high"] == 0.0
+    assert st["label"] == "quiet"                                        # only half the stocks went up: not "heating"
+    assert th.theme_stats(dict(spec, members="A MISSING"), close, vol, spy) is None     # fewer than 3 members = left out
+    out = th.build(close, vol)
+    assert out["day"] == close.index[-1].date().isoformat() and out["spy"]["r1w"] == 0.0
+    assert len(out["series_days"]) == th.SERIES_DAYS + 1
+
+
+def test_v80_theme_attention():
+    import themes as th
+    days = {f"202611{d:02d}": 100 for d in range(1, 29)}
+    days.update({f"202611{d:02d}": 300 for d in range(22, 29)})
+    days.update({f"202610{d:02d}": 100 for d in range(20, 32)})
+    a = th.attention(days)
+    assert a["last7"] == 2100 and a["prev_week_avg"] == 700 and a["ratio"] == 3.0
+    assert th.attention({"20261101": 5}) is None                         # a page with a short history = no number
+
+
+def test_v80_theme_rules_in_words_match_the_code():
+    import themes as th
+    html = (ROOT / "index.html").read_text(encoding="utf-8")
+    he = html[html.index("var THEME_LABEL_RULES_TEXT"):]
+    he = he[:he.index("};")]
+    r = th.THEME_LABEL_RULES
+    assert f"לפחות {r['hot']['rel_1m_min']:g} נקודות" in he and f"{r['hot']['above50_share_min']:.0%}" in he
+    assert f"לפחות {r['heating']['rel_1w_min']:g} נקודות" in he and f"פי {r['heating']['vol_ratio_min']:g}" in he
+    assert f"ב-{r['cooling']['rel_3m_min']:g} נקודות" in he and f"ב-{-r['cooling']['rel_1m_max']:g} לפחות" in he
+    assert f"חלש ב-{-r['weak']['rel_1m_max']:g} נקודות" in he
+    if (ROOT / ".github").exists():                                     # GitHub: the job the scheduler starts must exist
+        assert (ROOT / ".github" / "workflows" / "themes.yml").exists()
+    import scheduler as s
+    assert next(j for j in s.JOBS if j["name"] == "themes")["market_days_only"]
+
+
+def test_v80_themes_endpoint(api):
+    params = {r.path for r in api.app.routes if hasattr(r, "dependant")}
+    assert "/api/themes" in params

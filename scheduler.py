@@ -70,6 +70,8 @@ JOBS = [
     # v22: market breadth (S&P 500 above 50/200-day, new highs/lows) hourly while the market is open + after the close
     dict(name="breadth",     workflow="market-breadth.yml",  kind="interval", every_min=60, window=(10 * 60, 16 * 60), market_days_only=True, grace_min=40),
     dict(name="breadth_eod", workflow="market-breadth.yml",  kind="daily",    at=(16, 25), market_days_only=True, grace_min=300),
+    # v80: hot market themes (themes.py), once after the close, while the evening scan keeps the database awake anyway
+    dict(name="themes",      workflow="themes.yml",          kind="daily",    at=(16, 40), market_days_only=True, grace_min=300),
     # v22: insider trades (SEC Form 4) every 30 min on weekdays; each run also sweeps part of the companies (backfill)
     dict(name="insider",     workflow="insider-refresh.yml", kind="interval", every_min=30, window=(6 * 60, 22 * 60), market_days_only=True, grace_min=25),
     # v25: AI summary per stock, after the evening scan (16:10) has saved the day's signals and leaders

@@ -595,6 +595,18 @@
   .rg-label{font-size:12px;font-weight:700;color:var(--text);}
   .rg-chip{font-size:11.5px;font-weight:600;padding:3px 10px;border-radius:20px;border:1px solid var(--line-hover);color:var(--text);background:var(--panel);white-space:nowrap;cursor:help;}
   .rg-chip b{font-family:'JetBrains Mono',monospace;font-weight:700;}
+  /* v80: hot market themes */
+  .th-chip{font-size:11px;font-weight:700;padding:1px 8px;border-radius:20px;border:1px solid;white-space:nowrap;}
+  .th-row{cursor:pointer;} .th-row:hover td{background:var(--panel);}
+  .th-open > td{background:var(--panel);}
+  .th-table td{white-space:nowrap;} .th-table th{white-space:normal;}
+  .th-detail{white-space:normal;padding:8px 2px 4px;width:0;min-width:100%;}   /* width:0 = the open theme never widens the table; its own stock table scrolls inside */
+  @media (max-width:700px){
+    .th-table .th-x{display:none;}                                  /* phone: name, state, return, vs S&P — the rest is in the open theme */
+    .th-table td, .th-table th{white-space:normal;}
+  }
+  .th-caret{display:inline-block;width:10px;color:var(--text-dim);}
+  .th-axis{display:flex;justify-content:space-between;font-size:10.5px;color:var(--text-dim);direction:ltr;margin-top:2px;}
   .rg-more{font-size:11px;color:var(--amber);cursor:pointer;text-decoration:underline;white-space:nowrap;}
   .rg-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:10px;}
   @media(max-width:700px){.rg-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
@@ -1433,6 +1445,16 @@
 
     <!-- v26 view: stocks and funds -->
     <div id="pulse-view-stocks" style="display:none;">
+    <!-- v80 (owner 27.11.2026): hot market themes first — filled by renderThemes from /api/themes (themes.py) -->
+    <div class="pulse-section-head">
+      <div class="pulse-section-title" id="themes-title">נושאים חמים בשוק</div>
+      <div class="movers-toggle">
+        <button class="movers-toggle-btn" id="themes-p-1w" onclick="setThemesPeriod('1w')">שבוע</button>
+        <button class="movers-toggle-btn active" id="themes-p-1m" onclick="setThemesPeriod('1m')">חודש</button>
+        <button class="movers-toggle-btn" id="themes-p-3m" onclick="setThemesPeriod('3m')">3 חודשים</button>
+      </div>
+    </div>
+    <div id="themes-wrap" style="margin-bottom:24px;"></div>
     <div class="pulse-section-head">
       <div class="pulse-section-title" id="leaders-title">מניות מובילות</div>
     </div>
@@ -3624,6 +3646,7 @@ function ensurePulseViewLoaded(){   // each view loads its data only the first t
   }
   if(pulseView === 'stocks' && !pulseStocksLoaded){
     pulseStocksLoaded = true;
+    loadThemes();           // v80
     loadLeaders();          // v25
     loadFunds();            // v25
   }
@@ -9879,6 +9902,150 @@ function renderYields(){
     </div>`;
 }
 
+// ---- v80: hot market themes (/api/themes, written by themes.py once after the close) ----
+// `var`, not `let`: applyLang() can run before this line is reached
+var themesData = null, themesPeriod = '1m', themesOpen = null;
+var THEME_LABELS = {
+  hot:     {he: 'חם',     en: 'Hot',     color: 'var(--green)'},
+  heating: {he: 'מתחמם',  en: 'Heating', color: 'var(--amber)'},
+  cooling: {he: 'מתקרר',  en: 'Cooling', color: 'var(--sky)'},
+  weak:    {he: 'חלש',    en: 'Weak',    color: 'var(--red)'},
+  quiet:   {he: 'שקט',    en: 'Quiet',   color: 'var(--text-dim)'},
+};
+
+async function loadThemes(){
+  try {
+    const r = await fetchWithTimeout(`${API_BASE}/api/themes`, 25000);
+    themesData = r.ok ? await r.json() : {available: false, failed: true};
+  } catch(e){ themesData = {available: false, failed: true}; }
+  if(themesData.failed) pulseStocksLoaded = false;
+  renderThemes();
+}
+
+function setThemesPeriod(p){
+  themesPeriod = p;
+  ['1w', '1m', '3m'].forEach(k => { const b = document.getElementById('themes-p-' + k); if(b) b.classList.toggle('active', k === p); });
+  renderThemes();
+}
+
+function toggleTheme(key){
+  themesOpen = themesOpen === key ? null : key;
+  renderThemes();
+}
+
+function _themeChip(label, en){
+  const L = THEME_LABELS[label] || THEME_LABELS.quiet;
+  return `<span class="th-chip" style="color:${L.color};border-color:${L.color}">${en ? L.en : L.he}</span>`;
+}
+
+function _themeRatio(v){ return v == null ? '—' : `×${v.toFixed(1)}`; }
+
+function _themeChartSvg(t, d, en){
+  const a = t.series || [], b = d.spy_series || [];
+  const vals = a.concat(b).filter(v => v != null);
+  if(a.length < 2 || !vals.length) return '';
+  const W = 600, H = 170, P = 6;
+  let lo = Math.min(0, ...vals), hi = Math.max(0, ...vals);
+  if(hi - lo < 1){ hi += 0.5; lo -= 0.5; }
+  const x = i => P + i * (W - 2 * P) / (a.length - 1), y = v => P + (hi - v) * (H - 2 * P) / (hi - lo);
+  const line = (s, color, w) => `<polyline fill="none" stroke="${color}" stroke-width="${w}" points="${
+    s.map((v, i) => v == null ? '' : `${x(i).toFixed(1)},${y(v).toFixed(1)}`).filter(Boolean).join(' ')}"/>`;
+  const days = d.series_days || [];
+  const fmt = s => s ? `${+s.slice(8, 10)}.${+s.slice(5, 7)}` : '';
+  const last = a[a.length - 1], lastS = b[b.length - 1];
+  return `<div class="fund-legend" style="margin:0 0 6px;">
+      <span class="fund-legend-item"><span style="width:12px;height:3px;background:var(--amber);display:inline-block"></span>${escH(en ? t.en : t.he)} ${_pfPct(last)}</span>
+      <span class="fund-legend-item"><span style="width:12px;height:3px;background:var(--text-dim);display:inline-block"></span>S&amp;P 500 ${_pfPct(lastS)}</span>
+    </div>
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:170px;direction:ltr;display:block">
+      <line x1="0" x2="${W}" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}" stroke="var(--line-hover)" stroke-dasharray="3 3"/>
+      ${line(b, 'var(--text-dim)', 1.5)}${line(a, 'var(--amber)', 2.2)}
+    </svg>
+    <div class="th-axis"><span>${fmt(days[0])}</span><span>${fmt(days[days.length - 1])}</span></div>`;
+}
+
+function _themeDetail(t, d, en){
+  const pct = v => v == null ? '—' : `<span class="${_pfCls(v)}">${_pfPct(v)}</span>`;
+  const rows = (t.members || []).map(m => {
+    const tk = escH(m.ticker);
+    return `<tr><td><span class="pf-tk" onclick="openTickerAnalysis('${tk}')">${tk}</span></td>
+      <td class="mono">${pct(m.r1d)}</td><td class="mono">${pct(m.r1w)}</td><td class="mono">${pct(m.r1m)}</td><td class="mono">${pct(m.r3m)}</td>
+      <td class="mono">${m.from_high != null ? _pfPct(m.from_high) : '—'}</td><td class="mono">${_themeRatio(m.vol_ratio)}</td></tr>`;
+  }).join('');
+  const head = en ? ['Stock', 'Day', 'Week', 'Month', '3 months', 'From 52w high', 'Volume vs usual']
+                  : ['מניה', 'יום', 'שבוע', 'חודש', '3 חודשים', 'מהשיא השנתי', 'מחזור מול הרגיל'];
+  const etf = t.etf ? `<div class="hx-note" style="margin:6px 0 0">${en ? 'Matching fund' : 'קרן סל מקבילה'}: <b class="mono" style="color:var(--text)">${escH(t.etf.ticker)}</b> · ${
+    en ? 'week' : 'שבוע'} ${pct(t.etf.r1w)} · ${en ? 'month' : 'חודש'} ${pct(t.etf.r1m)} · ${en ? '3 months' : '3 חודשים'} ${pct(t.etf.r3m)}</div>` : '';
+  const att = [en
+    ? `Up this week: ${t.up_1w} of ${t.n} · above the 50-day average: ${t.above50} of ${t.n} · within 5% of the 52-week high: ${t.near_high} · volume vs usual: ${_themeRatio(t.vol_ratio)}.`
+    : `עלו השבוע: ${t.up_1w} מתוך ${t.n} · מעל ממוצע 50: ${t.above50} מתוך ${t.n} · עד 5% מהשיא השנתי: ${t.near_high} · מחזור מול הרגיל: ${_themeRatio(t.vol_ratio)}.`];
+  if(t.wiki && t.wiki.ratio != null) att.push(en
+    ? `Wikipedia views of the theme's pages: ${t.wiki.last7.toLocaleString('en-US')} in the last 7 days, ${_themeRatio(t.wiki.ratio)} the weekly average of the 4 weeks before.`
+    : `צפיות בדפי הנושא בוויקיפדיה: ${t.wiki.last7.toLocaleString('he-IL')} ב-7 הימים האחרונים, ${_themeRatio(t.wiki.ratio)} מהממוצע השבועי של 4 השבועות שלפני.`);
+  if(t.news) att.push(en
+    ? `Our news headlines that named the theme: ${t.news.last7} in the last 7 days (weekly average before: ${t.news.prev_week_avg}).`
+    : `כותרות בחדשות שלנו שהזכירו את הנושא: ${t.news.last7} ב-7 הימים האחרונים (ממוצע שבועי לפני: ${t.news.prev_week_avg}).`);
+  return `<div class="th-detail">
+      ${_themeChartSvg(t, d, en)}
+      ${etf}
+      ${att.length ? `<div class="hx-note" style="margin:6px 0 0">${att.join(' ')}</div>` : ''}
+      <div style="overflow-x:auto;margin-top:8px"><table class="bt-signals-table pf-table"><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>
+      ${t.missing && t.missing.length ? `<div class="hx-note" style="margin:4px 0 0">${en ? 'No prices today for' : 'אין היום מחירים עבור'}: ${t.missing.map(escH).join(', ')}</div>` : ''}
+    </div>`;
+}
+
+function renderThemes(){
+  const el = document.getElementById('themes-wrap');
+  if(!el || typeof lang === 'undefined') return;
+  const en = lang==='en', d = themesData;
+  if(!d){ el.innerHTML = `<div class="movers-empty">${UI[lang].loading}</div>`; return; }
+  if(!d.available){ el.innerHTML = `<div class="movers-empty">${d.failed
+    ? (en ? 'Not available right now.' : 'לא זמין כרגע.') + retryHtml('loadThemes()')
+    : (en ? 'The themes table fills after the next market close.' : 'טבלת הנושאים תתמלא אחרי סגירת המסחר הבאה.')}</div>`; return; }
+  const p = themesPeriod, spyP = d.spy ? d.spy['r' + p] : null;
+  const list = (d.themes || []).slice().sort((a, b) => (b['r' + p] ?? -999) - (a['r' + p] ?? -999));
+  const pct = v => v == null ? '—' : `<span class="${_pfCls(v)}">${_pfPct(v)}</span>`;
+  const rows = list.map(t => {
+    const open = themesOpen === t.key;
+    const changed = t.label_prev && t.label_prev !== t.label
+      ? `<span class="pf-sub" style="white-space:nowrap">${en ? 'was' : 'היה'} ${en ? (THEME_LABELS[t.label_prev] || {}).en || '' : (THEME_LABELS[t.label_prev] || {}).he || ''}</span>` : '';
+    const wiki = t.wiki && t.wiki.ratio != null ? _themeRatio(t.wiki.ratio) : '—';
+    const news = t.news ? `${t.news.last7}` : '—';
+    const key = JSON.stringify(t.key).replace(/"/g, '&quot;');
+    return `<tr class="th-row${open ? ' th-open' : ''}" onclick="toggleTheme(${key})">
+        <td><span class="th-caret">${open ? '▾' : '▸'}</span> <b>${escH(en ? t.en : t.he)}</b></td>
+        <td>${_themeChip(t.label, en)} ${changed}</td>
+        <td class="mono"><b>${pct(t['r' + p])}</b></td>
+        <td class="mono">${pct(t['rel_' + p])}</td>
+        <td class="mono th-x">${t.up_1w}/${t.n}</td>
+        <td class="mono th-x">${t.above50}/${t.n}</td>
+        <td class="mono th-x">${_themeRatio(t.vol_ratio)}</td>
+        <td class="mono th-x">${wiki}</td>
+        <td class="mono th-x">${news}</td>
+      </tr>${open ? `<tr class="th-open"><td colspan="9">${_themeDetail(t, d, en)}</td></tr>` : ''}`;
+  }).join('');
+  const pName = {'1w': en ? 'week' : 'שבוע', '1m': en ? 'month' : 'חודש', '3m': en ? '3 months' : '3 חודשים'}[p];
+  const head = en
+    ? ['Theme', 'State', `Return (${pName})`, 'Vs S&P 500', 'Up this week', 'Above 50-day', 'Volume vs usual', 'Wikipedia views', 'Headlines 7d']
+    : ['נושא', 'מצב', `תשואה (${pName})`, 'מול S&P 500', 'עלו השבוע', 'מעל ממוצע 50', 'מחזור מול הרגיל', 'צפיות בוויקיפדיה', 'כותרות ב-7 ימים'];
+  const heating = list.filter(t => t.label === 'heating' || t.label === 'hot').map(t => `<b style="color:var(--text)">${escH(en ? t.en : t.he)}</b>`);
+  const day = d.day ? `${+d.day.slice(8, 10)}.${+d.day.slice(5, 7)}` : '';
+  const R = THEME_LABEL_RULES_TEXT[en ? 'en' : 'he'];
+  el.innerHTML = `<div class="hx-card">
+      <div class="hx-note" style="margin:0 0 8px">${heating.length
+        ? (en ? 'Hot or heating now: ' : 'חמים או מתחממים עכשיו: ') + heating.join(', ')
+        : (en ? 'No theme is hot or heating right now.' : 'אין כרגע נושא חם או מתחמם.')}${spyP != null ? ` · S&amp;P 500 (${pName}): ${pct(spyP)}` : ''}</div>
+      <div style="overflow-x:auto;"><table class="bt-signals-table pf-table th-table"><thead><tr>${head.map((h, i) => `<th${i >= 4 ? ' class="th-x"' : ''}>${h}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="hx-note">${R}${en ? ` Data of ${day}, after the close.` : ` נתוני ${day}, אחרי הסגירה.`}</div>
+    </div>`;
+}
+
+// the label rules in words — the same numbers as THEME_LABEL_RULES in themes.py (tests/test_core.py compares them)
+var THEME_LABEL_RULES_TEXT = {
+  he: 'כל נושא = סל של מניות "טהורות" במשקל שווה (לחיצה על שורה פותחת את המניות והגרף). <b>חם</b>: בחודש עלה לפחות 8 נקודות אחוז יותר מ-S&amp;P 500, השבוע לא פחות ממנו, ו-60% מהמניות מעל ממוצע 50. <b>מתחמם</b>: השבוע עלה לפחות 3 נקודות יותר מ-S&amp;P 500, 60% מהמניות עלו, והמחזור לפחות פי 1.2 מהרגיל. <b>מתקרר</b>: ב-3 חודשים היה חזק מ-S&amp;P 500 ב-10 נקודות לפחות, ובחודש האחרון חלש ממנו ב-5 לפחות. <b>חלש</b>: בחודש חלש ב-8 נקודות לפחות, והשבוע לא חזק ממנו. "מחזור מול הרגיל" = שווי המסחר ב-5 הימים האחרונים מול 50 הימים שלפני, במניה האמצעית בסל. תיאור של מה שקרה — לא המלצה, ונושא חם יכול גם לרדת חזק.',
+  en: 'Each theme = an equal-weight basket of "pure" stocks (click a row for its stocks and chart). <b>Hot</b>: over the month at least 8 percentage points better than the S&amp;P 500, this week not worse, and 60% of the stocks above their 50-day average. <b>Heating</b>: this week at least 3 points better than the S&amp;P 500, 60% of the stocks up, and volume at least 1.2× usual. <b>Cooling</b>: over 3 months at least 10 points better than the S&amp;P 500, and over the last month at least 5 worse. <b>Weak</b>: over the month at least 8 points worse, and this week not better. "Volume vs usual" = dollar volume of the last 5 days against the 50 before, for the middle stock of the basket. A description of what happened — not a recommendation, and a hot theme can also fall hard.',
+};
+
 // ---- v25: leading stocks (/api/leaders, written by every full scan) ----
 var leadersData = null, leadersSector = 'all', leadersShowAll = false;
 
@@ -10547,6 +10714,10 @@ function applyLang(){
   document.getElementById('leaders-title').textContent = lang==='en' ? 'Leading stocks' : 'מניות מובילות';    // v25
   document.getElementById('corp-cal-title').textContent = lang==='en' ? 'Dividends and IPOs' : 'דיבידנדים והנפקות';
   document.getElementById('funds-title').textContent = lang==='en' ? 'What the big funds hold' : 'מה מחזיקות הקרנות הגדולות';
+  document.getElementById('themes-title').textContent = lang==='en' ? 'Hot market themes' : 'נושאים חמים בשוק';   // v80
+  [['1w', 'Week', 'שבוע'], ['1m', 'Month', 'חודש'], ['3m', '3 months', '3 חודשים']].forEach(([k, e, h]) => {
+    document.getElementById('themes-p-' + k).textContent = lang==='en' ? e : h; });
+  renderThemes();
   renderLeaders();
   renderCorpCalendar();
   renderFunds();
