@@ -608,10 +608,20 @@
   .th-detail .fund-legend-item{font-family:'Heebo',sans-serif;}
   .th-detail{white-space:normal;padding:8px 2px 4px;width:0;min-width:100%;}   /* width:0 = the open theme never widens the table; its own stock table scrolls inside */
   @media (max-width:700px){
-    .th-table .th-x{display:none;}                                  /* phone: name, state, return, vs S&P — the rest is in the open theme */
+    .th-table .th-x, .th-mini .th-x{display:none;}
+    .th-mini td, .th-mini th{white-space:normal;} .th-sub-name{min-width:0;}                                  /* phone: name, state, return, vs S&P — the rest is in the open theme */
     .th-table td, .th-table th{white-space:normal;}
   }
   .th-caret{display:inline-block;width:10px;color:var(--text-dim);}
+  .th-mini td{font-family:'Heebo',sans-serif;font-size:12.5px;} .th-mini td.mono, .th-mini .pf-tk{font-family:'JetBrains Mono',monospace;}
+  .th-name{max-width:170px;overflow:hidden;text-overflow:ellipsis;}
+  .th-members .pf-tk{font-size:11.5px;margin-right:6px;font-weight:600;}
+  .th-sub-name{text-align:left !important;white-space:normal !important;min-width:150px;}
+  .th-disc-h{font-size:13px;font-weight:700;color:var(--text);margin:14px 0 6px;} .th-discover .th-disc-h:first-child{margin-top:0;}
+  .th-phrase{padding:6px 0;border-bottom:1px solid var(--line);font-size:12.5px;}
+  .th-phrase b{color:var(--amber);margin-right:8px;font-family:'JetBrains Mono',monospace;}
+  .th-example{text-align:left;font-size:11px;margin-top:2px;}
+  .th-tag{cursor:pointer;}
   .th-axis{display:flex;justify-content:space-between;font-size:10.5px;color:var(--text-dim);direction:ltr;margin-top:2px;}
   .rg-more{font-size:11px;color:var(--amber);cursor:pointer;text-decoration:underline;white-space:nowrap;}
   .rg-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:10px;}
@@ -1461,6 +1471,11 @@
       </div>
     </div>
     <div id="themes-wrap" style="margin-bottom:24px;"></div>
+    <!-- v80d: what is starting to get attention — Reddit jumps, words rising in headlines, S&P 500 groups (renderDiscover) -->
+    <div class="pulse-section-head">
+      <div class="pulse-section-title" id="discover-title">מה מתחיל לעניין</div>
+    </div>
+    <div id="discover-wrap" style="margin-bottom:24px;"></div>
     <div class="pulse-section-head">
       <div class="pulse-section-title" id="leaders-title">מניות מובילות</div>
     </div>
@@ -1711,7 +1726,7 @@ function stockRowHtml(s,i){
     <div class="stock-row" onclick="openDrawer(${i})">
       <div class="ticker">${s.ticker}${isNewScan(s) ? `<span class="new-dot" title="${lang==='en'?'New since your last visit':'חדש מאז הביקור האחרון שלך'}"></span>` : ''}</div>
       <div class="trend ${s.trend}">${s.trend==="up"?"▲":"▼"}</div>
-      <div class="trigger">${lang==='en'?(s.trigger_en||s.trigger||''):(s.trigger||s.trigger_he||'')}${earningsSoonBadgeHtml(s)}${afterReportBadgeHtml(s)}${belowMa150BadgeHtml(s)}${insiderBadgeHtml(s)}</div>
+      <div class="trigger">${lang==='en'?(s.trigger_en||s.trigger||''):(s.trigger||s.trigger_he||'')}${earningsSoonBadgeHtml(s)}${afterReportBadgeHtml(s)}${belowMa150BadgeHtml(s)}${insiderBadgeHtml(s)}${themeBadgesHtml(s.ticker, true)}</div>
       ${repeatBadgeHtml(s.repeatCount)}
       ${winRateBadgeHtml(s.patternType)}
       <div class="score-badge ${scoreClass(s.score)}">${s.score}</div>
@@ -4410,6 +4425,17 @@ function digestEarningsHtml(e){
                                : 'חברות בשווי 10 מיליארד דולר ומעלה. התוצאות והצפי מיומן הדוחות; המניה מול הסגירה שלפני הדוח.'}</div>`;
 }
 
+// v80d: themes whose state changed that day into or out of hot / heating / cooling (themes.py) — data, not the AI
+function digestThemesHtml(list){
+  if(!Array.isArray(list) || !list.length) return '';
+  const t = lang==='en';
+  const lab = k => { const L = THEME_LABELS[k] || THEME_LABELS.quiet; return `<span style="color:${L.color}">${t ? L.en : L.he}</span>`; };
+  return `<div class="dg-h">${t ? 'Market themes that changed state' : 'נושאים בשוק ששינו מצב'}</div>${list.map(c => `<div class="dg-rating">
+      <a href="#" class="dg-rating-tk" onclick="closeDailyDigest(); openTheme('${escH(c.key)}'); return false;">${escH(t ? c.en : c.he)}</a>
+      <span class="dg-rating-what">${lab(c.from)} → ${lab(c.to)}</span></div>`).join('')}
+    <div class="dg-session">${t ? 'By the fixed rules of the themes table (Market → Stocks and funds).' : 'לפי הכללים הקבועים של טבלת הנושאים (השוק ← מניות וקרנות).'}</div>`;
+}
+
 // v39: the day's analyst rating changes (analyst_ratings.py), as the firms published them — data, not the AI
 function digestRatingsHtml(r){
   if(!r || !Array.isArray(r.changes)) return '';
@@ -4481,6 +4507,7 @@ function renderDailyDigest(data, picked){
       ${hasAi ? aiSummaryHtml(ai, {marketHtml: data.is_today ? digestMarketHtml(ai) : digestStoredMarketHtml(ai)}) : (data.is_today ? digestMarketHtml(ai) : '') + fallback}
       ${hasAi ? digestEarningsHtml(ai.earnings) : ''}
       <div id="digest-next"></div>
+      ${digestThemesHtml(data.theme_changes)}
       ${digestRatingsHtml(data.analyst_ratings)}
       <div class="dg-foot">${t
         ? 'Written automatically by AI from the day\'s headlines and may contain mistakes. Information only, not investment advice.'
@@ -8165,11 +8192,12 @@ function idxBadgesHtml(ticker){
   const t = lang === 'en';
   const tag = (label, he, en) => `<span class="idx-badge" dir="ltr" title="${t ? en : he}">${label}</span>`;
   return (m.sp500.has(ticker) ? tag('S&amp;P 500', 'המניה חברה במדד S&amp;P 500', 'A member of the S&amp;P 500 index') : '') +
-         (m.nasdaq100.has(ticker) ? tag('Nasdaq-100', 'המניה חברה במדד נאסד&quot;ק 100', 'A member of the Nasdaq-100 index') : '');
+         (m.nasdaq100.has(ticker) ? tag('Nasdaq-100', 'המניה חברה במדד נאסד&quot;ק 100', 'A member of the Nasdaq-100 index') : '') +
+         themeBadgesHtml(ticker, false);      // v80d: the stock's theme(s)
 }
 function idxSlot(ticker){ return `<span class="idx-badges" data-idx-t="${escH(ticker)}">${idxBadgesHtml(ticker)}</span>`; }
 function fillIndexBadges(){
-  loadIndexMembers().then(() => {
+  Promise.all([loadIndexMembers(), loadThemeTags()]).then(() => {
     document.querySelectorAll('.idx-badges[data-idx-t]').forEach(el => { el.innerHTML = idxBadgesHtml(el.dataset.idxT); });
   });
 }
@@ -9993,6 +10021,9 @@ function _themeDetail(t, d, en){
   if(t.wiki && t.wiki.ratio != null) att.push(en
     ? `Wikipedia views of the theme's pages: ${t.wiki.last7.toLocaleString('en-US')} in the last 7 days, ${_themeRatio(t.wiki.ratio)} the weekly average of the 4 weeks before.`
     : `צפיות בדפי הנושא בוויקיפדיה: ${t.wiki.last7.toLocaleString('he-IL')} ב-7 הימים האחרונים, ${_themeRatio(t.wiki.ratio)} מהממוצע השבועי של 4 השבועות שלפני.`);
+  if(t.reddit) att.push(en
+    ? `Reddit: the theme's stocks were named ${t.reddit.mentions} times in the last 24 hours (24 hours before: ${t.reddit.prev_day}${t.reddit.usual != null ? `; usual day: ${t.reddit.usual}` : ''}).`
+    : `רדיט: מניות הנושא הוזכרו ${t.reddit.mentions} פעמים ב-24 השעות האחרונות (24 השעות שלפני: ${t.reddit.prev_day}${t.reddit.usual != null ? `; ביום רגיל: ${t.reddit.usual}` : ''}).`);
   if(t.news) att.push(en
     ? `Our news headlines that named the theme: ${t.news.last7} in the last 7 days (weekly average before: ${t.news.prev_week_avg}).`
     : `כותרות בחדשות שלנו שהזכירו את הנושא: ${t.news.last7} ב-7 הימים האחרונים (ממוצע שבועי לפני: ${t.news.prev_week_avg}).`);
@@ -10022,6 +10053,7 @@ function renderThemes(){
       ? `<span class="pf-sub" style="white-space:nowrap">${en ? 'was' : 'היה'} ${en ? (THEME_LABELS[t.label_prev] || {}).en || '' : (THEME_LABELS[t.label_prev] || {}).he || ''}</span>` : '';
     const wiki = t.wiki && t.wiki.ratio != null ? _themeRatio(t.wiki.ratio) : '—';
     const news = t.news ? `${t.news.last7}` : '—';
+    const rd = t.reddit ? `${t.reddit.mentions}${t.reddit.ratio != null ? ` <span class="pf-sub">${_themeRatio(t.reddit.ratio)}</span>` : ''}` : '—';
     const key = JSON.stringify(t.key).replace(/"/g, '&quot;');
     return `<tr class="th-row${open ? ' th-open' : ''}" onclick="toggleTheme(${key})">
         <td><span class="th-caret">${open ? '▾' : '▸'}</span> <b>${escH(en ? t.en : t.he)}</b></td>
@@ -10033,12 +10065,13 @@ function renderThemes(){
         <td class="mono th-x">${_themeRatio(t.vol_ratio)}</td>
         <td class="mono th-x">${wiki}</td>
         <td class="mono th-x">${news}</td>
-      </tr>${open ? `<tr class="th-open"><td colspan="9">${_themeDetail(t, d, en)}</td></tr>` : ''}`;
+        <td class="mono th-x">${rd}</td>
+      </tr>${open ? `<tr class="th-open"><td colspan="10">${_themeDetail(t, d, en)}</td></tr>` : ''}`;
   }).join('');
   const pName = {'1w': en ? 'week' : 'שבוע', '1m': en ? 'month' : 'חודש', '3m': en ? '3 months' : '3 חודשים'}[p];
   const head = en
-    ? ['Theme', 'State', `Return (${pName})`, 'Vs S&P 500', 'Up this week', 'Above 50-day', 'Volume vs usual', 'Wikipedia views', 'Headlines 7d']
-    : ['נושא', 'מצב', `תשואה (${pName})`, 'מול S&P 500', 'עלו השבוע', 'מעל ממוצע 50', 'מחזור מול הרגיל', 'צפיות בוויקיפדיה', 'כותרות ב-7 ימים'];
+    ? ['Theme', 'State', `Return (${pName})`, 'Vs S&P 500', 'Up this week', 'Above 50-day', 'Volume vs usual', 'Wikipedia views', 'Headlines 7d', 'Reddit 24h']
+    : ['נושא', 'מצב', `תשואה (${pName})`, 'מול S&P 500', 'עלו השבוע', 'מעל ממוצע 50', 'מחזור מול הרגיל', 'צפיות בוויקיפדיה', 'כותרות ב-7 ימים', 'אזכורים ברדיט (24 ש׳)'];
   const heating = list.filter(t => t.label === 'heating' || t.label === 'hot').map(t => `<b style="color:var(--text)">${escH(en ? t.en : t.he)}</b>`);
   const day = d.day ? `${+d.day.slice(8, 10)}.${+d.day.slice(5, 7)}` : '';
   const R = THEME_LABEL_RULES_TEXT[en ? 'en' : 'he'];
@@ -10049,6 +10082,118 @@ function renderThemes(){
       <div style="overflow-x:auto;"><table class="bt-signals-table pf-table th-table"><thead><tr>${head.map((h, i) => `<th${i >= 4 ? ' class="th-x"' : ''}>${h}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>
       <div class="hx-note">${R}${en ? ` Data of ${day}, after the close.` : ` נתוני ${day}, אחרי הסגירה.`}</div>
     </div>`;
+  renderDiscover();      // v80d
+}
+
+// v80d: "what is starting to get attention" — three lists from the same stored day (themes.py), all data, no AI
+var discoverSubAll = false;
+function renderDiscover(){
+  const el = document.getElementById('discover-wrap');
+  if(!el || typeof lang === 'undefined') return;
+  const en = lang==='en', d = themesData;
+  if(!d || !d.available){ el.innerHTML = ''; return; }
+  const pct = v => v == null ? '—' : `<span class="${_pfCls(v)}">${_pfPct(v)}</span>`;
+  const names = {};
+  (d.themes || []).forEach(t => { names[t.key] = en ? t.en : t.he; });
+  const tk = t => `<span class="pf-tk" onclick="openTickerAnalysis('${escH(t)}')">${escH(t)}</span>`;
+  // 1. Reddit
+  const talked = d.talked || [];
+  const talkedHtml = talked.length ? `<div style="overflow-x:auto"><table class="bt-signals-table pf-table th-mini"><thead><tr>${
+      (en ? ['Stock', 'Mentions 24h', 'Vs usual', 'Day', 'Week', 'Theme'] : ['מניה', 'אזכורים ב-24 ש׳', 'מול הרגיל', 'יום', 'שבוע', 'נושא'])
+        .map((h, i) => `<th${i === 3 || i === 4 ? ' class="th-x"' : ''}>${h}</th>`).join('')}</tr></thead><tbody>${talked.map(r => `<tr>
+        <td>${tk(r.ticker)}<div class="pf-sub th-name">${escH(r.name || '')}</div></td>
+        <td class="mono">${r.mentions}</td>
+        <td class="mono">${_themeRatio(r.ratio)}</td>
+        <td class="mono th-x">${pct(r.r1d)}</td><td class="mono th-x">${pct(r.r1w)}</td>
+        <td>${(r.themes || []).length ? r.themes.map(k => escH(names[k] || k)).join(', ') : `<span class="pf-sub">${en ? 'not in our themes' : 'לא באף נושא שלנו'}</span>`}</td>
+      </tr>`).join('')}</tbody></table></div>`
+    : `<div class="movers-empty">${d.talked ? (en ? 'No stock jumped on Reddit today.' : 'אף מניה לא קפצה היום ברדיט.') : (en ? 'Reddit counts start with the next run.' : 'ספירת רדיט תתחיל בריצה הבאה.')}</div>`;
+  const talkedBase = talked.some(r => r.base_kind === 'usual') ? (en ? 'the average of the last stored days' : 'הממוצע של הימים האחרונים ששמרנו') : (en ? 'the 24 hours before' : '24 השעות שלפני');
+  // 2. words rising in headlines
+  const ph = (d.phrases && d.phrases.items) || [];
+  const phHtml = ph.length ? ph.map(r => `<div class="th-phrase"><b dir="ltr">${escH(r.phrase)}</b>
+      <span class="pf-sub">${en ? `${r.last7} headlines this week, ${r.prev_week_avg} in an average week before` : `${r.last7} כותרות השבוע, ${r.prev_week_avg} בשבוע ממוצע לפני`}</span>
+      <div class="pf-sub th-example" dir="ltr">${escH(r.example || '')}</div></div>`).join('')
+    : `<div class="movers-empty">${d.phrases ? (en ? 'No phrase jumped in the headlines this week.' : 'אין השבוע צירוף מילים שקפץ בכותרות.') : (en ? 'Starts with the next run.' : 'יתחיל בריצה הבאה.')}</div>`;
+  // 3. S&P 500 sub-industries, by the period the themes table is sorted by
+  const p = themesPeriod;
+  const subs = (d.subind || []).slice().sort((a, b) => (b['rel_' + p] ?? -999) - (a['rel_' + p] ?? -999));
+  const subShown = discoverSubAll ? subs : subs.slice(0, 8);
+  const subHtml = subs.length ? `<div style="overflow-x:auto"><table class="bt-signals-table pf-table th-mini"><thead><tr>${
+      (en ? ['Group (GICS)', 'Return', 'Vs S&P 500', 'Up this week', 'Stocks'] : ['ענף (GICS)', 'תשואה', 'מול S&P 500', 'עלו השבוע', 'מניות'])
+        .map((h, i) => `<th${i === 1 || i === 3 ? ' class="th-x"' : ''}>${h}</th>`).join('')}</tr></thead><tbody>${subShown.map(s => `<tr>
+        <td dir="ltr" class="th-sub-name">${escH(s.name)}<div class="pf-sub">${escH(s.sector || '')}</div></td>
+        <td class="mono th-x">${pct(s['r' + p])}</td><td class="mono">${pct(s['rel_' + p])}</td>
+        <td class="mono th-x">${s.up_1w}/${s.n}</td>
+        <td class="th-members">${(s.members || []).slice(0, 6).map(tk).join(' ')}</td>
+      </tr>`).join('')}</tbody></table></div>
+      ${subs.length > subShown.length ? `<button class="scan-more-btn" onclick="discoverSubAll=true;renderDiscover()">${en ? `Show all ${subs.length}` : `הצג את כל ${subs.length}`}</button>` : ''}`
+    : `<div class="movers-empty">${en ? 'Starts with the next run.' : 'יתחיל בריצה הבאה.'}</div>`;
+  const pName = {'1w': en ? 'week' : 'שבוע', '1m': en ? 'month' : 'חודש', '3m': en ? '3 months' : '3 חודשים'}[p];
+  el.innerHTML = `<div class="hx-card th-discover">
+      <div class="th-disc-h">${en ? 'Jumping on Reddit' : 'קופצות ברדיט'}</div>
+      ${talkedHtml}
+      <div class="hx-note">${en
+        ? `Stocks named on the stock subreddits (wallstreetbets, stocks and others) at least ${15} times in 24 hours and 3× ${talkedBase} or more. Counts of mentions only — not whether people are for or against. Funds and tickers that are also common words (DTE, AI, NOW...) are left out. Source: ApeWisdom.`
+        : `מניות שהוזכרו בקבוצות המניות ברדיט (wallstreetbets, stocks ועוד) לפחות 15 פעמים ב-24 שעות, ופי 3 לפחות מ${talkedBase}. ספירה של אזכורים בלבד — לא אם מדברים בעד או נגד. קרנות וטיקרים שהם גם מילים רגילות (DTE, AI, NOW...) לא נספרים. מקור: ApeWisdom.`}</div>
+      <div class="th-disc-h">${en ? 'Words rising in the headlines' : 'מילים שעולות בכותרות'}</div>
+      ${phHtml}
+      <div class="hx-note">${en
+        ? `Two-word phrases in our news headlines this week (at least 6) and 3× an average week of the 4 before. Updated once a week${d.phrases && d.phrases.computed ? ` (last: ${+d.phrases.computed.slice(8, 10)}.${+d.phrases.computed.slice(5, 7)})` : ''}. A word that rises can be a new theme — or just a big news week.`
+        : `צירופים של שתי מילים בכותרות החדשות שלנו השבוע (לפחות 6), ופי 3 משבוע ממוצע בארבעת השבועות שלפני. מתעדכן פעם בשבוע${d.phrases && d.phrases.computed ? ` (אחרון: ${+d.phrases.computed.slice(8, 10)}.${+d.phrases.computed.slice(5, 7)})` : ''}. מילה שעולה יכולה להיות נושא חדש — או סתם שבוע של אירוע גדול בחדשות.`}</div>
+      <div class="th-disc-h">${en ? `S&amp;P 500 groups moving together (${pName})` : `ענפים ב-S&amp;P 500 שזזים ביחד (${pName})`}</div>
+      ${subHtml}
+      <div class="hx-note">${en
+        ? 'Every GICS sub-industry of the S&amp;P 500 with 3+ stocks, equal weight, against the S&amp;P 500 — covers what our theme list does not. Sorted by the period chosen above.'
+        : 'כל תת-ענף (GICS) של S&amp;P 500 עם 3 מניות ומעלה, במשקל שווה, מול S&amp;P 500 — מכסה גם מה שלא ברשימת הנושאים שלנו. ממוין לפי התקופה שנבחרה למעלה. שמות הענפים באנגלית.'}</div>
+    </div>`;
+}
+
+// ---- v80d: theme tags on the stock page and the scan rows (/api/themes/tags, ~6 KB, kept a few hours in the browser) ----
+var _themeTags = null, _themeTagsLoading = null;
+var THEME_TAGS_KEY = 'swing_theme_tags_v1';
+function loadThemeTags(){
+  if(_themeTags) return Promise.resolve(_themeTags);
+  try {
+    const c = JSON.parse(localStorage.getItem(THEME_TAGS_KEY) || 'null');
+    if(c && c.ts && Date.now() - c.ts < 4 * 3600e3 && c.d && c.d.tags){ _themeTags = c.d; return Promise.resolve(_themeTags); }
+  } catch(e) {}
+  if(!_themeTagsLoading){
+    _themeTagsLoading = fetchWithTimeout(`${API_BASE}/api/themes/tags`, 20000)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if(!d || !d.available || !d.tags) return null;
+        try { localStorage.setItem(THEME_TAGS_KEY, JSON.stringify({ts: Date.now(), d})); } catch(e) {}
+        _themeTags = d;
+        try { if(typeof renderStocks === 'function') renderStocks(); } catch(e) {}     // the scan rows get their tag
+        return d;
+      })
+      .catch(() => null)
+      .finally(() => { _themeTagsLoading = null; });
+  }
+  return _themeTagsLoading;
+}
+function themeBadgesHtml(ticker, short){
+  const m = _themeTags;
+  if(!m || !m.tags) return '';
+  const keys = m.tags[ticker] || [];
+  const en = lang==='en';
+  return keys.map(k => {
+    const t = m.themes[k];
+    if(!t) return '';
+    const L = THEME_LABELS[t.label] || THEME_LABELS.quiet;
+    const loud = t.label === 'hot' || t.label === 'heating' || t.label === 'cooling';
+    if(short && !loud) return '';                  // scan rows: only a theme that is hot / heating / cooling
+    const name = en ? t.en : t.he;
+    return `<span class="${short ? 'earn-soon-badge' : 'idx-badge'} th-tag" style="${loud ? `color:${L.color};border-color:${L.color}` : ''}" onclick="event.stopPropagation();openTheme('${escH(k)}')" title="${en ? 'Part of the theme' : 'חלק מהנושא'} ${escH(name)} — ${en ? L.en : L.he}">${escH(name)}${loud ? ` · ${en ? L.en : L.he}` : ''}</span>`;
+  }).join('');
+}
+function openTheme(key){
+  themesOpen = key;
+  if(typeof closeDrawer === 'function') try { closeDrawer(); } catch(e) {}
+  setPage('pulse'); setPulseView('stocks');
+  renderThemes();
+  setTimeout(() => { const w = document.getElementById('themes-wrap'); if(w) w.scrollIntoView({block: 'start'}); }, 50);
 }
 
 // the label rules in words — the same numbers as THEME_LABEL_RULES in themes.py (tests/test_core.py compares them)
@@ -10509,6 +10654,7 @@ let _apiBusy = false;           // v34: one load at a time (its retries can last
 let _apiLoadedAt = 0;
 
 async function loadFromApi(){
+  loadThemeTags();       // v80d: theme tags on the scan rows (cached a few hours; no wait)
   if(_apiBusy) return;
   _apiBusy = true;
   try { await _loadFromApi(); if(apiConnected){ _apiLoadedAt = Date.now(); if(typeof visitLog !== 'undefined') visitLog.ready(); } } finally { _apiBusy = false; }
@@ -10726,6 +10872,7 @@ function applyLang(){
   document.getElementById('corp-cal-title').textContent = lang==='en' ? 'Dividends and IPOs' : 'דיבידנדים והנפקות';
   document.getElementById('funds-title').textContent = lang==='en' ? 'What the big funds hold' : 'מה מחזיקות הקרנות הגדולות';
   document.getElementById('themes-title').textContent = lang==='en' ? 'Hot market themes' : 'נושאים חמים בשוק';   // v80
+  document.getElementById('discover-title').textContent = lang==='en' ? 'What is starting to get attention' : 'מה מתחיל לעניין';
   [['1w', 'Week', 'שבוע'], ['1m', 'Month', 'חודש'], ['3m', '3 months', '3 חודשים']].forEach(([k, e, h]) => {
     document.getElementById('themes-p-' + k).textContent = lang==='en' ? e : h; });
   renderThemes();

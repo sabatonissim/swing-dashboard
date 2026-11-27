@@ -485,6 +485,39 @@ def check_digest(cur) -> List[dict]:
     return [_line("digest.main_story", "warn" if odd else "ok", f"{r['day']}: {'; '.join(odd) or 'market move: ' + move}", len(odd))]
 
 
+def theme_sources_problems(p: dict) -> List[str]:
+    """v80d: which outside source of the hot-themes table came back empty (Wikipedia, Reddit, headlines, S&P groups)."""
+    themes = p.get("themes") or []
+    odd = []
+    if len(themes) < 15:
+        odd.append(f"only {len(themes)} themes")
+    no_wiki = [t["key"] for t in themes if not t.get("wiki")]
+    if len(no_wiki) > len(themes) // 2:
+        odd.append(f"no Wikipedia views for {len(no_wiki)} themes")
+    if not any(t.get("reddit") for t in themes):
+        odd.append("no Reddit counts (ApeWisdom)")
+    if not any(t.get("news") for t in themes):
+        odd.append("no headline counts")
+    if not p.get("subind"):
+        odd.append("no S&P 500 sub-industries")
+    return odd
+
+
+def check_themes(cur) -> List[dict]:
+    """v80d: the last stored day of themes.py, ~70 KB once a day."""
+    cur.execute("SELECT to_regclass('theme_snapshots') IS NOT NULL AS ok")
+    if not cur.fetchone()["ok"]:
+        return [_line("value.themes", "warn", "theme_snapshots does not exist yet")]
+    cur.execute("SELECT day, payload FROM theme_snapshots ORDER BY day DESC LIMIT 1")
+    r = cur.fetchone()
+    if not r:
+        return [_line("value.themes", "warn", "no stored day")]
+    p = json.loads(r["payload"])
+    odd = theme_sources_problems(p)
+    return [_line("value.themes", "warn" if odd else "ok",
+                  f"{r['day']}: {'; '.join(odd) or str(len(p.get('themes') or [])) + ' themes, all sources answered'}", len(odd))]
+
+
 def check_profiles(cur) -> List[dict]:
     """v35: the text a stock page opens with, and what search engines read. Only rows the job has already redone (facts->>'fv' = 2):
     until its first run after v35, every older row would be reported."""
@@ -556,7 +589,7 @@ def main() -> int:
                           ("market caps", lambda: check_market_caps(cur)),
                           ("eps splits", lambda: check_eps_splits(cur)),
                           ("profiles", lambda: check_profiles(cur)), ("digest", lambda: check_digest(cur)),
-                          ("ratings", lambda: check_ratings(cur, now)),
+                          ("ratings", lambda: check_ratings(cur, now)), ("themes", lambda: check_themes(cur)),
                           ("size", lambda: check_db_size(cur)), ("usage", lambda: check_db_usage(cur, now))):
             try:
                 results += run()

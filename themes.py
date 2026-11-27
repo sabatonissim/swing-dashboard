@@ -16,8 +16,10 @@ One row per day in theme_snapshots (~30KB, kept 120 days).
 A theme or member is a line in THEMES. Members were checked against Yahoo on 27.11.2026 (GOLD is now Gold.com, SATS now
 Strive, CYBR/PSTG/INFN/TERN/ZEAL gave no prices); a member with no prices is left out of that day and named in the log.
 """
+import html
 import json
 import os
+import re
 import sys
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -189,8 +191,10 @@ def download(tickers: List[str]):
 
 
 def _ret(s: pd.Series, n: int) -> Optional[float]:
-    s = s.dropna()
-    if len(s) <= n or not s.iloc[-1 - n]:
+    """Return over the last n sessions of the shared calendar (v80c: a missing day = the last price before it, as on the
+    chart line — counting n of the stock's own rows took a different week when one day was missing: memory 27.11)."""
+    s = s.ffill()
+    if len(s) <= n or pd.isna(s.iloc[-1 - n]) or not s.iloc[-1 - n] or pd.isna(s.iloc[-1]):
         return None
     return round((float(s.iloc[-1]) / float(s.iloc[-1 - n]) - 1) * 100, 2)
 
@@ -214,7 +218,7 @@ def member_stats(close: pd.Series, volume: pd.Series) -> Optional[dict]:
         vol_ratio = round(float(recent / before), 2) if before and before > 0 else None
     sma50 = float(c.iloc[-50:].mean()) if len(c) >= 50 else None
     return {
-        "r1d": _ret(c, 1), "r1w": _ret(c, 5), "r1m": _ret(c, 21), "r3m": _ret(c, 63),
+        "r1d": _ret(close, 1), "r1w": _ret(close, 5), "r1m": _ret(close, 21), "r3m": _ret(close, 63),
         "from_high": round((last / hi - 1) * 100, 1) if hi else None,
         "above50": (last > sma50) if sma50 else None,
         "vol_ratio": vol_ratio,
@@ -364,7 +368,193 @@ def build(close: pd.DataFrame, volume: pd.DataFrame) -> dict:
             "themes": themes}
 
 
-def save(payload: dict) -> None:
+# ------------------------------------------------------------------ v80d: Reddit (ApeWisdom), stage 2 (owner 27.11.2026)
+# ApeWisdom counts how many times each ticker was named on the stock subreddits (wallstreetbets, stocks, investing...) in
+# the last 24 hours, and in the 24 hours before. Free, no key; no history, so every run stores its own day (extra column).
+APEWISDOM_URL = "https://apewisdom.io/api/v1.0/filter/all-stocks/page/{}"
+APEWISDOM_MAX_PAGES = 10
+# tickers that are also common words or abbreviations on Reddit ("DTE" = days to expiration, "ES" = S&P futures, "AI",
+# "NOW", "S", "B", "RUN"...): never counted, also when they are members of a theme
+REDDIT_SKIP = set("""A AI ALL AM AN ARE AT ATH B BE BIG BY CAN CASH CEO CPI DD DO DTE EH EOD ES ET EV FED FLY FN FOR FUD GDP
+GO HAS HE HOLD IPO IQ IS IT KEY LI LOVE LOW ME MOD NB NET NEXT NOW ON ONE OPEN OR PATH PL PLAY PR PS REAL RR RUN S SAIL
+SERV SO TOP TV U UP USA VS WELL YOU ALT AU""".split())
+ETF_NAME_RE = re.compile(r"\b(ETF|ETN|Trust|Fund|ProShares|Direxion|iShares|SPDR|Vanguard|Invesco|Index)\b", re.I)
+TALKED_MIN = 15           # mentions in 24 hours before a jump is shown at all
+TALKED_RATIO = 3.0        # ... and at least 3x its usual
+TALKED_SHOW = 10
+REDDIT_HISTORY_DAYS = 10  # stored days the "usual" is averaged over (until 5 exist: the 24 hours before)
+REDDIT_MIN_HISTORY = 5
+
+
+def fetch_reddit() -> Dict[str, dict]:
+    """{ticker: {"m": mentions 24h, "m24": the 24h before, "name": ...}} of every ticker ApeWisdom lists."""
+    out: Dict[str, dict] = {}
+    pages = 1
+    p = 1
+    while p <= min(pages, APEWISDOM_MAX_PAGES):
+        try:
+            r = requests.get(APEWISDOM_URL.format(p), headers={"User-Agent": "Mozilla/5.0 (SwingDesk themes)"}, timeout=20)
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:  # noqa: BLE001
+            print(f"[warn] themes: reddit page {p}: {type(e).__name__}: {e}")
+            break
+        pages = int(data.get("pages") or 1)
+        for x in data.get("results") or []:
+            t = str(x.get("ticker") or "").upper().strip()
+            if t:
+                out[t] = {"m": int(x.get("mentions") or 0), "m24": int(x.get("mentions_24h_ago") or 0),
+                          "name": html.unescape(str(x.get("name") or ""))}
+        p += 1
+        time.sleep(1)
+    return out
+
+
+def reddit_theme_sums(rd: Dict[str, dict]) -> Dict[str, dict]:
+    """Per theme: mentions of its members (word tickers left out), and the 24 hours before."""
+    out = {}
+    for t in THEMES:
+        names = [m for m in members_of(t) if m not in REDDIT_SKIP]
+        out[t["key"]] = {"mentions": sum(rd[m]["m"] for m in names if m in rd),
+                         "prev_day": sum(rd[m]["m24"] for m in names if m in rd)}
+    return out
+
+
+def usual(values: List[float]) -> Optional[float]:
+    return round(sum(values) / len(values), 1) if len(values) >= REDDIT_MIN_HISTORY else None
+
+
+def talked_about(rd: Dict[str, dict], history: List[dict]) -> List[dict]:
+    """Stocks whose Reddit mentions jumped: >= TALKED_MIN today and >= TALKED_RATIO x the usual (the average of the stored
+    days, or the 24 hours before while there are fewer than REDDIT_MIN_HISTORY). ETFs and word tickers left out."""
+    theme_of: Dict[str, List[str]] = {}
+    for t in THEMES:
+        for m in members_of(t):
+            theme_of.setdefault(m, []).append(t["key"])
+    out = []
+    for tk, x in rd.items():
+        if tk in REDDIT_SKIP or x["m"] < TALKED_MIN or ETF_NAME_RE.search(x["name"]):
+            continue
+        base = usual([h.get(tk, 0) for h in history])
+        base_kind = "usual" if base is not None else "day_before"
+        if base is None:
+            base = x["m24"]
+        ratio = x["m"] / max(base, 3)
+        if ratio >= TALKED_RATIO:
+            out.append({"ticker": tk, "name": x["name"], "mentions": x["m"], "base": base, "base_kind": base_kind,
+                        "ratio": round(ratio, 1), "themes": theme_of.get(tk, [])})
+    out.sort(key=lambda r: (-r["ratio"], -r["mentions"]))
+    return out[:TALKED_SHOW]
+
+
+# ------------------------------------------------------------------ v80d: words rising in our headlines
+PHRASE_STOP = set("""a about above after again against all also amid an and any are as at back be been before being below
+between both but by can could day days did do does down during each early few for from further had has have he her his how
+i if in into is it its just late latest made make makes may might more most much near new news no nor not now of off on
+once one only or other our out over own per said same say says see sees set she should since so some still such than that
+the their them then there these they this those through to today too under until up us u.s. very was we week weekly were
+what when where which while who why will with would year years yet you your vs via amid ahead set sets gets get got
+stock stocks share shares market markets price prices report reports reported percent pct record high higher low lower
+rise rises rose fall falls fell gain gains gained drop drops dropped jump jumps surge surges slump slumps climb climbs
+trading trade trades investors investor analysts analyst wall street dow nasdaq s&p index futures quarter quarterly
+monday tuesday wednesday thursday friday saturday sunday january february march april june july august september
+october november december first second third fourth biggest big top best amp""".split())
+PHRASE_WORD_RE = re.compile(r"[a-z][a-z0-9&'\-]*[a-z0-9]|[a-z]")
+PHRASE_MIN = 6            # times in the last 7 days
+PHRASE_RATIO = 3.0        # against the weekly average of the 4 weeks before (+1)
+PHRASE_SHOW = 12
+PHRASE_EVERY_DAYS = 6     # read the headlines again only once a week (~0.7MB from the database)
+
+
+def headline_phrases(title: str) -> set:
+    """The two-word phrases of one headline (each once), neither word common or about the market in general."""
+    words = PHRASE_WORD_RE.findall(str(title or "").lower().replace("\u2019", "'"))
+    words = [w.strip("'-") for w in words]
+    out = set()
+    for a, b in zip(words, words[1:]):
+        if a in PHRASE_STOP or b in PHRASE_STOP or len(a) < 2 or len(b) < 2 or a.isdigit() or b.isdigit():
+            continue
+        out.add(f"{a} {b}")
+    return out
+
+
+def rising_phrases(rows: List[tuple], now: datetime) -> List[dict]:
+    """rows = (headline, time). Phrases named at least PHRASE_MIN times in the last 7 days and PHRASE_RATIO x more than in
+    an average week of the 4 before, with the newest headline that has it."""
+    recent: Dict[str, int] = {}
+    before: Dict[str, int] = {}
+    example: Dict[str, tuple] = {}
+    cut = now - timedelta(days=7)
+    for title, ts in rows:
+        if ts is None:
+            continue
+        bucket = recent if ts >= cut else before
+        for ph in headline_phrases(title):
+            bucket[ph] = bucket.get(ph, 0) + 1
+            if ts >= cut and (ph not in example or ts > example[ph][1]):
+                example[ph] = (title, ts)
+    out = []
+    for ph, n in recent.items():
+        prev = before.get(ph, 0) / 4
+        if n >= PHRASE_MIN and n >= PHRASE_RATIO * (prev + 1):
+            out.append({"phrase": ph, "last7": n, "prev_week_avg": round(prev, 1), "example": example[ph][0]})
+    # "humanoid robots" and "robots draw" from the same headlines: of overlapping phrases keep the one named more often
+    # overall (in the 5 weeks) — the name of the thing, not the verb next to it
+    out.sort(key=lambda r: (-(r["last7"] + 4 * r["prev_week_avg"]), r["phrase"]))
+    kept: List[dict] = []
+    for r in out:
+        a, b = r["phrase"].split(" ")
+        if any(r["example"] == k["example"] and (a in k["phrase"].split() or b in k["phrase"].split()) for k in kept):
+            continue
+        kept.append(r)
+    kept.sort(key=lambda r: (-(r["last7"] / (r["prev_week_avg"] + 1)), -r["last7"]))
+    return kept[:PHRASE_SHOW]
+
+
+# ------------------------------------------------------------------ v80d: S&P 500 sub-industries that move together
+SP500_CSV = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv"
+SUBIND_MIN = 3
+
+
+def sp500_groups() -> Dict[str, dict]:
+    """{ticker: {"sub": GICS sub-industry, "sector": ...}}"""
+    import csv
+    import io
+    r = requests.get(SP500_CSV, timeout=20)
+    r.raise_for_status()
+    out = {}
+    for row in csv.DictReader(io.StringIO(r.text)):
+        t = str(row.get("Symbol") or "").strip().upper().replace(".", "-")
+        if t:
+            out[t] = {"sub": (row.get("GICS Sub-Industry") or "").strip(), "sector": (row.get("GICS Sector") or "").strip()}
+    return out
+
+
+def subindustry_stats(close: pd.DataFrame, groups: Dict[str, dict], spy: dict) -> List[dict]:
+    """Equal-weight return of every GICS sub-industry with SUBIND_MIN+ stocks, against the S&P 500."""
+    by: Dict[str, List[str]] = {}
+    for t, g in groups.items():
+        if g["sub"] and t in close.columns:
+            by.setdefault(g["sub"], []).append(t)
+    out = []
+    for sub, names in by.items():
+        rets = {t: {p: _ret(close[t], n) for p, n in PERIOD_DAYS.items()} for t in names}
+        rets = {t: r for t, r in rets.items() if r["1m"] is not None}
+        if len(rets) < SUBIND_MIN:
+            continue
+        row = {"name": sub, "sector": groups[next(iter(rets))]["sector"], "n": len(rets),
+               "up_1w": sum(1 for r in rets.values() if (r["1w"] or 0) > 0)}
+        for p in PERIOD_DAYS:
+            row["r" + p] = _avg(r[p] for r in rets.values())
+            row["rel_" + p] = round(row["r" + p] - spy["r" + p], 2) if row["r" + p] is not None and spy.get("r" + p) is not None else None
+        row["members"] = [t for t, _ in sorted(rets.items(), key=lambda kv: -(kv[1]["1m"] or -999))]
+        out.append(row)
+    out.sort(key=lambda r: -(r["rel_1m"] if r["rel_1m"] is not None else -999))
+    return out
+
+
+# ------------------------------------------------------------------ store
+def save(payload: dict, reddit: Optional[Dict[str, dict]] = None, quotes: Optional[Dict[str, dict]] = None) -> None:
     import psycopg2
     conn = psycopg2.connect(os.environ["DATABASE_URL"])          # opened only now: the database sleeps while we download
     try:
@@ -384,21 +574,72 @@ def save(payload: dict) -> None:
                 labels TEXT,
                 payload TEXT NOT NULL
             )""")
+        cur.execute("ALTER TABLE theme_snapshots ADD COLUMN IF NOT EXISTS extra TEXT")      # v80d: Reddit day, phrases
         cur.execute("SELECT labels FROM theme_snapshots WHERE day < %s ORDER BY day DESC LIMIT 1", (payload["day"],))
         prev = cur.fetchone()
         prev_labels = json.loads(prev[0]) if prev and prev[0] else {}
         for t in payload["themes"]:
             t["label_prev"] = prev_labels.get(t["key"])
+        cur.execute("SELECT day, extra FROM theme_snapshots WHERE day < %s AND extra IS NOT NULL ORDER BY day DESC LIMIT %s",
+                    (payload["day"], REDDIT_HISTORY_DAYS))
+        olds = [json.loads(e) for _, e in cur.fetchall() if e]
+        extra = {}
+        if reddit:
+            sums = reddit_theme_sums(reddit)
+            hist_t = [o.get("reddit_themes") or {} for o in olds if o.get("reddit_themes")]
+            for t in payload["themes"]:
+                s = sums.get(t["key"], {})
+                avg = usual([h.get(t["key"], 0) for h in hist_t])
+                s["usual"] = avg
+                s["ratio"] = round(s["mentions"] / max(avg, 1), 2) if avg is not None else None
+                t["reddit"] = s
+            hist_k = [o.get("reddit_tickers") or {} for o in olds if o.get("reddit_tickers")]
+            payload["talked"] = talked_about(reddit, hist_k)
+            for r in payload["talked"]:
+                r.update((quotes or {}).get(r["ticker"], {}))
+            top = sorted(((k, v["m"]) for k, v in reddit.items() if v["m"] >= 3), key=lambda kv: -kv[1])[:400]
+            extra["reddit_tickers"] = dict(top)
+            extra["reddit_themes"] = {k: v["mentions"] for k, v in sums.items()}
+        # headline phrases: once a week (the last stored list is reused in between)
+        last_ph = next((o.get("phrases") for o in olds if o.get("phrases")), None)
+        due = not last_ph or (date.fromisoformat(payload["day"]) - date.fromisoformat(last_ph["computed"])).days >= PHRASE_EVERY_DAYS
+        if due:
+            try:
+                cur.execute("SELECT summary_en, timestamp FROM macro_news WHERE timestamp >= NOW() - INTERVAL '35 days'")
+                now = datetime.now(timezone.utc)
+                last_ph = {"computed": payload["day"], "items": rising_phrases(cur.fetchall(), now)}
+            except Exception as e:  # noqa: BLE001
+                conn.rollback()
+                print(f"[warn] themes: headline phrases failed: {type(e).__name__}: {e}")
+        if last_ph:
+            payload["phrases"] = last_ph
+            extra["phrases"] = last_ph
         payload["updated_at"] = datetime.now(timezone.utc).isoformat()
         labels = json.dumps({t["key"]: t["label"] for t in payload["themes"]})
         cur.execute("""
-            INSERT INTO theme_snapshots (day, updated_at, labels, payload) VALUES (%s, NOW(), %s, %s)
-            ON CONFLICT (day) DO UPDATE SET updated_at = NOW(), labels = EXCLUDED.labels, payload = EXCLUDED.payload""",
-                    (payload["day"], labels, json.dumps(payload, separators=(",", ":"))))
+            INSERT INTO theme_snapshots (day, updated_at, labels, payload, extra) VALUES (%s, NOW(), %s, %s, %s)
+            ON CONFLICT (day) DO UPDATE SET updated_at = NOW(), labels = EXCLUDED.labels, payload = EXCLUDED.payload,
+                extra = EXCLUDED.extra""",
+                    (payload["day"], labels, json.dumps(payload, separators=(",", ":")),
+                     json.dumps(extra, separators=(",", ":")) if extra else None))
         cur.execute("DELETE FROM theme_snapshots WHERE day < %s", (date.fromisoformat(payload["day"]) - timedelta(days=KEEP_DAYS),))
         conn.commit()
     finally:
         conn.close()
+
+
+def reddit_quotes(rd: Dict[str, dict]) -> Dict[str, dict]:
+    """1D / 1W return of every stock that could make the Reddit list (most are not in our themes)."""
+    cands = sorted(t for t, x in rd.items()
+                   if t not in REDDIT_SKIP and x["m"] >= TALKED_MIN and not ETF_NAME_RE.search(x["name"]))
+    if not cands:
+        return {}
+    try:
+        close, _ = download(cands)
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] themes: reddit stocks prices: {e}")
+        return {}
+    return {t: {"r1d": _ret(close[t], 1), "r1w": _ret(close[t], 5)} for t in cands if t in close.columns}
 
 
 def main() -> int:
@@ -413,9 +654,23 @@ def main() -> int:
     for th in payload["themes"]:
         spec = next(x for x in THEMES if x["key"] == th["key"])
         th["wiki"] = wiki_views(spec["wiki"], end)
-    save(payload)
+    # v80d: S&P 500 sub-industries (a separate download — a failure only leaves this part out)
+    try:
+        groups = sp500_groups()
+        sp_close, _ = download(sorted(set(groups) | {"SPY"}))
+        payload["subind"] = subindustry_stats(sp_close, groups, payload["spy"])
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] themes: sub-industries failed: {type(e).__name__}: {e}")
+    reddit = fetch_reddit()
+    if len(reddit) < 100:
+        print(f"[warn] themes: reddit answered with {len(reddit)} tickers — left out today")
+        reddit = {}
+    quotes = reddit_quotes(reddit)                  # before the database is opened: it sleeps while we download
+    save(payload, reddit, quotes)
     size = len(json.dumps(payload, separators=(",", ":")))
     print(f"themes: saved {payload['day']} — {len(payload['themes'])} themes, {size // 1024}KB, "
+          f"{len(payload.get('subind') or [])} sub-industries, reddit {len(reddit)} tickers, "
+          f"talked {len(payload.get('talked') or [])}, phrases {len((payload.get('phrases') or {}).get('items') or [])}, "
           f"{int(time.time() - started)}s; " + ", ".join(f"{t['key']} {t['label']}" for t in payload["themes"]))
     return 0
 

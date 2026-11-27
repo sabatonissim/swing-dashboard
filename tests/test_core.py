@@ -4331,3 +4331,109 @@ def test_v80_theme_rules_in_words_match_the_code():
 def test_v80_themes_endpoint(api):
     params = {r.path for r in api.app.routes if hasattr(r, "dependant")}
     assert "/api/themes" in params
+
+
+def test_v80c_a_missing_day_counts_the_same_week():
+    """v80c (27.11): a stock with no price on the last day (a run 2 minutes after the open) — the table used the stock's own
+    last 5 rows (another week) while the chart used the calendar: memory 1W -9.76% in the table, -7.3% on the line."""
+    import themes as th
+    close, vol = _theme_frames()
+    close.loc[close.index[-1], "A"] = np.nan
+    spec = dict(key="x", he="x", en="x", etf=None, members="A B C D", wiki=["X"], news=r"\yx\y")
+    st = th.theme_stats(spec, close, vol, {"r1w": 0.0, "r1m": 0.0, "r3m": 0.0})
+    for p in th.PERIOD_DAYS:
+        assert abs(st["series"][p][-1] - st["r" + p]) < 0.06, p
+
+
+# ------------------------------------------------------------------ v80d: stage 2 — Reddit, headline phrases, S&P groups, tags
+def test_v80d_reddit_counts_leave_out_word_tickers():
+    import themes as th
+    rd = {"IONQ": {"m": 30, "m24": 10, "name": "IonQ"}, "AI": {"m": 900, "m24": 900, "name": "C3.ai"},
+          "NOW": {"m": 500, "m24": 400, "name": "ServiceNow"}, "PLTR": {"m": 40, "m24": 40, "name": "Palantir"}}
+    sums = th.reddit_theme_sums(rd)
+    assert sums["quantum"] == {"mentions": 30, "prev_day": 10}
+    assert sums["ai_software"]["mentions"] == 40            # "AI" and "NOW" are words on Reddit, not counted
+    assert {"AI", "NOW", "S", "B", "DTE", "ES", "RUN"} <= th.REDDIT_SKIP
+
+
+def test_v80d_talked_about():
+    import themes as th
+    rd = {"RGTI": {"m": 60, "m24": 10, "name": "Rigetti Computing"},
+          "NVDA": {"m": 220, "m24": 440, "name": "NVIDIA"},                       # down, not a jump
+          "SOXL": {"m": 90, "m24": 5, "name": "Direxion Daily Semiconductor Bull 3X Shares ETF"},   # a fund
+          "DTE": {"m": 80, "m24": 5, "name": "DTE Energy"},                       # "days to expiration"
+          "ZZZZ": {"m": 16, "m24": 1, "name": "Small Co"},
+          "TINY": {"m": 9, "m24": 0, "name": "Tiny"}}                              # under the minimum
+    out = th.talked_about(rd, [])
+    assert [r["ticker"] for r in out] == ["RGTI", "ZZZZ"]      # by the jump: 60 / 10 = 6.0, then 16 / max(1, 3) = 5.3
+    assert out[0]["themes"] == ["quantum"] and out[1]["themes"] == [] and out[0]["base_kind"] == "day_before"
+    # with 5+ stored days the usual day is their average, not the 24 hours before
+    hist = [{"RGTI": 25, "NVDA": 400}] * 5                      # a stock missing from the stored days = under 3 mentions then
+    out = th.talked_about(rd, hist)
+    assert [r["ticker"] for r in out] == ["ZZZZ"] and out[0]["base_kind"] == "usual"
+
+
+def test_v80d_rising_phrases():
+    import datetime as _dt
+    import themes as th
+    now = _dt.datetime(2026, 11, 27, 21, tzinfo=_dt.timezone.utc)
+    day = lambda n: now - _dt.timedelta(days=n)
+    rows = [(f"Humanoid robots draw record orders at maker {i}", day(1)) for i in range(7)]
+    rows += [("Humanoid robots shown at fair", day(20))]
+    rows += [(f"Fed officials weigh rate path {i}", day(2)) for i in range(8)]
+    rows += [(f"Fed officials speak on rates {i}", day(10 + i % 20)) for i in range(40)]      # every week the same
+    rows += [("Stock market rises as Nasdaq gains", day(1))] * 9
+    out = th.rising_phrases(rows, now)
+    phrases = [r["phrase"] for r in out]
+    assert "humanoid robots" in phrases and "fed officials" not in phrases
+    assert not any("market" in p or "nasdaq" in p for p in phrases)
+    r = next(r for r in out if r["phrase"] == "humanoid robots")
+    assert r["last7"] == 7 and r["prev_week_avg"] == 0.2 and "Humanoid" in r["example"]
+    assert th.headline_phrases("Rare-earth stocks: MP Materials, USA Rare Earth soar") >= {"mp materials", "rare earth"}
+
+
+def test_v80d_subindustries():
+    import themes as th
+    close, _ = _theme_frames()
+    groups = {"A": {"sub": "Semis", "sector": "IT"}, "B": {"sub": "Semis", "sector": "IT"}, "C": {"sub": "Semis", "sector": "IT"},
+              "D": {"sub": "Banks", "sector": "Fin"}, "SPY": {"sub": "", "sector": ""}}
+    out = th.subindustry_stats(close, groups, {"r1w": 0.0, "r1m": 0.0, "r3m": 0.0})
+    assert len(out) == 1 and out[0]["name"] == "Semis" and out[0]["n"] == 3          # Banks has fewer than 3
+    assert out[0]["r1w"] == round(20 / 3, 2) and out[0]["members"][0] in ("A", "B")
+
+
+def test_v80d_theme_sources_in_the_health_check():
+    import data_health as dh
+    ok = {"themes": [{"key": str(i), "wiki": {"ratio": 1}, "reddit": {"mentions": 1}, "news": {"last7": 1}} for i in range(21)],
+          "subind": [{"name": "x"}]}
+    assert dh.theme_sources_problems(ok) == []
+    bad = {"themes": [{"key": str(i), "wiki": None, "news": None} for i in range(21)]}
+    odd = dh.theme_sources_problems(bad)
+    assert any("Wikipedia" in o for o in odd) and any("Reddit" in o for o in odd) and any("sub-industries" in o for o in odd)
+
+
+def test_v80d_theme_changes_in_the_daily_summary(api):
+    import datetime as _dt
+    import json as _json
+
+    class Cur:
+        def __init__(self, rows): self.rows, self.n = rows, 0
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, *a): self.n += 1
+        def fetchone(self): return (True,)
+        def fetchall(self): return self.rows
+
+    class Conn:
+        def __init__(self, rows): self.rows = rows
+        def cursor(self): return Cur(self.rows)
+
+    d = _dt.date(2026, 11, 30)
+    rows = [(d, _json.dumps({"quantum": "heating", "nuclear": "quiet", "cyber": "cooling", "gold": "quiet"})),
+            (_dt.date(2026, 11, 27), _json.dumps({"quantum": "quiet", "nuclear": "weak", "cyber": "cooling", "gold": "hot"}))]
+    out = api._theme_changes_for_day(Conn(rows), d)
+    assert {(c["key"], c["from"], c["to"]) for c in out} == {("quantum", "quiet", "heating"), ("gold", "hot", "quiet")}
+    assert out[0]["he"] and out[0]["en"]                       # weak -> quiet (nuclear) is noise, left out
+    assert api._theme_changes_for_day(Conn(rows[1:]), d) is None   # no row for that day yet
+    params = {r.path for r in api.app.routes if hasattr(r, "dependant")}
+    assert "/api/themes/tags" in params

@@ -7189,6 +7189,12 @@ def get_daily_digest(day: Optional[str] = None, top_n: int = DIGEST_TOP_N):
             conn.rollback()
             print(f"[warn] analyst ratings skipped: {type(e).__name__}: {e}")
             ratings = None
+        try:
+            theme_changes = _theme_changes_for_day(conn, d)        # v80d
+        except Exception as e:  # noqa: BLE001
+            conn.rollback()
+            print(f"[warn] theme changes skipped: {type(e).__name__}: {e}")
+            theme_changes = None
     finally:
         conn.close()
 
@@ -7200,6 +7206,7 @@ def get_daily_digest(day: Optional[str] = None, top_n: int = DIGEST_TOP_N):
         "hot_topics": hot_topics,
         "ai_summary": ai_summary,
         "analyst_ratings": ratings,
+        "theme_changes": theme_changes,
     }
 
 
@@ -7799,6 +7806,46 @@ def get_themes():
     data["available"] = True
     _themes_last["v"] = (head["updated_at"], data)
     return data
+
+
+@app.get("/api/themes/tags")
+@_cached_answer(max_keys=1)
+def get_theme_tags():
+    """v80d: which theme(s) each stock belongs to and the theme's state — the small part of /api/themes the scan rows and the
+    stock page need (~6 KB instead of ~70). Read from /api/themes' stored answer, no query of its own."""
+    data = get_themes()
+    if not data.get("available"):
+        return {"available": False}
+    tags: dict = {}
+    names = {}
+    for t in data.get("themes") or []:
+        names[t["key"]] = {"he": t["he"], "en": t["en"], "label": t["label"]}
+        for m in t.get("members") or []:
+            tags.setdefault(m["ticker"], []).append(t["key"])
+    return {"available": True, "day": data.get("day"), "themes": names, "tags": tags}
+
+
+def _theme_changes_for_day(conn, day) -> Optional[list]:
+    """v80d: themes whose state changed on this market day into or out of hot / heating / cooling (weak <-> quiet is
+    everyday noise and is left out). Two small rows of theme_snapshots."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('theme_snapshots') IS NOT NULL")
+        if not cur.fetchone()[0]:
+            return None
+        cur.execute("SELECT day, labels FROM theme_snapshots WHERE day <= %s ORDER BY day DESC LIMIT 2", (day,))
+        rows = cur.fetchall()
+    if len(rows) < 2 or rows[0][0] != day or not rows[0][1] or not rows[1][1]:
+        return None
+    now, before = json.loads(rows[0][1]), json.loads(rows[1][1])
+    from themes import THEMES             # the names live with the list (late import: the server starts without it if it breaks)
+    names = {t["key"]: t for t in THEMES}
+    loud = {"hot", "heating", "cooling"}
+    out = []
+    for key, lab in now.items():
+        old = before.get(key)
+        if old and old != lab and (lab in loud or old in loud) and key in names:
+            out.append({"key": key, "he": names[key]["he"], "en": names[key]["en"], "from": old, "to": lab})
+    return out
 
 
 _INSIDER_DAYS = 183
