@@ -1,0 +1,25 @@
+name: Market Themes
+
+# v80: hot market themes (themes.py) — prices of ~240 theme stocks, Wikipedia page views, news counts -> Postgres
+# (theme_snapshots, one row a day). Started by the built-in scheduler on Render (scheduler.py) after the close; can also be
+# run by hand.
+on:
+  workflow_dispatch:
+
+# the job only needs to read the code (default token permissions are broader)
+permissions:
+  contents: read
+
+jobs:
+  themes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -u themes.py
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
