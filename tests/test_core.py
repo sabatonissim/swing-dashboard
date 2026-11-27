@@ -4289,13 +4289,17 @@ def test_v80_theme_numbers():
     assert st["missing"] == ["MISSING"] and st["n"] == 4
     assert st["r1w"] == 5.0 and st["rel_1w"] == 5.0                    # (10 + 10 + 0 + 0) / 4
     assert st["up_1w"] == 2 and 2.0 <= st["vol_ratio"] <= 2.2           # dollar volume: twice the shares, a bit higher price
-    assert st["series"][0] == 0.0 and st["series"][-1] == 5.0 and len(st["series"]) == th.SERIES_DAYS + 1
+    # v80b: one line per period, starting at 0, ending at the table's return for that period
+    for p, n in th.PERIOD_DAYS.items():
+        line = st["series"][p]
+        assert len(line) == n + 1 and line[0] == 0.0 and line[-1] == st["r" + p] == 5.0, p
     assert st["members"][0]["ticker"] in ("A", "B") and st["members"][0]["from_high"] == 0.0
     assert st["label"] == "quiet"                                        # only half the stocks went up: not "heating"
     assert th.theme_stats(dict(spec, members="A MISSING"), close, vol, spy) is None     # fewer than 3 members = left out
     out = th.build(close, vol)
     assert out["day"] == close.index[-1].date().isoformat() and out["spy"]["r1w"] == 0.0
-    assert len(out["series_days"]) == th.SERIES_DAYS + 1
+    assert {p: len(v) for p, v in out["series_days"].items()} == {p: n + 1 for p, n in th.PERIOD_DAYS.items()}
+    assert out["spy_series"]["1m"][-1] == 0.0
 
 
 def test_v80_theme_attention():

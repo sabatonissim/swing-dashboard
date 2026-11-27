@@ -124,6 +124,9 @@ THEME_LABEL_RULES = {
 LABEL_ORDER = ["hot", "heating", "cooling", "weak", "quiet"]
 NEAR_HIGH = 0.05          # within 5% of the 52-week closing high
 SERIES_DAYS = 63          # chart: the last ~3 months
+# v80b (owner 27.11: "the month's return is not the same number" as the chart): one line per period the table sorts by,
+# each starting at 0 on that period's first day, so its last point = the return in the table (the equal-weight average)
+PERIOD_DAYS = {"1w": 5, "1m": 21, "3m": SERIES_DAYS}
 
 
 def members_of(theme: dict) -> List[str]:
@@ -279,7 +282,8 @@ def theme_stats(theme: dict, close: pd.DataFrame, volume: pd.DataFrame, spy: dic
         c = close[etf]
         out["etf"] = {"ticker": etf, "r1w": _ret(c, 5), "r1m": _ret(c, 21), "r3m": _ret(c, 63)}
     out["label"] = theme_label(out)
-    out["series"] = basket_series(close, [m["ticker"] for m in members])
+    names = [m["ticker"] for m in members]
+    out["series"] = {p: basket_series(close, names, n) for p, n in PERIOD_DAYS.items()}
     out["members"] = sorted(members, key=lambda m: -(m["r1w"] if m["r1w"] is not None else -999))
     return out
 
@@ -354,8 +358,9 @@ def build(close: pd.DataFrame, volume: pd.DataFrame) -> dict:
     if skipped:
         print(f"[warn] themes: too few members with prices, left out: {', '.join(skipped)}")
     day = s.dropna().index[-1].date()
-    return {"day": day.isoformat(), "spy": spy, "spy_series": basket_series(close, ["SPY"]),
-            "series_days": [d.date().isoformat() for d in close.index[-(SERIES_DAYS + 1):]],
+    return {"day": day.isoformat(), "spy": spy,
+            "spy_series": {p: basket_series(close, ["SPY"], n) for p, n in PERIOD_DAYS.items()},
+            "series_days": {p: [d.date().isoformat() for d in close.index[-(n + 1):]] for p, n in PERIOD_DAYS.items()},
             "themes": themes}
 
 

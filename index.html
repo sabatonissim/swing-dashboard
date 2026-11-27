@@ -600,6 +600,12 @@
   .th-row{cursor:pointer;} .th-row:hover td{background:var(--panel);}
   .th-open > td{background:var(--panel);}
   .th-table td{white-space:nowrap;} .th-table th{white-space:normal;}
+  /* v80b (owner: "the Hebrew font is not nice"): .bt-signals-table puts every cell in JetBrains Mono, which has no Hebrew letters —
+     names and sentences in Heebo, only numbers and tickers stay monospaced */
+  .th-table td{font-family:'Heebo',sans-serif;font-size:13px;}
+  .th-table td.mono, .th-table .pf-tk, .th-detail .bt-signals-table td{font-family:'JetBrains Mono',monospace;}
+  .th-detail .hx-note{font-size:12px;line-height:1.65;}
+  .th-detail .fund-legend-item{font-family:'Heebo',sans-serif;}
   .th-detail{white-space:normal;padding:8px 2px 4px;width:0;min-width:100%;}   /* width:0 = the open theme never widens the table; its own stock table scrolls inside */
   @media (max-width:700px){
     .th-table .th-x{display:none;}                                  /* phone: name, state, return, vs S&P — the rest is in the open theme */
@@ -9941,7 +9947,10 @@ function _themeChip(label, en){
 function _themeRatio(v){ return v == null ? '—' : `×${v.toFixed(1)}`; }
 
 function _themeChartSvg(t, d, en){
-  const a = t.series || [], b = d.spy_series || [];
+  // v80b: the line of the period the table is sorted by (its last point = the return in the table); an older stored row has one 3-month line
+  const per = s => Array.isArray(s) ? (themesPeriod === '3m' ? s : null) : (s ? s[themesPeriod] : null);
+  const a = per(t.series), b = per(d.spy_series) || [];
+  if(!a) return '';
   const vals = a.concat(b).filter(v => v != null);
   if(a.length < 2 || !vals.length) return '';
   const W = 600, H = 170, P = 6;
@@ -9950,12 +9959,14 @@ function _themeChartSvg(t, d, en){
   const x = i => P + i * (W - 2 * P) / (a.length - 1), y = v => P + (hi - v) * (H - 2 * P) / (hi - lo);
   const line = (s, color, w) => `<polyline fill="none" stroke="${color}" stroke-width="${w}" points="${
     s.map((v, i) => v == null ? '' : `${x(i).toFixed(1)},${y(v).toFixed(1)}`).filter(Boolean).join(' ')}"/>`;
-  const days = d.series_days || [];
+  const days = (Array.isArray(d.series_days) ? d.series_days : (d.series_days || {})[themesPeriod]) || [];
   const fmt = s => s ? `${+s.slice(8, 10)}.${+s.slice(5, 7)}` : '';
-  const last = a[a.length - 1], lastS = b[b.length - 1];
+  const pName = {'1w': en ? 'week' : 'שבוע', '1m': en ? 'month' : 'חודש', '3m': en ? '3 months' : '3 חודשים'}[themesPeriod];
+  const last = t['r' + themesPeriod] ?? a[a.length - 1], lastS = (d.spy || {})['r' + themesPeriod] ?? b[b.length - 1];
   return `<div class="fund-legend" style="margin:0 0 6px;">
-      <span class="fund-legend-item"><span style="width:12px;height:3px;background:var(--amber);display:inline-block"></span>${escH(en ? t.en : t.he)} ${_pfPct(last)}</span>
-      <span class="fund-legend-item"><span style="width:12px;height:3px;background:var(--text-dim);display:inline-block"></span>S&amp;P 500 ${_pfPct(lastS)}</span>
+      <span class="fund-legend-item"><span style="width:12px;height:3px;background:var(--amber);display:inline-block"></span>${escH(en ? t.en : t.he)} <span class="mono">${_pfPct(last)}</span></span>
+      <span class="fund-legend-item"><span style="width:12px;height:3px;background:var(--text-dim);display:inline-block"></span>S&amp;P 500 <span class="mono">${_pfPct(lastS)}</span></span>
+      <span class="fund-legend-item">${en ? 'Period' : 'תקופה'}: ${pName}</span>
     </div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:170px;direction:ltr;display:block">
       <line x1="0" x2="${W}" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}" stroke="var(--line-hover)" stroke-dasharray="3 3"/>
