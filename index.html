@@ -522,6 +522,7 @@
   .cs-input{width:100%;background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:10px 12px;padding-left:34px;font-size:14px;outline:none;font-family:'JetBrains Mono',monospace;}
   .cs-input:focus{border-color:var(--teal-dim);}
   .cs-list{max-height:320px;overflow-y:auto;margin-top:6px;}
+  #tk-list{max-height:min(60vh,520px);}      /* v80f: up to 30 recent stocks */
   .cs-item{display:flex;align-items:center;gap:10px;padding:11px 10px;border-radius:8px;cursor:pointer;transition:background .12s;border-bottom:1px solid var(--line);}
   .cs-item:last-child{border-bottom:none;}
   .cs-item:hover,.cs-item.sel{background:var(--panel-2);}
@@ -5485,7 +5486,9 @@ function tkLoadList(){
   return _tkListLoading;
 }
 function tkRecent(){ try { const r = JSON.parse(localStorage.getItem('swing_recent_tk') || '[]'); return Array.isArray(r) ? r.filter(x => TICKER_OK.test(x)) : []; } catch(e){ return []; } }
-function tkRemember(t){ try { localStorage.setItem('swing_recent_tk', JSON.stringify([t, ...tkRecent().filter(x => x !== t)].slice(0, 8))); } catch(e){} }
+// v80f (owner 28.11: "the recent list is really short — the last 30"): kept 30, also from the scan window and the free-search window
+var TK_RECENT_MAX = 30;
+function tkRemember(t){ if(window.__isBot || !TICKER_OK.test(String(t || ''))) return; try { localStorage.setItem('swing_recent_tk', JSON.stringify([t, ...tkRecent().filter(x => x !== t)].slice(0, TK_RECENT_MAX))); } catch(e){} }
 function tkNameOf(t){ const r = (_tkList || []).find(x => x[0] === t); return r ? r[1] : ''; }
 // what the list offers for `q`: the exact ticker, tickers that start with it (largest companies first), then names
 function tkMatches(q, list){
@@ -5525,7 +5528,7 @@ function renderTickerSearch(raw){
     if(typed && TICKER_OK.test(typed) && !items.some(r => r[0] === typed)) items.push([typed, '']);   // whatever was typed, always
   }
   _tkItems = items; _tkSel = 0;
-  tkDraw(box, !q && items.length ? (t ? 'Opened recently' : 'נפתחו לאחרונה') : '');
+  tkDraw(box, !q && items.length ? (t ? `Opened recently (${items.length})` : `נפתחו לאחרונה (${items.length})`) : '');
   clearTimeout(_tkTimer);
   const seq = ++_tkSeq;
   if(typed && items.length && items[0][0] === typed && tkNameOf(typed))      // a known ticker: start loading it
@@ -5548,7 +5551,7 @@ function tkDraw(box, head){
   const t = lang === 'en';
   box.innerHTML = (head ? `<div class="cs-empty" style="text-align:start;padding:4px 4px 6px;">${escH(head)}</div>` : '')
     + (_tkItems.length ? _tkItems.map((r, i) => `<div class="cs-item${i === _tkSel ? ' sel' : ''}" role="option" onclick="pickTicker('${escH(r[0])}')">
-        <span class="cs-ticker" dir="ltr">${escH(r[0])}</span><span class="cs-trigger" dir="ltr">${escH(r[1] || (t ? 'Open this ticker' : 'פתיחת הטיקר הזה'))}</span></div>`).join('')
+        <span class="cs-ticker" dir="ltr">${escH(r[0])}</span><span class="cs-trigger" dir="ltr">${escH(r[1] || (head ? '' : (t ? 'Open this ticker' : 'פתיחת הטיקר הזה')))}</span></div>`).join('')
       : `<div class="cs-empty" style="text-align:start;padding:4px;">${t ? 'Type a ticker, for example AAPL.' : 'הקלידו טיקר, למשל AAPL.'}</div>`);
 }
 function tickerSearchKey(e){
@@ -5558,7 +5561,10 @@ function tickerSearchKey(e){
     if(!_tkItems.length) return;
     e.preventDefault();
     _tkSel = (_tkSel + (e.key === 'ArrowDown' ? 1 : -1) + _tkItems.length) % _tkItems.length;
-    tkDraw(box, '');
+    const head = box.querySelector('.cs-empty');
+    tkDraw(box, head && _tkItems.length && !e.target.value.trim() ? head.textContent : '');
+    const sel = box.querySelector('.cs-item.sel');                       // v80f: a long list scrolls with the selection
+    if(sel && sel.scrollIntoView) sel.scrollIntoView({block: 'nearest'});
     if(_tkItems[_tkSel] && tkNameOf(_tkItems[_tkSel][0])) ddPrefetch(_tkItems[_tkSel][0]);
   } else if(e.key === 'Enter'){
     e.preventDefault();
@@ -6257,6 +6263,7 @@ async function toggleWatchlist(ticker){
 // ---- Drawers ----
 function openDrawer(i){
   const s = stocks[i];
+  if(s) tkRemember(s.ticker);      // v80f: a stock opened from the scans is a stock seen too
   const drawer = document.getElementById("drawer");
   const triggerText = lang==='en' ? (s.trigger_en||s.trigger||'') : (s.trigger||s.trigger_he||'');
   drawer.innerHTML = `
@@ -7711,6 +7718,7 @@ async function showTickerDrawer(ticker){
     alert(lang==='en' ? 'Please enter a stock symbol, for example AAPL.' : 'יש להקליד סימול של מניה, למשל AAPL.');
     return;
   }
+  tkRemember(ticker);              // v80f
   const drawer = document.getElementById("drawer");
   drawer.innerHTML = `
     <div class="drawer-head"><h2>${ticker} <span class="watchlist-star ${watchlistTickers.has(ticker)?'active':''}" id="watchlist-star-${ticker}" onclick="toggleWatchlist('${ticker}')" title="${lang==='en'?'Add/remove from watchlist':'הוסף/הסר מרשימת המעקב'}">★</span>${idxSlot(ticker)}</h2><button class="close-btn" onclick="closeDrawer()">✕</button></div>
