@@ -616,11 +616,12 @@
   .th-mini td{font-family:'Heebo',sans-serif;font-size:12.5px;} .th-mini td.mono, .th-mini .pf-tk{font-family:'JetBrains Mono',monospace;}
   .th-name{max-width:170px;overflow:hidden;text-overflow:ellipsis;}
   .th-members .pf-tk{font-size:11.5px;margin-right:6px;font-weight:600;}
-  .th-sub-name{text-align:left !important;white-space:normal !important;min-width:150px;}
+  .th-sub-name{white-space:normal !important;min-width:150px;}
   .th-disc-h{font-size:13px;font-weight:700;color:var(--text);margin:14px 0 6px;} .th-discover .th-disc-h:first-child{margin-top:0;}
   .th-phrase{padding:6px 0;border-bottom:1px solid var(--line);font-size:12.5px;}
-  .th-phrase b{color:var(--amber);margin-right:8px;font-family:'JetBrains Mono',monospace;}
-  .th-example{text-align:left;font-size:11px;margin-top:2px;}
+
+  .th-example{text-align:left;font-size:11px;margin-top:2px;} .th-ph-line{font-size:13px;color:var(--text);margin-bottom:2px;}
+  .th-phrase .pf-sub b{color:var(--amber);font-family:'JetBrains Mono',monospace;font-weight:600;margin:0;}
   .th-tag{cursor:pointer;}
   .th-axis{display:flex;justify-content:space-between;font-size:10.5px;color:var(--text-dim);direction:ltr;margin-top:2px;}
   .rg-more{font-size:11px;color:var(--amber);cursor:pointer;text-decoration:underline;white-space:nowrap;}
@@ -10085,6 +10086,54 @@ function renderThemes(){
   renderDiscover();      // v80d
 }
 
+// v80e: GICS sub-industries of the S&P 500 in Hebrew (all 126 in constituents.csv, 27.11.2026); a new one shows in English
+var SUBIND_HE = {
+  "Advertising": "פרסום", "Aerospace & Defense": "תעופה וביטחון", "Agricultural & Farm Machinery": "מכונות חקלאיות",
+  "Agricultural Products & Services": "מוצרים ושירותים חקלאיים", "Air Freight & Logistics": "הובלה אווירית ולוגיסטיקה",
+  "Apparel Retail": "קמעונאות ביגוד", "Apparel, Accessories & Luxury Goods": "ביגוד, אביזרים ומותגי יוקרה",
+  "Application Software": "תוכנה יישומית", "Asset Management & Custody Banks": "ניהול נכסים ובנקי משמורת",
+  "Automobile Manufacturers": "יצרניות רכב", "Automotive Parts & Equipment": "חלקי רכב", "Automotive Retail": "קמעונאות רכב",
+  "Biotechnology": "ביוטכנולוגיה", "Broadcasting": "שידור", "Broadline Retail": "קמעונאות כללית", "Building Products": "מוצרי בנייה",
+  "Cable & Satellite": "כבלים ולוויין", "Cargo Ground Transportation": "הובלה יבשתית", "Casinos & Gaming": "קזינו והימורים",
+  "Commodity Chemicals": "כימיקלים בסיסיים", "Communications Equipment": "ציוד תקשורת", "Computer & Electronics Retail": "קמעונאות מחשבים ואלקטרוניקה",
+  "Construction & Engineering": "בנייה והנדסה", "Construction Machinery & Heavy Transportation Equipment": "מכונות בנייה וכלי הובלה כבדים",
+  "Construction Materials": "חומרי בנייה", "Consumer Electronics": "מוצרי אלקטרוניקה לצרכן", "Consumer Finance": "אשראי צרכני",
+  "Consumer Staples Merchandise Retail": "רשתות קמעונאות למוצרי צריכה", "Copper": "נחושת", "Data Center REITs": "נדל\"ן חוות שרתים",
+  "Data Processing & Outsourced Services": "עיבוד נתונים ומיקור חוץ", "Distillers & Vintners": "משקאות אלכוהוליים", "Distributors": "הפצה",
+  "Diversified Banks": "בנקים גדולים", "Diversified Support Services": "שירותי תמיכה", "Electric Utilities": "חברות חשמל",
+  "Electrical Components & Equipment": "רכיבים וציוד חשמלי", "Electronic Components": "רכיבים אלקטרוניים",
+  "Electronic Equipment & Instruments": "ציוד ומכשור אלקטרוני", "Electronic Manufacturing Services": "ייצור אלקטרוניקה בקבלנות",
+  "Environmental & Facilities Services": "שירותי סביבה ותחזוקה", "Fertilizers & Agricultural Chemicals": "דשנים וכימיקלים לחקלאות",
+  "Financial Exchanges & Data": "בורסות ומידע פיננסי", "Food Distributors": "הפצת מזון", "Food Retail": "רשתות מזון", "Footwear": "הנעלה",
+  "Gas Utilities": "חברות גז", "Gold": "זהב", "Health Care Distributors": "הפצה רפואית", "Health Care Equipment": "ציוד רפואי",
+  "Health Care Facilities": "מוסדות רפואיים", "Health Care REITs": "נדל\"ן רפואי", "Health Care Services": "שירותי בריאות",
+  "Health Care Supplies": "מוצרים רפואיים מתכלים", "Health Care Technology": "טכנולוגיה רפואית", "Heavy Electrical Equipment": "ציוד חשמלי כבד",
+  "Home Improvement Retail": "רשתות לשיפוץ הבית", "Homebuilding": "בניית בתים", "Homefurnishing Retail": "רשתות ריהוט",
+  "Hotel & Resort REITs": "נדל\"ן מלונאות", "Hotels, Resorts & Cruise Lines": "מלונות, נופש ושייט", "Household Products": "מוצרים לבית",
+  "Human Resource & Employment Services": "השמה ומשאבי אנוש", "Independent Power Producers & Energy Traders": "יצרני חשמל פרטיים וסוחרי אנרגיה",
+  "Industrial Conglomerates": "תאגידי תעשייה", "Industrial Gases": "גזים תעשייתיים", "Industrial Machinery & Supplies & Components": "מכונות ורכיבים לתעשייה",
+  "Industrial REITs": "נדל\"ן תעשייה ולוגיסטיקה", "Insurance Brokers": "סוכנויות ביטוח", "Integrated Oil & Gas": "נפט וגז משולבות",
+  "Integrated Telecommunication Services": "חברות תקשורת", "Interactive Home Entertainment": "משחקי וידאו", "Interactive Media & Services": "מדיה ואינטרנט",
+  "Internet Services & Infrastructure": "שירותי ותשתיות אינטרנט", "Investment Banking & Brokerage": "בנקאות השקעות וברוקרים",
+  "IT Consulting & Other Services": "ייעוץ ושירותי IT", "Leisure Products": "מוצרי פנאי", "Life & Health Insurance": "ביטוח חיים ובריאות",
+  "Life Sciences Tools & Services": "כלים ושירותים למדעי החיים", "Managed Health Care": "ביטוח בריאות מנוהל", "Metal, Glass & Plastic Containers": "אריזות מתכת, זכוכית ופלסטיק",
+  "Movies & Entertainment": "קולנוע ובידור", "Multi-Family Residential REITs": "נדל\"ן דירות להשכרה", "Multi-line Insurance": "ביטוח כללי משולב",
+  "Multi-Sector Holdings": "חברות אחזקה", "Multi-Utilities": "חברות תשתית משולבות", "Office REITs": "נדל\"ן משרדים",
+  "Oil & Gas Equipment & Services": "ציוד ושירותים לנפט וגז", "Oil & Gas Exploration & Production": "חיפוש והפקת נפט וגז",
+  "Oil & Gas Refining & Marketing": "זיקוק ושיווק נפט", "Oil & Gas Storage & Transportation": "אחסון והולכת נפט וגז",
+  "Other Specialized REITs": "נדל\"ן ייעודי אחר", "Other Specialty Retail": "קמעונאות ייעודית", "Packaged Foods & Meats": "מזון ארוז ובשר",
+  "Paper & Plastic Packaging Products & Materials": "אריזות נייר ופלסטיק", "Passenger Airlines": "חברות תעופה", "Passenger Ground Transportation": "הסעת נוסעים",
+  "Personal Care Products": "טיפוח אישי", "Pharmaceuticals": "תרופות", "Property & Casualty Insurance": "ביטוח רכוש",
+  "Publishing": "הוצאה לאור", "Rail Transportation": "רכבות משא", "Real Estate Services": "שירותי נדל\"ן", "Regional Banks": "בנקים אזוריים",
+  "Reinsurance": "ביטוח משנה", "Research & Consulting Services": "מחקר וייעוץ", "Restaurants": "מסעדות", "Retail REITs": "נדל\"ן מסחרי",
+  "Self-Storage REITs": "נדל\"ן מחסנים", "Semiconductor Materials & Equipment": "ציוד וחומרים לייצור שבבים", "Semiconductors": "שבבים",
+  "Single-Family Residential REITs": "נדל\"ן בתים להשכרה", "Soft Drinks & Non-alcoholic Beverages": "משקאות קלים", "Specialized Consumer Services": "שירותים צרכניים",
+  "Specialty Chemicals": "כימיקלים מיוחדים", "Steel": "פלדה", "Systems Software": "תוכנת מערכת", "Technology Distributors": "הפצת טכנולוגיה",
+  "Technology Hardware, Storage & Peripherals": "חומרה, אחסון וציוד היקפי", "Telecom Tower REITs": "נדל\"ן אנטנות סלולר", "Timber REITs": "נדל\"ן יערות",
+  "Tobacco": "טבק", "Trading Companies & Distributors": "חברות סחר והפצה", "Transaction & Payment Processing Services": "סליקה ותשלומים",
+  "Water Utilities": "חברות מים", "Wireless Telecommunication Services": "סלולר",
+};
+
 // v80d: "what is starting to get attention" — three lists from the same stored day (themes.py), all data, no AI
 var discoverSubAll = false;
 function renderDiscover(){
@@ -10111,9 +10160,12 @@ function renderDiscover(){
   const talkedBase = talked.some(r => r.base_kind === 'usual') ? (en ? 'the average of the last stored days' : 'הממוצע של הימים האחרונים ששמרנו') : (en ? 'the 24 hours before' : '24 השעות שלפני');
   // 2. words rising in headlines
   const ph = (d.phrases && d.phrases.items) || [];
-  const phHtml = ph.length ? ph.map(r => `<div class="th-phrase"><b dir="ltr">${escH(r.phrase)}</b>
-      <span class="pf-sub">${en ? `${r.last7} headlines this week, ${r.prev_week_avg} in an average week before` : `${r.last7} כותרות השבוע, ${r.prev_week_avg} בשבוע ממוצע לפני`}</span>
-      <div class="pf-sub th-example" dir="ltr">${escH(r.example || '')}</div></div>`).join('')
+  // v80e: in Hebrew the example headline is our stored translation (macro_news.summary_he); the phrase stays in English —
+  // it is the exact words counted in the headlines (a translated two-word fragment reads wrong: "cap credit")
+  const phHtml = ph.length ? ph.map(r => `<div class="th-phrase">
+      <div class="th-ph-line">${!en && r.example_he ? escH(r.example_he) : `<span dir="ltr">${escH(r.example || '')}</span>`}</div>
+      <span class="pf-sub">${en ? `${r.last7} headlines this week, ${r.prev_week_avg} in an average week before` : `${r.last7} כותרות השבוע, ${r.prev_week_avg} בשבוע ממוצע לפני`}
+        · ${en ? 'words' : 'המילים'}: <b dir="ltr">${escH(r.phrase)}</b></span></div>`).join('')
     : `<div class="movers-empty">${d.phrases ? (en ? 'No phrase jumped in the headlines this week.' : 'אין השבוע צירוף מילים שקפץ בכותרות.') : (en ? 'Starts with the next run.' : 'יתחיל בריצה הבאה.')}</div>`;
   // 3. S&P 500 sub-industries, by the period the themes table is sorted by
   const p = themesPeriod;
@@ -10122,7 +10174,7 @@ function renderDiscover(){
   const subHtml = subs.length ? `<div style="overflow-x:auto"><table class="bt-signals-table pf-table th-mini"><thead><tr>${
       (en ? ['Group (GICS)', 'Return', 'Vs S&P 500', 'Up this week', 'Stocks'] : ['ענף (GICS)', 'תשואה', 'מול S&P 500', 'עלו השבוע', 'מניות'])
         .map((h, i) => `<th${i === 1 || i === 3 ? ' class="th-x"' : ''}>${h}</th>`).join('')}</tr></thead><tbody>${subShown.map(s => `<tr>
-        <td dir="ltr" class="th-sub-name">${escH(s.name)}<div class="pf-sub">${escH(s.sector || '')}</div></td>
+        <td class="th-sub-name">${en ? escH(s.name) : escH(SUBIND_HE[s.name] || s.name)}<div class="pf-sub">${escH(sectorLabel(s.sector || ''))}${!en && SUBIND_HE[s.name] ? ` · <span dir="ltr">${escH(s.name)}</span>` : ''}</div></td>
         <td class="mono th-x">${pct(s['r' + p])}</td><td class="mono">${pct(s['rel_' + p])}</td>
         <td class="mono th-x">${s.up_1w}/${s.n}</td>
         <td class="th-members">${(s.members || []).slice(0, 6).map(tk).join(' ')}</td>
@@ -10134,18 +10186,18 @@ function renderDiscover(){
       <div class="th-disc-h">${en ? 'Jumping on Reddit' : 'קופצות ברדיט'}</div>
       ${talkedHtml}
       <div class="hx-note">${en
-        ? `Stocks named on the stock subreddits (wallstreetbets, stocks and others) at least ${15} times in 24 hours and 3× ${talkedBase} or more. Counts of mentions only — not whether people are for or against. Funds and tickers that are also common words (DTE, AI, NOW...) are left out. Source: ApeWisdom.`
-        : `מניות שהוזכרו בקבוצות המניות ברדיט (wallstreetbets, stocks ועוד) לפחות 15 פעמים ב-24 שעות, ופי 3 לפחות מ${talkedBase}. ספירה של אזכורים בלבד — לא אם מדברים בעד או נגד. קרנות וטיקרים שהם גם מילים רגילות (DTE, AI, NOW...) לא נספרים. מקור: ApeWisdom.`}</div>
+        ? `Stocks named on the stock subreddits (wallstreetbets, stocks and others) at least ${15} times in 24 hours and 3× ${talkedBase} or more. Counts of mentions only — not whether people are for or against. A ticker that is also a word (NOW, AI) counts only when written with $ ($NOW); funds and trading shorthand (DTE, ES...) are left out. Source: ApeWisdom.`
+        : `מניות שהוזכרו בקבוצות המניות ברדיט (wallstreetbets, stocks ועוד) לפחות 15 פעמים ב-24 שעות, ופי 3 לפחות מ${talkedBase}. ספירה של אזכורים בלבד — לא אם מדברים בעד או נגד. טיקר שהוא גם מילה (NOW, AI) נספר רק כשנכתב עם $ ($NOW); קרנות וקיצורי מסחר (DTE, ES...) לא נספרים. מקור: ApeWisdom.`}</div>
       <div class="th-disc-h">${en ? 'Words rising in the headlines' : 'מילים שעולות בכותרות'}</div>
       ${phHtml}
       <div class="hx-note">${en
-        ? `Two-word phrases in our news headlines this week (at least 6) and 3× an average week of the 4 before. Updated once a week${d.phrases && d.phrases.computed ? ` (last: ${+d.phrases.computed.slice(8, 10)}.${+d.phrases.computed.slice(5, 7)})` : ''}. A word that rises can be a new theme — or just a big news week.`
-        : `צירופים של שתי מילים בכותרות החדשות שלנו השבוע (לפחות 6), ופי 3 משבוע ממוצע בארבעת השבועות שלפני. מתעדכן פעם בשבוע${d.phrases && d.phrases.computed ? ` (אחרון: ${+d.phrases.computed.slice(8, 10)}.${+d.phrases.computed.slice(5, 7)})` : ''}. מילה שעולה יכולה להיות נושא חדש — או סתם שבוע של אירוע גדול בחדשות.`}</div>
+        ? `Two-word phrases in different news headlines this week (at least 6; the same headline from several outlets counts once) and 3× an average week of the 4 before. Updated once a week${d.phrases && d.phrases.computed ? ` (last: ${+d.phrases.computed.slice(8, 10)}.${+d.phrases.computed.slice(5, 7)})` : ''}. A word that rises can be a new theme — or just a big news week.`
+        : `צירופים של שתי מילים שהופיעו השבוע בכותרות חדשות שונות (לפחות 6; אותה כותרת מכמה מקורות נספרת פעם אחת), ופי 3 משבוע ממוצע בארבעת השבועות שלפני. מתעדכן פעם בשבוע${d.phrases && d.phrases.computed ? ` (אחרון: ${+d.phrases.computed.slice(8, 10)}.${+d.phrases.computed.slice(5, 7)})` : ''}. מילה שעולה יכולה להיות נושא חדש — או סתם שבוע של אירוע גדול בחדשות.`}</div>
       <div class="th-disc-h">${en ? `S&amp;P 500 groups moving together (${pName})` : `ענפים ב-S&amp;P 500 שזזים ביחד (${pName})`}</div>
       ${subHtml}
       <div class="hx-note">${en
         ? 'Every GICS sub-industry of the S&amp;P 500 with 3+ stocks, equal weight, against the S&amp;P 500 — covers what our theme list does not. Sorted by the period chosen above.'
-        : 'כל תת-ענף (GICS) של S&amp;P 500 עם 3 מניות ומעלה, במשקל שווה, מול S&amp;P 500 — מכסה גם מה שלא ברשימת הנושאים שלנו. ממוין לפי התקופה שנבחרה למעלה. שמות הענפים באנגלית.'}</div>
+        : 'כל תת-ענף (GICS) של S&amp;P 500 עם 3 מניות ומעלה, במשקל שווה, מול S&amp;P 500 — מכסה גם מה שלא ברשימת הנושאים שלנו. ממוין לפי התקופה שנבחרה למעלה.'}</div>
     </div>`;
 }
 

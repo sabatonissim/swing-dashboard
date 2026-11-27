@@ -4348,12 +4348,14 @@ def test_v80c_a_missing_day_counts_the_same_week():
 # ------------------------------------------------------------------ v80d: stage 2 — Reddit, headline phrases, S&P groups, tags
 def test_v80d_reddit_counts_leave_out_word_tickers():
     import themes as th
-    rd = {"IONQ": {"m": 30, "m24": 10, "name": "IonQ"}, "AI": {"m": 900, "m24": 900, "name": "C3.ai"},
-          "NOW": {"m": 500, "m24": 400, "name": "ServiceNow"}, "PLTR": {"m": 40, "m24": 40, "name": "Palantir"}}
+    rd = {"IONQ": {"m": 30, "m24": 10, "name": "IonQ"}, "AI": {"m": 9, "m24": 4, "name": "C3.ai"},
+          "NOW": {"m": 7, "m24": 30, "name": "ServiceNow"}, "PLTR": {"m": 40, "m24": 40, "name": "Palantir"},
+          "MOD": {"m": 50, "m24": 50, "name": "Modine"}}
     sums = th.reddit_theme_sums(rd)
     assert sums["quantum"] == {"mentions": 30, "prev_day": 10}
-    assert sums["ai_software"]["mentions"] == 40            # "AI" and "NOW" are words on Reddit, not counted
-    assert {"AI", "NOW", "S", "B", "DTE", "ES", "RUN"} <= th.REDDIT_SKIP
+    # v80e: ApeWisdom counts a word ticker only as $NOW / $AI, so they count; "MOD" (moderators) is shorthand in capitals
+    assert sums["ai_software"]["mentions"] == 56 and sums["dc_power"]["mentions"] == 0
+    assert {"DTE", "ES", "IT", "ALL", "MOD"} <= th.REDDIT_SKIP and not {"AI", "NOW", "S", "B", "RUN", "NET"} & th.REDDIT_SKIP
 
 
 def test_v80d_talked_about():
@@ -4385,9 +4387,9 @@ def test_v80d_rising_phrases():
     rows += [("Stock market rises as Nasdaq gains", day(1))] * 9
     out = th.rising_phrases(rows, now)
     phrases = [r["phrase"] for r in out]
-    assert "humanoid robots" in phrases and "fed officials" not in phrases
+    assert any("humanoid robots" in p for p in phrases) and not any("fed officials" in p for p in phrases)
     assert not any("market" in p or "nasdaq" in p for p in phrases)
-    r = next(r for r in out if r["phrase"] == "humanoid robots")
+    r = next(r for r in out if "humanoid robots" in r["phrase"])            # v80e: "humanoid robots draw" (joined pairs)
     assert r["last7"] == 7 and r["prev_week_avg"] == 0.2 and "Humanoid" in r["example"]
     assert th.headline_phrases("Rare-earth stocks: MP Materials, USA Rare Earth soar") >= {"mp materials", "rare earth"}
 
@@ -4437,3 +4439,31 @@ def test_v80d_theme_changes_in_the_daily_summary(api):
     assert api._theme_changes_for_day(Conn(rows[1:]), d) is None   # no row for that day yet
     params = {r.path for r in api.app.routes if hasattr(r, "dependant")}
     assert "/api/themes/tags" in params
+
+
+def test_v80e_phrases_count_each_headline_once_and_keep_its_hebrew():
+    """27.11: "aren't enough" = 15 copies of one headline from several outlets; "nvidia's ceo" / "huang's return" fragments."""
+    import datetime as _dt
+    import themes as th
+    now = _dt.datetime(2026, 11, 27, 21, tzinfo=_dt.timezone.utc)
+    ts = now - _dt.timedelta(days=1)
+    rows = [("Lower energy prices aren't enough to cool inflation, raising pressure on Fed", "מחירי אנרגיה נמוכים לא מספיקים", ts)] * 15
+    rows += [(f"Credit card rate cap {i}: banks push back", f"תקרה על ריבית כרטיסי אשראי {i}", ts) for i in range(7)]
+    out = th.rising_phrases(rows, now)
+    phrases = [r["phrase"] for r in out]
+    assert "aren't enough" not in phrases and "inflation raising" not in phrases
+    card = next(r for r in out if "credit card" in r["phrase"])
+    assert card["phrase"] == "credit card rate cap"                         # three overlapping pairs = one phrase
+    assert card["last7"] == 7 and card["example_he"].startswith("תקרה")
+    assert "nvidia ceo" in th.headline_phrases("Jensen Huang returns as Nvidia's CEO")
+
+
+def test_v80e_every_sp500_group_has_a_hebrew_name():
+    import re
+    html = (ROOT / "index.html").read_text(encoding="utf-8")
+    block = html[html.index("var SUBIND_HE = {"):]
+    block = block[:block.index("};")]
+    names = re.findall(r'"([^"]+)":\s*"', block)
+    assert len(names) == len(set(names)) == 126
+    for n in ("Semiconductors", "Casinos & Gaming", "Data Center REITs", "Insurance Brokers", "Electric Utilities"):
+        assert n in names

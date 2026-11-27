@@ -373,11 +373,12 @@ def build(close: pd.DataFrame, volume: pd.DataFrame) -> dict:
 # the last 24 hours, and in the 24 hours before. Free, no key; no history, so every run stores its own day (extra column).
 APEWISDOM_URL = "https://apewisdom.io/api/v1.0/filter/all-stocks/page/{}"
 APEWISDOM_MAX_PAGES = 10
-# tickers that are also common words or abbreviations on Reddit ("DTE" = days to expiration, "ES" = S&P futures, "AI",
-# "NOW", "S", "B", "RUN"...): never counted, also when they are members of a theme
-REDDIT_SKIP = set("""A AI ALL AM AN ARE AT ATH B BE BIG BY CAN CASH CEO CPI DD DO DTE EH EOD ES ET EV FED FLY FN FOR FUD GDP
-GO HAS HE HOLD IPO IQ IS IT KEY LI LOVE LOW ME MOD NB NET NEXT NOW ON ONE OPEN OR PATH PL PLAY PR PS REAL RR RUN S SAIL
-SERV SO TOP TV U UP USA VS WELL YOU ALT AU""".split())
+# Tickers that are trading shorthand written in capitals on Reddit ("DTE" = days to expiration, "ES" = S&P futures, "IT",
+# "ALL", "ON"...): never counted. v80e (owner: "on Reddit and X a stock is written with $, like $NOW"): ApeWisdom already
+# counts a word ticker only as $NOW / $now (its methodology page; 27.11: "AI" not listed at all, "NOW" 7) — so AI, NOW, S,
+# B, RUN, NET, PATH... are counted; only shorthand that it still counts in capitals (DTE 39, ES 22, IT 15, ALL 17) is here.
+REDDIT_SKIP = set("""A ALL AM AN ARE AT ATH BIG BY CAN CASH CEO CPI DD DO DTE EOD ES ET EV FED FOR FUD GDP GO HAS HE HOLD IPO
+IQ IS IT KEY LOVE LOW ME MOD NEXT ON ONE OPEN OR PLAY PR PS REAL SO TOP TV U UP USA VS WELL YOU""".split())
 ETF_NAME_RE = re.compile(r"\b(ETF|ETN|Trust|Fund|ProShares|Direxion|iShares|SPDR|Vanguard|Invesco|Index)\b", re.I)
 TALKED_MIN = 15           # mentions in 24 hours before a jump is shown at all
 TALKED_RATIO = 3.0        # ... and at least 3x its usual
@@ -458,55 +459,97 @@ stock stocks share shares market markets price prices report reports reported pe
 rise rises rose fall falls fell gain gains gained drop drops dropped jump jumps surge surges slump slumps climb climbs
 trading trade trades investors investor analysts analyst wall street dow nasdaq s&p index futures quarter quarterly
 monday tuesday wednesday thursday friday saturday sunday january february march april june july august september
-october november december first second third fourth biggest big top best amp""".split())
-PHRASE_WORD_RE = re.compile(r"[a-z][a-z0-9&'\-]*[a-z0-9]|[a-z]")
+october november december first second third fourth biggest big top best amp
+vow vows vowed find finds found remain remains remained raise raises raising raised mount mounts mounting enough aren't
+isn't won't can't don't doesn't didn't despite unlikely uncomfortably look looks looking eye eyes weigh weighs weighing
+seen push pushes pushing plan plans planned warn warns warned expect expects expected focus return returns returned
+mixed ease eases eased fear fears hope hopes data could should might reinstate reinstates reinstated name names named
+take takes taking keep keeps hit hits face faces facing pressure boost boosts lead leads led move moves amid again like
+key big ahead set""".split())
 PHRASE_MIN = 6            # times in the last 7 days
 PHRASE_RATIO = 3.0        # against the weekly average of the 4 weeks before (+1)
 PHRASE_SHOW = 12
 PHRASE_EVERY_DAYS = 6     # read the headlines again only once a week (~0.7MB from the database)
+PHRASES_VERSION = 2       # v80e: a change in the rules = a new number, so the next run does not wait the week
+
+
+PHRASE_MAX_WORDS = 5
+
+
+def headline_words(title: str) -> List[str]:
+    """The words in order; a number or a break (: , ; . ! ? | dash) stays as a token of its own, so no pair is made across
+    it ("rate cap 10%: banks" must not give "cap banks")."""
+    text = re.sub(r"[:;,.!?|\u2014\u2013()\[\]\"]|\s-\s", " | ", str(title or "").lower().replace("\u2019", "'"))
+    words = re.findall(r"\||[a-z0-9][a-z0-9&'\-%]*", text)
+    return [re.sub(r"'s$", "", w).strip("'-") for w in words]          # "nvidia's ceo" = "nvidia ceo"
 
 
 def headline_phrases(title: str) -> set:
     """The two-word phrases of one headline (each once), neither word common or about the market in general."""
-    words = PHRASE_WORD_RE.findall(str(title or "").lower().replace("\u2019", "'"))
-    words = [w.strip("'-") for w in words]
+    words = headline_words(title)
     out = set()
     for a, b in zip(words, words[1:]):
-        if a in PHRASE_STOP or b in PHRASE_STOP or len(a) < 2 or len(b) < 2 or a.isdigit() or b.isdigit():
+        if a in PHRASE_STOP or b in PHRASE_STOP or len(a) < 2 or len(b) < 2 or a[0].isdigit() or b[0].isdigit():
             continue
         out.add(f"{a} {b}")
     return out
 
 
 def rising_phrases(rows: List[tuple], now: datetime) -> List[dict]:
-    """rows = (headline, time). Phrases named at least PHRASE_MIN times in the last 7 days and PHRASE_RATIO x more than in
-    an average week of the 4 before, with the newest headline that has it."""
+    """rows = (headline, time) or (headline, Hebrew headline, time). Phrases in at least PHRASE_MIN different headlines in
+    the last 7 days and PHRASE_RATIO x more than in an average week of the 4 before, with the newest headline that has it
+    (and its Hebrew, when stored). v80e: the same headline from several outlets counts once (27.11: "aren't enough" = 15
+    copies of one headline)."""
     recent: Dict[str, int] = {}
     before: Dict[str, int] = {}
     example: Dict[str, tuple] = {}
+    seen = set()
     cut = now - timedelta(days=7)
-    for title, ts in rows:
+    for row in rows:
+        title, title_he, ts = (row[0], None, row[1]) if len(row) == 2 else row
         if ts is None:
             continue
+        key = (ts >= cut, re.sub(r"[^a-z0-9]+", " ", str(title or "").lower()).strip())
+        if key in seen:
+            continue
+        seen.add(key)
         bucket = recent if ts >= cut else before
         for ph in headline_phrases(title):
             bucket[ph] = bucket.get(ph, 0) + 1
-            if ts >= cut and (ph not in example or ts > example[ph][1]):
-                example[ph] = (title, ts)
+            if ts >= cut and (ph not in example or ts > example[ph][2]):
+                example[ph] = (title, title_he, ts)
     out = []
     for ph, n in recent.items():
         prev = before.get(ph, 0) / 4
         if n >= PHRASE_MIN and n >= PHRASE_RATIO * (prev + 1):
-            out.append({"phrase": ph, "last7": n, "prev_week_avg": round(prev, 1), "example": example[ph][0]})
-    # "humanoid robots" and "robots draw" from the same headlines: of overlapping phrases keep the one named more often
-    # overall (in the 5 weeks) — the name of the thing, not the verb next to it
+            out.append({"phrase": ph, "last7": n, "prev_week_avg": round(prev, 1), "example": example[ph][0],
+                        "example_he": example[ph][1] or None})
+    # v80e: pairs that overlap in the same headlines ("credit card", "card rate", "rate cap") are one phrase: the words of
+    # the example headline that they cover together ("credit card rate cap", up to PHRASE_MAX_WORDS); the numbers are
+    # those of the pair named most often in the 5 weeks
     out.sort(key=lambda r: (-(r["last7"] + 4 * r["prev_week_avg"]), r["phrase"]))
-    kept: List[dict] = []
+    groups: List[dict] = []
     for r in out:
-        a, b = r["phrase"].split(" ")
-        if any(r["example"] == k["example"] and (a in k["phrase"].split() or b in k["phrase"].split()) for k in kept):
-            continue
-        kept.append(r)
+        words = set(r["phrase"].split())
+        hit = [g for g in groups if g["rep"]["example"] == r["example"] and g["words"] & words]
+        if hit:                                   # joins every group it overlaps ("a b" + "c d", then "b c")
+            g = hit[0]
+            for other in hit[1:]:
+                g["pairs"] += other["pairs"]
+                g["words"] |= other["words"]
+                groups.remove(other)
+            g["pairs"].append(r["phrase"])
+            g["words"] |= words
+        else:
+            groups.append({"rep": r, "pairs": [r["phrase"]], "words": words})
+    kept = []
+    for g in groups:
+        rep = dict(g["rep"])
+        toks = headline_words(rep["example"])
+        at = sorted({i for i in range(len(toks) - 1) for ph in g["pairs"] if f"{toks[i]} {toks[i + 1]}" == ph})
+        if at and at == list(range(at[0], at[-1] + 1)) and at[-1] + 2 - at[0] <= PHRASE_MAX_WORDS:
+            rep["phrase"] = " ".join(toks[at[0]:at[-1] + 2])
+        kept.append(rep)
     kept.sort(key=lambda r: (-(r["last7"] / (r["prev_week_avg"] + 1)), -r["last7"]))
     return kept[:PHRASE_SHOW]
 
@@ -602,12 +645,13 @@ def save(payload: dict, reddit: Optional[Dict[str, dict]] = None, quotes: Option
             extra["reddit_themes"] = {k: v["mentions"] for k, v in sums.items()}
         # headline phrases: once a week (the last stored list is reused in between)
         last_ph = next((o.get("phrases") for o in olds if o.get("phrases")), None)
-        due = not last_ph or (date.fromisoformat(payload["day"]) - date.fromisoformat(last_ph["computed"])).days >= PHRASE_EVERY_DAYS
+        due = (not last_ph or last_ph.get("v") != PHRASES_VERSION
+               or (date.fromisoformat(payload["day"]) - date.fromisoformat(last_ph["computed"])).days >= PHRASE_EVERY_DAYS)
         if due:
             try:
-                cur.execute("SELECT summary_en, timestamp FROM macro_news WHERE timestamp >= NOW() - INTERVAL '35 days'")
+                cur.execute("SELECT summary_en, summary_he, timestamp FROM macro_news WHERE timestamp >= NOW() - INTERVAL '35 days'")
                 now = datetime.now(timezone.utc)
-                last_ph = {"computed": payload["day"], "items": rising_phrases(cur.fetchall(), now)}
+                last_ph = {"computed": payload["day"], "v": PHRASES_VERSION, "items": rising_phrases(cur.fetchall(), now)}
             except Exception as e:  # noqa: BLE001
                 conn.rollback()
                 print(f"[warn] themes: headline phrases failed: {type(e).__name__}: {e}")
